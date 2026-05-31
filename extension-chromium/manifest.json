@@ -14,7 +14,9 @@
     "scripting",
     "tabs"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -28,8 +30,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -39,5 +45,6 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3DEkGsXXSXGAj/xGZQbbF7CCd5WB+GR7HVPEsIQEbSehGtV4MtapuQMfEF85PkXtmRWW6ZGCya+rV5WkoGEf5p6JkyKYeSCESo3Nuai1ipSCpfc/ZlZAXcZKhmcRqmQ1dyfiZnrFIHCRI/ZrA7A/pEkNG0+oZmrEoHmxwa8whX7mxIQOgruY8XRsvZj47UsJwXiUyEGUZ1/DOdvxu/1LTmnCmxXqzMJQe4a6h3t+jWv9lQmBdtXgKfHno0bg3hBibv3chb+6ZTS8PkBND5zlR/f9f2/iYuSAbpOG+fxwzNVe2pe9U3I/HhIoMwh2xTKYuhVWqKI9wKmcc6QTfu4gSQIDAQAB"
 }

@@ -41,3 +41,4 @@ extension-firefox/icons/
 
 # Extension packaging output
 /dist/
+extension-chromium/.key.pem
