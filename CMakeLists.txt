@@ -26,6 +26,7 @@ add_executable(nexa
     src/grabber/HlsGrabber.cpp
     src/torrent/TorrentManager.cpp
     src/ipc/IpcServer.cpp
+    src/web/WebServer.cpp
     src/ui/MainWindow.cpp
 )
 

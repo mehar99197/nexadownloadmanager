@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QRegularExpression>
 #include <climits>
+#include <algorithm>
 
 namespace nexa {
 
@@ -30,6 +31,56 @@ DownloadEngine::DownloadEngine(QObject *parent)
         QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (m_downloadDir.isEmpty())
         m_downloadDir = QDir::homePath() + QStringLiteral("/Downloads");
+
+    // Cache live progress so the dashboard/API can report it on demand.
+    connect(this, &DownloadEngine::taskProgress, this, &DownloadEngine::cacheProgress);
+    connect(this, &DownloadEngine::taskRemoved,  this, &DownloadEngine::dropProgress);
+    // A paused/finished/errored task isn't moving — clear its cached speed so the
+    // API doesn't keep reporting the last sampled rate.
+    connect(this, &DownloadEngine::taskStateChanged, this,
+            [this](int id, DownloadState s, const QString &) {
+                if (s == DownloadState::Paused || s == DownloadState::Completed ||
+                    s == DownloadState::Error) {
+                    if (auto it = m_progress.find(id); it != m_progress.end())
+                        it->speed = 0.0;
+                }
+            });
+}
+
+void DownloadEngine::cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec)
+{
+    ProgressInfo &p = m_progress[id];
+    p.done = done;
+    p.total = total;
+    p.speed = bytesPerSec;
+}
+
+void DownloadEngine::dropProgress(int id)
+{
+    m_progress.remove(id);
+}
+
+QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
+{
+    QList<int> ids = m_tasks.keys();
+    ids.append(m_grabbers.keys());
+    ids.append(m_torrentIds.values());
+    std::sort(ids.begin(), ids.end());
+
+    QVector<TaskSnapshot> out;
+    out.reserve(ids.size());
+    for (int id : ids) {
+        TaskSnapshot s;
+        s.id = id;
+        s.name = nameOf(id);
+        s.state = stateOf(id);
+        const ProgressInfo p = m_progress.value(id);
+        s.done = p.done;
+        s.total = p.total;
+        s.speed = p.speed;
+        out.append(s);
+    }
+    return out;
 }
 
 DownloadEngine::~DownloadEngine()

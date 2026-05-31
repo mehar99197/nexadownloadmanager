@@ -37,6 +37,14 @@ media-stream grabbing, and more. C++ / Qt 6.
   pause/resume. Something IDM can't do at all. *Verified end-to-end: a full
   755 MB Debian ISO downloaded from a live swarm with a SHA256 matching
   Debian's official checksum exactly.*
+- **Remote web dashboard** — a built-in, dependency-free, hardened HTTP server
+  serves a phone-friendly page + REST API to add/monitor/pause/resume/remove
+  downloads, gated by a 128-bit access token (sent as a Bearer header).
+  Loopback-only by default; `--dashboard-lan` exposes it to other devices.
+  Has per-connection idle timeouts, a concurrent-connection cap, request-size
+  limits and strict request parsing. *Verified by an adversarial code review +
+  tests: token auth, slowloris cutoff, malformed-request rejection, and DoS
+  resilience.*
 
 ## Build
 
@@ -111,10 +119,25 @@ Browser Extension ──native messaging (framed JSON)──▶ nexa-host
 ### CLI flags
 
 ```
-nexa [--max=N] [--no-categorize] [--batch] [--resume-all] <url|pattern>...
-  --max=N          max simultaneous downloads (queue the rest)
-  --no-categorize  save straight to the download dir (no type subfolders)
-  --batch          exit once all downloads/streams finish (for scripts)
-  --resume-all     resume downloads interrupted in the previous run
-  pattern          e.g. "http://host/file[1-20].jpg" expands to 20 downloads
+nexa [--max=N] [--no-categorize] [--batch] [--resume-all]
+     [--dashboard[=PORT]] [--dashboard-lan] [--dashboard-token=TOK] <url|pattern>...
+  --max=N            max simultaneous downloads (queue the rest)
+  --no-categorize    save straight to the download dir (no type subfolders)
+  --batch            exit once all downloads/streams finish (for scripts)
+  --resume-all       resume downloads interrupted in the previous run
+  --dashboard[=PORT] start the remote web dashboard (default port 8088, loopback)
+  --dashboard-lan    bind the dashboard to 0.0.0.0 so other devices can reach it
+  --dashboard-token  set the dashboard access token (otherwise auto-generated)
+  pattern            e.g. "http://host/file[1-20].jpg" expands to 20 downloads
 ```
+
+### Remote dashboard
+
+```bash
+./build/nexa --dashboard --dashboard-lan
+# prints: Nexa dashboard: http://<lan-ip>:8088/?token=<128-bit token>
+```
+
+Open that URL on your phone (same Wi-Fi) to add and control downloads. Without
+`--dashboard-lan` the server is reachable only from `127.0.0.1`. The token is
+required on every request.

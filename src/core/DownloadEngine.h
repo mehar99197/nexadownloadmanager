@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QList>
 #include <QSet>
+#include <QVector>
 #include <QUrl>
 #include <QDateTime>
 #include "core/Types.h"
@@ -65,6 +66,18 @@ public:
     // or errored — used by --batch mode to know when to exit.
     bool allTerminal() const;
 
+    // A point-in-time view of one job, for the remote dashboard / API.
+    struct TaskSnapshot {
+        int           id = 0;
+        QString       name;
+        DownloadState state = DownloadState::Queued;
+        qint64        done = 0;
+        qint64        total = -1;     // -1 = unknown
+        double        speed = 0.0;    // bytes/sec
+    };
+    // All jobs (downloads, stream grabs, torrents) ordered by id.
+    QVector<TaskSnapshot> snapshot() const;
+
     // Rebuild unfinished tasks from the database (call once at startup).
     void loadPersisted();
 
@@ -78,6 +91,10 @@ signals:
     void taskFinished(int id);
     void taskRemoved(int id);
 
+private slots:
+    void cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec);
+    void dropProgress(int id);
+
 private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     void    wireTask(DownloadTask *t);
@@ -85,12 +102,15 @@ private:
     int     activeCount() const;     // tasks currently Probing/Downloading
     void    ensureTorrents();        // lazily create the libtorrent session
 
+    struct ProgressInfo { qint64 done = 0; qint64 total = -1; double speed = 0.0; };
+
     QNetworkAccessManager *m_nam = nullptr;
     Database              *m_db = nullptr;
     TorrentManager        *m_torrents = nullptr;
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
     QSet<int>              m_torrentIds;
+    QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;
     int                    m_maxConcurrent = 4;

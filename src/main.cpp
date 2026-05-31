@@ -3,7 +3,23 @@
 #include "core/DownloadTask.h"
 #include "core/Types.h"
 #include "ipc/IpcServer.h"
+#include "web/WebServer.h"
 #include "ui/MainWindow.h"
+
+#include <QHostInfo>
+#include <QNetworkInterface>
+#include <QUuid>
+
+// First non-loopback IPv4 address, so we can print a reachable dashboard URL.
+static QString localIpv4()
+{
+    const auto addrs = QNetworkInterface::allAddresses();
+    for (const QHostAddress &a : addrs) {
+        if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback())
+            return a.toString();
+    }
+    return QStringLiteral("127.0.0.1");
+}
 
 int main(int argc, char *argv[])
 {
@@ -42,11 +58,43 @@ int main(int argc, char *argv[])
     }
 
     // First pass: apply settings flags before adding downloads.
+    bool wantDashboard = false;
+    bool dashLan = false;          // bind 0.0.0.0 only when explicitly opted in
+    quint16 dashPort = 8088;
+    QString dashToken;
     for (const QString &arg : args) {
-        if (arg.startsWith(QStringLiteral("--max=")))
+        if (arg.startsWith(QStringLiteral("--max="))) {
             engine.setMaxConcurrent(arg.mid(6).toInt());
-        else if (arg == QStringLiteral("--no-categorize"))
+        } else if (arg == QStringLiteral("--no-categorize")) {
             engine.setAutoCategorize(false);
+        } else if (arg == QStringLiteral("--dashboard")) {
+            wantDashboard = true;
+        } else if (arg.startsWith(QStringLiteral("--dashboard="))) {
+            wantDashboard = true;
+            dashPort = quint16(arg.mid(12).toUInt());
+        } else if (arg == QStringLiteral("--dashboard-lan")) {
+            dashLan = true;
+        } else if (arg.startsWith(QStringLiteral("--dashboard-token="))) {
+            dashToken = arg.mid(18);
+        }
+    }
+
+    // Remote dashboard. Bound to loopback by default; --dashboard-lan exposes it
+    // on the LAN so a phone can reach it. A high-entropy token gates every call.
+    nexa::WebServer *dashboard = nullptr;
+    if (wantDashboard) {
+        if (dashToken.isEmpty())   // 128-bit token, constant width (no lost zeros)
+            dashToken = QUuid::createUuid().toString(QUuid::Id128);
+        dashboard = new nexa::WebServer(&engine, &app);
+        if (dashboard->start(dashPort, dashLan, dashToken)) {
+            const QString host = dashLan ? localIpv4() : QStringLiteral("127.0.0.1");
+            qInfo().noquote() << QStringLiteral("Nexa dashboard: http://%1:%2/?token=%3")
+                                     .arg(host).arg(dashboard->port()).arg(dashToken);
+            if (!dashLan)
+                qInfo().noquote() << "  (loopback only; pass --dashboard-lan to reach it from other devices)";
+        } else {
+            qWarning() << "Nexa dashboard could not start on port" << dashPort;
+        }
     }
 
     for (int i = 1; i < args.size(); ++i) {
