@@ -1,0 +1,36 @@
+name: build
+
+# Compiles Nexa on every push / PR so we always know the tree builds clean.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Build (Ubuntu, Qt6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            qt6-base-dev libqt6sql6-sqlite \
+            ffmpeg
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Smoke test (binaries exist)
+        run: |
+          test -x build/nexa
+          test -x build/nexa-host
+          echo "Build OK: $(ls -la build/nexa build/nexa-host)"
