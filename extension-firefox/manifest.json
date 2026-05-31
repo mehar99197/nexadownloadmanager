@@ -1,0 +1,41 @@
+{
+  "manifest_version": 2,
+  "name": "Nexa Download Manager Integration",
+  "version": "0.1.0",
+  "description": "Hands downloads and media streams off to the Nexa desktop app for fast multi-connection downloading.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "nexa@nexa.local",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "downloads",
+    "cookies",
+    "contextMenus",
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "nativeMessaging",
+    "tabs",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "browser_action": {
+    "default_title": "Nexa Download Manager",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

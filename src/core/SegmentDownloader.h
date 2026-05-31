@@ -1,0 +1,56 @@
+#pragma once
+#include <QObject>
+#include <QUrl>
+#include <QFile>
+#include <QNetworkRequest>
+#include "core/Types.h"
+
+class QNetworkAccessManager;
+class QNetworkReply;
+
+namespace nexa {
+
+// Downloads a single byte-range of a file and writes it directly into the
+// destination file at the correct offset. Multiple SegmentDownloaders run
+// concurrently on the same Qt event loop (async network I/O = real parallelism
+// without threads).
+class SegmentDownloader : public QObject {
+    Q_OBJECT
+public:
+    SegmentDownloader(const SegmentInfo &seg,
+                      const QUrl &url,
+                      const QString &filePath,
+                      const HeaderList &headers,
+                      QNetworkAccessManager *nam,
+                      QObject *parent = nullptr);
+    ~SegmentDownloader() override;
+
+    void start();              // begins / resumes from seg.done
+    void stop();               // aborts the in-flight request (keeps bytes done)
+
+    int    index()     const { return m_seg.index; }
+    qint64 bytesDone() const { return m_seg.done; }
+    qint64 length()    const { return m_seg.length(); }
+    bool   isComplete()const { return m_seg.complete(); }
+
+signals:
+    void progressed(int index, qint64 deltaBytes);   // emitted as bytes arrive
+    void completed(int index);
+    void failed(int index, const QString &error);
+
+private slots:
+    void onReadyRead();
+    void onFinished();
+
+private:
+    SegmentInfo             m_seg;
+    QUrl                    m_url;
+    QString                 m_filePath;
+    HeaderList              m_headers;
+    QNetworkAccessManager  *m_nam = nullptr;
+    QNetworkReply          *m_reply = nullptr;
+    QFile                   m_file;
+    bool                    m_stopped = false;
+};
+
+} // namespace nexa
