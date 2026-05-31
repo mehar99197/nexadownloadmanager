@@ -97,7 +97,9 @@ QByteArray relayToEngine(const QByteArray &payload, bool *connected)
     sock.flush();
     sock.waitForBytesWritten(500);
 
-    if (!sock.waitForReadyRead(2000))
+    // Most replies are instant, but a "list-formats" request runs yt-dlp -J,
+    // which is network-bound and can take several seconds.
+    if (!sock.waitForReadyRead(25000))
         return {};
     return sock.readAll();
 }

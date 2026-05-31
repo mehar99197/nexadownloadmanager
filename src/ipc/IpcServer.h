@@ -26,6 +26,8 @@ private slots:
 
 private:
     void handlePayload(QLocalSocket *sock, const QByteArray &json);
+    void sendFramed(QLocalSocket *sock, const QJsonObject &obj) const;
+    void listFormats(QLocalSocket *sock, const QUrl &url);   // async yt-dlp -J
 
     DownloadEngine *m_engine;
     QLocalServer   *m_server = nullptr;

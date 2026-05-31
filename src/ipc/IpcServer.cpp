@@ -6,8 +6,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QJsonArray>
+#include <QProcess>
+#include <QSet>
 #include <QUrl>
 #include <QDebug>
+#include <algorithm>
 
 namespace nexa {
 
@@ -66,20 +70,25 @@ void IpcServer::onReadyRead()
     handlePayload(sock, json);
 }
 
+void IpcServer::sendFramed(QLocalSocket *sock, const QJsonObject &o) const
+{
+    if (!sock)
+        return;
+    const QByteArray body = QJsonDocument(o).toJson(QJsonDocument::Compact);
+    const quint32 len = quint32(body.size());
+    QByteArray framed;
+    framed.append(char(len & 0xFF));
+    framed.append(char((len >> 8) & 0xFF));
+    framed.append(char((len >> 16) & 0xFF));
+    framed.append(char((len >> 24) & 0xFF));
+    framed.append(body);
+    sock->write(framed);
+    sock->flush();
+}
+
 void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
 {
-    auto sendReply = [sock](const QJsonObject &o) {
-        const QByteArray body = QJsonDocument(o).toJson(QJsonDocument::Compact);
-        const quint32 len = quint32(body.size());
-        QByteArray framed;
-        framed.append(char(len & 0xFF));
-        framed.append(char((len >> 8) & 0xFF));
-        framed.append(char((len >> 16) & 0xFF));
-        framed.append(char((len >> 24) & 0xFF));
-        framed.append(body);
-        sock->write(framed);
-        sock->flush();
-    };
+    auto sendReply = [this, sock](const QJsonObject &o) { sendFramed(sock, o); };
 
     const QJsonDocument doc = QJsonDocument::fromJson(json);
     if (!doc.isObject()) {
@@ -88,14 +97,21 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     }
     const QJsonObject obj = doc.object();
     const QString type = obj.value(QStringLiteral("type")).toString(QStringLiteral("download"));
-    if (type != QStringLiteral("download")) {
-        sendReply(QJsonObject{{"ok", false}, {"message", "unknown type"}});
-        return;
-    }
 
     const QUrl url = QUrl::fromUserInput(obj.value(QStringLiteral("url")).toString());
     if (!url.isValid()) {
         sendReply(QJsonObject{{"ok", false}, {"message", "invalid url"}});
+        return;
+    }
+
+    // The extension asks for a video's real, available qualities before showing
+    // the quality menu. Runs yt-dlp -J and replies asynchronously.
+    if (type == QStringLiteral("list-formats")) {
+        listFormats(sock, url);
+        return;
+    }
+    if (type != QStringLiteral("download")) {
+        sendReply(QJsonObject{{"ok", false}, {"message", "unknown type"}});
         return;
     }
 
@@ -119,6 +135,55 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else
         sendReply(QJsonObject{{"ok", true}, {"id", id}});
+}
+
+void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
+{
+    auto *proc = new QProcess(this);
+    auto *out = new QByteArray;
+    connect(proc, &QProcess::readyReadStandardOutput, this,
+            [proc, out]() { out->append(proc->readAllStandardOutput()); });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, sock, proc, out](int, QProcess::ExitStatus) {
+        // Collect the distinct video heights that have audio available so every
+        // listed quality can be delivered as video+audio.
+        const QJsonObject info = QJsonDocument::fromJson(*out).object();
+        const QJsonArray formats = info.value(QStringLiteral("formats")).toArray();
+        QSet<int> heights;
+        bool hasAudio = false;
+        for (const QJsonValue &fv : formats) {
+            const QJsonObject f = fv.toObject();
+            const QString vcodec = f.value(QStringLiteral("vcodec")).toString();
+            const QString acodec = f.value(QStringLiteral("acodec")).toString();
+            const int h = f.value(QStringLiteral("height")).toInt();
+            if (acodec != QLatin1String("none") && !acodec.isEmpty())
+                hasAudio = true;
+            if (vcodec != QLatin1String("none") && !vcodec.isEmpty() && h > 0)
+                heights.insert(h);
+        }
+        QList<int> sorted = heights.values();
+        std::sort(sorted.begin(), sorted.end(), std::greater<int>());
+
+        QJsonArray quals;
+        for (int h : sorted)
+            quals.append(QJsonObject{{"height", h}, {"label", QStringLiteral("%1p").arg(h)}});
+
+        sendFramed(sock, QJsonObject{{"ok", true},
+                                     {"hasAudio", hasAudio},
+                                     {"title", info.value(QStringLiteral("title")).toString()},
+                                     {"qualities", quals}});
+        proc->deleteLater();
+        delete out;
+    });
+    // -J extraction is network-bound (a few seconds); the host waits for us.
+    proc->start(QStringLiteral("yt-dlp"),
+                {QStringLiteral("-J"), QStringLiteral("--no-warnings"),
+                 QStringLiteral("--no-playlist"), url.toString()});
+    if (!proc->waitForStarted(3000)) {
+        sendFramed(sock, QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});
+        proc->deleteLater();
+        delete out;
+    }
 }
 
 } // namespace nexa

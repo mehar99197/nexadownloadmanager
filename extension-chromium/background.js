@@ -86,6 +86,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Count only video/stream media for the floating pill.
       const list = (tabMedia.get(tab?.id) || []).filter((m) => VIDEO_TYPES.has(m.type));
       sendResponse({ count: list.length, signature: list.map((m) => m.url).join("|") });
+    } else if (msg.type === "nexa-list-formats") {
+      // Ask the desktop app (yt-dlp -J) for a site video's real qualities.
+      const r = await sendNative({ type: "list-formats", url: msg.url });
+      sendResponse(r);
     } else if (msg.type === "nexa-get-qualities") {
       sendResponse(await buildQualities(tab));
     } else if (msg.type === "nexa-get-media") {

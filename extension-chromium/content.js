@@ -28,10 +28,10 @@
   }
   const YT_QUALITIES = [
     { label: "Best available", quality: "best", meta: "video + audio" },
-    { label: "1080p", quality: "1080", meta: "" },
-    { label: "720p", quality: "720", meta: "" },
-    { label: "480p", quality: "480", meta: "" },
-    { label: "360p", quality: "360", meta: "" },
+    { label: "1080p", quality: "1080", meta: "video + audio" },
+    { label: "720p", quality: "720", meta: "video + audio" },
+    { label: "480p", quality: "480", meta: "video + audio" },
+    { label: "360p", quality: "360", meta: "video + audio" },
     { label: "Audio only (m4a)", quality: "audio", meta: "" }
   ];
 
@@ -102,11 +102,21 @@
     panel.style.display = "block";
 
     if (isSiteVideo()) {
-      // YouTube & co: a fixed quality menu (yt-dlp resolves the streams).
-      renderPanel([{
-        title: siteTitle(), name: siteTitle(), site: true,
-        qualities: YT_QUALITIES.map((q) => ({ label: q.label, meta: q.meta, quality: q.quality }))
-      }]);
+      // YouTube & co: ask the engine (yt-dlp -J) for this video's REAL qualities.
+      renderPanel([{ title: siteTitle(), qualities: [{ label: "Loading qualities…" }] }]);
+      chrome.runtime.sendMessage({ type: "nexa-list-formats", url: location.href }, (r) => {
+        let quals;
+        if (!chrome.runtime.lastError && r && r.ok && Array.isArray(r.qualities) && r.qualities.length) {
+          // Every quality is delivered as video+audio (yt-dlp merges).
+          quals = [{ label: "Best available", quality: "best", meta: "video + audio" }];
+          for (const q of r.qualities)
+            quals.push({ label: q.label, quality: String(q.height), meta: "video + audio" });
+          quals.push({ label: "Audio only (m4a)", quality: "audio", meta: "" });
+        } else {
+          quals = YT_QUALITIES.map((q) => ({ label: q.label, quality: q.quality, meta: q.meta }));
+        }
+        renderPanel([{ title: siteTitle(), name: siteTitle(), site: true, qualities: quals }]);
+      });
       return;
     }
     renderPanel([{ title: "Loading qualities…", qualities: [] }]);
