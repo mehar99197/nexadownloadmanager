@@ -2,6 +2,7 @@
 #include "core/DownloadTask.h"
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
+#include "torrent/TorrentManager.h"
 
 #include <QNetworkAccessManager>
 #include <QStandardPaths>
@@ -98,6 +99,24 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
 
     const int id = m_db->nextId();
 
+    // Torrents (magnet links / .torrent files) go to the libtorrent session.
+    const QString asText = (url.scheme() == QLatin1String("magnet"))
+                               ? url.toString()
+                               : (url.isLocalFile() ? url.toLocalFile() : url.toString());
+    if (TorrentManager::isTorrentUrl(asText)) {
+        ensureTorrents();
+        const QString dir = m_autoCategorize
+                                ? QDir(m_downloadDir).filePath(QStringLiteral("Torrents"))
+                                : m_downloadDir;
+        m_torrentIds.insert(id);
+        emit taskAdded(id);
+        if (!m_torrents->add(id, asText, dir)) {
+            m_torrentIds.remove(id);
+            return -1;
+        }
+        return id;
+    }
+
     // Adaptive streams (HLS/DASH) go to the grabber, which yields a single MP4.
     if (HlsGrabber::isStreamUrl(url)) {
         QString out = savePath;
@@ -171,10 +190,21 @@ void DownloadEngine::schedule()
     m_inSchedule = false;
 }
 
+void DownloadEngine::ensureTorrents()
+{
+    if (m_torrents)
+        return;
+    m_torrents = new TorrentManager(this);
+    connect(m_torrents, &TorrentManager::progress,     this, &DownloadEngine::taskProgress);
+    connect(m_torrents, &TorrentManager::stateChanged, this, &DownloadEngine::taskStateChanged);
+    connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
+}
+
 QString DownloadEngine::nameOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->fileName();
     if (auto *g = m_grabbers.value(id)) return g->fileName();
+    if (m_torrents && m_torrents->has(id)) return m_torrents->nameOf(id);
     return QStringLiteral("download");
 }
 
@@ -182,12 +212,13 @@ DownloadState DownloadEngine::stateOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->state();
     if (auto *g = m_grabbers.value(id)) return g->state();
+    if (m_torrents && m_torrents->has(id)) return m_torrents->stateOf(id);
     return DownloadState::Queued;
 }
 
 bool DownloadEngine::allTerminal() const
 {
-    if (m_tasks.isEmpty() && m_grabbers.isEmpty())
+    if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_torrentIds.isEmpty())
         return false;
     auto terminal = [](DownloadState s) {
         return s == DownloadState::Completed || s == DownloadState::Error;
@@ -196,6 +227,8 @@ bool DownloadEngine::allTerminal() const
         if (!terminal(t->state())) return false;
     for (auto *g : m_grabbers)
         if (!terminal(g->state())) return false;
+    for (int id : m_torrentIds)
+        if (!terminal(m_torrents->stateOf(id))) return false;
     return true;
 }
 
@@ -207,6 +240,8 @@ void DownloadEngine::pause(int id)
         schedule();        // a slot just freed up
     } else if (auto *g = m_grabbers.value(id)) {
         g->cancel();
+    } else if (m_torrents && m_torrentIds.contains(id)) {
+        m_torrents->pause(id);
     }
 }
 
@@ -218,11 +253,20 @@ void DownloadEngine::resume(int id)
         schedule();
     } else if (auto *g = m_grabbers.value(id)) {
         g->start();        // streams restart from scratch (no partial resume)
+    } else if (m_torrents && m_torrentIds.contains(id)) {
+        m_torrents->resume(id);
     }
 }
 
 void DownloadEngine::remove(int id, bool deleteFile)
 {
+    if (m_torrents && m_torrentIds.contains(id)) {
+        m_torrents->remove(id, deleteFile);
+        m_torrentIds.remove(id);
+        emit taskRemoved(id);
+        return;
+    }
+
     if (auto *g = m_grabbers.take(id)) {
         const QString path = g->savePath();
         g->cancel();

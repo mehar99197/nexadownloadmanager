@@ -2,6 +2,7 @@
 #include <QObject>
 #include <QHash>
 #include <QList>
+#include <QSet>
 #include <QUrl>
 #include <QDateTime>
 #include "core/Types.h"
@@ -12,6 +13,7 @@ namespace nexa {
 
 class DownloadTask;
 class HlsGrabber;
+class TorrentManager;
 class Database;
 
 // Top-level controller: owns the network stack + database and manages the set
@@ -81,11 +83,14 @@ private:
     void    wireTask(DownloadTask *t);
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
+    void    ensureTorrents();        // lazily create the libtorrent session
 
     QNetworkAccessManager *m_nam = nullptr;
     Database              *m_db = nullptr;
+    TorrentManager        *m_torrents = nullptr;
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
+    QSet<int>              m_torrentIds;
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;
     int                    m_maxConcurrent = 4;
