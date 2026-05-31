@@ -14,20 +14,33 @@ static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
 namespace {
 
+// Scale a numeric value by a yt-dlp size unit (KiB/MiB/GiB/TiB).
+double applyUnit(double v, const QString &unit)
+{
+    const QChar u = unit.isEmpty() ? QChar() : unit.at(0).toUpper();
+    if (u == 'K') v *= 1024.0;
+    else if (u == 'M') v *= 1024.0 * 1024;
+    else if (u == 'G') v *= 1024.0 * 1024 * 1024;
+    else if (u == 'T') v *= 1024.0 * 1024 * 1024 * 1024;
+    return v;
+}
+
 // Parse a yt-dlp rate string like "1.50MiB/s" into bytes/second.
 double parseRate(const QString &s)
 {
-    static const QRegularExpression re(QStringLiteral("([\\d.]+)\\s*([KMG]?i?B)/s"),
+    static const QRegularExpression re(QStringLiteral("([\\d.]+)\\s*([KMGT]?)i?B/s"),
                                        QRegularExpression::CaseInsensitiveOption);
     const auto m = re.match(s);
-    if (!m.hasMatch())
-        return 0.0;
-    double v = m.captured(1).toDouble();
-    const QString unit = m.captured(2).toUpper();
-    if (unit.startsWith('K')) v *= 1024;
-    else if (unit.startsWith('M')) v *= 1024 * 1024;
-    else if (unit.startsWith('G')) v *= 1024.0 * 1024 * 1024;
-    return v;
+    return m.hasMatch() ? applyUnit(m.captured(1).toDouble(), m.captured(2)) : 0.0;
+}
+
+// Parse a size token like "218.53KiB" into bytes.
+qint64 parseSize(const QString &s)
+{
+    static const QRegularExpression re(QStringLiteral("([\\d.]+)\\s*([KMGT]?)i?B"),
+                                       QRegularExpression::CaseInsensitiveOption);
+    const auto m = re.match(s);
+    return m.hasMatch() ? qint64(applyUnit(m.captured(1).toDouble(), m.captured(2))) : -1;
 }
 
 } // namespace
@@ -113,6 +126,19 @@ void YtDlpGrabber::start()
          << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
          << QStringLiteral("-o") << tmpl;
 
+    // Speed: download many chunks/fragments in parallel to beat YouTube's
+    // per-connection throttling. Prefer aria2c (16 connections) when installed,
+    // otherwise yt-dlp's native concurrent fragments + range chunking.
+    const QString aria2 = QStandardPaths::findExecutable(QStringLiteral("aria2c"));
+    if (!aria2.isEmpty()) {
+        args << QStringLiteral("--downloader") << QStringLiteral("aria2c")
+             << QStringLiteral("--downloader-args")
+             << QStringLiteral("aria2c:-x16 -s16 -k1M -j16");
+    } else {
+        args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
+             << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
+    }
+
     // NOTE: deliberately do NOT forward the browser's User-Agent / cookies to
     // yt-dlp. yt-dlp manages its own client/UA/cookie logic for YouTube & co.;
     // overriding the UA or injecting raw account cookies breaks its extractor.
@@ -159,17 +185,22 @@ void YtDlpGrabber::onOutput()
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp" << m_id << line;
 
-        static const QRegularExpression pct(QStringLiteral("\\[download\\]\\s+([\\d.]+)%"));
+        // e.g. "[download]  36.0% of  218.53KiB at  222.40KiB/s ETA 00:00"
+        static const QRegularExpression pct(
+            QStringLiteral("\\[download\\]\\s+([\\d.]+)%(?:\\s+of\\s+~?\\s*([\\d.]+\\s*[KMGT]?i?B))?"));
         const auto pm = pct.match(line);
         if (pm.hasMatch()) {
-            const int p = int(pm.captured(1).toDouble() + 0.5);
+            const double pf = pm.captured(1).toDouble();
+            const int p = int(pf + 0.5);
+            const qint64 total = pm.captured(2).isEmpty() ? -1 : parseSize(pm.captured(2));
+            const qint64 done = total > 0 ? qint64(total * pf / 100.0) : -1;
             double bps = 0.0;
             const int at = line.indexOf(QStringLiteral(" at "));
             if (at >= 0)
                 bps = parseRate(line.mid(at + 4));
             if (p != m_lastPct) {
                 m_lastPct = p;
-                emit progress(m_id, p, 100, bps);
+                emit progress(m_id, done, total, bps);
                 setState(DownloadState::Downloading, QStringLiteral("%1%").arg(p));
             }
             continue;
