@@ -105,6 +105,7 @@ private slots:
 
 private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
+    QString pathForName(const QString &fileName) const;  // categorise + de-dup
     void    wireTask(DownloadTask *t);
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading

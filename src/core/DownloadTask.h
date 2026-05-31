@@ -3,7 +3,9 @@
 #include <QUrl>
 #include <QString>
 #include <QVector>
+#include <QHash>
 #include <QElapsedTimer>
+#include <functional>
 #include "core/Types.h"
 
 class QNetworkAccessManager;
@@ -31,6 +33,12 @@ public:
     void setHeaders(const HeaderList &headers) { m_headers = headers; }
     HeaderList headers() const { return m_headers; }
 
+    // Given a server-provided filename, returns the full path to save to
+    // (categorised + de-duplicated). Set by the engine; used when a
+    // Content-Disposition header reveals the real filename.
+    void setNameResolver(std::function<QString(const QString &)> resolver)
+    { m_nameResolver = std::move(resolver); }
+
     // Rename the completed file (keeps the directory). Returns false on failure.
     bool renameTo(const QString &newFileName);
     ~DownloadTask() override;
@@ -56,12 +64,14 @@ signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
     void stateChanged(int id, DownloadState state, const QString &detail);
     void finished(int id);
+    void renamedTo(const QString &fileName);    // server-provided name applied
 
 private slots:
     void onProbeFinished();
     void onSegmentProgressed(int index, qint64 delta);
     void onSegmentCompleted(int index);
     void onSegmentFailed(int index, const QString &error);
+    void onSegmentShortFinish(int index, qint64 received);
     void emitSpeedTick();
 
 private:
@@ -72,6 +82,8 @@ private:
     void clearSegments();
     void persist();
     void checkAllComplete();
+    void retrySegment(int index, const QString &reason);  // resume a failed segment
+    void finalizeShort(qint64 totalReceived);             // accept actual size, truncate
 
     int                       m_id;
     QUrl                      m_url;
@@ -90,6 +102,9 @@ private:
     QVector<SegmentDownloader*> m_workers;
     int                       m_completedSegments = 0;
     int                       m_activeSegments = 0;
+    QHash<int, int>           m_retries;        // per-segment retry attempts
+    std::function<QString(const QString &)> m_nameResolver;
+    static constexpr int      kMaxRetries = 5;
 
     // Speed measurement
     QTimer                   *m_speedTimer = nullptr;

@@ -55,6 +55,10 @@ void SegmentDownloader::start() {
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::NoLessSafeRedirectPolicy);
+    // Ask for raw, uncompressed bytes so the data we receive matches the byte
+    // ranges/sizes exactly. Without this a server may gzip the response and we'd
+    // see fewer bytes than the advertised length ("clean but short" finish).
+    req.setRawHeader("Accept-Encoding", "identity");
 
     // Replay the browser-captured headers (cookies, UA, referrer, auth) so that
     // authenticated / CDN links are served instead of 403'd.
@@ -111,6 +115,8 @@ void SegmentDownloader::onFinished() {
     if (!m_reply)
         return;
     const QNetworkReply::NetworkError err = m_reply->error();
+    const QString errorString = m_reply->errorString();
+    const int httpStatus = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     m_reply->deleteLater();
     m_reply = nullptr;
     m_file.flush();
@@ -123,7 +129,20 @@ void SegmentDownloader::onFinished() {
         // Intentional pause/abort — keep m_seg.done for resume, stay silent.
         return;
     }
-    emit failed(m_seg.index, QStringLiteral("network error %1").arg(int(err)));
+    if (httpStatus == 416) {
+        // Requested Range Not Satisfiable: we've asked past the end of the file,
+        // so there is nothing more to fetch — treat as a short (no-more-data) end.
+        emit shortFinish(m_seg.index, m_seg.done);
+        return;
+    }
+    if (err == QNetworkReply::NoError) {
+        // Connection closed cleanly but we received fewer bytes than the range
+        // we asked for. The server simply has no more data for us — let the task
+        // decide whether to retry or finalize at the actual size.
+        emit shortFinish(m_seg.index, m_seg.done);
+        return;
+    }
+    emit failed(m_seg.index, errorString);
 }
 
 } // namespace nexa

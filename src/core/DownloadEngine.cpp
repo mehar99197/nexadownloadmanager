@@ -134,12 +134,9 @@ QString DownloadEngine::categoryFor(const QString &fileName)
     return QStringLiteral("Other");
 }
 
-QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath) const
+QString DownloadEngine::pathForName(const QString &fileName) const
 {
-    if (!savePath.isEmpty())
-        return savePath;
-
-    QString name = QFileInfo(url.path()).fileName();
+    QString name = fileName;
     if (name.isEmpty())
         name = QStringLiteral("download");
 
@@ -163,6 +160,13 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
         } while (QFile::exists(candidate));
     }
     return candidate;
+}
+
+QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath) const
+{
+    if (!savePath.isEmpty())
+        return savePath;
+    return pathForName(QFileInfo(url.path()).fileName());
 }
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
@@ -217,6 +221,8 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
     t->setHeaders(headers);
+    // Lets the task adopt the real Content-Disposition filename, categorised.
+    t->setNameResolver([this](const QString &name) { return pathForName(name); });
     m_tasks.insert(id, t);
     wireTask(t);
 
@@ -231,6 +237,9 @@ void DownloadEngine::wireTask(DownloadTask *t)
     connect(t, &DownloadTask::progress, this, &DownloadEngine::taskProgress);
     connect(t, &DownloadTask::stateChanged, this, &DownloadEngine::taskStateChanged);
     connect(t, &DownloadTask::finished, this, &DownloadEngine::taskFinished);
+    // Surface a server-provided (Content-Disposition) rename to the UI/dashboard.
+    connect(t, &DownloadTask::renamedTo, this,
+            [this, t](const QString &name) { emit taskRenamed(t->id(), name); });
     // When a task leaves the active set (done/error/paused), fill the freed slot.
     connect(t, &DownloadTask::stateChanged, this,
             [this](int, DownloadState, const QString &) { schedule(); });
@@ -375,6 +384,7 @@ void DownloadEngine::loadPersisted()
         if (m_tasks.contains(rec.id))
             continue;
         auto *t = new DownloadTask(rec.id, QUrl(rec.url), rec.savePath, m_nam, m_db, this);
+        t->setNameResolver([this](const QString &name) { return pathForName(name); });
         if (!rec.segments.isEmpty())
             t->restore(rec.total, rec.segments);
         m_tasks.insert(rec.id, t);

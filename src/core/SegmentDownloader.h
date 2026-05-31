@@ -36,7 +36,8 @@ public:
 signals:
     void progressed(int index, qint64 deltaBytes);   // emitted as bytes arrive
     void completed(int index);
-    void failed(int index, const QString &error);
+    void failed(int index, const QString &error);    // real (retryable) error
+    void shortFinish(int index, qint64 received);     // clean close, fewer bytes than asked
 
 private slots:
     void onReadyRead();

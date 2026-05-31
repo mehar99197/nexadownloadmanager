@@ -10,11 +10,37 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QDebug>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace nexa {
 
 static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
+
+// Extract a filename from a Content-Disposition header, handling both the plain
+// `filename="x"` form and the RFC 5987 `filename*=UTF-8''x` (percent-encoded)
+// form. Returns a sanitised basename, or empty if none.
+static QString filenameFromContentDisposition(const QByteArray &header)
+{
+    if (header.isEmpty())
+        return QString();
+    const QString value = QString::fromUtf8(header);
+
+    QString name;
+    // RFC 5987 extended form takes precedence (carries proper encoding).
+    static const QRegularExpression ext(
+        QStringLiteral("filename\\*\\s*=\\s*[^']*''([^;]+)"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression plain(
+        QStringLiteral("filename\\s*=\\s*\"?([^\";]+)\"?"), QRegularExpression::CaseInsensitiveOption);
+    if (const auto m = ext.match(value); m.hasMatch())
+        name = QUrl::fromPercentEncoding(m.captured(1).trimmed().toUtf8());
+    else if (const auto m = plain.match(value); m.hasMatch())
+        name = m.captured(1).trimmed();
+
+    name = QFileInfo(name).fileName();                       // strip any path
+    name.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QString());
+    return name.trimmed();
+}
 
 DownloadTask::DownloadTask(int id, const QUrl &url, const QString &savePath,
                            QNetworkAccessManager *nam, Database *db, QObject *parent)
@@ -87,6 +113,7 @@ void DownloadTask::start()
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setRawHeader("Accept-Encoding", "identity");
     for (const auto &h : m_headers)
         req.setRawHeader(h.first, h.second);
     // A ranged HEAD-style probe: ask for the first byte to learn whether the
@@ -143,6 +170,17 @@ void DownloadTask::onProbeFinished()
 
     m_total = total;
     m_rangesSupported = ranges;
+
+    // Prefer the real filename from Content-Disposition (CDN/redirect URLs often
+    // have a random token in the path, so the URL alone gives a useless name).
+    const QString serverName = filenameFromContentDisposition(r->rawHeader("Content-Disposition"));
+    if (!serverName.isEmpty() && m_nameResolver) {
+        const QString newPath = m_nameResolver(serverName);
+        if (!newPath.isEmpty() && newPath != m_savePath) {
+            m_savePath = newPath;
+            emit renamedTo(fileName());
+        }
+    }
 
     if (!preallocateFile()) {
         setState(DownloadState::Error, QStringLiteral("cannot create destination file"));
@@ -230,9 +268,10 @@ void DownloadTask::launchSegments()
             continue;
         }
         auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, this);
-        connect(w, &SegmentDownloader::progressed, this, &DownloadTask::onSegmentProgressed);
-        connect(w, &SegmentDownloader::completed,  this, &DownloadTask::onSegmentCompleted);
-        connect(w, &SegmentDownloader::failed,     this, &DownloadTask::onSegmentFailed);
+        connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
+        connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
+        connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
+        connect(w, &SegmentDownloader::shortFinish, this, &DownloadTask::onSegmentShortFinish);
         m_workers.append(w);
         ++m_activeSegments;
     }
@@ -272,11 +311,85 @@ void DownloadTask::onSegmentFailed(int index, const QString &error)
 {
     if (m_state == DownloadState::Paused)
         return;
+    // Transient network error — retry this one segment a few times (it resumes
+    // from where it stopped) before giving up on the whole download.
+    if (m_retries.value(index) < kMaxRetries) {
+        retrySegment(index, error);
+        return;
+    }
     m_speedTimer->stop();
     clearSegments();
     persist();
     setState(DownloadState::Error,
              QStringLiteral("segment %1: %2").arg(index).arg(error));
+}
+
+void DownloadTask::onSegmentShortFinish(int index, qint64 received)
+{
+    Q_UNUSED(received);
+    if (m_state == DownloadState::Paused)
+        return;
+
+    // The server closed cleanly having sent fewer bytes than the range we
+    // requested. If there might be more (transient early close), retry a couple
+    // of times — the segment resumes from its current offset.
+    if (m_retries.value(index) < 2) {
+        retrySegment(index, QStringLiteral("short read"));
+        return;
+    }
+
+    // Still short after retries: the server genuinely has no more data, i.e. the
+    // advertised total was larger than the real content. Accept what we have.
+    if (m_segments.size() == 1) {
+        finalizeShort(m_done);
+        return;
+    }
+    // Multi-segment short read leaves a gap we can't fill — fail clearly.
+    m_speedTimer->stop();
+    clearSegments();
+    persist();
+    setState(DownloadState::Error,
+             QStringLiteral("segment %1 ended early (incomplete)").arg(index));
+}
+
+void DownloadTask::retrySegment(int index, const QString &reason)
+{
+    m_retries[index] = m_retries.value(index) + 1;
+    if (kDebug)
+        qDebug().noquote() << "NEXA RETRY" << m_id << "seg" << index
+                           << "attempt" << m_retries[index] << reason;
+    // Restart just this segment after a short backoff; it resumes from seg.done.
+    for (auto *w : m_workers) {
+        if (w->index() == index) {
+            const int delayMs = 400 * m_retries.value(index);
+            QTimer::singleShot(delayMs, this, [this, w]() {
+                if (m_state == DownloadState::Downloading && m_workers.contains(w))
+                    w->start();
+            });
+            return;
+        }
+    }
+}
+
+void DownloadTask::finalizeShort(qint64 totalReceived)
+{
+    m_speedTimer->stop();
+    clearSegments();
+    // Trim the pre-allocated file down to what we actually received.
+    QFile f(m_savePath);
+    if (f.open(QIODevice::ReadWrite))
+        f.resize(totalReceived);
+    f.close();
+    m_total = totalReceived;
+    if (!m_segments.isEmpty()) {
+        m_segments[0].end = totalReceived - 1;
+        m_segments[0].done = totalReceived;
+    }
+    m_completedSegments = m_segments.size();
+    setState(DownloadState::Completed, QStringLiteral("done"));
+    persist();
+    emit progress(m_id, m_total, m_total, 0.0);
+    emit finished(m_id);
 }
 
 void DownloadTask::checkAllComplete()
