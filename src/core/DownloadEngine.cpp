@@ -3,6 +3,7 @@
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
 #include "torrent/TorrentManager.h"
+#include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
 
 #include <QNetworkAccessManager>
@@ -170,12 +171,32 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
 }
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
-                                const HeaderList &headers, const QString &suggestedName)
+                                const HeaderList &headers, const QString &suggestedName,
+                                const QString &siteFormat)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
 
     const int id = m_db->nextId();
+
+    // YouTube & other yt-dlp sites: drive yt-dlp (handles ciphers/SABR + mux).
+    if (YtDlpGrabber::isSiteVideoUrl(url) && YtDlpGrabber::available()) {
+        const QString videoDir = m_autoCategorize
+            ? QDir(m_downloadDir).filePath(categoryFor(QStringLiteral("a.mp4")))  // Video/
+            : m_downloadDir;
+        const QString fixedName = suggestedName.isEmpty()
+            ? QString()
+            : QFileInfo(suggestedName).completeBaseName();
+        const QString fmt = YtDlpGrabber::formatForQuality(siteFormat);
+        auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, this);
+        m_siteVideos.insert(id, g);
+        connect(g, &YtDlpGrabber::progress,     this, &DownloadEngine::taskProgress);
+        connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
+        connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
+        emit taskAdded(id);
+        g->start();
+        return id;
+    }
 
     // Torrents (magnet links / .torrent files) go to the libtorrent session.
     const QString asText = (url.scheme() == QLatin1String("magnet"))
@@ -290,6 +311,7 @@ QString DownloadEngine::nameOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->fileName();
     if (auto *g = m_grabbers.value(id)) return g->fileName();
+    if (auto *y = m_siteVideos.value(id)) return y->fileName();
     if (m_torrents && m_torrents->has(id)) return m_torrents->nameOf(id);
     return QStringLiteral("download");
 }
@@ -298,13 +320,15 @@ DownloadState DownloadEngine::stateOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->state();
     if (auto *g = m_grabbers.value(id)) return g->state();
+    if (auto *y = m_siteVideos.value(id)) return y->state();
     if (m_torrents && m_torrents->has(id)) return m_torrents->stateOf(id);
     return DownloadState::Queued;
 }
 
 bool DownloadEngine::allTerminal() const
 {
-    if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_torrentIds.isEmpty())
+    if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_siteVideos.isEmpty() &&
+        m_torrentIds.isEmpty())
         return false;
     auto terminal = [](DownloadState s) {
         return s == DownloadState::Completed || s == DownloadState::Error;
@@ -313,6 +337,8 @@ bool DownloadEngine::allTerminal() const
         if (!terminal(t->state())) return false;
     for (auto *g : m_grabbers)
         if (!terminal(g->state())) return false;
+    for (auto *y : m_siteVideos)
+        if (!terminal(y->state())) return false;
     for (int id : m_torrentIds)
         if (!terminal(m_torrents->stateOf(id))) return false;
     return true;
@@ -326,6 +352,8 @@ void DownloadEngine::pause(int id)
         schedule();        // a slot just freed up
     } else if (auto *g = m_grabbers.value(id)) {
         g->cancel();
+    } else if (auto *y = m_siteVideos.value(id)) {
+        y->cancel();
     } else if (m_torrents && m_torrentIds.contains(id)) {
         m_torrents->pause(id);
     }
@@ -339,6 +367,8 @@ void DownloadEngine::resume(int id)
         schedule();
     } else if (auto *g = m_grabbers.value(id)) {
         g->start();        // streams restart from scratch (no partial resume)
+    } else if (auto *y = m_siteVideos.value(id)) {
+        y->start();        // yt-dlp resumes its .part files
     } else if (m_torrents && m_torrentIds.contains(id)) {
         m_torrents->resume(id);
     }
@@ -349,6 +379,16 @@ void DownloadEngine::remove(int id, bool deleteFile)
     if (m_torrents && m_torrentIds.contains(id)) {
         m_torrents->remove(id, deleteFile);
         m_torrentIds.remove(id);
+        emit taskRemoved(id);
+        return;
+    }
+
+    if (auto *y = m_siteVideos.take(id)) {
+        const QString path = y->savePath();
+        y->cancel();
+        y->deleteLater();
+        if (deleteFile && !path.isEmpty())
+            QFile::remove(path);
         emit taskRemoved(id);
         return;
     }

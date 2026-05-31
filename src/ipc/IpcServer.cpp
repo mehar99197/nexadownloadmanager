@@ -113,7 +113,8 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         headers.append({it.key().toUtf8(), it.value().toString().toUtf8()});
 
     const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
-    const int id = m_engine->addDownload(url, QString(), headers, suggestedName);
+    const QString quality = obj.value(QStringLiteral("quality")).toString();   // YouTube etc.
+    const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality);
     if (id < 0)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else

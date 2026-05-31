@@ -26,6 +26,7 @@ add_executable(nexa
     src/core/DownloadEngine.cpp
     src/grabber/HlsGrabber.cpp
     src/torrent/TorrentManager.cpp
+    src/site/YtDlpGrabber.cpp
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/web/WebServer.cpp

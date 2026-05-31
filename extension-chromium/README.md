@@ -48,5 +48,9 @@ store for convenience).
   **qualities** (parsed from the HLS master playlist — 1080p / 720p / …); pick
   one and that exact stream is grabbed and muxed to MP4, named from the page
   title and sorted into `Video/`.
+- **YouTube** — on a `youtube.com/watch` (or Shorts) page the pill offers
+  Best / 1080p / 720p / 480p / 360p / Audio. The desktop app downloads the
+  chosen quality with **yt-dlp** (handles signatures/SABR + video+audio mux).
+  Requires `yt-dlp` installed on the system.
 - **Media sniffing** — `webRequest` detects `.m3u8` / `.mpd` / `.mp4` / media.
 - **Context menus** — "Download with Nexa", "Download all links on page".

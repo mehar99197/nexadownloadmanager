@@ -13,6 +13,25 @@
   let panel = null;
   let lastSignature = "";
 
+  // ---- site-video (YouTube etc.) detection -----------------------------
+  function isSiteVideo() {
+    const h = location.host;
+    if (/(^|\.)youtube\.com$/.test(h))
+      return location.pathname === "/watch" || location.pathname.startsWith("/shorts/");
+    return /(^|\.)youtu\.be$/.test(h);
+  }
+  function siteTitle() {
+    return (document.title || "video").replace(/\s*-\s*YouTube\s*$/i, "").trim();
+  }
+  const YT_QUALITIES = [
+    { label: "Best available", quality: "best", meta: "video + audio" },
+    { label: "1080p", quality: "1080", meta: "" },
+    { label: "720p", quality: "720", meta: "" },
+    { label: "480p", quality: "480", meta: "" },
+    { label: "360p", quality: "360", meta: "" },
+    { label: "Audio only (m4a)", quality: "audio", meta: "" }
+  ];
+
   // ---- styling (injected once) -----------------------------------------
   const css = `
     #nexa-pill{position:fixed;right:20px;bottom:20px;z-index:2147483647;
@@ -77,8 +96,17 @@
   function togglePanel() {
     if (!panel) return;
     if (panel.style.display === "block") { panel.style.display = "none"; return; }
-    renderPanel([{ title: "Loading qualities…", qualities: [] }]);
     panel.style.display = "block";
+
+    if (isSiteVideo()) {
+      // YouTube & co: a fixed quality menu (yt-dlp resolves the streams).
+      renderPanel([{
+        title: siteTitle(), name: siteTitle(), site: true,
+        qualities: YT_QUALITIES.map((q) => ({ label: q.label, meta: q.meta, quality: q.quality }))
+      }]);
+      return;
+    }
+    renderPanel([{ title: "Loading qualities…", qualities: [] }]);
     chrome.runtime.sendMessage({ type: "nexa-get-qualities" }, (groups) => {
       if (chrome.runtime.lastError) { renderPanel([]); return; }
       renderPanel(groups || []);
@@ -98,7 +126,8 @@
         html += `<div class="nx-meta">…</div>`;
       }
       g.qualities.forEach((q) => {
-        html += `<div class="nx-q" data-url="${esc(q.url)}" data-name="${esc(g.name || "")}">
+        html += `<div class="nx-q" data-url="${esc(q.url || "")}" data-quality="${esc(q.quality || "")}"
+                      data-name="${esc(g.name || "")}">
                    <span>${esc(q.label)}</span>
                    <span style="display:flex;gap:8px;align-items:center">
                      <span class="nx-meta">${esc(q.meta || "")}</span>
@@ -111,11 +140,18 @@
     panel.querySelector(".nx-close").addEventListener("click", () => { panel.style.display = "none"; });
     panel.querySelectorAll(".nx-q").forEach((el) => {
       el.addEventListener("click", () => {
-        chrome.runtime.sendMessage({
+        const quality = el.getAttribute("data-quality");
+        const msg = {
           type: "nexa-download",
-          url: el.getAttribute("data-url"),
           filename: el.getAttribute("data-name") || document.title
-        });
+        };
+        if (quality) {                       // site video (YouTube): page URL + quality
+          msg.url = location.href;
+          msg.quality = quality;
+        } else {
+          msg.url = el.getAttribute("data-url");
+        }
+        chrome.runtime.sendMessage(msg);
         panel.style.display = "none";
         toast("Sent to Nexa ✓");
       });
@@ -129,6 +165,13 @@
 
   // ---- poll the background worker for detected media count -------------
   function poll() {
+    // YouTube & co: always offer the pill (streams can't be sniffed).
+    if (isSiteVideo()) {
+      ensureUi();
+      pill.style.display = "flex";
+      pill.querySelector(".nx-badge").textContent = "HD";
+      return;
+    }
     chrome.runtime.sendMessage({ type: "nexa-media-count" }, (info) => {
       if (chrome.runtime.lastError || !info) return;
       ensureUi();

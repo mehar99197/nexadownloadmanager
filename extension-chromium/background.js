@@ -80,7 +80,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     const tab = sender.tab || (await activeTab());
     if (msg.type === "nexa-download") {
-      const r = await handoff(msg.url, tab, tab?.url, msg.filename);
+      const r = await handoff(msg.url, tab, tab?.url, msg.filename, msg.quality);
       sendResponse(r);
     } else if (msg.type === "nexa-media-count") {
       // Count only video/stream media for the floating pill.
@@ -179,7 +179,7 @@ function sanitizeName(s) {
 }
 
 // ---- Core handoff --------------------------------------------------------
-async function handoff(url, tab, referrer, filename) {
+async function handoff(url, tab, referrer, filename, quality) {
   try {
     const cookies = await cookieHeader(url);
     const payload = {
@@ -189,6 +189,7 @@ async function handoff(url, tab, referrer, filename) {
       userAgent: navigator.userAgent,
       cookies,
       filename: sanitizeName(filename) || "",
+      quality: quality || "",        // YouTube etc.: chosen yt-dlp quality
       headers: {}
     };
     const reply = await sendNative(payload);

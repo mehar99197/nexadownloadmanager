@@ -54,6 +54,10 @@ media-stream grabbing, and more. C++ / Qt 6.
 - **Modern dark UI** — themed desktop GUI (brand header with live aggregate
   speed, color-coded status, progress bars) sharing the dashboard's palette,
   plus a Nexa app/extension icon set.
+- **YouTube & 1000+ sites** — paste a YouTube URL (or use the extension's
+  quality picker) and Nexa downloads it via **yt-dlp**, muxing the best
+  video+audio to MP4 named from the title. *Verified: a real video downloaded
+  as av1 240p + opus audio, merged and named from the page title.*
 
 ## Build
 
@@ -66,7 +70,8 @@ sudo apt-get install -y cmake ninja-build qt6-base-dev libqt6sql6-sqlite \
 ```
 
 `ffmpeg` is needed at runtime for the stream grabber;
-`libtorrent-rasterbar-dev` for BitTorrent.
+`libtorrent-rasterbar-dev` for BitTorrent. Install `yt-dlp` (e.g.
+`sudo apt-get install -y yt-dlp`) to download from YouTube and other sites.
 
 Configure & build:
 
