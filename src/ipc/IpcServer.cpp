@@ -112,7 +112,8 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     for (auto it = extra.begin(); it != extra.end(); ++it)
         headers.append({it.key().toUtf8(), it.value().toString().toUtf8()});
 
-    const int id = m_engine->addDownload(url, QString(), headers);
+    const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
+    const int id = m_engine->addDownload(url, QString(), headers, suggestedName);
     if (id < 0)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else

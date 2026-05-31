@@ -1,58 +1,157 @@
-// Nexa content script: injects a floating "Download with Nexa" button when the
-// page has media, and can collect every link on the page for batch download.
+// Nexa content script — IDM-style "Download this video" experience.
+//
+// When the background worker reports media on this tab, a floating pill appears.
+// Clicking it opens a panel listing each video and its available qualities
+// (parsed from the HLS master playlist in the background). Clicking a quality
+// hands that exact stream to the Nexa desktop app.
 
 (function () {
-  let panel = null;
+  "use strict";
+  if (window.top !== window) return;        // top frame only
 
-  function ensurePanel() {
-    if (panel) return panel;
+  let pill = null;
+  let panel = null;
+  let lastSignature = "";
+
+  // ---- styling (injected once) -----------------------------------------
+  const css = `
+    #nexa-pill{position:fixed;right:20px;bottom:20px;z-index:2147483647;
+      display:none;align-items:center;gap:8px;cursor:pointer;
+      background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;
+      font:600 13px/1 system-ui,sans-serif;padding:11px 14px;border-radius:24px;
+      box-shadow:0 8px 24px rgba(37,99,235,.45);user-select:none;transition:transform .12s}
+    #nexa-pill:hover{transform:translateY(-2px)}
+    #nexa-pill .nx-badge{background:#fff;color:#2563eb;border-radius:999px;
+      font-size:11px;font-weight:700;padding:1px 7px;margin-left:2px}
+    #nexa-panel{position:fixed;right:20px;bottom:74px;z-index:2147483647;display:none;
+      width:320px;max-height:60vh;overflow:auto;background:#0f172a;color:#e2e8f0;
+      border:1px solid #1e293b;border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.5);
+      font:13px/1.45 system-ui,sans-serif}
+    #nexa-panel .nx-head{display:flex;align-items:center;justify-content:space-between;
+      padding:12px 14px;background:#1e293b;border-radius:14px 14px 0 0;font-weight:600}
+    #nexa-panel .nx-close{cursor:pointer;color:#94a3b8;font-size:16px;line-height:1}
+    #nexa-panel .nx-media{padding:8px 14px;border-top:1px solid #1e293b}
+    #nexa-panel .nx-title{color:#94a3b8;font-size:11px;text-transform:uppercase;
+      letter-spacing:.04em;margin:4px 0 8px;word-break:break-all}
+    #nexa-panel .nx-q{display:flex;align-items:center;justify-content:space-between;
+      gap:8px;padding:9px 10px;margin:5px 0;background:#1e293b;border-radius:9px;
+      cursor:pointer;transition:background .1s}
+    #nexa-panel .nx-q:hover{background:#2b3b55}
+    #nexa-panel .nx-q .nx-meta{color:#94a3b8;font-size:11px}
+    #nexa-panel .nx-q .nx-dl{background:#3b82f6;color:#fff;border-radius:6px;
+      padding:3px 9px;font-size:11px;font-weight:700}
+    #nexa-panel .nx-empty{padding:14px;color:#94a3b8}
+    #nexa-toast{position:fixed;right:20px;bottom:74px;z-index:2147483647;display:none;
+      background:#22c55e;color:#06210f;font:600 13px/1 system-ui,sans-serif;
+      padding:10px 14px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  `;
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.documentElement.appendChild(style);
+
+  function ensureUi() {
+    if (pill) return;
+    pill = document.createElement("div");
+    pill.id = "nexa-pill";
+    pill.innerHTML = `⬇ <span>Download Video</span><span class="nx-badge">0</span>`;
+    pill.addEventListener("click", togglePanel);
+    document.documentElement.appendChild(pill);
+
     panel = document.createElement("div");
     panel.id = "nexa-panel";
-    panel.style.cssText = [
-      "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
-      "background:#1e293b", "color:#fff", "font:13px/1.4 system-ui,sans-serif",
-      "border-radius:10px", "box-shadow:0 6px 24px rgba(0,0,0,.35)",
-      "padding:10px 12px", "max-width:320px", "display:none"
-    ].join(";");
     document.documentElement.appendChild(panel);
-    return panel;
   }
 
-  function showMedia(items) {
-    if (!items || !items.length) return;
-    const p = ensurePanel();
-    p.innerHTML =
-      '<div style="font-weight:600;margin-bottom:6px;">⬇ Nexa — media found</div>';
-    items.slice(0, 8).forEach((m) => {
-      const row = document.createElement("button");
-      row.textContent = `${m.type}  ·  download`;
-      row.style.cssText =
-        "display:block;width:100%;text-align:left;margin:4px 0;padding:6px 8px;" +
-        "background:#3b82f6;color:#fff;border:0;border-radius:6px;cursor:pointer;";
-      row.onclick = () =>
-        chrome.runtime.sendMessage({ type: "nexa-download", url: m.url });
-      p.appendChild(row);
+  function toast(msg) {
+    let t = document.getElementById("nexa-toast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "nexa-toast";
+      document.documentElement.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.display = "block";
+    setTimeout(() => { t.style.display = "none"; }, 2200);
+  }
+
+  function togglePanel() {
+    if (!panel) return;
+    if (panel.style.display === "block") { panel.style.display = "none"; return; }
+    renderPanel([{ title: "Loading qualities…", qualities: [] }]);
+    panel.style.display = "block";
+    chrome.runtime.sendMessage({ type: "nexa-get-qualities" }, (groups) => {
+      if (chrome.runtime.lastError) { renderPanel([]); return; }
+      renderPanel(groups || []);
     });
-    p.style.display = "block";
   }
 
-  // Poll the background worker for media it sniffed on this tab.
+  function renderPanel(groups) {
+    let html = `<div class="nx-head"><span>⬇ Download with Nexa</span>
+                <span class="nx-close" title="Close">✕</span></div>`;
+    if (!groups.length) {
+      html += `<div class="nx-empty">No downloadable video found on this page yet.
+               Start playing the video and try again.</div>`;
+    }
+    groups.forEach((g) => {
+      html += `<div class="nx-media"><div class="nx-title">${esc(g.title || "Video")}</div>`;
+      if (!g.qualities.length) {
+        html += `<div class="nx-meta">…</div>`;
+      }
+      g.qualities.forEach((q) => {
+        html += `<div class="nx-q" data-url="${esc(q.url)}" data-name="${esc(g.name || "")}">
+                   <span>${esc(q.label)}</span>
+                   <span style="display:flex;gap:8px;align-items:center">
+                     <span class="nx-meta">${esc(q.meta || "")}</span>
+                     <span class="nx-dl">Download</span>
+                   </span></div>`;
+      });
+      html += `</div>`;
+    });
+    panel.innerHTML = html;
+    panel.querySelector(".nx-close").addEventListener("click", () => { panel.style.display = "none"; });
+    panel.querySelectorAll(".nx-q").forEach((el) => {
+      el.addEventListener("click", () => {
+        chrome.runtime.sendMessage({
+          type: "nexa-download",
+          url: el.getAttribute("data-url"),
+          filename: el.getAttribute("data-name") || document.title
+        });
+        panel.style.display = "none";
+        toast("Sent to Nexa ✓");
+      });
+    });
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  // ---- poll the background worker for detected media count -------------
   function poll() {
-    chrome.runtime.sendMessage({ type: "nexa-get-media" }, (items) => {
-      if (chrome.runtime.lastError) return;
-      if (items && items.length) showMedia(items);
+    chrome.runtime.sendMessage({ type: "nexa-media-count" }, (info) => {
+      if (chrome.runtime.lastError || !info) return;
+      ensureUi();
+      const count = info.count || 0;
+      pill.style.display = count > 0 ? "flex" : "none";
+      pill.querySelector(".nx-badge").textContent = String(count);
+      // Refresh an open panel if the media set changed.
+      const sig = info.signature || "";
+      if (count > 0 && panel && panel.style.display === "block" && sig !== lastSignature)
+        togglePanel(), togglePanel();   // close+reopen to refetch
+      lastSignature = sig;
     });
   }
 
+  // Collect every link on the page (used by the "download all links" menu).
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "nexa-collect-links") {
       const urls = Array.from(document.querySelectorAll("a[href]"))
-        .map((a) => a.href)
-        .filter((h) => /^https?:/i.test(h));
+        .map((a) => a.href).filter((h) => /^https?:/i.test(h));
       chrome.runtime.sendMessage({ type: "nexa-download-list", urls: [...new Set(urls)] });
     }
   });
 
-  setInterval(poll, 2500);
-  setTimeout(poll, 1500);
+  setInterval(poll, 2000);
+  setTimeout(poll, 1200);
 })();

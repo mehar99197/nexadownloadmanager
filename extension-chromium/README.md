@@ -43,6 +43,10 @@ store for convenience).
 - **Download interception** — `chrome.downloads.onCreated` → cancel → hand to Nexa.
 - **Header capture** — `chrome.cookies` + User-Agent + referrer so authenticated
   / CDN links don't 403 (the detail most IDM clones get wrong).
-- **Media sniffing** — `webRequest` detects `.m3u8` / `.mpd` / media; a floating
-  panel + the toolbar badge offer them for download.
+- **Video grabber (IDM-style)** — when a page is playing video, a floating
+  **"Download Video"** pill appears. Click it to see the available
+  **qualities** (parsed from the HLS master playlist — 1080p / 720p / …); pick
+  one and that exact stream is grabbed and muxed to MP4, named from the page
+  title and sorted into `Video/`.
+- **Media sniffing** — `webRequest` detects `.m3u8` / `.mpd` / `.mp4` / media.
 - **Context menus** — "Download with Nexa", "Download all links on page".

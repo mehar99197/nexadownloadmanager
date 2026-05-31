@@ -170,7 +170,7 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
 }
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
-                                const HeaderList &headers)
+                                const HeaderList &headers, const QString &suggestedName)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
@@ -199,13 +199,13 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     if (HlsGrabber::isStreamUrl(url)) {
         QString out = savePath;
         if (out.isEmpty()) {
-            QString base = QFileInfo(url.path()).completeBaseName();
+            // Prefer the page title (suggestedName) for the video's filename.
+            QString base = suggestedName.isEmpty()
+                               ? QFileInfo(url.path()).completeBaseName()
+                               : QFileInfo(suggestedName).completeBaseName();
             if (base.isEmpty())
                 base = QStringLiteral("stream");
-            // Run through resolveSavePath so streams get categorized (Video/).
-            QUrl fake;
-            fake.setPath(QStringLiteral("/") + base + QStringLiteral(".mp4"));
-            out = resolveSavePath(fake, QString());
+            out = pathForName(base + QStringLiteral(".mp4"));   // categorised (Video/)
         }
         auto *g = new HlsGrabber(id, url, out, headers, this);
         m_grabbers.insert(id, g);
@@ -217,7 +217,10 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         return id;
     }
 
-    const QString path = resolveSavePath(url, savePath);
+    QString path = resolveSavePath(url, savePath);
+    if (savePath.isEmpty() && !suggestedName.isEmpty() &&
+        QFileInfo(url.path()).fileName().isEmpty())
+        path = pathForName(suggestedName);   // URL has no filename; use the hint
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
     t->setHeaders(headers);

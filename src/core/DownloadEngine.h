@@ -28,9 +28,11 @@ public:
 
     // Returns the new task id, or -1 on bad input. `headers` carries the
     // browser-captured cookies/UA/referrer to replay on every request.
+    // `suggestedName` (e.g. a page title) names stream grabs / unnamed files.
     int  addDownload(const QUrl &url,
                      const QString &savePath = QString(),
-                     const HeaderList &headers = {});
+                     const HeaderList &headers = {},
+                     const QString &suggestedName = QString());
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);
