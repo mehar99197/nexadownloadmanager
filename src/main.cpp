@@ -41,17 +41,24 @@ int main(int argc, char *argv[])
                          &app, [checkDone](int, nexa::DownloadState, const QString &) { checkDone(); });
     }
 
+    // First pass: apply settings flags before adding downloads.
+    for (const QString &arg : args) {
+        if (arg.startsWith(QStringLiteral("--max=")))
+            engine.setMaxConcurrent(arg.mid(6).toInt());
+        else if (arg == QStringLiteral("--no-categorize"))
+            engine.setAutoCategorize(false);
+    }
+
     for (int i = 1; i < args.size(); ++i) {
         const QString arg = args.at(i);
         if (arg == QStringLiteral("--resume-all")) {
             engine.resumeUnfinished();   // continue downloads interrupted last run
             continue;
         }
-        if (arg == QStringLiteral("--background") || arg == QStringLiteral("--batch"))
-            continue;                    // flags, not URLs
-        const QUrl u = QUrl::fromUserInput(arg);
-        if (u.isValid() && !u.scheme().isEmpty())
-            engine.addDownload(u);
+        if (arg.startsWith(QStringLiteral("--")))
+            continue;                    // flags handled above, not URLs
+        // addBatch expands numeric ranges like file[1-20].jpg and queues them.
+        engine.addBatch(arg);
     }
 
     return app.exec();

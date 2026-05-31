@@ -9,9 +9,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDebug>
 #include <algorithm>
 
 namespace nexa {
+
+static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
 DownloadTask::DownloadTask(int id, const QUrl &url, const QString &savePath,
                            QNetworkAccessManager *nam, Database *db, QObject *parent)
@@ -315,6 +318,12 @@ void DownloadTask::emitSpeedTick()
 
 void DownloadTask::setState(DownloadState s, const QString &detail)
 {
+    if (kDebug) {
+        if (s == DownloadState::Probing)
+            qDebug().noquote() << "NEXA BEGIN" << m_id;
+        else if (s == DownloadState::Completed || s == DownloadState::Error)
+            qDebug().noquote() << "NEXA END" << m_id;
+    }
     m_state = s;
     emit stateChanged(m_id, s, detail);
 }

@@ -7,7 +7,7 @@ media-stream grabbing, and more. C++ / Qt 6.
 > Full roadmap & rationale: see the approved plan in
 > `~/.claude/plans/` and the architecture notes below.
 
-## What works today (Phase 0–4)
+## What works today (Phase 0–5)
 
 - **Segmented download engine** — splits a file into up to 16 byte-range
   connections (HTTP `Range`), writes each part in place into a pre-allocated
@@ -24,6 +24,14 @@ media-stream grabbing, and more. C++ / Qt 6.
   passes through `#EXT-X-KEY` decryption, and muxes to MP4 with FFmpeg
   (`-c copy`, no re-encode). DASH `.mpd` handled via FFmpeg directly.
   *Verified end-to-end: a generated HLS stream grabs to a valid h264+aac MP4.*
+- **Queue + scheduler** — a concurrency limit (default 4) keeps N downloads
+  active and auto-promotes queued ones as slots free; `scheduleDownload()`
+  starts a download at a future time. *Verified: with `--max=2`, 6 batched
+  downloads never exceeded 2 concurrent and all were byte-correct.*
+- **Batch add** — expands numeric ranges (`file[1-20].jpg`) and multi-URL
+  lists into individual downloads.
+- **Auto-categorize** — completed files are sorted into `Video/`, `Audio/`,
+  `Documents/`, `Compressed/`, `Programs/`, `Images/`, `Other/`.
 
 ## Build
 
@@ -85,6 +93,17 @@ Browser Extension ──native messaging (framed JSON)──▶ nexa-host
 ## Roadmap (next)
 
 - ~~Phase 4: HLS/DASH grabber → mux to MP4 with FFmpeg.~~ ✅ done
-- Phase 5: queues, scheduler, batch import.
+- ~~Phase 5: queues, scheduler, batch import, auto-categorize.~~ ✅ done
 - Phase 6: BitTorrent (libtorrent), AI features, remote web dashboard.
 - Phase 7: installers, auto-update.
+
+### CLI flags
+
+```
+nexa [--max=N] [--no-categorize] [--batch] [--resume-all] <url|pattern>...
+  --max=N          max simultaneous downloads (queue the rest)
+  --no-categorize  save straight to the download dir (no type subfolders)
+  --batch          exit once all downloads/streams finish (for scripts)
+  --resume-all     resume downloads interrupted in the previous run
+  pattern          e.g. "http://host/file[1-20].jpg" expands to 20 downloads
+```
