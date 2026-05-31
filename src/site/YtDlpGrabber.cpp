@@ -6,8 +6,11 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QRegularExpression>
+#include <QDebug>
 
 namespace nexa {
+
+static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
 namespace {
 
@@ -110,17 +113,12 @@ void YtDlpGrabber::start()
          << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
          << QStringLiteral("-o") << tmpl;
 
-    // Forward the browser-captured identity so age/region/login-gated videos work.
-    for (const auto &h : m_headers) {
-        if (h.first.compare("User-Agent", Qt::CaseInsensitive) == 0)
-            args << QStringLiteral("--user-agent") << QString::fromUtf8(h.second);
-        else if (h.first.compare("Referer", Qt::CaseInsensitive) == 0)
-            args << QStringLiteral("--referer") << QString::fromUtf8(h.second);
-        else
-            args << QStringLiteral("--add-header")
-                 << QStringLiteral("%1:%2").arg(QString::fromUtf8(h.first), QString::fromUtf8(h.second));
-    }
+    // NOTE: deliberately do NOT forward the browser's User-Agent / cookies to
+    // yt-dlp. yt-dlp manages its own client/UA/cookie logic for YouTube & co.;
+    // overriding the UA or injecting raw account cookies breaks its extractor.
     args << m_url.toString();
+    m_lastError.clear();
+    m_tail.clear();
 
     m_proc = new QProcess(this);
     m_proc->setProcessChannelMode(QProcess::MergedChannels);
@@ -151,6 +149,15 @@ void YtDlpGrabber::onOutput()
         const QString line = QString::fromUtf8(m_proc->readLine()).trimmed();
         if (line.isEmpty())
             continue;
+
+        // Keep a short tail + the last error for diagnostics on failure.
+        m_tail.append(line);
+        if (m_tail.size() > 20)
+            m_tail.removeFirst();
+        if (line.startsWith(QStringLiteral("ERROR:"), Qt::CaseInsensitive))
+            m_lastError = line;
+        if (kDebug)
+            qDebug().noquote() << "NEXA yt-dlp" << m_id << line;
 
         static const QRegularExpression pct(QStringLiteral("\\[download\\]\\s+([\\d.]+)%"));
         const auto pm = pct.match(line);
@@ -211,7 +218,16 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
         setState(DownloadState::Completed, QStringLiteral("saved %1").arg(fileName()));
         emit finished(m_id);
     } else {
-        setState(DownloadState::Error, QStringLiteral("yt-dlp failed (code %1)").arg(exitCode));
+        // Surface the real reason: the yt-dlp ERROR line (trimmed) if we have it.
+        QString why = m_lastError;
+        why.remove(QRegularExpression(QStringLiteral("^ERROR:\\s*"), QRegularExpression::CaseInsensitiveOption));
+        if (why.isEmpty())
+            why = m_tail.isEmpty() ? QStringLiteral("code %1").arg(exitCode) : m_tail.last();
+        if (why.length() > 160)
+            why = why.left(157) + QStringLiteral("…");
+        if (kDebug)
+            qDebug().noquote() << "NEXA yt-dlp FAILED" << m_id << "\n" << m_tail.join('\n');
+        setState(DownloadState::Error, why);
     }
 }
 

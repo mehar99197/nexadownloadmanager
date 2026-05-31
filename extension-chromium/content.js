@@ -21,7 +21,10 @@
     return /(^|\.)youtu\.be$/.test(h);
   }
   function siteTitle() {
-    return (document.title || "video").replace(/\s*-\s*YouTube\s*$/i, "").trim();
+    return (document.title || "video")
+      .replace(/\s*-\s*YouTube\s*$/i, "")   // trailing " - YouTube"
+      .replace(/^\(\d+\)\s*/, "")            // leading "(7) " notification count
+      .trim();
   }
   const YT_QUALITIES = [
     { label: "Best available", quality: "best", meta: "video + audio" },

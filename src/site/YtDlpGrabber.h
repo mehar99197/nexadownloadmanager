@@ -2,6 +2,7 @@
 #include <QObject>
 #include <QUrl>
 #include <QString>
+#include <QStringList>
 #include "core/Types.h"
 
 class QProcess;
@@ -61,6 +62,8 @@ private:
     QProcess       *m_proc = nullptr;
     bool            m_cancelled = false;
     int             m_lastPct = -1;
+    QString         m_lastError;          // last "ERROR:" line from yt-dlp
+    QStringList     m_tail;               // recent output lines (for diagnostics)
 };
 
 } // namespace nexa
