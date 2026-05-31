@@ -30,17 +30,10 @@ int main(int argc, char *argv[])
     const bool batch = args.contains(QStringLiteral("--batch"));
 
     if (batch) {
-        // In batch mode, exit as soon as all downloads finish or error out.
+        // In batch mode, exit as soon as all downloads/streams finish or error.
         auto checkDone = [&engine]() {
-            const auto all = engine.tasks();
-            if (all.isEmpty())
-                return;
-            for (auto *t : all) {
-                if (t->state() != nexa::DownloadState::Completed &&
-                    t->state() != nexa::DownloadState::Error)
-                    return;
-            }
-            QCoreApplication::quit();
+            if (engine.allTerminal())
+                QCoreApplication::quit();
         };
         QObject::connect(&engine, &nexa::DownloadEngine::taskFinished,
                          &app, [checkDone](int) { checkDone(); });

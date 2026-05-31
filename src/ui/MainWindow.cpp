@@ -150,8 +150,7 @@ void MainWindow::onTaskAdded(int id)
     m_table->insertRow(row);
     m_idToRow.insert(id, row);
 
-    DownloadTask *t = m_engine->task(id);
-    auto *fileItem = new QTableWidgetItem(t ? t->fileName() : QStringLiteral("download"));
+    auto *fileItem = new QTableWidgetItem(m_engine->nameOf(id));
     fileItem->setData(Qt::UserRole, id);
     m_table->setItem(row, ColFile, fileItem);
     m_table->setItem(row, ColSize, new QTableWidgetItem(QStringLiteral("?")));
@@ -164,8 +163,7 @@ void MainWindow::onTaskAdded(int id)
 
     m_table->setItem(row, ColSpeed, new QTableWidgetItem(QString()));
     m_table->setItem(row, ColStatus,
-                     new QTableWidgetItem(t ? stateToString(t->state())
-                                            : QStringLiteral("Queued")));
+                     new QTableWidgetItem(stateToString(m_engine->stateOf(id))));
 }
 
 void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
@@ -204,9 +202,8 @@ void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &
             s += QStringLiteral(" — ") + detail;
         statusItem->setText(s);
     }
-    DownloadTask *t = m_engine->task(id);
     m_status->setText(QStringLiteral("%1: %2")
-                          .arg(t ? t->fileName() : QStringLiteral("task"))
+                          .arg(m_engine->nameOf(id))
                           .arg(stateToString(state)));
 }
 

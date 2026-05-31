@@ -7,7 +7,7 @@ media-stream grabbing, and more. C++ / Qt 6.
 > Full roadmap & rationale: see the approved plan in
 > `~/.claude/plans/` and the architecture notes below.
 
-## What works today (Phase 0–3)
+## What works today (Phase 0–4)
 
 - **Segmented download engine** — splits a file into up to 16 byte-range
   connections (HTTP `Range`), writes each part in place into a pre-allocated
@@ -19,6 +19,11 @@ media-stream grabbing, and more. C++ / Qt 6.
 - **Native messaging bridge** (`nexa-host`) + **IPC server** in the engine.
 - **Browser extensions** (Chromium MV3 + Firefox) — intercept downloads,
   capture cookies/UA/referrer, sniff HLS/DASH/media, right-click handoff.
+- **HLS/DASH stream grabber** — parses `.m3u8` master + media playlists,
+  picks the highest-bitrate variant, downloads all segments in parallel,
+  passes through `#EXT-X-KEY` decryption, and muxes to MP4 with FFmpeg
+  (`-c copy`, no re-encode). DASH `.mpd` handled via FFmpeg directly.
+  *Verified end-to-end: a generated HLS stream grabs to a valid h264+aac MP4.*
 
 ## Build
 
@@ -79,7 +84,7 @@ Browser Extension ──native messaging (framed JSON)──▶ nexa-host
 
 ## Roadmap (next)
 
-- Phase 4: HLS/DASH grabber → mux to MP4 with FFmpeg.
+- ~~Phase 4: HLS/DASH grabber → mux to MP4 with FFmpeg.~~ ✅ done
 - Phase 5: queues, scheduler, batch import.
 - Phase 6: BitTorrent (libtorrent), AI features, remote web dashboard.
 - Phase 7: installers, auto-update.

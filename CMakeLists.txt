@@ -19,6 +19,7 @@ add_executable(nexa
     src/core/SegmentDownloader.cpp
     src/core/DownloadTask.cpp
     src/core/DownloadEngine.cpp
+    src/grabber/HlsGrabber.cpp
     src/ipc/IpcServer.cpp
     src/ui/MainWindow.cpp
 )
