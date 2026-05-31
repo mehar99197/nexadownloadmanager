@@ -15,6 +15,7 @@ namespace nexa {
 class DownloadTask;
 class HlsGrabber;
 class TorrentManager;
+class AiClient;
 class Database;
 
 // Top-level controller: owns the network stack + database and manages the set
@@ -55,6 +56,12 @@ public:
     bool autoCategorize() const { return m_autoCategorize; }
     static QString categoryFor(const QString &fileName);
 
+    // AI helpers (require $ANTHROPIC_API_KEY). aiAvailable() reflects key presence.
+    bool aiAvailable() const;
+    void setAiRename(bool on) { m_aiRename = on; }   // AI-rename files on completion
+    bool aiRename() const { return m_aiRename; }
+    void runAiCommand(const QString &naturalLanguage);  // NL -> add/schedule downloads
+
     DownloadTask *task(int id) const { return m_tasks.value(id, nullptr); }
     QList<DownloadTask*> tasks() const { return m_tasks.values(); }
 
@@ -90,6 +97,7 @@ signals:
     void taskStateChanged(int id, nexa::DownloadState state, const QString &detail);
     void taskFinished(int id);
     void taskRemoved(int id);
+    void taskRenamed(int id, const QString &newName);   // AI rename applied
 
 private slots:
     void cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec);
@@ -107,6 +115,7 @@ private:
     QNetworkAccessManager *m_nam = nullptr;
     Database              *m_db = nullptr;
     TorrentManager        *m_torrents = nullptr;
+    AiClient              *m_ai = nullptr;
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
     QSet<int>              m_torrentIds;
@@ -115,6 +124,7 @@ private:
     QString                m_downloadDir;
     int                    m_maxConcurrent = 4;
     bool                   m_autoCategorize = true;
+    bool                   m_aiRename = false;
     bool                   m_inSchedule = false;
 };
 

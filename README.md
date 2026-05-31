@@ -45,6 +45,15 @@ media-stream grabbing, and more. C++ / Qt 6.
   limits and strict request parsing. *Verified by an adversarial code review +
   tests: token auth, slowloris cutoff, malformed-request rejection, and DoS
   resilience.*
+- **AI assist** (Anthropic / Claude) — **smart auto-rename** turns
+  `dl_98237.bin` into `Quarterly Earnings Report.bin` on completion; **Smart
+  Add** takes a natural-language request ("grab these two files tonight at
+  2am") and extracts the URLs + schedule. Available in the GUI, CLI (`--ai`),
+  and dashboard (`POST /api/ai`); enabled when `ANTHROPIC_API_KEY` is set.
+  *Verified end-to-end against a mock API: both rename and NL-command paths.*
+- **Modern dark UI** — themed desktop GUI (brand header with live aggregate
+  speed, color-coded status, progress bars) sharing the dashboard's palette,
+  plus a Nexa app/extension icon set.
 
 ## Build
 
@@ -113,7 +122,7 @@ Browser Extension ──native messaging (framed JSON)──▶ nexa-host
 
 - ~~Phase 4: HLS/DASH grabber → mux to MP4 with FFmpeg.~~ ✅ done
 - ~~Phase 5: queues, scheduler, batch import, auto-categorize.~~ ✅ done
-- Phase 6: ~~BitTorrent (libtorrent)~~ ✅ done · AI features · remote web dashboard.
+- ~~Phase 6: BitTorrent (libtorrent) · AI features · remote web dashboard.~~ ✅ done
 - Phase 7: installers, auto-update.
 
 ### CLI flags
@@ -128,8 +137,23 @@ nexa [--max=N] [--no-categorize] [--batch] [--resume-all]
   --dashboard[=PORT] start the remote web dashboard (default port 8088, loopback)
   --dashboard-lan    bind the dashboard to 0.0.0.0 so other devices can reach it
   --dashboard-token  set the dashboard access token (otherwise auto-generated)
+  --ai-rename        AI-rename files to clean names on completion (needs API key)
+  --ai "<text>"      natural-language add/schedule, e.g. --ai "get these tonight"
   pattern            e.g. "http://host/file[1-20].jpg" expands to 20 downloads
 ```
+
+### AI features (optional)
+
+Set an Anthropic API key to enable smart-rename and Smart Add:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+./build/nexa --ai-rename                       # auto-rename on completion
+./build/nexa --ai "download the linux iso and the release notes at 2am"
+```
+
+Uses Claude Haiku by default (override with `NEXA_AI_MODEL`). Without a key, the
+AI buttons/flags are inert and everything else works unchanged.
 
 ### Remote dashboard
 

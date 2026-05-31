@@ -39,6 +39,32 @@ QString DownloadTask::fileName() const
     return QFileInfo(m_savePath).fileName();
 }
 
+bool DownloadTask::renameTo(const QString &newFileName)
+{
+    const QFileInfo fi(m_savePath);
+    const QString dir = fi.absolutePath();
+    QString target = dir + QStringLiteral("/") + newFileName;
+    if (target == m_savePath)
+        return true;
+    // Don't clobber an existing file: name.ext -> name (1).ext, etc.
+    if (QFile::exists(target)) {
+        const QFileInfo tf(target);
+        const QString base = tf.completeBaseName();
+        const QString suffix = tf.suffix().isEmpty() ? QString()
+                                                     : (QStringLiteral(".") + tf.suffix());
+        int n = 1;
+        do {
+            target = dir + QStringLiteral("/%1 (%2)%3").arg(base).arg(n).arg(suffix);
+            ++n;
+        } while (QFile::exists(target));
+    }
+    if (!QFile::rename(m_savePath, target))
+        return false;
+    m_savePath = target;
+    persist();
+    return true;
+}
+
 // Choose how many parallel connections to use, scaling with file size and
 // capping at 16 (more than that rarely helps and annoys servers).
 int DownloadTask::preferredSegmentCount(qint64 totalBytes)

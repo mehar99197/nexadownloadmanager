@@ -4,8 +4,7 @@
 
 #include <QTableWidget>
 #include <QHeaderView>
-#include <QToolBar>
-#include <QAction>
+#include <QPushButton>
 #include <QStatusBar>
 #include <QLabel>
 #include <QProgressBar>
@@ -13,6 +12,11 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QClipboard>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QWidget>
+#include <QIcon>
+#include <QColor>
 #include <QUrl>
 
 namespace nexa {
@@ -35,6 +39,20 @@ QString humanSpeed(double bps)
     return humanSize(qint64(bps)) + QStringLiteral("/s");
 }
 
+// A distinct colour per lifecycle state for the Status column.
+QColor statusColor(DownloadState s)
+{
+    switch (s) {
+        case DownloadState::Completed:   return QColor(0x22c55e);  // green
+        case DownloadState::Downloading: return QColor(0x60a5fa);  // blue
+        case DownloadState::Probing:     return QColor(0x38bdf8);  // cyan
+        case DownloadState::Paused:      return QColor(0xfbbf24);  // amber
+        case DownloadState::Error:       return QColor(0xf87171);  // red
+        case DownloadState::Queued:      return QColor(0x94a3b8);  // grey
+    }
+    return QColor(0xe2e8f0);
+}
+
 enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColCount };
 
 } // namespace
@@ -43,32 +61,81 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     : QMainWindow(parent), m_engine(engine)
 {
     setWindowTitle(QStringLiteral("Nexa Download Manager"));
-    resize(880, 480);
+    setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
+    resize(960, 540);
 
-    auto *tb = addToolBar(QStringLiteral("Main"));
-    tb->setMovable(false);
-    auto *addAct    = tb->addAction(QStringLiteral("Add URL"));
-    auto *pauseAct  = tb->addAction(QStringLiteral("Pause"));
-    auto *resumeAct = tb->addAction(QStringLiteral("Resume"));
-    auto *removeAct = tb->addAction(QStringLiteral("Remove"));
+    auto *central = new QWidget(this);
+    auto *root = new QVBoxLayout(central);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
 
-    connect(addAct,    &QAction::triggered, this, &MainWindow::promptAddUrl);
-    connect(pauseAct,  &QAction::triggered, this, &MainWindow::pauseSelected);
-    connect(resumeAct, &QAction::triggered, this, &MainWindow::resumeSelected);
-    connect(removeAct, &QAction::triggered, this, &MainWindow::removeSelected);
+    // ---- Brand header: logo + title on the left, live stats on the right ----
+    auto *header = new QWidget(central);
+    header->setObjectName(QStringLiteral("HeaderBar"));
+    auto *hl = new QHBoxLayout(header);
+    hl->setContentsMargins(16, 12, 16, 12);
 
-    m_table = new QTableWidget(0, ColCount, this);
+    auto *logo = new QLabel(header);
+    logo->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(26, 26));
+    auto *title = new QLabel(QStringLiteral("Nexa Download Manager"), header);
+    title->setObjectName(QStringLiteral("BrandTitle"));
+    m_statsLabel = new QLabel(QString(), header);
+    m_statsLabel->setObjectName(QStringLiteral("Stats"));
+
+    hl->addWidget(logo);
+    hl->addSpacing(8);
+    hl->addWidget(title);
+    hl->addStretch(1);
+    hl->addWidget(m_statsLabel);
+    root->addWidget(header);
+
+    // ---- Action bar: primary buttons ----
+    auto *actions = new QWidget(central);
+    actions->setObjectName(QStringLiteral("ActionBar"));
+    auto *al = new QHBoxLayout(actions);
+    al->setContentsMargins(12, 8, 12, 8);
+    al->setSpacing(8);
+
+    auto makeBtn = [&](const QString &text, const char *obj) {
+        auto *b = new QPushButton(text, actions);
+        b->setObjectName(QString::fromLatin1(obj));
+        b->setCursor(Qt::PointingHandCursor);
+        al->addWidget(b);
+        return b;
+    };
+    auto *addBtn    = makeBtn(QStringLiteral("  ＋  Add Download  "), "Primary");
+    auto *aiBtn     = makeBtn(QStringLiteral("🤖  Smart Add"), "");
+    auto *pauseBtn  = makeBtn(QStringLiteral("⏸  Pause"), "");
+    auto *resumeBtn = makeBtn(QStringLiteral("▶  Resume"), "");
+    auto *removeBtn = makeBtn(QStringLiteral("✕  Remove"), "");
+    al->addStretch(1);
+    root->addWidget(actions);
+
+    connect(addBtn,    &QPushButton::clicked, this, &MainWindow::promptAddUrl);
+    connect(aiBtn,     &QPushButton::clicked, this, &MainWindow::promptSmartAdd);
+    connect(pauseBtn,  &QPushButton::clicked, this, &MainWindow::pauseSelected);
+    connect(resumeBtn, &QPushButton::clicked, this, &MainWindow::resumeSelected);
+    connect(removeBtn, &QPushButton::clicked, this, &MainWindow::removeSelected);
+
+    // ---- Downloads table ----
+    m_table = new QTableWidget(0, ColCount, central);
     m_table->setHorizontalHeaderLabels(
         {QStringLiteral("File"), QStringLiteral("Size"), QStringLiteral("Progress"),
          QStringLiteral("Speed"), QStringLiteral("Status")});
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setSectionResizeMode(ColFile, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColProgress, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setHighlightSections(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setShowGrid(false);
+    m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
-    setCentralWidget(m_table);
+    m_table->verticalHeader()->setDefaultSectionSize(38);
+    root->addWidget(m_table, 1);
+
+    setCentralWidget(central);
 
     m_status = new QLabel(QStringLiteral("Ready"), this);
     statusBar()->addWidget(m_status);
@@ -78,6 +145,23 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     connect(m_engine, &DownloadEngine::taskStateChanged, this, &MainWindow::onTaskStateChanged);
     connect(m_engine, &DownloadEngine::taskFinished,     this, &MainWindow::onTaskFinished);
     connect(m_engine, &DownloadEngine::taskRemoved,      this, &MainWindow::onTaskRemoved);
+    connect(m_engine, &DownloadEngine::taskRenamed,      this, &MainWindow::onTaskRenamed);
+
+    updateStats();
+}
+
+void MainWindow::updateStats()
+{
+    int active = 0;
+    double totalSpeed = 0.0;
+    for (const auto &s : m_engine->snapshot()) {
+        if (s.state == DownloadState::Downloading || s.state == DownloadState::Probing) {
+            ++active;
+            totalSpeed += s.speed;
+        }
+    }
+    const QString spd = totalSpeed > 1.0 ? humanSpeed(totalSpeed) : QStringLiteral("idle");
+    m_statsLabel->setText(QStringLiteral("%1 active   ·   %2").arg(active).arg(spd));
 }
 
 void MainWindow::promptAddUrl()
@@ -100,6 +184,25 @@ void MainWindow::promptAddUrl()
     if (id < 0)
         QMessageBox::warning(this, QStringLiteral("Invalid URL"),
                              QStringLiteral("That URL could not be parsed."));
+}
+
+void MainWindow::promptSmartAdd()
+{
+    if (!m_engine->aiAvailable()) {
+        QMessageBox::information(
+            this, QStringLiteral("Smart Add (AI)"),
+            QStringLiteral("AI features need an Anthropic API key.\n\n"
+                           "Set ANTHROPIC_API_KEY in your environment and restart Nexa, e.g.:\n"
+                           "    export ANTHROPIC_API_KEY=sk-ant-...\n    ./nexa"));
+        return;
+    }
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, QStringLiteral("Smart Add (AI)"),
+        QStringLiteral("Describe what to download (URLs, and optionally when):"),
+        QLineEdit::Normal, QString(), &ok);
+    if (ok && !text.trimmed().isEmpty())
+        m_engine->runAiCommand(text.trimmed());
 }
 
 int MainWindow::rowForId(int id) const
@@ -162,8 +265,11 @@ void MainWindow::onTaskAdded(int id)
     m_table->setCellWidget(row, ColProgress, bar);
 
     m_table->setItem(row, ColSpeed, new QTableWidgetItem(QString()));
-    m_table->setItem(row, ColStatus,
-                     new QTableWidgetItem(stateToString(m_engine->stateOf(id))));
+    const DownloadState st = m_engine->stateOf(id);
+    auto *statusItem = new QTableWidgetItem(stateToString(st));
+    statusItem->setForeground(statusColor(st));
+    m_table->setItem(row, ColStatus, statusItem);
+    updateStats();
 }
 
 void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
@@ -189,6 +295,8 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
     }
     if (auto *speedItem = m_table->item(row, ColSpeed))
         speedItem->setText(humanSpeed(bps));
+
+    updateStats();
 }
 
 void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &detail)
@@ -201,10 +309,12 @@ void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &
         if (!detail.isEmpty())
             s += QStringLiteral(" — ") + detail;
         statusItem->setText(s);
+        statusItem->setForeground(statusColor(state));
     }
     m_status->setText(QStringLiteral("%1: %2")
                           .arg(m_engine->nameOf(id))
                           .arg(stateToString(state)));
+    updateStats();
 }
 
 void MainWindow::onTaskFinished(int id)
@@ -219,6 +329,17 @@ void MainWindow::onTaskFinished(int id)
     }
     if (auto *speedItem = m_table->item(row, ColSpeed))
         speedItem->setText(QString());
+    updateStats();
+}
+
+void MainWindow::onTaskRenamed(int id, const QString &newName)
+{
+    const int row = rowForId(id);
+    if (row < 0)
+        return;
+    if (auto *fileItem = m_table->item(row, ColFile))
+        fileItem->setText(newName);
+    m_status->setText(QStringLiteral("Renamed to %1").arg(newName));
 }
 
 void MainWindow::onTaskRemoved(int id)
@@ -233,6 +354,7 @@ void MainWindow::onTaskRemoved(int id)
         if (it.value() > row)
             it.value() -= 1;
     }
+    updateStats();
 }
 
 } // namespace nexa

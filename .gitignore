@@ -38,3 +38,6 @@ extension-firefox/content.js
 extension-firefox/popup.html
 extension-firefox/popup.js
 extension-firefox/icons/
+
+# Extension packaging output
+/dist/

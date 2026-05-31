@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 #include "core/DownloadEngine.h"
 #include "core/DownloadTask.h"
 #include "core/Types.h"
@@ -27,6 +28,41 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
+
+    // Modern dark theme, shared palette with the web dashboard.
+    app.setStyleSheet(QStringLiteral(R"(
+        QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
+        #HeaderBar { background: #1e293b; border-bottom: 1px solid #334155; }
+        #BrandTitle { font-size: 16px; font-weight: 600; color: #f8fafc; }
+        #Stats { color: #94a3b8; }
+        #ActionBar { background: #0b1220; border-bottom: 1px solid #1e293b; }
+        QPushButton { background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
+                      border-radius: 8px; padding: 7px 14px; font-weight: 600; }
+        QPushButton:hover { background: #334155; }
+        QPushButton:pressed { background: #0b1220; }
+        QPushButton#Primary { background: #3b82f6; border: 0; color: white; }
+        QPushButton#Primary:hover { background: #2563eb; }
+        QTableWidget { background: #0f172a; border: 0; outline: 0;
+                       alternate-background-color: #131f37;
+                       selection-background-color: #1d4ed8; selection-color: white; }
+        QTableWidget::item { padding: 4px 10px; border: 0; }
+        QHeaderView::section { background: #1e293b; color: #94a3b8; padding: 8px 10px;
+                       border: 0; border-bottom: 1px solid #334155; font-weight: 600; }
+        QProgressBar { background: #1e293b; border: 0; border-radius: 6px;
+                       text-align: center; color: #e2e8f0; }
+        QProgressBar::chunk { background: #3b82f6; border-radius: 6px; }
+        QStatusBar { background: #1e293b; border-top: 1px solid #334155; }
+        QStatusBar QLabel, QStatusBar { color: #94a3b8; }
+        QStatusBar::item { border: 0; }
+        QScrollBar:vertical { background: #0f172a; width: 11px; margin: 0; }
+        QScrollBar::handle:vertical { background: #334155; border-radius: 5px; min-height: 28px; }
+        QScrollBar::handle:vertical:hover { background: #475569; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QLineEdit { background: #0b1220; border: 1px solid #334155; border-radius: 6px;
+                    padding: 7px; color: #e2e8f0; selection-background-color: #3b82f6; }
+        QToolTip { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+    )"));
 
     qRegisterMetaType<nexa::DownloadState>("nexa::DownloadState");
 
@@ -76,6 +112,8 @@ int main(int argc, char *argv[])
             dashLan = true;
         } else if (arg.startsWith(QStringLiteral("--dashboard-token="))) {
             dashToken = arg.mid(18);
+        } else if (arg == QStringLiteral("--ai-rename")) {
+            engine.setAiRename(true);
         }
     }
 
@@ -101,6 +139,10 @@ int main(int argc, char *argv[])
         const QString arg = args.at(i);
         if (arg == QStringLiteral("--resume-all")) {
             engine.resumeUnfinished();   // continue downloads interrupted last run
+            continue;
+        }
+        if (arg == QStringLiteral("--ai") && i + 1 < args.size()) {
+            engine.runAiCommand(args.at(++i));   // natural-language request
             continue;
         }
         if (arg.startsWith(QStringLiteral("--")))

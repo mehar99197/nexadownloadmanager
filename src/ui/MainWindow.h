@@ -19,6 +19,7 @@ public:
 
 private slots:
     void promptAddUrl();
+    void promptSmartAdd();           // natural-language AI add
     void pauseSelected();
     void resumeSelected();
     void removeSelected();
@@ -28,15 +29,17 @@ private slots:
     void onTaskStateChanged(int id, nexa::DownloadState state, const QString &detail);
     void onTaskFinished(int id);
     void onTaskRemoved(int id);
+    void onTaskRenamed(int id, const QString &newName);
 
 private:
     int  rowForId(int id) const;
     int  selectedId() const;
-    void refreshRow(int id);
+    void updateStats();          // refresh the "N active · X/s" header readout
 
     DownloadEngine *m_engine;
     QTableWidget   *m_table;
     QLabel         *m_status;
+    QLabel         *m_statsLabel = nullptr;
     QHash<int, int> m_idToRow;   // task id -> table row
 };
 

@@ -18,6 +18,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBTORRENT REQUIRED IMPORTED_TARGET libtorrent-rasterbar)
 
 add_executable(nexa
+    resources.qrc
     src/main.cpp
     src/core/Database.cpp
     src/core/SegmentDownloader.cpp
@@ -25,6 +26,7 @@ add_executable(nexa
     src/core/DownloadEngine.cpp
     src/grabber/HlsGrabber.cpp
     src/torrent/TorrentManager.cpp
+    src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/web/WebServer.cpp
     src/ui/MainWindow.cpp

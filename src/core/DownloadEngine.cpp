@@ -3,6 +3,7 @@
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
 #include "torrent/TorrentManager.h"
+#include "ai/AiClient.h"
 
 #include <QNetworkAccessManager>
 #include <QStandardPaths>
@@ -12,6 +13,8 @@
 #include <QUrlQuery>
 #include <QTimer>
 #include <QRegularExpression>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <climits>
 #include <algorithm>
 
@@ -32,9 +35,29 @@ DownloadEngine::DownloadEngine(QObject *parent)
     if (m_downloadDir.isEmpty())
         m_downloadDir = QDir::homePath() + QStringLiteral("/Downloads");
 
+    m_ai = new AiClient(this);
+
     // Cache live progress so the dashboard/API can report it on demand.
     connect(this, &DownloadEngine::taskProgress, this, &DownloadEngine::cacheProgress);
     connect(this, &DownloadEngine::taskRemoved,  this, &DownloadEngine::dropProgress);
+
+    // AI smart-rename: when a file download finishes, ask the model for a clean
+    // name and rename it on disk (only when enabled and a key is configured).
+    connect(this, &DownloadEngine::taskFinished, this, [this](int id) {
+        if (!m_aiRename || !m_ai->isConfigured())
+            return;
+        DownloadTask *t = m_tasks.value(id);
+        if (!t)
+            return;                        // file downloads only
+        m_ai->suggestFilename(t->fileName(), t->url().toString(), QString(),
+                              [this, id](const QString &newName) {
+            DownloadTask *t = m_tasks.value(id);
+            if (!t || newName.isEmpty() || newName == t->fileName())
+                return;
+            if (t->renameTo(newName))
+                emit taskRenamed(id, t->fileName());
+        });
+    });
     // A paused/finished/errored task isn't moving — clear its cached speed so the
     // API doesn't keep reporting the last sampled rate.
     connect(this, &DownloadEngine::taskStateChanged, this,
@@ -425,6 +448,36 @@ int DownloadEngine::scheduleDownload(const QUrl &url, const QDateTime &when,
         addDownload(url, QString(), headers);
     });
     return int(ms / 1000);   // seconds until it starts (for UI feedback)
+}
+
+bool DownloadEngine::aiAvailable() const
+{
+    return m_ai && m_ai->isConfigured();
+}
+
+void DownloadEngine::runAiCommand(const QString &naturalLanguage)
+{
+    if (!aiAvailable())
+        return;
+    m_ai->interpretCommand(naturalLanguage, [this](const QJsonObject &obj) {
+        const QJsonArray downloads = obj.value(QStringLiteral("downloads")).toArray();
+        const QJsonObject schedule = obj.value(QStringLiteral("schedule")).toObject();
+        const QString atIso = schedule.value(QStringLiteral("atIso")).toString();
+        const QDateTime when = atIso.isEmpty()
+                                   ? QDateTime()
+                                   : QDateTime::fromString(atIso, Qt::ISODate);
+
+        for (const QJsonValue &d : downloads) {
+            const QString u = d.toObject().value(QStringLiteral("url")).toString().trimmed();
+            if (u.isEmpty())
+                continue;
+            const QUrl url = QUrl::fromUserInput(u);
+            if (when.isValid() && when > QDateTime::currentDateTime())
+                scheduleDownload(url, when);
+            else
+                addDownload(url);
+        }
+    });
 }
 
 } // namespace nexa

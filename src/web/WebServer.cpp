@@ -317,6 +317,23 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         return;
     }
 
+    if (req.method == QLatin1String("POST") && req.path == QLatin1String("/api/ai")) {
+        if (!m_engine->aiAvailable()) {
+            sendJson(sock, 400, R"({"ok":false,"error":"AI not configured; set ANTHROPIC_API_KEY"})");
+            return;
+        }
+        QString text;
+        const QJsonObject obj = QJsonDocument::fromJson(req.body).object();
+        text = obj.value(QStringLiteral("text")).toString().trimmed();
+        if (text.isEmpty()) {
+            sendJson(sock, 400, R"({"ok":false,"error":"missing text"})");
+            return;
+        }
+        m_engine->runAiCommand(text);
+        sendJson(sock, 200, R"({"ok":true})");
+        return;
+    }
+
     auto idParam = [&]() { return req.query.value(QStringLiteral("id")).toInt(); };
 
     if (req.method == QLatin1String("POST") && req.path == QLatin1String("/api/pause")) {

@@ -30,6 +30,9 @@ public:
 
     void setHeaders(const HeaderList &headers) { m_headers = headers; }
     HeaderList headers() const { return m_headers; }
+
+    // Rename the completed file (keeps the directory). Returns false on failure.
+    bool renameTo(const QString &newFileName);
     ~DownloadTask() override;
 
     void start();
