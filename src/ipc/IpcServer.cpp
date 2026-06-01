@@ -1,5 +1,6 @@
 #include "ipc/IpcServer.h"
 #include "core/DownloadEngine.h"
+#include "auth/AuthenticationManager.h"
 
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -115,6 +116,28 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         return;
     }
 
+    // Optional: the extension may hand us domain-scoped auth (a cookies.txt path
+    // or a bearer token) to register before downloading. Validate eagerly so the
+    // user hears "all cookies expired — re-login" now, not via a silent 403 later.
+    if (AuthenticationManager *am = m_engine->auth()) {
+        const QString authDomain = obj.value(QStringLiteral("authDomain")).toString();
+        if (!authDomain.isEmpty()) {
+            AuthResult ar = AuthResult::success();
+            const QString cookiesFile = obj.value(QStringLiteral("authCookiesFile")).toString();
+            const QString bearer      = obj.value(QStringLiteral("bearer")).toString();
+            if (!cookiesFile.isEmpty()) {
+                ar = am->registerCookieFile(authDomain, cookiesFile);
+            } else if (!bearer.isEmpty()) {
+                const qint64 exp = qint64(obj.value(QStringLiteral("bearerExpiresAt")).toDouble(0));
+                ar = am->registerBearerToken(authDomain, bearer, exp);
+            }
+            if (!ar.ok) {
+                sendReply(QJsonObject{{"ok", false}, {"message", ar.detail}});
+                return;
+            }
+        }
+    }
+
     // Assemble the headers the extension captured for this request.
     HeaderList headers;
     const QString cookies   = obj.value(QStringLiteral("cookies")).toString();
@@ -130,7 +153,8 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
 
     const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
     const QString quality = obj.value(QStringLiteral("quality")).toString();   // YouTube etc.
-    const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality);
+    const bool playlist = obj.value(QStringLiteral("playlist")).toBool(false);  // whole playlist?
+    const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality, playlist);
     if (id < 0)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else

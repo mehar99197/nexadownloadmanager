@@ -18,6 +18,7 @@ class TorrentManager;
 class YtDlpGrabber;
 class AiClient;
 class Database;
+class AuthenticationManager;
 
 // Top-level controller: owns the network stack + database and manages the set
 // of DownloadTasks. The UI talks only to this class.
@@ -31,11 +32,14 @@ public:
     // browser-captured cookies/UA/referrer to replay on every request.
     // `suggestedName` (e.g. a page title) names stream grabs / unnamed files.
     // `siteFormat` (set for YouTube etc.) picks the yt-dlp quality, e.g. "1080".
+    // `playlist` (YouTube etc.): download every video in the playlist via yt-dlp
+    // --yes-playlist instead of just the single linked video.
     int  addDownload(const QUrl &url,
                      const QString &savePath = QString(),
                      const HeaderList &headers = {},
                      const QString &suggestedName = QString(),
-                     const QString &siteFormat = QString());
+                     const QString &siteFormat = QString(),
+                     bool playlist = false);
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);
@@ -69,6 +73,10 @@ public:
 
     DownloadTask *task(int id) const { return m_tasks.value(id, nullptr); }
     QList<DownloadTask*> tasks() const { return m_tasks.values(); }
+
+    // Domain-scoped authentication (cookies.txt / bearer tokens). Lets IpcServer
+    // and the UI register credentials; the engine applies them in addDownload().
+    AuthenticationManager *auth() const { return m_auth; }
 
     // Unified accessors that work for both file downloads and stream grabs.
     QString       nameOf(int id) const;
@@ -122,6 +130,7 @@ private:
     Database              *m_db = nullptr;
     TorrentManager        *m_torrents = nullptr;
     AiClient              *m_ai = nullptr;
+    AuthenticationManager *m_auth = nullptr;
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
     QHash<int, YtDlpGrabber*> m_siteVideos;

@@ -5,6 +5,7 @@
 #include "torrent/TorrentManager.h"
 #include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
+#include "auth/AuthenticationManager.h"
 
 #include <QNetworkAccessManager>
 #include <QStandardPaths>
@@ -37,6 +38,12 @@ DownloadEngine::DownloadEngine(QObject *parent)
         m_downloadDir = QDir::homePath() + QStringLiteral("/Downloads");
 
     m_ai = new AiClient(this);
+
+    // Domain-scoped authentication (cookies.txt / bearer tokens). One instance
+    // owned here; addDownload() resolves auth per URL and hands the APPLIED result
+    // (yt-dlp flags / HeaderList) to the download classes. Config is optional.
+    m_auth = new AuthenticationManager(this);
+    m_auth->loadFromJson();   // ~/.config/nexa/auth.json — ignore failure
 
     // Cache live progress so the dashboard/API can report it on demand.
     connect(this, &DownloadEngine::taskProgress, this, &DownloadEngine::cacheProgress);
@@ -172,12 +179,28 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 const HeaderList &headers, const QString &suggestedName,
-                                const QString &siteFormat)
+                                const QString &siteFormat, bool playlist)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
 
     const int id = m_db->nextId();
+
+    // Resolve domain-scoped auth for this URL ONCE, into the two forms the
+    // download classes already understand: finished yt-dlp CLI flags and
+    // HeaderList entries. Both are empty when no credential matches (or the host
+    // is excluded, e.g. YouTube), so non-auth downloads are entirely unaffected.
+    const QStringList authArgs    = m_auth->ytDlpArgs(url);
+    const HeaderList  authHeaders = m_auth->headerAuthFor(url);
+
+    // Pre-flight: refuse an expired/malformed credential BEFORE any request, so
+    // the user is told to re-auth instead of waiting on a guaranteed 401/403.
+    const AuthResult av = m_auth->validateFor(url);
+    if (!av.ok) {
+        emit taskAdded(id);   // create the id so the UI shows the failed job
+        emit taskStateChanged(id, DownloadState::Error, av.detail);
+        return id;
+    }
 
     // YouTube & other yt-dlp sites: drive yt-dlp (handles ciphers/SABR + mux).
     if (YtDlpGrabber::isSiteVideoUrl(url) && YtDlpGrabber::available()) {
@@ -188,7 +211,8 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
             ? QString()
             : QFileInfo(suggestedName).completeBaseName();
         const QString fmt = YtDlpGrabber::formatForQuality(siteFormat);
-        auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, this);
+        auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
+                                   playlist, this);
         m_siteVideos.insert(id, g);
         connect(g, &YtDlpGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
@@ -228,7 +252,12 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                 base = QStringLiteral("stream");
             out = pathForName(base + QStringLiteral(".mp4"));   // categorised (Video/)
         }
-        auto *g = new HlsGrabber(id, url, out, headers, this);
+        HlsGrabber *g = nullptr;
+        {
+            HeaderList merged = headers;
+            merged += authHeaders;   // domain-scoped Cookie/Authorization, if any
+            g = new HlsGrabber(id, url, out, merged, this);
+        }
         m_grabbers.insert(id, g);
         connect(g, &HlsGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &HlsGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
@@ -244,7 +273,11 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         path = pathForName(suggestedName);   // URL has no filename; use the hint
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
-    t->setHeaders(headers);
+    // Merge domain-scoped auth into the browser headers; SegmentDownloader replays
+    // them via its existing setRawHeader loop, with no coupling to the manager.
+    HeaderList merged = headers;
+    merged += authHeaders;
+    t->setHeaders(merged);
     // Lets the task adopt the real Content-Disposition filename, categorised.
     t->setNameResolver([this](const QString &name) { return pathForName(name); });
     m_tasks.insert(id, t);

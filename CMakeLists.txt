@@ -27,6 +27,9 @@ add_executable(nexa
     src/grabber/HlsGrabber.cpp
     src/torrent/TorrentManager.cpp
     src/site/YtDlpGrabber.cpp
+    src/auth/CookieFile.cpp
+    src/auth/AuthUtils.cpp
+    src/auth/AuthenticationManager.cpp
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/web/WebServer.cpp
@@ -52,3 +55,19 @@ target_link_libraries(nexa-host PRIVATE
 )
 
 install(TARGETS nexa nexa-host RUNTIME DESTINATION bin)
+
+# Auth-layer unit tests (built opt-in: cmake -DNEXA_BUILD_TESTS=ON). Run with
+# ./build/nexa_auth_test — no QtTest dependency, exits non-zero on any failure.
+option(NEXA_BUILD_TESTS "Build Nexa unit tests" OFF)
+if(NEXA_BUILD_TESTS)
+    add_executable(nexa_auth_test
+        tests/AuthTest.cpp
+        src/auth/CookieFile.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/AuthenticationManager.cpp
+    )
+    target_include_directories(nexa_auth_test PRIVATE src)
+    target_link_libraries(nexa_auth_test PRIVATE Qt6::Core Qt6::Network)
+    enable_testing()
+    add_test(NAME auth COMMAND nexa_auth_test)
+endif()

@@ -1,4 +1,5 @@
 #include "core/SegmentDownloader.h"
+#include "auth/AuthUtils.h"
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QByteArray>
@@ -127,6 +128,12 @@ void SegmentDownloader::onFinished() {
     }
     if (m_stopped || err == QNetworkReply::OperationCanceledError) {
         // Intentional pause/abort — keep m_seg.done for resume, stay silent.
+        return;
+    }
+    if (authIsStatus(httpStatus)) {
+        // 401/403: credentials missing/expired. Surface a precise auth reason
+        // (routes to DownloadTask::onSegmentFailed -> Error). Retrying won't help.
+        emit failed(m_seg.index, authErrorDetail(httpStatus));
         return;
     }
     if (httpStatus == 416) {

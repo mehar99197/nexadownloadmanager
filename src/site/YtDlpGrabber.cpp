@@ -1,4 +1,5 @@
 #include "site/YtDlpGrabber.h"
+#include "auth/AuthUtils.h"
 
 #include <QProcess>
 #include <QFile>
@@ -47,12 +48,20 @@ qint64 parseSize(const QString &s)
 
 YtDlpGrabber::YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir,
                            const QString &fixedName, const QString &formatSelector,
-                           const HeaderList &headers, QObject *parent)
+                           const HeaderList &headers, const QStringList &authArgs,
+                           bool playlist, QObject *parent)
     : QObject(parent), m_id(id), m_url(pageUrl), m_dir(outputDir),
-      m_fixedName(fixedName), m_format(formatSelector), m_headers(headers)
+      m_fixedName(fixedName), m_format(formatSelector), m_headers(headers),
+      m_authArgs(authArgs), m_playlist(playlist)
 {
-    const QString placeholder = m_fixedName.isEmpty() ? QStringLiteral("video") : m_fixedName;
-    m_savePath = QDir(m_dir).filePath(placeholder + QStringLiteral(".mp4"));
+    if (m_playlist) {
+        // A playlist yields many files in a subfolder; show the playlist name.
+        const QString base = m_fixedName.isEmpty() ? QStringLiteral("Playlist") : m_fixedName;
+        m_savePath = QDir(m_dir).filePath(base);
+    } else {
+        const QString placeholder = m_fixedName.isEmpty() ? QStringLiteral("video") : m_fixedName;
+        m_savePath = QDir(m_dir).filePath(placeholder + QStringLiteral(".mp4"));
+    }
     m_outFile = QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
                 QStringLiteral("/nexa-ytout-%1.txt").arg(m_id);
 }
@@ -78,6 +87,22 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
         host == QStringLiteral("youtu.be") ||
         host.endsWith(QStringLiteral(".youtu.be")))
         return !url.path().contains(QStringLiteral("/videoplayback"));  // not a raw media URL
+
+    // Other yt-dlp-extracted sites we route through yt-dlp so its extractor (and
+    // our domain-scoped cookie/bearer auth) handle login-gated video. yt-dlp
+    // supports 1000+ sites; this is the curated set Nexa routes by default —
+    // extend as needed. AuthenticationManager applies cookies/Bearer for these.
+    static const QStringList kAuthSites = {
+        QStringLiteral("udemy.com"),
+        QStringLiteral("vimeo.com"),
+        QStringLiteral("coursera.org"),
+        QStringLiteral("skillshare.com"),
+        QStringLiteral("pluralsight.com"),
+        QStringLiteral("linkedin.com"),   // LinkedIn Learning
+    };
+    for (const QString &s : kAuthSites)
+        if (host == s || host.endsWith(QLatin1Char('.') + s))
+            return true;
     return false;
 }
 
@@ -111,30 +136,49 @@ void YtDlpGrabber::start()
     m_cancelled = false;
     QDir().mkpath(m_dir);
 
-    const QString tmpl = m_fixedName.isEmpty()
-        ? QDir(m_dir).filePath(QStringLiteral("%(title)s.%(ext)s"))
-        : QDir(m_dir).filePath(m_fixedName + QStringLiteral(".%(ext)s"));
+    // Playlist: number each video into a per-playlist subfolder. Single video:
+    // the page title (or the caller's fixed name).
+    const QString tmpl = m_playlist
+        ? QDir(m_dir).filePath(QStringLiteral("%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s"))
+        : (m_fixedName.isEmpty()
+               ? QDir(m_dir).filePath(QStringLiteral("%(title)s.%(ext)s"))
+               : QDir(m_dir).filePath(m_fixedName + QStringLiteral(".%(ext)s")));
 
     QStringList args;
-    args << QStringLiteral("--no-playlist")
+    args << (m_playlist ? QStringLiteral("--yes-playlist") : QStringLiteral("--no-playlist"))
          << QStringLiteral("--newline") << QStringLiteral("--progress")
          << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
          << QStringLiteral("--no-mtime") << QStringLiteral("--restrict-filenames")
          << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
+         // Machine-readable progress: one line per update with the exact byte
+         // counts, speed and fragment indices so the UI shows real progress and
+         // the live connection count (rather than scraping the human display).
+         << QStringLiteral("--progress-template")
+         << QStringLiteral("download:[NEXA]|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
+                           "%(progress.total_bytes_estimate)s|%(progress.speed)s|"
+                           "%(progress.fragment_index)s|%(progress.fragment_count)s")
          // record the actual final path so we can show/open it accurately
          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
          << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
          << QStringLiteral("-o") << tmpl;
 
-    // Speed: download many chunks/fragments in parallel to beat YouTube's
-    // per-connection throttling. Prefer aria2c (16 connections) when installed,
-    // otherwise yt-dlp's native concurrent fragments + range chunking.
+    // Speed: real multi-connection downloading. YouTube serves high-quality
+    // video/audio as a single googlevideo URL, which yt-dlp's own downloader can
+    // only pull over ONE connection (concurrent-fragments parallelises only
+    // *fragmented* streams). aria2c splits each stream across up to 16 parallel
+    // connections and ramps them with the available bandwidth — the IDM-style
+    // behaviour. Its periodic summary reports the live connection count (CN:n),
+    // which onOutput() parses for both progress and the displayed connection count.
+    m_conns = 1;
     const QString aria2 = QStandardPaths::findExecutable(QStringLiteral("aria2c"));
     if (!aria2.isEmpty()) {
         args << QStringLiteral("--downloader") << QStringLiteral("aria2c")
              << QStringLiteral("--downloader-args")
-             << QStringLiteral("aria2c:-x16 -s16 -k1M -j16");
+             << QStringLiteral("aria2c:-x16 -s16 -k1M --summary-interval=1 "
+                               "--console-log-level=warn --enable-color=false");
     } else {
+        // No aria2c: yt-dlp native. Parallelises fragmented (DASH/HLS) streams
+        // via concurrent fragments; a single-file stream uses one connection.
         args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
              << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
     }
@@ -142,6 +186,11 @@ void YtDlpGrabber::start()
     // NOTE: deliberately do NOT forward the browser's User-Agent / cookies to
     // yt-dlp. yt-dlp manages its own client/UA/cookie logic for YouTube & co.;
     // overriding the UA or injecting raw account cookies breaks its extractor.
+    // Domain-scoped auth IS allowed though: m_authArgs holds finished flags the
+    // engine's AuthenticationManager built for THIS host (e.g. --cookies for
+    // udemy.com). It is EMPTY for YouTube hosts (ytDlpArgs() excludes them), so
+    // the no-forward safeguard above still holds.
+    args << m_authArgs;
     args << m_url.toString();
     m_lastError.clear();
     m_tail.clear();
@@ -171,6 +220,12 @@ void YtDlpGrabber::onOutput()
 {
     if (!m_proc)
         return;
+    // When downloading a playlist, prefix each per-video status with its position.
+    auto withPl = [this](const QString &base) {
+        return (m_playlist && m_plTotal > 0)
+            ? QStringLiteral("video %1/%2 · %3").arg(m_plItem).arg(m_plTotal).arg(base)
+            : base;
+    };
     while (m_proc->canReadLine()) {
         const QString line = QString::fromUtf8(m_proc->readLine()).trimmed();
         if (line.isEmpty())
@@ -182,8 +237,97 @@ void YtDlpGrabber::onOutput()
             m_tail.removeFirst();
         if (line.startsWith(QStringLiteral("ERROR:"), Qt::CaseInsensitive))
             m_lastError = line;
+        // Classify auth failures precisely (HTTP 401/403, login/course-access,
+        // bot sign-in) so onProcessFinished reports a clear auth reason instead
+        // of a generic "code N". Checked on every line, not just ERROR: lines.
+        if (const QString why = authReasonFromYtDlpLine(line); !why.isEmpty())
+            m_lastError = QStringLiteral("ERROR: ") + why;
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp" << m_id << line;
+
+        // Playlist position: "[download] Downloading item 3 of 13" (or "video N of M").
+        if (m_playlist) {
+            static const QRegularExpression itemRe(
+                QStringLiteral("Downloading (?:item|video) (\\d+) of (\\d+)"));
+            if (const auto im = itemRe.match(line); im.hasMatch()) {
+                m_plItem = im.captured(1).toInt();
+                m_plTotal = im.captured(2).toInt();
+                m_lastPct = -1;            // each new video animates from 0
+                m_lastEmitDone = -1;
+                setState(DownloadState::Downloading,
+                         QStringLiteral("playlist: video %1 of %2").arg(m_plItem).arg(m_plTotal));
+                continue;
+            }
+        }
+
+        // aria2c summary line (multi-connection downloader):
+        //   "[#1e2ef5 39MiB/67MiB(57%) CN:16 DL:11MiB ETA:2s]"
+        //   done=39MiB total=67MiB pct=57 CN=live connections DL=rate (per second)
+        static const QRegularExpression aria(QStringLiteral(
+            "\\[#\\S+\\s+([0-9.]+\\s*[KMGT]?i?B)/([0-9.]+\\s*[KMGT]?i?B)\\((\\d+)%\\)"
+            "\\s+CN:(\\d+)\\s+DL:([0-9.]+\\s*[KMGT]?i?B)"));
+        const auto am = aria.match(line);
+        if (am.hasMatch()) {
+            const qint64 done  = parseSize(am.captured(1));
+            const qint64 total = parseSize(am.captured(2));
+            const int    p     = am.captured(3).toInt();
+            m_conns            = am.captured(4).toInt();
+            const double bps   = double(parseSize(am.captured(5)));
+            const bool worth = (p != m_lastPct) || (done - m_lastEmitDone >= 512 * 1024) ||
+                               (m_lastEmitDone < 0);
+            if (worth) {
+                m_lastPct = p;
+                m_lastEmitDone = done;
+                emit progress(m_id, done, total, bps);
+                setState(DownloadState::Downloading,
+                         withPl(QStringLiteral("%1 connections").arg(m_conns)));
+            }
+            continue;
+        }
+
+        // Structured progress line from --progress-template:
+        //   [NEXA]|downloaded|total|total_estimate|speed|frag_index|frag_count
+        // Missing values arrive as "NA". This is the primary progress path.
+        if (line.startsWith(QStringLiteral("[NEXA]|"))) {
+            const QStringList f = line.split(QLatin1Char('|'));
+            auto num = [&f](int i) -> double {
+                if (i >= f.size()) return -1.0;
+                bool ok = false;
+                const double v = f.at(i).toDouble(&ok);
+                return ok ? v : -1.0;
+            };
+            const qint64 done  = qint64(num(1));
+            qint64       total = qint64(num(2));
+            if (total <= 0) total = qint64(num(3));     // fall back to the estimate
+            const double bps   = qMax(0.0, num(4));
+            const int fragIdx  = int(num(5));
+            const int fragCnt  = int(num(6));
+
+            // Connection count: with fragmented (DASH) streams we run up to 16
+            // fragment downloads at once; a progressive single file is one stream.
+            QString detail;
+            if (fragCnt > 1) {
+                m_conns = qMin(16, fragCnt);
+                detail = QStringLiteral("%1 connections · fragment %2/%3")
+                             .arg(m_conns).arg(qMax(0, fragIdx)).arg(fragCnt);
+            } else {
+                m_conns = 1;
+                detail = QStringLiteral("1 connection");
+            }
+
+            // Throttle: emit when the percent ticks or ~512 KiB more has arrived,
+            // so a fast download doesn't repaint the table hundreds of times/sec.
+            const int p = (total > 0 && done >= 0) ? int(done * 100.0 / total + 0.5) : -1;
+            const bool worth = (p != m_lastPct) || (done - m_lastEmitDone >= 512 * 1024) ||
+                               (m_lastEmitDone < 0);
+            if (worth) {
+                m_lastPct = p;
+                m_lastEmitDone = done;
+                emit progress(m_id, done, total, bps);
+                setState(DownloadState::Downloading, withPl(detail));
+            }
+            continue;
+        }
 
         // e.g. "[download]  36.0% of  218.53KiB at  222.40KiB/s ETA 00:00"
         static const QRegularExpression pct(
@@ -201,14 +345,20 @@ void YtDlpGrabber::onOutput()
             if (p != m_lastPct) {
                 m_lastPct = p;
                 emit progress(m_id, done, total, bps);
-                setState(DownloadState::Downloading, QStringLiteral("%1%").arg(p));
+                setState(DownloadState::Downloading, withPl(QStringLiteral("%1%").arg(p)));
             }
             continue;
         }
-        if (line.startsWith(QStringLiteral("[Merger]")))
+        // A new stream is starting (YouTube delivers video and audio separately):
+        // restart the throttle so the next stream animates from 0 again.
+        if (line.startsWith(QStringLiteral("[download] Destination:"))) {
+            m_lastPct = -1;
+            m_lastEmitDone = -1;
+        } else if (line.startsWith(QStringLiteral("[Merger]"))) {
             setState(DownloadState::Downloading, QStringLiteral("merging audio + video"));
-        else if (line.startsWith(QStringLiteral("[ExtractAudio]")))
+        } else if (line.startsWith(QStringLiteral("[ExtractAudio]"))) {
             setState(DownloadState::Downloading, QStringLiteral("extracting audio"));
+        }
     }
 }
 
@@ -241,11 +391,47 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
     if (m_cancelled)
         return;
 
+    if (m_playlist) {
+        // yt-dlp appended one finalised path per video to m_outFile. Count them;
+        // success = at least one video saved (a playlist run can exit non-zero if
+        // a single private/age-gated entry failed, while the rest downloaded fine).
+        int n = 0;
+        QString folder;
+        QFile f(m_outFile);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QStringList paths = QString::fromUtf8(f.readAll())
+                                          .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            f.close();
+            QFile::remove(m_outFile);
+            n = paths.size();
+            if (!paths.isEmpty())
+                folder = QFileInfo(paths.last()).absolutePath();
+        }
+        if (!folder.isEmpty())
+            m_savePath = folder;   // so "open" lands in the playlist folder
+        if (n > 0) {
+            setState(DownloadState::Completed,
+                     QStringLiteral("saved %1 video%2").arg(n).arg(n == 1 ? "" : "s"));
+            emit finished(m_id);
+        } else {
+            QString why = m_lastError;
+            why.remove(QRegularExpression(QStringLiteral("^ERROR:\\s*"),
+                                          QRegularExpression::CaseInsensitiveOption));
+            if (why.isEmpty())
+                why = m_tail.isEmpty() ? QStringLiteral("code %1").arg(exitCode) : m_tail.last();
+            if (why.length() > 160)
+                why = why.left(157) + QStringLiteral("…");
+            setState(DownloadState::Error, why);
+        }
+        return;
+    }
+
     resolveOutputFile();
     const bool ok = (exitCode == 0) && QFileInfo::exists(m_savePath) &&
                     QFileInfo(m_savePath).size() > 0;
     if (ok) {
-        emit progress(m_id, 100, 100, 0.0);
+        const qint64 sz = QFileInfo(m_savePath).size();   // real final size, not "100 B"
+        emit progress(m_id, sz, sz, 0.0);
         setState(DownloadState::Completed, QStringLiteral("saved %1").arg(fileName()));
         emit finished(m_id);
     } else {

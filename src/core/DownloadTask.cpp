@@ -1,6 +1,7 @@
 #include "core/DownloadTask.h"
 #include "core/SegmentDownloader.h"
 #include "core/Database.h"
+#include "auth/AuthUtils.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -144,6 +145,12 @@ void DownloadTask::onProbeFinished()
         m_url = finalUrl;
 
     const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (authIsStatus(status)) {
+        // 401/403 on the size probe: surface the auth-specific reason immediately
+        // instead of falling through to range parsing on an error page.
+        setState(DownloadState::Error, authErrorDetail(status));
+        return;
+    }
     bool ranges = false;
     qint64 total = -1;
 

@@ -19,9 +19,15 @@ class YtDlpGrabber : public QObject {
 public:
     // outputDir: where to save (e.g. .../Downloads/Video). fixedName: the desired
     // base filename (no extension); empty -> use the video's own title.
+    // `authArgs` are FINISHED yt-dlp CLI flags (e.g. {"--cookies","/abs/x.txt"})
+    // pre-built by the engine's AuthenticationManager for this domain. The grabber
+    // stays decoupled — it splices opaque flags, never the manager.
+    // `playlist` downloads every video in the playlist (yt-dlp --yes-playlist),
+    // numbered into a per-playlist subfolder, instead of just the linked video.
     YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir,
                  const QString &fixedName, const QString &formatSelector,
-                 const HeaderList &headers, QObject *parent = nullptr);
+                 const HeaderList &headers, const QStringList &authArgs = {},
+                 bool playlist = false, QObject *parent = nullptr);
     ~YtDlpGrabber() override;
 
     void start();
@@ -58,10 +64,16 @@ private:
     QString         m_savePath;   // resolved final file (best guess until done)
     QString         m_format;
     HeaderList      m_headers;
+    QStringList     m_authArgs;   // pre-built domain-scoped yt-dlp auth flags
+    bool            m_playlist = false;   // download the whole playlist
+    int             m_plItem = 0;         // current playlist item (1-based)
+    int             m_plTotal = 0;        // playlist item count
     DownloadState   m_state = DownloadState::Queued;
     QProcess       *m_proc = nullptr;
     bool            m_cancelled = false;
     int             m_lastPct = -1;
+    qint64          m_lastEmitDone = -1;  // throttle UI updates to meaningful deltas
+    int             m_conns = 16;         // parallel fragment connections in use
     QString         m_lastError;          // last "ERROR:" line from yt-dlp
     QStringList     m_tail;               // recent output lines (for diagnostics)
 };
