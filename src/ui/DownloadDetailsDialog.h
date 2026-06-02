@@ -4,6 +4,7 @@
 #include "core/Types.h"
 
 class QLabel;
+class QProgressBar;
 class QPushButton;
 class QTableWidget;
 class QTimer;
@@ -12,7 +13,6 @@ namespace nexa {
 
 class DownloadEngine;
 class ConnStrip;
-class FireBar;
 class SpeedMeter;
 
 // Per-download "details plate" — Nexa's themed analogue of IDM's Download-status
@@ -57,8 +57,8 @@ private:
     QLabel *m_vUrl = nullptr, *m_vStatus = nullptr, *m_vSize = nullptr, *m_vDone = nullptr,
            *m_vRate = nullptr, *m_vEta = nullptr, *m_vResume = nullptr;
     // progress + connections
-    FireBar   *m_bar  = nullptr;
-    SpeedMeter *m_speedMeter = nullptr;
+    QProgressBar *m_bar = nullptr;
+    SpeedMeter   *m_speedMeter = nullptr;
     QLabel *m_barPct = nullptr, *m_connCount = nullptr;
     ConnStrip *m_strip = nullptr;
     QTableWidget *m_table = nullptr;

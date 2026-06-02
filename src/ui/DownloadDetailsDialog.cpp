@@ -17,10 +17,8 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QProgressBar>
 #include <QIcon>
-#include <QVector>
-#include <QImage>
-#include <QRandomGenerator>
 #include <QtGlobal>
 #include <cmath>
 
@@ -103,130 +101,6 @@ private:
 namespace {
 enum ConnCol { CN = 0, CDownloaded, CInfo };
 }
-
-// ---------------------------------------------------------------------------
-// FireBar — clean solid fill behind the progress head; fire CA burns ONLY at
-// the leading edge (tip). The head moves forward as % increases.
-// ---------------------------------------------------------------------------
-class FireBar : public QWidget {
-public:
-    explicit FireBar(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        setFixedHeight(52);
-        m_animTimer = new QTimer(this);
-        m_animTimer->setInterval(40);
-        connect(m_animTimer, &QTimer::timeout, this, [this]{ step(); update(); });
-    }
-
-    void setValue(int pct)          { m_pct = qBound(0, pct, 100); }
-    void setIndeterminate(bool b)   { m_indet = b; }
-    void setAccent(const QColor &c) { m_accent = c; }
-    void startAnim() { if (!m_animTimer->isActive()) m_animTimer->start(); }
-    void stopAnim()  { m_animTimer->stop(); update(); }
-
-protected:
-    void resizeEvent(QResizeEvent *) override { rebuild(); }
-
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        const int W = width(), H = height();
-        const int fillX = m_indet ? m_idHead : (m_pct * W / 100);
-
-        // 1. Dark track.
-        p.fillRect(rect(), QColor(0x111827));
-
-        // 2. Solid gradient fill behind the head (clean, no fire here).
-        if (fillX > 1) {
-            QLinearGradient g(0, 0, fillX, 0);
-            g.setColorAt(0.0, m_accent.darker(240));
-            g.setColorAt(0.6, m_accent.darker(130));
-            g.setColorAt(1.0, m_accent);
-            p.fillRect(QRect(0, 0, fillX, H), g);
-            // Subtle inner top-edge highlight.
-            p.fillRect(QRect(0, 0, fillX, 2), QColor(255, 255, 255, 28));
-        }
-
-        // 3. Fire CA — heat only near the head, so the CA naturally produces
-        //    fire only at the tip; the rest of the image is transparent.
-        if (!m_field.empty() && m_W > 0 && m_H > 0) {
-            QImage img(m_W, m_H, QImage::Format_ARGB32_Premultiplied);
-            img.fill(Qt::transparent);
-            for (int y = 0; y < m_H; ++y) {
-                for (int x = 0; x < m_W; ++x) {
-                    const int h = m_field[y * m_W + x];
-                    if (h > 8) {
-                        const QRgb c = fireColor(h);
-                        const int a = qMin(255, h * 2);
-                        // premultiplied ARGB
-                        const int ra = qRed(c)*a/255, ga = qGreen(c)*a/255, ba = qBlue(c)*a/255;
-                        reinterpret_cast<QRgb*>(img.scanLine(y))[x] = qRgba(ra, ga, ba, a);
-                    }
-                }
-            }
-            p.drawImage(0, 0, img);
-        }
-
-        // 4. Percentage text — white, centred.
-        p.setPen(Qt::white);
-        QFont f = p.font(); f.setBold(true); f.setPointSize(11); p.setFont(f);
-        p.drawText(rect(), Qt::AlignCenter,
-                   m_indet ? QString() : QStringLiteral("%1%").arg(m_pct));
-    }
-
-private:
-    static QRgb fireColor(int h)
-    {
-        h = qBound(0, h, 255);
-        if (h < 48)  return qRgb(0,           0,            0);
-        if (h < 90)  return qRgb(h * 2,        0,            0);
-        if (h < 130) return qRgb(255,          (h-90)*5,     0);
-        if (h < 190) return qRgb(255,           130+(h-130)*2, 0);
-        return             qRgb(255,           255,          (h-190)*5);
-    }
-
-    void rebuild()
-    {
-        m_W = qMax(1, width());
-        m_H = qMax(1, height());
-        m_field.assign(size_t(m_W) * m_H, 0);
-    }
-
-    void step()
-    {
-        if (m_W <= 0 || m_H <= 0) return;
-        const int headX = m_indet ? m_idHead : (m_pct * m_W / 100);
-        if (m_indet) m_idHead = (m_idHead + 2) % m_W;
-
-        // Heat source: ONLY near the head (±16 px). Hottest at the tip.
-        for (int x = 0; x < m_W; ++x) {
-            const int dist = qAbs(x - headX);
-            const int fuel = (dist < 18)
-                ? qBound(0, 210 + QRandomGenerator::global()->bounded(45) - dist * 10, 255)
-                : 0;
-            m_field[(m_H - 1) * m_W + x] = fuel;
-        }
-
-        // Propagate heat upward with cooling + random flicker.
-        for (int y = 0; y < m_H - 1; ++y) {
-            for (int x = 0; x < m_W; ++x) {
-                const int xl = qMax(x-1, 0), xr = qMin(x+1, m_W-1);
-                int v = (m_field[(y+1)*m_W + xl] + m_field[(y+1)*m_W + x] +
-                         m_field[(y+1)*m_W + xr]  + m_field[qMin(y+2,m_H-1)*m_W + x]) / 4;
-                v -= QRandomGenerator::global()->bounded(20);
-                m_field[y * m_W + x] = qBound(0, v, 255);
-            }
-        }
-    }
-
-    int    m_pct    = 0;
-    bool   m_indet  = false;
-    int    m_idHead = 0;
-    QColor m_accent {0x8b5cf6};
-    int    m_W = 0, m_H = 0;
-    std::vector<int> m_field;
-    QTimer *m_animTimer = nullptr;
-};
 
 // ---------------------------------------------------------------------------
 // SpeedMeter — professional circular speedometer gauge.
@@ -409,8 +283,8 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
-    resize(580, 640);
-    setMinimumSize(500, 600);
+    resize(560, 620);
+    setMinimumSize(480, 580);
 
     // Seed from the engine's current view so an already-running download paints
     // immediately when opened by double-click.
@@ -495,19 +369,22 @@ void DownloadDetailsDialog::buildUi()
     m_vResume = addField(6, QStringLiteral("Resume capability"));
     v->addLayout(grid);
 
-    // --- Fire progress bar + speed meter side by side ---
+    // --- Overall progress bar + speed meter ---
     auto *barRow = new QHBoxLayout;
     barRow->setSpacing(12);
 
     auto *barCol = new QVBoxLayout;
     barCol->setSpacing(4);
-    m_bar = new FireBar(plate);
+    m_bar = new QProgressBar(plate);
+    m_bar->setObjectName(QStringLiteral("Dd_bar"));
+    m_bar->setTextVisible(false);
+    m_bar->setFixedHeight(8);
+    m_bar->setRange(0, 100);
     m_barPct = new QLabel(QStringLiteral("0%"), plate);
     m_barPct->setObjectName(QStringLiteral("Dd_barpct"));
     m_barPct->setAlignment(Qt::AlignRight);
-    // The percent is overlaid ON the FireBar (it draws it itself); hide the label.
-    m_barPct->setVisible(false);
     barCol->addWidget(m_bar);
+    barCol->addWidget(m_barPct);
     barRow->addLayout(barCol, 1);
 
     m_speedMeter = new SpeedMeter(plate);
@@ -658,26 +535,21 @@ void DownloadDetailsDialog::refreshFields()
 
 void DownloadDetailsDialog::refreshOverallBar()
 {
-    const bool active = (m_state == DownloadState::Downloading ||
-                         m_state == DownloadState::Probing);
-    m_bar->setAccent(statusColor(m_state));
-
-    if (m_state == DownloadState::Completed) {
-        m_bar->setValue(100);
-        m_bar->setIndeterminate(false);
-        m_bar->stopAnim();
-        // Show a brief final flash then freeze.
-        m_bar->update();
-    } else if (m_total > 0) {
+    if (m_total > 0) {
         const int p = int(m_done * 100 / m_total);
-        m_bar->setValue(p);
-        m_bar->setIndeterminate(false);
-        if (active) m_bar->startAnim(); else m_bar->stopAnim();
+        m_bar->setRange(0, 100);
+        m_bar->setValue(m_state == DownloadState::Completed ? 100 : p);
+        m_barPct->setText(QStringLiteral("%1%").arg(m_state == DownloadState::Completed ? 100 : p));
+    } else if (m_state == DownloadState::Downloading || m_state == DownloadState::Probing) {
+        m_bar->setRange(0, 0);
+        m_barPct->setText(humanSize(m_done));
     } else {
-        m_bar->setIndeterminate(active);
-        m_bar->setValue(0);
-        if (active) m_bar->startAnim(); else m_bar->stopAnim();
+        m_bar->setRange(0, 100);
+        m_bar->setValue(m_state == DownloadState::Completed ? 100 : 0);
+        m_barPct->setText(m_state == DownloadState::Completed ? QStringLiteral("100%")
+                                                              : humanSize(m_done));
     }
+    paintBar(m_bar, statusColor(m_state));
 }
 
 void DownloadDetailsDialog::refreshConnections()
