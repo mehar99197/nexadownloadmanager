@@ -105,148 +105,154 @@ enum ConnCol { CN = 0, CDownloaded, CInfo };
 }
 
 // ---------------------------------------------------------------------------
-// FireBar — a cellular automaton fire animation used as the overall progress bar.
-// The "fuel" line is set to the progress fraction and heat rises upward with
-// random flicker, painted through a fire colour palette.
+// FireBar — clean solid fill behind the progress head; fire CA burns ONLY at
+// the leading edge (tip). The head moves forward as % increases.
 // ---------------------------------------------------------------------------
 class FireBar : public QWidget {
 public:
     explicit FireBar(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedHeight(40);
+        setFixedHeight(52);
         m_animTimer = new QTimer(this);
-        m_animTimer->setInterval(40);   // ~25 fps
-        connect(m_animTimer, &QTimer::timeout, this, [this]{ tick(); update(); });
+        m_animTimer->setInterval(40);
+        connect(m_animTimer, &QTimer::timeout, this, [this]{ step(); update(); });
     }
 
-    void setValue(int pct)       { m_pct = qBound(0, pct, 100); }
-    void setIndeterminate(bool b){ m_indet = b; }
-    void setAccent(const QColor &c){ m_accent = c; }
-
+    void setValue(int pct)          { m_pct = qBound(0, pct, 100); }
+    void setIndeterminate(bool b)   { m_indet = b; }
+    void setAccent(const QColor &c) { m_accent = c; }
     void startAnim() { if (!m_animTimer->isActive()) m_animTimer->start(); }
     void stopAnim()  { m_animTimer->stop(); update(); }
 
 protected:
-    void resizeEvent(QResizeEvent *) override { rebuildField(); }
+    void resizeEvent(QResizeEvent *) override { rebuild(); }
 
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        const int W = width(), H = height();
+        const int fillX = m_indet ? m_idHead : (m_pct * W / 100);
 
-        // Draw the heat field as a colour-mapped image.
+        // 1. Dark track.
+        p.fillRect(rect(), QColor(0x111827));
+
+        // 2. Solid gradient fill behind the head (clean, no fire here).
+        if (fillX > 1) {
+            QLinearGradient g(0, 0, fillX, 0);
+            g.setColorAt(0.0, m_accent.darker(240));
+            g.setColorAt(0.6, m_accent.darker(130));
+            g.setColorAt(1.0, m_accent);
+            p.fillRect(QRect(0, 0, fillX, H), g);
+            // Subtle inner top-edge highlight.
+            p.fillRect(QRect(0, 0, fillX, 2), QColor(255, 255, 255, 28));
+        }
+
+        // 3. Fire CA — heat only near the head, so the CA naturally produces
+        //    fire only at the tip; the rest of the image is transparent.
         if (!m_field.empty() && m_W > 0 && m_H > 0) {
-            QImage img(m_W, m_H, QImage::Format_RGB32);
-            for (int y = 0; y < m_H; ++y)
-                for (int x = 0; x < m_W; ++x)
-                    img.setPixel(x, y, fireColor(m_field[y * m_W + x]));
-            p.drawImage(rect(), img);
-        } else {
-            // No field yet — plain dark rect.
-            p.fillRect(rect(), QColor(0x1a2133));
+            QImage img(m_W, m_H, QImage::Format_ARGB32_Premultiplied);
+            img.fill(Qt::transparent);
+            for (int y = 0; y < m_H; ++y) {
+                for (int x = 0; x < m_W; ++x) {
+                    const int h = m_field[y * m_W + x];
+                    if (h > 8) {
+                        const QRgb c = fireColor(h);
+                        const int a = qMin(255, h * 2);
+                        // premultiplied ARGB
+                        const int ra = qRed(c)*a/255, ga = qGreen(c)*a/255, ba = qBlue(c)*a/255;
+                        reinterpret_cast<QRgb*>(img.scanLine(y))[x] = qRgba(ra, ga, ba, a);
+                    }
+                }
+            }
+            p.drawImage(0, 0, img);
         }
 
-        // Percentage text centred on top.
-        if (!m_indet) {
-            const QString txt = QStringLiteral("%1%").arg(m_pct);
-            p.setPen(Qt::white);
-            QFont f = p.font(); f.setBold(true); f.setPointSize(11); p.setFont(f);
-            p.drawText(rect(), Qt::AlignCenter, txt);
-        }
+        // 4. Percentage text — white, centred.
+        p.setPen(Qt::white);
+        QFont f = p.font(); f.setBold(true); f.setPointSize(11); p.setFont(f);
+        p.drawText(rect(), Qt::AlignCenter,
+                   m_indet ? QString() : QStringLiteral("%1%").arg(m_pct));
     }
 
 private:
-    // Classic fire cellular automaton fire color palette.
-    static QRgb fireColor(int heat)
+    static QRgb fireColor(int h)
     {
-        heat = qBound(0, heat, 255);
-        if (heat < 64)  return qRgb(0, 0, 0);
-        if (heat < 96)  return qRgb(heat * 2, 0, 0);
-        if (heat < 128) return qRgb(255, (heat - 96) * 4, 0);
-        if (heat < 192) return qRgb(255, (heat - 128) * 4, 0);
-        return qRgb(255, 255, (heat - 192) * 4);
+        h = qBound(0, h, 255);
+        if (h < 48)  return qRgb(0,           0,            0);
+        if (h < 90)  return qRgb(h * 2,        0,            0);
+        if (h < 130) return qRgb(255,          (h-90)*5,     0);
+        if (h < 190) return qRgb(255,           130+(h-130)*2, 0);
+        return             qRgb(255,           255,          (h-190)*5);
     }
 
-    void rebuildField()
+    void rebuild()
     {
         m_W = qMax(1, width());
         m_H = qMax(1, height());
-        m_field.assign(m_W * m_H, 0);
+        m_field.assign(size_t(m_W) * m_H, 0);
     }
 
-    void tick()
+    void step()
     {
         if (m_W <= 0 || m_H <= 0) return;
+        const int headX = m_indet ? m_idHead : (m_pct * m_W / 100);
+        if (m_indet) m_idHead = (m_idHead + 2) % m_W;
 
-        // Bottom row = fuel: heat proportional to progress (or scrolling if indeterminate).
+        // Heat source: ONLY near the head (±16 px). Hottest at the tip.
         for (int x = 0; x < m_W; ++x) {
-            int fuel;
-            if (m_indet) {
-                // Moving wave for unknown size.
-                const double phase = (m_idPhase / 40.0) * 2.0 * M_PI;
-                fuel = int(128 + 100 * std::sin(phase + x * 0.15));
-            } else {
-                const int fill = (m_pct * m_W) / 100;
-                fuel = (x < fill) ? (180 + QRandomGenerator::global()->bounded(75)) : 0;
-            }
-            m_field[(m_H - 1) * m_W + x] = qBound(0, fuel, 255);
+            const int dist = qAbs(x - headX);
+            const int fuel = (dist < 18)
+                ? qBound(0, 210 + QRandomGenerator::global()->bounded(45) - dist * 10, 255)
+                : 0;
+            m_field[(m_H - 1) * m_W + x] = fuel;
         }
-        ++m_idPhase;
 
         // Propagate heat upward with cooling + random flicker.
         for (int y = 0; y < m_H - 1; ++y) {
             for (int x = 0; x < m_W; ++x) {
-                const int xl = qMax(x - 1, 0), xr = qMin(x + 1, m_W - 1);
-                int v = (m_field[(y + 1) * m_W + xl] +
-                         m_field[(y + 1) * m_W + x]  +
-                         m_field[(y + 1) * m_W + xr]  +
-                         m_field[qMin(y + 2, m_H - 1) * m_W + x]) / 4;
-                v -= QRandomGenerator::global()->bounded(18);
+                const int xl = qMax(x-1, 0), xr = qMin(x+1, m_W-1);
+                int v = (m_field[(y+1)*m_W + xl] + m_field[(y+1)*m_W + x] +
+                         m_field[(y+1)*m_W + xr]  + m_field[qMin(y+2,m_H-1)*m_W + x]) / 4;
+                v -= QRandomGenerator::global()->bounded(20);
                 m_field[y * m_W + x] = qBound(0, v, 255);
             }
         }
     }
 
-    int    m_pct   = 0;
-    bool   m_indet = false;
-    int    m_idPhase = 0;
-    QColor m_accent{0x8b5cf6};
+    int    m_pct    = 0;
+    bool   m_indet  = false;
+    int    m_idHead = 0;
+    QColor m_accent {0x8b5cf6};
     int    m_W = 0, m_H = 0;
     std::vector<int> m_field;
     QTimer *m_animTimer = nullptr;
 };
 
 // ---------------------------------------------------------------------------
-// SpeedMeter — a circular gauge (speedometer) widget.
-// Arc background, coloured fill, animated needle, digital readout in centre.
+// SpeedMeter — professional circular speedometer gauge.
+// Bezel ring, dark face, coloured arc, tick marks, animated needle with glow,
+// metallic hub, digital readout. All painted with QPainter.
 // ---------------------------------------------------------------------------
 class SpeedMeter : public QWidget {
 public:
     explicit SpeedMeter(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(140, 140);
+        setFixedSize(180, 180);
         m_animTimer = new QTimer(this);
-        m_animTimer->setInterval(40);
+        m_animTimer->setInterval(30);   // ~33 fps
         connect(m_animTimer, &QTimer::timeout, this, [this]{
-            // Smooth the needle toward the target.
-            const double delta = m_targetAngle - m_currentAngle;
-            m_currentAngle += delta * 0.18;
+            m_curFrac += (m_targetFrac - m_curFrac) * 0.15;
             update();
         });
         m_animTimer->start();
     }
 
-    // bps in bytes per second.
     void setSpeed(double bps)
     {
         m_bps = bps;
-        // Autoscale the max: grow when needed, shrink slowly.
-        if (bps > m_maxBps * 0.9)
-            m_maxBps = bps * 1.4;
-        else if (bps < m_maxBps * 0.3 && m_maxBps > 1024.0 * 1024.0)
-            m_maxBps *= 0.97;
-        const double frac = (m_maxBps > 0) ? qBound(0.0, bps / m_maxBps, 1.0) : 0.0;
-        m_targetAngle = kStartAngle + frac * kSweep;
+        if (bps > m_maxBps * 0.85)                              m_maxBps = bps * 1.5;
+        else if (bps < m_maxBps * 0.25 && m_maxBps > 512*1024.0) m_maxBps *= 0.985;
+        m_targetFrac = (m_maxBps > 0) ? qBound(0.0, bps / m_maxBps, 1.0) : 0.0;
     }
 
 protected:
@@ -254,61 +260,145 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
-        const QRectF r = QRectF(rect()).adjusted(8, 8, -8, -8);
 
-        // Track arc (dark).
-        p.setPen(QPen(QColor(0x1a2133), 10, Qt::SolidLine, Qt::FlatCap));
-        p.drawArc(r, int(-kStartAngle * 16), int(-kSweep * 16));
+        const QPointF C(width() * 0.5, height() * 0.5);
+        const double R = qMin(width(), height()) * 0.5 - 3.0;
 
-        // Filled arc — colour shifts green → yellow → red with speed.
-        const double frac = (m_maxBps > 0) ? qBound(0.0, m_bps / m_maxBps, 1.0) : 0.0;
-        const double filled = frac * kSweep;
-        if (filled > 0.5) {
-            const int r1 = int(frac < 0.5 ? 2 * frac * 255 : 255);
-            const int g1 = int(frac < 0.5 ? 255 : 2 * (1.0 - frac) * 255);
-            p.setPen(QPen(QColor(r1, g1, 60), 10, Qt::SolidLine, Qt::FlatCap));
-            p.drawArc(r, int(-kStartAngle * 16), int(-filled * 16));
+        // ── Outer bezel ring ──────────────────────────────────────────────
+        {
+            QRadialGradient g(C, R);
+            g.setColorAt(0.76, QColor(0x1e293b));
+            g.setColorAt(0.84, QColor(0x334155));
+            g.setColorAt(0.90, QColor(0x475569));
+            g.setColorAt(0.95, QColor(0x334155));
+            g.setColorAt(1.00, QColor(0x0f172a));
+            p.setBrush(g); p.setPen(Qt::NoPen);
+            p.drawEllipse(C, R, R);
         }
 
-        // Needle.
-        const double angle = (m_currentAngle) * M_PI / 180.0;
-        const QPointF centre = r.center();
-        const double len = r.width() / 2.0 - 8;
-        const QPointF tip(centre.x() - len * std::cos(angle),
-                          centre.y() - len * std::sin(angle));
-        p.setPen(QPen(QColor(0xff6b35), 2.5, Qt::SolidLine, Qt::RoundCap));
-        p.drawLine(centre, tip);
+        // ── Inner dark face ───────────────────────────────────────────────
+        const double faceR = R * 0.80;
+        {
+            QRadialGradient g(C, faceR);
+            g.setColorAt(0.0, QColor(0x1e2940));
+            g.setColorAt(0.65, QColor(0x0f172a));
+            g.setColorAt(1.0,  QColor(0x080c14));
+            p.setBrush(g); p.setPen(Qt::NoPen);
+            p.drawEllipse(C, faceR, faceR);
+        }
 
-        // Centre hub.
-        p.setBrush(QColor(0xff6b35)); p.setPen(Qt::NoPen);
-        p.drawEllipse(centre, 5.0, 5.0);
+        // ── Arc geometry (gauge: 225° → 270° CW sweep) ───────────────────
+        // Angles: 225° CCW from east = lower-left. Needle sweeps CW 270°.
+        // Qt drawArc: startAngle in 1/16°, positive = CCW. Span negative = CW.
+        const double arcR = R * 0.68;
+        const QRectF arcRect(C.x()-arcR, C.y()-arcR, arcR*2, arcR*2);
 
-        // Digital speed readout.
-        QString spd, unit;
-        if (m_bps >= 1024.0 * 1024.0)      { spd = QString::number(m_bps / (1024*1024), 'f', 1); unit = "MB/s"; }
-        else if (m_bps >= 1024.0)           { spd = QString::number(m_bps / 1024.0,      'f', 1); unit = "KB/s"; }
-        else if (m_bps > 0)                 { spd = QString::number(int(m_bps));            unit = "B/s"; }
-        else                                { spd = "0";                                     unit = "KB/s"; }
+        // Track arc
+        p.setPen(QPen(QColor(0x1a2437), 8, Qt::SolidLine, Qt::FlatCap));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(arcRect, 225*16, -270*16);
 
-        p.setPen(Qt::white);
-        QFont bf = p.font(); bf.setBold(true); bf.setPointSize(11); p.setFont(bf);
-        const QRectF topHalf(r.left(), centre.y() - 22, r.width(), 22);
-        p.drawText(topHalf, Qt::AlignCenter | Qt::AlignBottom, spd);
-        QFont sf = p.font(); sf.setBold(false); sf.setPointSize(8); p.setFont(sf);
-        p.setPen(QColor(0x94a3b8));
-        const QRectF botHalf(r.left(), centre.y() + 2, r.width(), 18);
-        p.drawText(botHalf, Qt::AlignCenter | Qt::AlignTop, unit);
+        // Coloured fill arc (conical gradient: green → amber → red)
+        if (m_curFrac > 0.002) {
+            QConicalGradient cg(C, 225.0);
+            cg.setColorAt(0.000, QColor(0x22c55e));
+            cg.setColorAt(0.375, QColor(0xfbbf24));
+            cg.setColorAt(0.750, QColor(0xef4444));
+            cg.setColorAt(1.000, QColor(0xef4444));
+            p.setPen(QPen(QBrush(cg), 8, Qt::SolidLine, Qt::FlatCap));
+            p.drawArc(arcRect, 225*16, int(-m_curFrac * 270.0 * 16));
+
+            // Glow blob at arc tip
+            const double tipAng = (225.0 - m_curFrac * 270.0) * M_PI / 180.0;
+            const QPointF tip(C.x() + arcR * std::cos(tipAng),
+                              C.y() - arcR * std::sin(tipAng));
+            const QColor gc = (m_curFrac < 0.5) ? QColor(0x22c55e)
+                            : (m_curFrac < 0.75) ? QColor(0xfbbf24)
+                                                 : QColor(0xef4444);
+            QRadialGradient glow(tip, 13);
+            glow.setColorAt(0.0, gc);
+            glow.setColorAt(1.0, Qt::transparent);
+            p.setBrush(glow); p.setPen(Qt::NoPen);
+            p.drawEllipse(tip, 13, 13);
+        }
+
+        // ── Tick marks ────────────────────────────────────────────────────
+        // 60 ticks over 270° = 4.5°/tick; every 10th is a major tick.
+        const double oT = R * 0.74, iMaj = R * 0.59, iMin = R * 0.66;
+        for (int i = 0; i <= 60; ++i) {
+            const bool maj = (i % 10 == 0);
+            const double ang = (225.0 - i * 4.5) * M_PI / 180.0;
+            const double ri = maj ? iMaj : iMin;
+            p.setPen(QPen(maj ? QColor(0x94a3b8) : QColor(0x2d3850),
+                          maj ? 2.0 : 1.0, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(QPointF(C.x() + oT  * std::cos(ang), C.y() - oT  * std::sin(ang)),
+                       QPointF(C.x() + ri  * std::cos(ang), C.y() - ri  * std::sin(ang)));
+        }
+
+        // ── "SPEED" label ─────────────────────────────────────────────────
+        {
+            QFont f = p.font(); f.setPointSize(6);
+            f.setLetterSpacing(QFont::AbsoluteSpacing, 2.5); p.setFont(f);
+            p.setPen(QColor(0x475569));
+            p.drawText(QRectF(C.x()-38, C.y() - R*0.40, 76, 13),
+                       Qt::AlignCenter, QStringLiteral("SPEED"));
+        }
+
+        // ── Digital readout ───────────────────────────────────────────────
+        QString spdStr, unitStr;
+        if (m_bps >= 1024.0*1024.0) { spdStr = QString::number(m_bps/(1024*1024),'f',1); unitStr = "MB/s"; }
+        else if (m_bps >= 1024.0)   { spdStr = QString::number(m_bps/1024.0,     'f',1); unitStr = "KB/s"; }
+        else if (m_bps > 0.5)       { spdStr = QString::number(int(m_bps));               unitStr = "B/s";  }
+        else                        { spdStr = QStringLiteral("0.0");                      unitStr = "KB/s"; }
+        {
+            QFont f = p.font(); f.setBold(true); f.setPointSize(15);
+            f.setLetterSpacing(QFont::PercentageSpacing, 90); p.setFont(f);
+            p.setPen(QColor(0xf1f5f9));
+            p.drawText(QRectF(C.x()-48, C.y()+8, 96, 26), Qt::AlignCenter, spdStr);
+        }
+        {
+            QFont f = p.font(); f.setBold(false); f.setPointSize(8);
+            f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2); p.setFont(f);
+            p.setPen(QColor(0x64748b));
+            p.drawText(QRectF(C.x()-38, C.y()+34, 76, 16), Qt::AlignCenter, unitStr);
+        }
+
+        // ── Needle (with orange glow + white highlight + counterweight) ───
+        {
+            const double nAng = (225.0 - m_curFrac * 270.0) * M_PI / 180.0;
+            const double nLen = R * 0.60, cwt = R * 0.13;
+            const QPointF tipPt (C.x() + nLen * std::cos(nAng), C.y() - nLen * std::sin(nAng));
+            const QPointF cwtPt (C.x() - cwt  * std::cos(nAng), C.y() + cwt  * std::sin(nAng));
+            // Glow
+            p.setPen(QPen(QColor(255, 107, 53, 55), 9, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(cwtPt, tipPt);
+            // Body
+            p.setPen(QPen(QColor(0xff6b35), 3, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(cwtPt, tipPt);
+            // Highlight
+            p.setPen(QPen(QColor(255, 220, 190, 180), 1, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(cwtPt, tipPt);
+        }
+
+        // ── Centre hub ────────────────────────────────────────────────────
+        {
+            QRadialGradient hg(C, 10);
+            hg.setColorAt(0.0, QColor(0xaab4c4));
+            hg.setColorAt(0.5, QColor(0x475569));
+            hg.setColorAt(1.0, QColor(0x1e293b));
+            p.setBrush(hg); p.setPen(QPen(QColor(0x64748b), 1));
+            p.drawEllipse(C, 9.5, 9.5);
+            p.setBrush(QColor(0x0a0e1a)); p.setPen(Qt::NoPen);
+            p.drawEllipse(C, 3.5, 3.5);
+        }
     }
 
 private:
-    static constexpr double kStartAngle = 220.0;   // degrees from east, clockwise
-    static constexpr double kSweep      = 260.0;   // total arc
-
-    double m_bps         = 0.0;
-    double m_maxBps      = 4.0 * 1024 * 1024;   // initial max: 4 MB/s
-    double m_targetAngle = kStartAngle;
-    double m_currentAngle= kStartAngle;
-    QTimer *m_animTimer  = nullptr;
+    double m_bps        = 0.0;
+    double m_maxBps     = 4.0 * 1024 * 1024;
+    double m_targetFrac = 0.0;
+    double m_curFrac    = 0.0;
+    QTimer *m_animTimer = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -319,8 +409,8 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
-    resize(560, 600);
-    setMinimumSize(480, 560);
+    resize(580, 640);
+    setMinimumSize(500, 600);
 
     // Seed from the engine's current view so an already-running download paints
     // immediately when opened by double-click.
