@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Nexa Download Manager
+GenericName=Download Manager
+Comment=Fast multi-protocol download manager (HTTP, HLS, BitTorrent, yt-dlp)
+Exec=nexa %U
+TryExec=nexa
+Icon=nexa
+Terminal=false
+Categories=Network;FileTransfer;Qt;
+Keywords=download;torrent;video;hls;ytdlp;aria2;
+StartupNotify=true
+StartupWMClass=nexa

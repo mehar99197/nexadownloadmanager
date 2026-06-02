@@ -33,8 +33,19 @@ IpcServer::~IpcServer()
 bool IpcServer::start(const QString &name)
 {
     m_server = new QLocalServer(this);
-    // Clear any stale socket left by a previous crash.
-    QLocalServer::removeServer(name);
+    // Only clear the socket file if it is truly STALE (no live peer answers). If
+    // a real instance is already listening, return false so the caller forwards
+    // its work to that instance and exits instead of stealing the socket and
+    // opening a duplicate window.
+    {
+        QLocalSocket probe;
+        probe.connectToServer(name);
+        const bool alive = probe.waitForConnected(200);
+        probe.abort();
+        if (alive)
+            return false;                    // a real instance owns it
+        QLocalServer::removeServer(name);    // stale file left by a crash
+    }
     if (!m_server->listen(name)) {
         qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
         return false;
@@ -99,6 +110,14 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     }
     const QJsonObject obj = doc.object();
     const QString type = obj.value(QStringLiteral("type")).toString(QStringLiteral("download"));
+
+    // "show": a peer (a second `nexa` launch, or the browser popup's Open-app
+    // action) asks the running instance to surface its window. No URL required.
+    if (type == QStringLiteral("show")) {
+        emit showWindowRequested();
+        sendReply(QJsonObject{{"ok", true}});
+        return;
+    }
 
     const QUrl url = QUrl::fromUserInput(obj.value(QStringLiteral("url")).toString());
     if (!url.isValid()) {

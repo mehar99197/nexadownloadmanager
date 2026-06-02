@@ -81,7 +81,10 @@ QByteArray relayToEngine(const QByteArray &payload, bool *connected)
 {
     QLocalSocket sock;
     sock.connectToServer(QString::fromLatin1(kIpcName));
-    *connected = sock.waitForConnected(300);
+    // Tolerate a busy/just-binding engine: the old 300ms budget made the host
+    // give up and launch a *second* engine on any momentary delay. 1.5s is still
+    // imperceptible in the common (engine-up) case.
+    *connected = sock.waitForConnected(1500);
     if (!*connected)
         return {};
 
@@ -144,8 +147,10 @@ int main(int argc, char *argv[])
 
     if (!connected) {
         launchEngine();
-        // Give the engine a moment to bind its local server, then retry once.
-        for (int i = 0; i < 20 && !connected; ++i) {
+        // Give a cold engine time to start Qt + bind its local server before
+        // giving up (~6s). The single-instance guard means a duplicate launch
+        // here exits harmlessly, but the longer wait avoids it in the first place.
+        for (int i = 0; i < 40 && !connected; ++i) {
             QThread::msleep(150);
             engineReply = relayToEngine(msg, &connected);
         }

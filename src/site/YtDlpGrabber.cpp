@@ -235,7 +235,25 @@ void YtDlpGrabber::start()
     // udemy.com). It is EMPTY for YouTube hosts (ytDlpArgs() excludes them), so
     // the no-forward safeguard above still holds.
     args << m_authArgs;
-    args << m_url.toString();
+
+    // For a Udemy whole-course (playlist) job, the URL we give yt-dlp must be a
+    // page that actually contains the numeric course id: yt-dlp's udemy:course
+    // extractor SCRAPES the id out of the fetched page. The course landing page
+    // (and the root-slug form) is a login-walled SPA WITHOUT the id, but the
+    // in-course lecture page udemy.com/course/<slug>/learn/lecture/ carries it
+    // and the extractor then enumerates the full curriculum. Normalise to that
+    // form (idempotent when the URL is already a lecture URL). Host preserved so
+    // enterprise tenants (company.udemy.com) keep working.
+    // NB: DRM-protected lectures still cannot be downloaded (yt-dlp can't decrypt
+    // Widevine); a course mixing DRM + plain videos yields only the plain ones.
+    QUrl runUrl = m_url;
+    if (m_playlist && m_url.host().toLower().endsWith(QStringLiteral("udemy.com"))) {
+        const QString slug = urlSlug(m_url);
+        if (!slug.isEmpty() && !m_url.path().contains(QStringLiteral("/learn/lecture/")))
+            runUrl = QUrl(QStringLiteral("https://%1/course/%2/learn/lecture/")
+                              .arg(m_url.host(), slug));
+    }
+    args << runUrl.toString();
     m_lastError.clear();
     m_tail.clear();
 

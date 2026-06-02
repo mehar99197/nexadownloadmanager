@@ -47,22 +47,70 @@
     return isPublicSite() || isAuthSite();
   }
 
+  // Resolve the specific /@author/video/<id> URL for the TikTok video in view.
+  // TikTok keeps the address bar on /en/, /foryou or / for the feed AND the
+  // logged-out landing page, so the real per-video URL must be dug out of the
+  // DOM. Returns "" when no concrete video can be identified.
+  const TT_VIDEO_RE = /\/@[\w.\-]+\/video\/(\d+)/;
+  function tiktokVideoUrl() {
+    const abs = (href) => { try { return new URL(href, location.origin).href; } catch (_) { return ""; } };
+    // distance of an element's vertical centre from the viewport centre, or
+    // null when it is hidden / fully off-screen.
+    const dist = (elm) => {
+      const r = elm.getBoundingClientRect();
+      if ((!r.width && !r.height) || r.bottom <= 0 || r.top >= window.innerHeight) return null;
+      return Math.abs((r.top + r.bottom) / 2 - window.innerHeight / 2);
+    };
+
+    // 1) Most-centred visible /@user/video/<id> anchor (works on grids/feeds).
+    let best = "", bestDist = Infinity;
+    for (const a of document.querySelectorAll('a[href*="/video/"]')) {
+      const href = a.getAttribute("href") || "";
+      if (!TT_VIDEO_RE.test(href)) continue;
+      const d = dist(a);
+      if (d != null && d < bestDist) { bestDist = d; best = href; }
+    }
+    if (best) return abs(best);
+
+    // 2) The most-centred <video> element → climb its ancestors looking for a
+    //    /video/ link or a numeric video id embedded in an element id
+    //    (e.g. id="xgwrapper-0-7234567890123456789"), pairing it with the
+    //    nearest author handle.
+    let vid = null, vDist = Infinity;
+    for (const v of document.querySelectorAll("video")) {
+      const d = dist(v);
+      if (d != null && d < vDist) { vDist = d; vid = v; }
+    }
+    if (vid) {
+      for (let node = vid, i = 0; node && i < 10; node = node.parentElement, i++) {
+        const a = node.querySelector && node.querySelector('a[href*="/video/"]');
+        if (a && TT_VIDEO_RE.test(a.getAttribute("href") || "")) return abs(a.getAttribute("href"));
+        const idm = (node.id || "").match(/(\d{15,21})/);
+        if (idm) {
+          const au = node.querySelector && node.querySelector('a[href*="/@"]')
+                     || document.querySelector('a[href*="/@"]');
+          const um = au && (au.getAttribute("href") || "").match(/\/@([\w.\-]+)/);
+          if (um) return `https://www.tiktok.com/@${um[1]}/video/${idm[1]}`;
+        }
+      }
+    }
+
+    // 3) canonical / og:url meta (present when a single video is rendered).
+    const canon = (document.querySelector('link[rel="canonical"]') || {}).href || "";
+    if (TT_VIDEO_RE.test(canon)) return canon;
+    const og = (document.querySelector('meta[property="og:url"]') || {}).content || "";
+    if (TT_VIDEO_RE.test(og)) return abs(og);
+
+    return "";
+  }
+
   // The actual video URL to hand to yt-dlp. Usually the page URL; on the TikTok
-  // For-You feed (URL isn't a single video) pick the most-centered video link.
+  // feed / landing page resolve the most-centred video out of the DOM.
   function videoUrl() {
     const h = location.host.toLowerCase();
     if (/(^|\.)tiktok\.com$/.test(h) && !/\/video\/\d+/.test(location.pathname)) {
-      const cy = window.innerHeight / 2;
-      let best = "", bestDist = Infinity;
-      for (const a of document.querySelectorAll('a[href*="/video/"]')) {
-        const href = a.getAttribute("href") || "";
-        if (!/\/@[^/]+\/video\/\d+/.test(href)) continue;
-        const r = a.getBoundingClientRect();
-        if (!r.width && !r.height) continue;            // hidden
-        const d = Math.abs((r.top + r.bottom) / 2 - cy);
-        if (d < bestDist) { bestDist = d; best = href; }
-      }
-      if (best) { try { return new URL(best, location.origin).href; } catch (_) {} }
+      const u = tiktokVideoUrl();
+      if (u) return u;
     }
     return location.href;
   }
@@ -145,36 +193,47 @@
   ];
 
   // ---- styling (injected once) -----------------------------------------
+  // Palette mirrors the Nexa app + redesigned popup: deep navy canvas, indigo
+  // accent (#6366f1/#4f46e5), teal (#34d399), text #e6edf3.
   const css = `
     #nexa-pill{position:fixed;right:20px;bottom:20px;z-index:2147483647;
       display:none;align-items:center;gap:8px;cursor:pointer;
-      background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;
-      font:600 13px/1 system-ui,sans-serif;padding:11px 14px;border-radius:24px;
-      box-shadow:0 8px 24px rgba(37,99,235,.45);user-select:none;transition:transform .12s}
-    #nexa-pill:hover{transform:translateY(-2px)}
-    #nexa-pill .nx-badge{background:#fff;color:#2563eb;border-radius:999px;
-      font-size:11px;font-weight:700;padding:1px 7px;margin-left:2px}
+      background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;
+      font:700 13px/1 -apple-system,"Segoe UI",system-ui,sans-serif;
+      padding:10px 15px 10px 12px;border-radius:24px;letter-spacing:.2px;
+      border:1px solid rgba(129,140,248,.55);
+      box-shadow:0 8px 24px rgba(79,70,229,.5);user-select:none;
+      transition:transform .12s,box-shadow .15s,filter .15s}
+    #nexa-pill:hover{transform:translateY(-2px);filter:brightness(1.07);
+      box-shadow:0 12px 30px rgba(79,70,229,.6)}
+    #nexa-pill svg{flex:0 0 auto;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+    #nexa-pill .nx-badge{background:#fff;color:#4f46e5;border-radius:999px;
+      font-size:11px;font-weight:800;padding:1px 7px;margin-left:2px}
     #nexa-panel{position:fixed;right:20px;bottom:74px;z-index:2147483647;display:none;
-      width:320px;max-height:60vh;overflow:auto;background:#0f172a;color:#e2e8f0;
-      border:1px solid #1e293b;border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.5);
-      font:13px/1.45 system-ui,sans-serif}
+      width:328px;max-height:62vh;overflow:auto;color:#e6edf3;
+      background:radial-gradient(120% 80% at 50% 0%,#15203a 0%,#0d1326 55%,#0a0e1a 100%);
+      border:1px solid #232b42;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.6);
+      font:13px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif}
     #nexa-panel .nx-head{display:flex;align-items:center;justify-content:space-between;
-      padding:12px 14px;background:#1e293b;border-radius:14px 14px 0 0;font-weight:600}
-    #nexa-panel .nx-close{cursor:pointer;color:#94a3b8;font-size:16px;line-height:1}
-    #nexa-panel .nx-media{padding:8px 14px;border-top:1px solid #1e293b}
-    #nexa-panel .nx-title{color:#94a3b8;font-size:11px;text-transform:uppercase;
-      letter-spacing:.04em;margin:4px 0 8px;word-break:break-all}
+      padding:13px 15px;border-bottom:1px solid #1b2236;font-weight:700;color:#f3f6fb}
+    #nexa-panel .nx-close{cursor:pointer;color:#8b94a7;font-size:16px;line-height:1;
+      padding:2px 7px;border-radius:7px;transition:background .12s,color .12s}
+    #nexa-panel .nx-close:hover{background:#1b2236;color:#e6edf3}
+    #nexa-panel .nx-media{padding:8px 15px;border-top:1px solid #161d2c}
+    #nexa-panel .nx-title{color:#8b94a7;font-size:11px;text-transform:uppercase;
+      letter-spacing:.05em;margin:6px 0 8px;word-break:break-all}
     #nexa-panel .nx-q{display:flex;align-items:center;justify-content:space-between;
-      gap:8px;padding:9px 10px;margin:5px 0;background:#1e293b;border-radius:9px;
-      cursor:pointer;transition:background .1s}
-    #nexa-panel .nx-q:hover{background:#2b3b55}
-    #nexa-panel .nx-q .nx-meta{color:#94a3b8;font-size:11px}
-    #nexa-panel .nx-q .nx-dl{background:#3b82f6;color:#fff;border-radius:6px;
-      padding:3px 9px;font-size:11px;font-weight:700}
-    #nexa-panel .nx-empty{padding:14px;color:#94a3b8}
+      gap:8px;padding:10px 11px;margin:6px 0;background:#141b2c;border:1px solid #232b42;
+      border-radius:10px;cursor:pointer;transition:background .12s,border-color .12s,transform .1s}
+    #nexa-panel .nx-q:hover{background:#1b2236;border-color:#2d3650;transform:translateX(2px)}
+    #nexa-panel .nx-q .nx-meta{color:#8b94a7;font-size:11px}
+    #nexa-panel .nx-q .nx-dl{background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;
+      border-radius:7px;padding:4px 10px;font-size:11px;font-weight:700}
+    #nexa-panel .nx-empty{padding:16px;color:#8b94a7}
     #nexa-toast{position:fixed;right:20px;bottom:74px;z-index:2147483647;display:none;
-      background:#22c55e;color:#06210f;font:600 13px/1 system-ui,sans-serif;
-      padding:10px 14px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+      background:linear-gradient(135deg,#10b981,#34d399);color:#04140c;
+      font:700 13px/1 -apple-system,"Segoe UI",system-ui,sans-serif;
+      padding:11px 15px;border-radius:12px;box-shadow:0 8px 24px rgba(16,185,129,.4)}
   `;
 
   function injectStyleOnce() {
@@ -183,6 +242,37 @@
     style.id = "nexa-style";
     style.textContent = css;
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  // The Nexa brand mark — a letter "N" whose right leg flows into a down arrow
+  // ("Nexa Downloader"). Built via the SVG namespace (Trusted-Types-safe; no
+  // innerHTML). White N + light-teal arrow reads cleanly on the indigo pill.
+  function nexaLogo(size) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 64 64");
+    svg.setAttribute("width", String(size || 18));
+    svg.setAttribute("height", String(size || 18));
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const path = (d, attrs) => {
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("d", d);
+      for (const k in attrs) p.setAttribute(k, attrs[k]);
+      svg.appendChild(p);
+    };
+    const nAttr = { stroke: "#ffffff", "stroke-width": "6.2",
+                    "stroke-linecap": "round", "stroke-linejoin": "round" };
+    path("M16 46 V18", nAttr);          // left stem
+    path("M16 18 L44 42", nAttr);       // diagonal
+    path("M44 14 V40", nAttr);          // right stem
+    const aAttr = { stroke: "#a7f3d0", "stroke-width": "6.2",
+                    "stroke-linecap": "round", "stroke-linejoin": "round" };
+    path("M44 40 V50", aAttr);          // arrow shaft (continues the right leg)
+    path("M35 45 L44 54 L53 45 Z",      // arrowhead
+         { fill: "#a7f3d0", stroke: "#a7f3d0", "stroke-width": "2",
+           "stroke-linejoin": "round" });
+    return svg;
   }
 
   // Small DOM helper: el("div", {class, text, ...attrs}, [children])
@@ -208,7 +298,7 @@
 
     if (!pill || !pill.isConnected) {
       pill = el("div", { id: "nexa-pill" }, [
-        document.createTextNode("⬇ "),
+        nexaLogo(18),
         el("span", { text: "Download Video" }),
         (badge = el("span", { class: "nx-badge", text: "0" }))
       ]);
@@ -256,9 +346,11 @@
       // Auth sites (Udemy/Coursera/…): the -J probe can't see login-gated
       // formats, so offer Best/Audio directly — the handoff carries the cookies.
       if (isAuthSite()) {
-        // yt-dlp's "course" extractor is broken on a bare /course/<slug>/ URL, but
-        // a LECTURE url (what we're on inside a course) enumerates every lecture —
-        // so "Entire course" sends this lecture URL with the playlist flag.
+        // "Entire course" sends the current lecture page URL with the playlist
+        // flag; the engine normalises it to udemy.com/course/<slug>/learn/lecture/
+        // (the page that exposes the course id) so yt-dlp enumerates every
+        // lecture. NOTE: DRM-protected lectures can't be downloaded by yt-dlp, so
+        // a DRM course yields only its non-DRM (plain) videos.
         const onLecture = /\/learn\/lecture\//.test(location.pathname);
         const quals = [];
         if (onLecture)
@@ -352,7 +444,22 @@
               msg.playlist = true;
               msg.filename = row.dataset.name || "";
             } else if (quality) {            // single site video: resolved page URL
-              msg.url = row.dataset.siteurl || location.href;
+              let siteUrl = row.dataset.siteurl || location.href;
+              // The TikTok feed scrolls between the panel opening and this click,
+              // so re-resolve the centred video now. If we still can't pin a
+              // concrete /video/<id>, guide the user instead of handing off the
+              // bare feed URL (which yt-dlp rejects as "Unsupported URL").
+              const onTikTok = /(^|\.)tiktok\.com$/.test(location.host.toLowerCase());
+              if (onTikTok && !/\/video\/\d+/.test(location.pathname)) {
+                siteUrl = videoUrl();
+                if (!TT_VIDEO_RE.test(siteUrl)) {
+                  panel.style.display = "none";
+                  toast("Nexa: open the specific TikTok video first (tap it so the "
+                        + "address bar shows /video/…), then click Download.");
+                  return;
+                }
+              }
+              msg.url = siteUrl;
               msg.quality = quality;
               msg.filename = row.dataset.name || "";   // empty -> yt-dlp uses real title
               if (row.dataset.course === "1") msg.playlist = true;  // whole course

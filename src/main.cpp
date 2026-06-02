@@ -10,6 +10,9 @@
 #include <QHostInfo>
 #include <QNetworkInterface>
 #include <QUuid>
+#include <QLocalSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 // First non-loopback IPv4 address, so we can print a reachable dashboard URL.
 static QString localIpv4()
@@ -103,20 +106,79 @@ int main(int argc, char *argv[])
 
     qRegisterMetaType<nexa::DownloadState>("nexa::DownloadState");
 
+    // Command line: nexa [--background] [--resume-all] [--batch] <url> [url...]
+    //   --background  run headless (no window) — used by the native host/autostart
+    //   --batch       quit once every download reaches a terminal state (CLI use)
+    const QStringList args = QApplication::arguments();
+    const bool batch = args.contains(QStringLiteral("--batch"));
+    const bool background = args.contains(QStringLiteral("--background"));
+
+    // Positional (non-flag) args are URLs/patterns to download. ("--ai <text>"
+    // consumes the next token, so skip it.)
+    QStringList urlArgs;
+    for (int i = 1; i < args.size(); ++i) {
+        const QString a = args.at(i);
+        if (a == QStringLiteral("--ai")) { ++i; continue; }
+        if (!a.startsWith(QStringLiteral("--")))
+            urlArgs << a;
+    }
+
+    // ---- Single-instance guard -------------------------------------------
+    // If an engine is already listening on the IPC socket, forward any URLs to
+    // it and (for a plain re-launch) ask it to surface its window, then exit —
+    // never open a second window. This is what keeps repeated handoffs/launches
+    // from spawning a wall of Nexa windows.
+    {
+        QLocalSocket probe;
+        probe.connectToServer(QStringLiteral("nexa-ipc"));
+        if (probe.waitForConnected(400)) {
+            auto sendFramed = [&probe](const QJsonObject &o) {
+                const QByteArray body = QJsonDocument(o).toJson(QJsonDocument::Compact);
+                const quint32 len = quint32(body.size());
+                QByteArray framed;
+                framed.append(char(len & 0xFF));        framed.append(char((len >> 8) & 0xFF));
+                framed.append(char((len >> 16) & 0xFF)); framed.append(char((len >> 24) & 0xFF));
+                framed.append(body);
+                probe.write(framed);
+                probe.flush();
+                probe.waitForBytesWritten(500);
+                probe.waitForReadyRead(2000);   // let the server consume + reply
+                probe.readAll();
+            };
+            for (const QString &u : urlArgs)
+                sendFramed(QJsonObject{{"type", "download"}, {"url", u}});
+            if (!background)                    // a plain re-launch wants the window
+                sendFramed(QJsonObject{{"type", "show"}});
+            probe.disconnectFromServer();
+            return 0;
+        }
+    }
+
     nexa::DownloadEngine engine;
     engine.loadPersisted();        // restore unfinished downloads from last run
 
     // Listen for downloads handed off by the browser extension via nexa-host.
     nexa::IpcServer ipc(&engine);
-    ipc.start();
+    if (!ipc.start()) {
+        // Another instance grabbed the socket between our probe and now — exit
+        // rather than running a windowless, socket-less duplicate.
+        return 0;
+    }
 
     nexa::MainWindow window(&engine);
-    window.show();
+    // A peer asking to "show" (second launch / popup) surfaces this window.
+    QObject::connect(&ipc, &nexa::IpcServer::showWindowRequested,
+                     &window, &nexa::MainWindow::showAndRaise);
 
-    // Command line: nexa [--resume-all] [--batch] <url> [url...]
-    //   --batch   quit once every download reaches a terminal state (CLI use)
-    const QStringList args = QApplication::arguments();
-    const bool batch = args.contains(QStringLiteral("--batch"));
+    // Background presence: a system tray lets the engine run without a window.
+    // When a tray exists, closing the window keeps Nexa running in the tray.
+    const bool trayOk = window.setupTray();
+    if (trayOk)
+        QApplication::setQuitOnLastWindowClosed(false);
+    if (!background)
+        window.show();                 // normal launch: show the window
+    else if (!trayOk)
+        window.showMinimized();        // headless but no tray: stay in the taskbar
 
     if (batch) {
         // In batch mode, exit as soon as all downloads/streams finish or error.

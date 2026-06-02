@@ -29,6 +29,23 @@ QString authReasonFromYtDlpLine(const QString &line)
     if (loginRe.match(line).hasMatch())
         return QStringLiteral("login required — provide cookies or a token");
 
+    // Udemy: yt-dlp's extractor scrapes the course page for a course id, but
+    // modern Udemy is a login-walled SPA that no longer exposes it (and course
+    // videos are DRM-protected), so whole-course downloads cannot work. Give an
+    // honest reason rather than yt-dlp's raw "report this issue" text.
+    static const QRegularExpression udemyRe(
+        QStringLiteral("udemy.*(unable to extract course id|course id)|unable to extract course id"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (udemyRe.match(line).hasMatch())
+        return QStringLiteral("Udemy course download is not supported (yt-dlp can't read "
+                              "Udemy's DRM-protected course content)");
+    // DRM is a hard blocker for any site: yt-dlp cannot decrypt protected media.
+    static const QRegularExpression drmRe(
+        QStringLiteral("DRM|widevine|fairplay|protected.*content|this video is drm"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (drmRe.match(line).hasMatch())
+        return QStringLiteral("DRM-protected video — cannot be downloaded");
+
     return QString();
 }
 

@@ -8,6 +8,8 @@
 class QTableWidget;
 class QLabel;
 class QLineEdit;
+class QSystemTrayIcon;
+class QCloseEvent;
 
 namespace nexa {
 
@@ -21,6 +23,20 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(DownloadEngine *engine, QWidget *parent = nullptr);
+
+    // Create a system-tray presence so the app can run in the background without
+    // a visible window. Returns true if a system tray is available (and the icon
+    // was installed); false otherwise, so the caller can fall back gracefully.
+    bool setupTray();
+    bool hasTray() const { return m_tray != nullptr; }
+
+public slots:
+    // Bring the window to the foreground (used by the single-instance guard and
+    // the IPC "show" command). Safe to call when already visible.
+    void showAndRaise();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;   // minimise to tray if present
 
 private slots:
     void promptAddUrl();
@@ -60,6 +76,7 @@ private:
     QHash<int, QPointer<DownloadDetailsDialog>> m_openDialogs;  // one plate per id
     QSet<int>       m_autoOpened;   // ids that already auto-popped (dedupe, lifetime)
     bool            m_restoring = false;  // true during startup snapshot replay
+    QSystemTrayIcon *m_tray = nullptr;    // background/tray presence (may be null)
 };
 
 } // namespace nexa

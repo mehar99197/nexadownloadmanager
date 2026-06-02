@@ -18,7 +18,15 @@ public:
     explicit IpcServer(DownloadEngine *engine, QObject *parent = nullptr);
     ~IpcServer() override;
 
+    // Returns true on success. Returns false if another live instance already
+    // owns the socket (the caller should then forward its work and exit rather
+    // than opening a second window).
     bool start(const QString &name = QStringLiteral("nexa-ipc"));
+
+signals:
+    // Emitted when a peer sends {"type":"show"} (e.g. a second `nexa` launch, or
+    // the browser popup) asking the running instance to surface its window.
+    void showWindowRequested();
 
 private slots:
     void onNewConnection();

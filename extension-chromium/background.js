@@ -110,8 +110,7 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (!list.some((m) => m.url === details.url)) {
       list.push({ url: details.url, type: mediaType(details.url) });
       tabMedia.set(details.tabId, list);
-      chrome.action.setBadgeText({ tabId: details.tabId, text: String(list.length) });
-      chrome.action.setBadgeBackgroundColor({ tabId: details.tabId, color: "#3b82f6" });
+      // (No icon badge — the user asked not to show a count on the extension icon.)
     }
   },
   { urls: ["<all_urls>"] }
@@ -119,10 +118,8 @@ chrome.webRequest.onBeforeRequest.addListener(
 
 chrome.tabs.onRemoved.addListener((tabId) => tabMedia.delete(tabId));
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading") {
+  if (info.status === "loading")
     tabMedia.delete(tabId);
-    chrome.action.setBadgeText({ tabId, text: "" });
-  }
 });
 
 const VIDEO_TYPES = new Set(["HLS", "DASH", "video", "audio"]);

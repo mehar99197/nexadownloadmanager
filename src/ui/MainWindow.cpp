@@ -22,6 +22,8 @@
 #include <QCheckBox>
 #include <QApplication>
 #include <QClipboard>
+#include <QSystemTrayIcon>
+#include <QCloseEvent>
 #include <QDesktopServices>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -464,6 +466,52 @@ void MainWindow::openDetails(int id)
     dlg->show();
 }
 
+void MainWindow::showAndRaise()
+{
+    showNormal();        // restore if minimised
+    show();
+    raise();
+    activateWindow();
+}
+
+bool MainWindow::setupTray()
+{
+    if (m_tray || !QSystemTrayIcon::isSystemTrayAvailable())
+        return false;
+
+    m_tray = new QSystemTrayIcon(windowIcon(), this);
+    m_tray->setToolTip(QStringLiteral("Nexa Download Manager"));
+
+    auto *menu = new QMenu(this);
+    menu->addAction(QStringLiteral("Open Nexa"),  this, &MainWindow::showAndRaise);
+    menu->addAction(QStringLiteral("Add URL…"),   this, &MainWindow::promptAddUrl);
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("Quit Nexa"),  qApp, &QApplication::quit);
+    m_tray->setContextMenu(menu);
+
+    // Single click / double click on the tray icon surfaces the window.
+    connect(m_tray, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason r) {
+                if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick)
+                    showAndRaise();
+            });
+    m_tray->show();
+    return true;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // With a tray present, closing the window keeps the engine running in the
+    // background (downloads continue); "Quit Nexa" from the tray truly exits.
+    // Without a tray, closing behaves normally (quits the app).
+    if (m_tray && !QApplication::closingDown()) {
+        hide();
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
+}
+
 void MainWindow::applyFilter(const QString &text)
 {
     const QString q = text.trimmed().toLower();
@@ -615,22 +663,12 @@ void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &
         }
     }
 
-    // Auto-open the per-download details plate the first time a SINGLE-FILE
-    // download starts. Suppressed for playlist jobs (requirement) and during the
-    // startup restore. A batch of many URLs would otherwise pop one window each,
-    // so we only auto-pop when this download is effectively the sole active one;
-    // the rest stay reachable via double-click / right-click → Details.
-    if (!m_restoring &&
-        (state == DownloadState::Downloading || state == DownloadState::Probing) &&
-        !m_autoOpened.contains(id) && !m_engine->isPlaylist(id)) {
-        int active = 0;
-        for (const auto &s : m_engine->snapshot())
-            if (s.state == DownloadState::Downloading || s.state == DownloadState::Probing)
-                ++active;
-        m_autoOpened.insert(id);          // mark regardless, so it never re-pops
-        if (active <= 1)
-            openDetails(id);
-    }
+    // NOTE: we deliberately do NOT auto-open the per-download details plate when
+    // a download starts. Doing so made a window pop over the browser on every
+    // single handoff — an unwanted focus-steal. Downloads now appear silently in
+    // the list; the user opens a plate on demand (double-click / right-click →
+    // Details). m_autoOpened is retained only for backward-compat of the field.
+    Q_UNUSED(m_autoOpened);
 
     updateStats();
 }
