@@ -319,7 +319,13 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
         QStringList a = common;
         a << QStringLiteral("--yes-playlist")
           << QStringLiteral("--playlist-items") << QStringLiteral("%1::%2").arg(j + 1).arg(K)
-          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << outf
+          // Record "<full-playlist-count>|<final-path>" per saved video. The
+          // count is the WHOLE playlist size (yt-dlp's playlist_count), NOT the
+          // per-shard "item N of M" — with --playlist-items that M is only this
+          // shard's slice (e.g. 10 for 60 videos across 6 shards). after_move is
+          // a late stage so this does NOT imply --simulate (downloads still run).
+          << QStringLiteral("--print-to-file")
+          << QStringLiteral("after_move:%(playlist_count)s|%(filepath)s") << outf
           << runUrl.toString();
 
         auto *p = new QProcess(this);
@@ -584,22 +590,29 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
 
 // ---- parallel playlist workers -------------------------------------------
 
-int YtDlpGrabber::countPlaylistDone() const
+int YtDlpGrabber::countPlaylistDone()
 {
-    // Count UNIQUE finalised paths across all workers. Each video has a distinct
-    // path (its playlist index is in the filename), so de-duplicating is the
-    // number of videos done. This is what makes pause+resume correct: on resume,
-    // workers re-append to the same files (and yt-dlp may re-print an already-
-    // downloaded path), which previously double-counted and pushed the total
-    // past 100% (e.g. "42/20 videos").
+    // Each worker appends "<playlist_count>|<final-path>" per saved video. Count
+    // UNIQUE paths (each video has a distinct path, so this de-dups re-runs on
+    // resume — what previously pushed the total past 100%, e.g. "42/20"). The
+    // playlist_count is the WHOLE playlist size, so we also learn the real total
+    // here (the per-shard "item N of M" can't give it under --playlist-items).
     QSet<QString> paths;
     for (const QString &f : m_plOutFiles) {
         QFile qf(f);
         if (qf.open(QIODevice::ReadOnly)) {
             const QStringList lines = QString::fromUtf8(qf.readAll())
                                           .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-            for (const QString &l : lines)
-                paths.insert(l.trimmed());
+            for (const QString &l : lines) {
+                const int sep = l.indexOf(QLatin1Char('|'));
+                if (sep > 0) {
+                    const int n = l.left(sep).toInt();
+                    if (n > m_plTotal) m_plTotal = n;
+                    paths.insert(l.mid(sep + 1).trimmed());
+                } else {
+                    paths.insert(l.trimmed());   // tolerate a count-less line
+                }
+            }
             qf.close();
         }
     }
@@ -644,14 +657,11 @@ void YtDlpGrabber::onPlOutput()
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp[pl]" << m_id << line;
 
-        // Total videos in the playlist (yt-dlp: "Downloading item N of M").
-        static const QRegularExpression itemRe(
-            QStringLiteral("Downloading (?:item|video) \\d+ of (\\d+)"));
-        if (const auto im = itemRe.match(line); im.hasMatch()) {
-            const int M = im.captured(1).toInt();
-            if (M > m_plTotal)
-                m_plTotal = M;
-        }
+        // NB: the per-video "Downloading item N of M" line is intentionally NOT
+        // used for the total — under --playlist-items "j::K" its M is only this
+        // shard's slice (e.g. 10 of a 60-video playlist). The real total comes
+        // from yt-dlp's playlist_count, recorded in the per-video output file and
+        // read in countPlaylistDone().
 
         // Real playlist title (yt-dlp: "[download] Downloading playlist: TITLE").
         // Use it for the displayed name so the row/plate shows the playlist's
@@ -722,11 +732,15 @@ void YtDlpGrabber::onPlProcFinished()
     for (const QString &f : m_plOutFiles) {
         QFile qf(f);
         if (qf.open(QIODevice::ReadOnly)) {
-            const QStringList paths = QString::fromUtf8(qf.readAll())
+            const QStringList lines = QString::fromUtf8(qf.readAll())
                                           .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
             qf.close();
-            if (!paths.isEmpty() && folder.isEmpty())
-                folder = QFileInfo(paths.last()).absolutePath();
+            if (!lines.isEmpty() && folder.isEmpty()) {
+                QString path = lines.last();
+                const int sep = path.indexOf(QLatin1Char('|'));   // strip "<count>|"
+                if (sep > 0) path = path.mid(sep + 1);
+                folder = QFileInfo(path.trimmed()).absolutePath();
+            }
         }
         QFile::remove(f);
     }

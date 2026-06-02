@@ -75,7 +75,7 @@ private:
     QStringList commonArgs(const QString &outputTemplate) const;   // args shared by all workers
     void startPlaylistParallel(const QStringList &common, const QUrl &runUrl);
     void emitPlaylistProgress();   // aggregate videos-done + combined speed
-    int  countPlaylistDone() const;
+    int  countPlaylistDone();      // unique videos done; also learns the real total
 
     int             m_id;
     QUrl            m_url;
