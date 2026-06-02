@@ -429,6 +429,99 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// SpeedGraph — live area chart of recent transfer-speed samples. Fills the
+// plate and shows the speed trend over time, with a glowing leading dot.
+// ---------------------------------------------------------------------------
+class SpeedGraph : public QWidget {
+public:
+    explicit SpeedGraph(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setMinimumHeight(80);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        m_samples.fill(0.0, kN);
+    }
+    void setAccent(const QColor &c) { m_accent = c; }
+    void addSample(double bps)
+    {
+        m_samples[m_head] = bps;
+        m_head = (m_head + 1) % kN;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const double W = r.width(), H = r.height();
+
+        // Card background.
+        QPainterPath bg; bg.addRoundedRect(r, 9, 9);
+        p.fillPath(bg, QColor(0x0c1320));
+        p.save(); p.setClipPath(bg);
+
+        // Scale to the window max (with headroom + a floor so a flat line sits low).
+        double mx = 1.0;
+        for (double s : m_samples) mx = qMax(mx, s);
+        mx *= 1.18;
+
+        // Horizontal grid.
+        p.setPen(QPen(QColor(0x182338), 1));
+        for (int i = 1; i < 4; ++i) {
+            const double y = r.top() + H * i / 4.0;
+            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+        }
+
+        // Build the curve oldest→newest, left→right.
+        QPainterPath line, area;
+        QPointF last;
+        for (int i = 0; i < kN; ++i) {
+            const int idx = (m_head + i) % kN;
+            const double x = r.left() + W * i / double(kN - 1);
+            const double y = r.bottom() - H * qBound(0.0, m_samples[idx] / mx, 1.0);
+            if (i == 0) { line.moveTo(x, y); area.moveTo(x, r.bottom()); area.lineTo(x, y); }
+            else        { line.lineTo(x, y); area.lineTo(x, y); }
+            last = QPointF(x, y);
+        }
+        area.lineTo(r.right(), r.bottom());
+        area.closeSubpath();
+
+        // Area fill + line.
+        QLinearGradient g(0, r.top(), 0, r.bottom());
+        QColor a1 = m_accent; a1.setAlpha(150);
+        QColor a2 = m_accent; a2.setAlpha(8);
+        g.setColorAt(0.0, a1); g.setColorAt(1.0, a2);
+        p.fillPath(area, g);
+        p.strokePath(line, QPen(m_accent.lighter(125), 1.7));
+
+        // Glowing leading dot.
+        QRadialGradient dg(last, 6);
+        dg.setColorAt(0.0, m_accent.lighter(160));
+        dg.setColorAt(1.0, Qt::transparent);
+        p.setBrush(dg); p.setPen(Qt::NoPen);
+        p.drawEllipse(last, 6, 6);
+        p.setBrush(m_accent.lighter(150));
+        p.drawEllipse(last, 2.2, 2.2);
+
+        p.restore();
+
+        // Label.
+        QFont f = p.font(); f.setPointSize(7);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.5); p.setFont(f);
+        p.setPen(QColor(0x475569));
+        p.drawText(r.adjusted(9, 6, -9, 0), Qt::AlignLeft | Qt::AlignTop,
+                   QStringLiteral("SPEED HISTORY"));
+    }
+
+private:
+    static constexpr int kN = 100;
+    QVector<double> m_samples;
+    int    m_head = 0;
+    QColor m_accent{0x8b5cf6};
+};
+
+// ---------------------------------------------------------------------------
 // DownloadDetailsDialog
 // ---------------------------------------------------------------------------
 DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWidget *parent)
@@ -532,13 +625,15 @@ void DownloadDetailsDialog::buildUi()
     m_barPct = new QLabel(QStringLiteral("0%"), plate);
     m_barPct->setObjectName(QStringLiteral("Dd_barpct"));
     m_barPct->setAlignment(Qt::AlignRight);
+    m_speedGraph = new SpeedGraph(plate);     // fills the space beside the meter
     barCol->addWidget(m_bar);
     barCol->addWidget(m_barPct);
+    barCol->addWidget(m_speedGraph, 1);
     barRow->addLayout(barCol, 1);
 
     m_speedMeter = new SpeedMeter(plate);
     barRow->addWidget(m_speedMeter, 0, Qt::AlignVCenter);
-    v->addLayout(barRow);
+    v->addLayout(barRow, 1);                  // this row absorbs the extra space
 
     // --- Connections strip ---
     auto *secRow = new QHBoxLayout;
@@ -572,7 +667,8 @@ void DownloadDetailsDialog::buildUi()
     m_table->setColumnWidth(CN, 44);
     m_table->setColumnWidth(CDownloaded, 150);
     m_table->verticalHeader()->setDefaultSectionSize(30);
-    v->addWidget(m_table, 1);
+    m_table->setMaximumHeight(160);          // table only for segmented; graph fills the rest
+    v->addWidget(m_table);
 
     // --- Buttons ---
     auto *btns = new QHBoxLayout;
@@ -685,6 +781,7 @@ void DownloadDetailsDialog::refreshFields()
 void DownloadDetailsDialog::refreshOverallBar()
 {
     m_bar->setAccent(statusColor(m_state));
+    m_speedGraph->setAccent(statusColor(m_state));
     if (m_total > 0) {
         const int pct = int(m_state == DownloadState::Completed ? 100
                             : m_done * 100 / m_total);
@@ -777,6 +874,7 @@ void DownloadDetailsDialog::onProgress(int id, qint64 done, qint64 total, double
     m_done = done; m_total = total; m_bps = bps;
     ++m_phase;                       // keeps the indeterminate rail moving
     m_speedMeter->setSpeed(bps);
+    m_speedGraph->addSample(bps);
     refreshHeader();
     refreshFields();
     refreshOverallBar();

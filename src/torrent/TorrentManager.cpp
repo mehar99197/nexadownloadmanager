@@ -38,9 +38,31 @@ TorrentManager::TorrentManager(QObject *parent)
     lt::settings_pack sp;
     sp.set_int(lt::settings_pack::alert_mask,
                lt::alert_category::status | lt::alert_category::error);
-    // Reasonable defaults; let libtorrent pick ports + enable DHT/LSD/UPnP.
     sp.set_str(lt::settings_pack::user_agent, "Nexa/0.1 libtorrent");
-    sp.set_bool(lt::settings_pack::enable_dht, true);
+
+    // ---- Aggressive throughput tuning -----------------------------------
+    // Saturate the swarm: connect to many more peers, ramp them up fast, and
+    // never throttle. libtorrent's defaults (200 conns, slow connect rate) leave
+    // a lot of bandwidth unused on a well-seeded torrent.
+    sp.set_int(lt::settings_pack::connections_limit,   1200);   // global peer cap (def 200)
+    sp.set_int(lt::settings_pack::connection_speed,     500);   // new conns/sec (def ~30)
+    sp.set_int(lt::settings_pack::active_downloads,      16);   // def 3
+    sp.set_int(lt::settings_pack::active_seeds,           8);
+    sp.set_int(lt::settings_pack::active_limit,          64);   // def 15
+    sp.set_int(lt::settings_pack::unchoke_slots_limit,   64);   // def 8
+    sp.set_int(lt::settings_pack::download_rate_limit,    0);   // 0 = unlimited
+    sp.set_int(lt::settings_pack::upload_rate_limit,      0);
+    // Bigger socket buffers + auto-tuned send/recv so a fat pipe isn't starved.
+    sp.set_int(lt::settings_pack::send_buffer_watermark, 3 * 1024 * 1024);
+    sp.set_bool(lt::settings_pack::enable_outgoing_utp,  true);
+    sp.set_bool(lt::settings_pack::enable_incoming_utp,  true);
+
+    // Maximise peer discovery: DHT + local discovery + port mapping.
+    sp.set_bool(lt::settings_pack::enable_dht,    true);
+    sp.set_bool(lt::settings_pack::enable_lsd,    true);
+    sp.set_bool(lt::settings_pack::enable_upnp,   true);
+    sp.set_bool(lt::settings_pack::enable_natpmp, true);
+
     d->session = new lt::session(sp);
 
     auto *timer = new QTimer(this);
@@ -81,6 +103,8 @@ bool TorrentManager::add(int id, const QString &magnetOrPath, const QString &sav
     }
 
     atp.save_path = saveDir.toStdString();
+    atp.max_connections = 500;   // per-torrent peer cap (this is a single big download)
+    atp.max_uploads     = 16;
     try {
         lt::torrent_handle h = d->session->add_torrent(std::move(atp));
         d->handles.insert(id, h);

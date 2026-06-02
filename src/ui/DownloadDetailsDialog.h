@@ -14,6 +14,7 @@ class DownloadEngine;
 class ConnStrip;
 class FlowBar;
 class SpeedMeter;
+class SpeedGraph;
 
 // Per-download "details plate" — Nexa's themed analogue of IDM's Download-status
 // window. Shows URL/status/size/speed/ETA/resume, an overall progress bar, the
@@ -59,6 +60,7 @@ private:
     // progress + connections
     FlowBar      *m_bar = nullptr;
     SpeedMeter   *m_speedMeter = nullptr;
+    SpeedGraph   *m_speedGraph = nullptr;
     QLabel *m_barPct = nullptr, *m_connCount = nullptr;
     ConnStrip *m_strip = nullptr;
     QTableWidget *m_table = nullptr;
