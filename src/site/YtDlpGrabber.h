@@ -3,6 +3,9 @@
 #include <QUrl>
 #include <QString>
 #include <QStringList>
+#include <QVector>
+#include <QHash>
+#include <QElapsedTimer>
 #include "core/Types.h"
 
 class QProcess;
@@ -38,6 +41,12 @@ public:
     // engine wires this to the user's Settings value. No-op for audio-only grabs.
     void setSubtitles(bool embed, const QString &langs);
 
+    // For playlist jobs: how many videos to download in PARALLEL (default 3).
+    // yt-dlp itself downloads a playlist one video at a time, which leaves most
+    // of the bandwidth idle for small videos — so we run N yt-dlp workers, each
+    // taking a round-robin slice of the playlist (--playlist-items "j::N").
+    void setPlaylistConcurrency(int n);
+
     int           id()       const { return m_id; }
     QUrl          url()      const { return m_url; }
     QString       savePath() const { return m_savePath; }
@@ -52,14 +61,21 @@ signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
     void stateChanged(int id, DownloadState state, const QString &detail);
     void finished(int id);
+    void renamed(int id, const QString &name);   // real (playlist/video) name discovered
 
 private slots:
     void onOutput();
     void onProcessFinished(int exitCode);
+    void onPlOutput();          // a parallel playlist worker produced output
+    void onPlProcFinished();    // a parallel playlist worker exited
 
 private:
     void setState(DownloadState s, const QString &detail = QString());
     void resolveOutputFile();
+    QStringList commonArgs(const QString &outputTemplate) const;   // args shared by all workers
+    void startPlaylistParallel(const QStringList &common, const QUrl &runUrl);
+    void emitPlaylistProgress();   // aggregate videos-done + combined speed
+    int  countPlaylistDone() const;
 
     int             m_id;
     QUrl            m_url;
@@ -76,7 +92,18 @@ private:
     int             m_plItem = 0;         // current playlist item (1-based)
     int             m_plTotal = 0;        // playlist item count
     DownloadState   m_state = DownloadState::Queued;
-    QProcess       *m_proc = nullptr;
+    QProcess       *m_proc = nullptr;     // single-video worker
+
+    // ---- parallel playlist workers (only used when m_playlist) ----
+    int             m_plConcurrency = 3;        // videos downloaded at once
+    QVector<QProcess*>       m_plProcs;         // the N worker processes
+    QStringList              m_plOutFiles;      // each worker's finalised-path file
+    QHash<QProcess*, double> m_plRates;         // each worker's last reported speed
+    int             m_plFinished = 0;           // workers that have exited
+    int             m_plDoneVideos = 0;         // videos finished across all workers
+    QString         m_plName;                   // real playlist title (parsed from yt-dlp)
+    qint64          m_plLastEmitMs = 0;         // throttle aggregate progress emits
+    QElapsedTimer   m_plClock;
     bool            m_cancelled = false;
     int             m_lastPct = -1;
     qint64          m_lastEmitDone = -1;  // throttle UI updates to meaningful deltas

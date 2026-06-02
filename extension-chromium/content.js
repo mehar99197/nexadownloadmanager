@@ -19,6 +19,9 @@
   let badge = null;
   let lastSignature = "";
   let lastHref = location.href;
+  let prefetchedUrl = "";       // video URL whose qualities we've warmed the cache for
+  let prefetchArmedUrl = "";    // URL the debounced prefetch timer is counting for
+  let prefetchTimer = null;
 
   // ---- site-video detection (YouTube + other yt-dlp sites) -------------
   // Public sites: the panel probes real qualities via yt-dlp -J. Auth sites:
@@ -153,7 +156,10 @@
       "ytd-playlist-header-renderer yt-dynamic-sizing-formatted-string, " +
       "h1.ytd-playlist-header-renderer, .ytp-playlist-menu-title");
     const t = el && (el.textContent || el.getAttribute("title"));
-    return (t || "YouTube Playlist").trim();
+    // Empty (not a generic "YouTube Playlist") when the page scrape misses, so
+    // the engine falls back to yt-dlp's real %(playlist_title)s for the folder
+    // name instead of a placeholder.
+    return (t || "").trim();
   }
   function playlistCount() {
     // The playlist panel shows "3 / 13"; pull the total. Best-effort (0 = unknown).
@@ -493,6 +499,27 @@
   }
 
   // ---- poll the background worker for detected media count -------------
+  // Warm the quality cache as soon as a public/YouTube video page is detected,
+  // so opening the pill shows qualities instantly instead of "Loading qualities…".
+  // The expensive yt-dlp -J probe runs in the background during page viewing; by
+  // the time the user clicks, it's a cache hit (best case: O(1), instant).
+  // Auth sites are skipped (their formats are login-gated and offered directly).
+  // Deduped per URL and debounced so quickly skimming past videos doesn't fire a
+  // burst of probes.
+  function maybePrefetch() {
+    if (!isSiteVideo() || isAuthSite()) return;
+    const vurl = videoUrl();
+    if (!vurl || vurl === prefetchedUrl || vurl === prefetchArmedUrl) return;
+    prefetchArmedUrl = vurl;
+    clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(() => {
+      if (videoUrl() !== vurl) return;          // navigated away while waiting
+      prefetchedUrl = vurl;
+      chrome.runtime.sendMessage({ type: "nexa-prefetch-formats", url: vurl },
+                                 () => void chrome.runtime.lastError);
+    }, 1200);
+  }
+
   function poll() {
     // YouTube & co: always offer the pill (streams can't be sniffed). On a
     // dedicated playlist page there's no single video, but the playlist is still
@@ -501,6 +528,7 @@
       ensureUi();
       pill.style.display = "flex";
       if (badge) badge.textContent = isPlaylistPage() ? "PL" : (playlistId() ? "PL" : "HD");
+      maybePrefetch();   // warm the quality cache in the background
       return;
     }
     // Left a site-video page (SPA nav): hide the pill until media is sniffed.

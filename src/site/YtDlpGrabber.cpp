@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QSet>
 #include <QStandardPaths>
 #include <QRegularExpression>
 #include <QDebug>
@@ -87,6 +88,12 @@ YtDlpGrabber::~YtDlpGrabber()
         m_proc->kill();
         m_proc->waitForFinished(1000);
     }
+    for (QProcess *p : m_plProcs) {
+        if (!p) continue;
+        p->disconnect(this);
+        p->kill();
+        p->waitForFinished(500);
+    }
 }
 
 bool YtDlpGrabber::available()
@@ -163,6 +170,11 @@ void YtDlpGrabber::setSubtitles(bool embed, const QString &langs)
         m_subLangs = langs.trimmed();
 }
 
+void YtDlpGrabber::setPlaylistConcurrency(int n)
+{
+    m_plConcurrency = qBound(1, n, 8);
+}
+
 void YtDlpGrabber::setState(DownloadState s, const QString &detail)
 {
     m_state = s;
@@ -195,62 +207,8 @@ void YtDlpGrabber::start()
                ? QDir(m_dir).filePath(QStringLiteral("%(title)s.%(ext)s"))
                : QDir(m_dir).filePath(m_fixedName + QStringLiteral(".%(ext)s")));
 
-    QStringList args;
-    args << (m_playlist ? QStringLiteral("--yes-playlist") : QStringLiteral("--no-playlist"))
-         << QStringLiteral("--newline") << QStringLiteral("--progress")
-         << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
-         << QStringLiteral("--no-mtime") << QStringLiteral("--restrict-filenames")
-         << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
-         // Machine-readable progress: one line per update with the exact byte
-         // counts, speed and fragment indices so the UI shows real progress and
-         // the live connection count (rather than scraping the human display).
-         << QStringLiteral("--progress-template")
-         << QStringLiteral("download:[NEXA]|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
-                           "%(progress.total_bytes_estimate)s|%(progress.speed)s|"
-                           "%(progress.fragment_index)s|%(progress.fragment_count)s")
-         // record the actual final path so we can show/open it accurately
-         << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
-         << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
-         << QStringLiteral("-o") << tmpl;
-
-    // Subtitles (opt-in): fetch manual + auto-generated tracks for the chosen
-    // languages and embed them into the muxed MP4 (mov_text). Harmless for
-    // audio-only grabs — yt-dlp simply finds nothing to embed.
-    if (m_embedSubs) {
-        args << QStringLiteral("--write-subs") << QStringLiteral("--write-auto-subs")
-             << QStringLiteral("--sub-langs") << m_subLangs
-             << QStringLiteral("--embed-subs");
-    }
-
-    // Speed: real multi-connection downloading. YouTube serves high-quality
-    // video/audio as a single googlevideo URL, which yt-dlp's own downloader can
-    // only pull over ONE connection (concurrent-fragments parallelises only
-    // *fragmented* streams). aria2c splits each stream across up to 16 parallel
-    // connections and ramps them with the available bandwidth — the IDM-style
-    // behaviour. Its periodic summary reports the live connection count (CN:n),
-    // which onOutput() parses for both progress and the displayed connection count.
     m_conns = 1;
-    const QString aria2 = QStandardPaths::findExecutable(QStringLiteral("aria2c"));
-    if (!aria2.isEmpty()) {
-        args << QStringLiteral("--downloader") << QStringLiteral("aria2c")
-             << QStringLiteral("--downloader-args")
-             << QStringLiteral("aria2c:-x16 -s16 -k1M --summary-interval=1 "
-                               "--console-log-level=warn --enable-color=false");
-    } else {
-        // No aria2c: yt-dlp native. Parallelises fragmented (DASH/HLS) streams
-        // via concurrent fragments; a single-file stream uses one connection.
-        args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
-             << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
-    }
-
-    // NOTE: deliberately do NOT forward the browser's User-Agent / cookies to
-    // yt-dlp. yt-dlp manages its own client/UA/cookie logic for YouTube & co.;
-    // overriding the UA or injecting raw account cookies breaks its extractor.
-    // Domain-scoped auth IS allowed though: m_authArgs holds finished flags the
-    // engine's AuthenticationManager built for THIS host (e.g. --cookies for
-    // udemy.com). It is EMPTY for YouTube hosts (ytDlpArgs() excludes them), so
-    // the no-forward safeguard above still holds.
-    args << m_authArgs;
+    const QStringList common = commonArgs(tmpl);
 
     // For a Udemy whole-course (playlist) job, the URL we give yt-dlp must be a
     // page that actually contains the numeric course id: yt-dlp's udemy:course
@@ -269,9 +227,20 @@ void YtDlpGrabber::start()
             runUrl = QUrl(QStringLiteral("https://%1/course/%2/learn/lecture/")
                               .arg(m_url.host(), slug));
     }
-    args << runUrl.toString();
     m_lastError.clear();
     m_tail.clear();
+
+    // Playlist: download several videos in parallel (yt-dlp is one-at-a-time).
+    if (m_playlist) {
+        startPlaylistParallel(common, runUrl);
+        return;
+    }
+
+    // Single video: one yt-dlp process (unchanged behaviour).
+    QStringList args = common;
+    args << QStringLiteral("--no-playlist")
+         << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
+         << runUrl.toString();
 
     m_proc = new QProcess(this);
     m_proc->setProcessChannelMode(QProcess::MergedChannels);
@@ -283,6 +252,87 @@ void YtDlpGrabber::start()
     m_proc->start(QStringLiteral("yt-dlp"), args);
 }
 
+// yt-dlp flags shared by the single-video process and every parallel playlist
+// worker. The per-mode bits (--no-playlist / --yes-playlist + --playlist-items,
+// the per-worker --print-to-file path, and the URL) are appended by the caller.
+QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
+{
+    QStringList args;
+    args << QStringLiteral("--newline") << QStringLiteral("--progress")
+         << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
+         << QStringLiteral("--no-mtime") << QStringLiteral("--restrict-filenames")
+         << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
+         // Machine-readable progress (byte counts, speed, fragment indices).
+         << QStringLiteral("--progress-template")
+         << QStringLiteral("download:[NEXA]|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
+                           "%(progress.total_bytes_estimate)s|%(progress.speed)s|"
+                           "%(progress.fragment_index)s|%(progress.fragment_count)s")
+         << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
+         << QStringLiteral("-o") << tmpl;
+
+    if (m_embedSubs) {
+        args << QStringLiteral("--write-subs") << QStringLiteral("--write-auto-subs")
+             << QStringLiteral("--sub-langs") << m_subLangs
+             << QStringLiteral("--embed-subs");
+    }
+
+    // Per-stream acceleration (aria2c multi-connection, else native fragments).
+    const QString aria2 = QStandardPaths::findExecutable(QStringLiteral("aria2c"));
+    if (!aria2.isEmpty()) {
+        args << QStringLiteral("--downloader") << QStringLiteral("aria2c")
+             << QStringLiteral("--downloader-args")
+             << QStringLiteral("aria2c:-x16 -s16 -k1M --summary-interval=1 "
+                               "--console-log-level=warn --enable-color=false");
+    } else {
+        args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
+             << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
+    }
+
+    // Domain-scoped auth flags only (never the browser UA/cookies — that breaks
+    // yt-dlp's own extractor). Empty for YouTube.
+    args << m_authArgs;
+    return args;
+}
+
+// Launch N workers, each handling a round-robin slice of the playlist
+// (--playlist-items "j::N"), so up to N videos download at once. Each writes its
+// finalised file paths to its own file; we aggregate count + speed across them.
+void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &runUrl)
+{
+    m_plProcs.clear();
+    m_plOutFiles.clear();
+    m_plRates.clear();
+    m_plFinished = 0;
+    m_plDoneVideos = 0;
+    m_plTotal = 0;
+    m_plLastEmitMs = 0;
+    m_plName.clear();
+    m_plClock.start();
+
+    const int K = qBound(1, m_plConcurrency, 8);
+    setState(DownloadState::Downloading,
+             QStringLiteral("starting playlist (%1 in parallel)").arg(K));
+
+    for (int j = 0; j < K; ++j) {
+        const QString outf = m_outFile + QStringLiteral(".%1").arg(j);
+        m_plOutFiles << outf;
+        QStringList a = common;
+        a << QStringLiteral("--yes-playlist")
+          << QStringLiteral("--playlist-items") << QStringLiteral("%1::%2").arg(j + 1).arg(K)
+          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << outf
+          << runUrl.toString();
+
+        auto *p = new QProcess(this);
+        p->setProcessChannelMode(QProcess::MergedChannels);
+        connect(p, &QProcess::readyReadStandardOutput, this, &YtDlpGrabber::onPlOutput);
+        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this](int, QProcess::ExitStatus) { onPlProcFinished(); });
+        m_plProcs << p;
+        m_plRates.insert(p, 0.0);
+        p->start(QStringLiteral("yt-dlp"), a);
+    }
+}
+
 void YtDlpGrabber::cancel()
 {
     m_cancelled = true;
@@ -290,6 +340,12 @@ void YtDlpGrabber::cancel()
         m_proc->terminate();
         if (!m_proc->waitForFinished(1500))
             m_proc->kill();
+    }
+    for (QProcess *p : m_plProcs) {     // parallel playlist workers
+        if (!p) continue;
+        p->terminate();
+        if (!p->waitForFinished(1200))
+            p->kill();
     }
     setState(DownloadState::Paused, QStringLiteral("cancelled"));
 }
@@ -522,6 +578,180 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
             why = why.left(157) + QStringLiteral("…");
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp FAILED" << m_id << "\n" << m_tail.join('\n');
+        setState(DownloadState::Error, why);
+    }
+}
+
+// ---- parallel playlist workers -------------------------------------------
+
+int YtDlpGrabber::countPlaylistDone() const
+{
+    // Count UNIQUE finalised paths across all workers. Each video has a distinct
+    // path (its playlist index is in the filename), so de-duplicating is the
+    // number of videos done. This is what makes pause+resume correct: on resume,
+    // workers re-append to the same files (and yt-dlp may re-print an already-
+    // downloaded path), which previously double-counted and pushed the total
+    // past 100% (e.g. "42/20 videos").
+    QSet<QString> paths;
+    for (const QString &f : m_plOutFiles) {
+        QFile qf(f);
+        if (qf.open(QIODevice::ReadOnly)) {
+            const QStringList lines = QString::fromUtf8(qf.readAll())
+                                          .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &l : lines)
+                paths.insert(l.trimmed());
+            qf.close();
+        }
+    }
+    return paths.size();
+}
+
+void YtDlpGrabber::emitPlaylistProgress()
+{
+    m_plDoneVideos = countPlaylistDone();
+    if (m_plTotal > 0)
+        m_plDoneVideos = qMin(m_plDoneVideos, m_plTotal);   // never report > 100%
+    double rate = 0.0;
+    for (double r : m_plRates) rate += r;          // combined speed of all workers
+    const int active = qMax(0, int(m_plProcs.size()) - m_plFinished);
+    // done/total are VIDEO COUNTS for a playlist (the UI shows "N videos").
+    emit progress(m_id, m_plDoneVideos, m_plTotal > 0 ? m_plTotal : -1, rate);
+    if (m_plTotal > 0)
+        setState(DownloadState::Downloading,
+                 QStringLiteral("%1/%2 videos · %3 downloading")
+                     .arg(m_plDoneVideos).arg(m_plTotal).arg(active));
+    else
+        setState(DownloadState::Downloading,
+                 QStringLiteral("%1 videos · %2 downloading").arg(m_plDoneVideos).arg(active));
+}
+
+void YtDlpGrabber::onPlOutput()
+{
+    auto *p = qobject_cast<QProcess*>(sender());
+    if (!p)
+        return;
+    while (p->canReadLine()) {
+        const QString line = QString::fromUtf8(p->readLine()).trimmed();
+        if (line.isEmpty())
+            continue;
+        m_tail.append(line);
+        if (m_tail.size() > 40)
+            m_tail.removeFirst();
+        if (line.startsWith(QStringLiteral("ERROR:"), Qt::CaseInsensitive))
+            m_lastError = line;
+        if (const QString why = authReasonFromYtDlpLine(line); !why.isEmpty())
+            m_lastError = QStringLiteral("ERROR: ") + why;
+        if (kDebug)
+            qDebug().noquote() << "NEXA yt-dlp[pl]" << m_id << line;
+
+        // Total videos in the playlist (yt-dlp: "Downloading item N of M").
+        static const QRegularExpression itemRe(
+            QStringLiteral("Downloading (?:item|video) \\d+ of (\\d+)"));
+        if (const auto im = itemRe.match(line); im.hasMatch()) {
+            const int M = im.captured(1).toInt();
+            if (M > m_plTotal)
+                m_plTotal = M;
+        }
+
+        // Real playlist title (yt-dlp: "[download] Downloading playlist: TITLE").
+        // Use it for the displayed name so the row/plate shows the playlist's
+        // actual title instead of a placeholder. (The folder on disk is already
+        // named by yt-dlp's %(playlist_title)s.)
+        if (m_plName.isEmpty()) {
+            static const QRegularExpression titleRe(
+                QStringLiteral("Downloading playlist:\\s*(.+)$"));
+            if (const auto tm = titleRe.match(line); tm.hasMatch()) {
+                m_plName = tm.captured(1).trimmed();
+                if (!m_plName.isEmpty()) {
+                    m_savePath = QDir(m_dir).filePath(m_plName);
+                    emit renamed(m_id, fileName());
+                }
+            }
+        }
+
+        // This worker's current speed (structured line, else aria2 DL:, else "at RATE").
+        double rate = -1.0;
+        if (line.startsWith(QStringLiteral("[NEXA]|"))) {
+            const QStringList f = line.split(QLatin1Char('|'));
+            if (f.size() > 4) {
+                bool ok = false;
+                const double v = f.at(4).toDouble(&ok);
+                if (ok) rate = qMax(0.0, v);
+            }
+        } else {
+            static const QRegularExpression aria(QStringLiteral("DL:([0-9.]+\\s*[KMGT]?i?B)"));
+            if (const auto am = aria.match(line); am.hasMatch()) {
+                rate = double(parseSize(am.captured(1)));
+            } else if (line.contains(QStringLiteral("[download]"))) {
+                const int at = line.indexOf(QStringLiteral(" at "));
+                if (at >= 0) {
+                    const double r = parseRate(line.mid(at + 4));
+                    if (r > 0) rate = r;
+                }
+            }
+        }
+        if (rate >= 0.0)
+            m_plRates[p] = rate;
+    }
+
+    // Throttle the aggregate emit so a burst of worker lines doesn't repaint madly.
+    const qint64 now = m_plClock.elapsed();
+    if (now - m_plLastEmitMs >= 400) {
+        m_plLastEmitMs = now;
+        emitPlaylistProgress();
+    }
+}
+
+void YtDlpGrabber::onPlProcFinished()
+{
+    if (auto *p = qobject_cast<QProcess*>(sender()))
+        m_plRates[p] = 0.0;
+    ++m_plFinished;
+    if (m_cancelled)
+        return;
+    if (m_plFinished < m_plProcs.size()) {
+        emitPlaylistProgress();    // reflect one fewer worker downloading
+        return;
+    }
+
+    // All workers exited — tally the saved videos and the playlist folder.
+    int total = countPlaylistDone();
+    if (m_plTotal > 0)
+        total = qMin(total, m_plTotal);
+    QString folder;
+    for (const QString &f : m_plOutFiles) {
+        QFile qf(f);
+        if (qf.open(QIODevice::ReadOnly)) {
+            const QStringList paths = QString::fromUtf8(qf.readAll())
+                                          .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            qf.close();
+            if (!paths.isEmpty() && folder.isEmpty())
+                folder = QFileInfo(paths.last()).absolutePath();
+        }
+        QFile::remove(f);
+    }
+    if (!folder.isEmpty()) {
+        m_savePath = folder;       // so "open" lands in the playlist folder
+        emit renamed(m_id, fileName());   // show the real (on-disk) folder name
+    }
+
+    if (kDebug)
+        qDebug().noquote() << "NEXA PL-DONE" << m_id << "videos=" << total
+                           << "folder=" << folder;
+    if (total > 0) {
+        m_plDoneVideos = total;
+        emit progress(m_id, total, m_plTotal > 0 ? m_plTotal : total, 0.0);
+        setState(DownloadState::Completed,
+                 QStringLiteral("saved %1 video%2").arg(total).arg(total == 1 ? "" : "s"));
+        emit finished(m_id);
+    } else {
+        QString why = m_lastError;
+        why.remove(QRegularExpression(QStringLiteral("^ERROR:\\s*"),
+                                      QRegularExpression::CaseInsensitiveOption));
+        if (why.isEmpty())
+            why = m_tail.isEmpty() ? QStringLiteral("no videos downloaded") : m_tail.last();
+        if (why.length() > 160)
+            why = why.left(157) + QStringLiteral("…");
         setState(DownloadState::Error, why);
     }
 }

@@ -35,6 +35,7 @@ private:
     QSpinBox       *m_maxConc = nullptr;
     QSpinBox       *m_speedKB = nullptr;       // 0 = unlimited
     QSpinBox       *m_streamConc = nullptr;
+    QSpinBox       *m_plConc = nullptr;        // playlist videos in parallel
     QCheckBox      *m_subs = nullptr;
     QLineEdit      *m_subLangs = nullptr;
     QSpinBox       *m_torrentDlKB = nullptr;

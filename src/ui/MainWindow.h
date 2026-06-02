@@ -89,6 +89,7 @@ private:
     QSystemTrayIcon *m_tray = nullptr;    // background/tray presence (may be null)
     ClipboardMonitor *m_clipboard = nullptr;          // IDM-style link capture
     QPointer<QWidget> m_captureToast;                 // at most one toast on screen
+    QPointer<QWidget> m_settingsDlg;                  // single non-modal Settings window
     UpdateChecker    *m_updates = nullptr;            // version-check (not auto-install)
     bool              m_manualUpdateCheck = false;    // menu check vs silent startup check
 };

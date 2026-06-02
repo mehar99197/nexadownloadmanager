@@ -11,6 +11,10 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QScrollArea>
+#include <QFrame>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QTimer>
 #include <QMessageBox>
 #include <QFontMetrics>
@@ -529,8 +533,11 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
-    resize(560, 620);
-    setMinimumSize(480, 580);
+    // Decorations: title + system menu + minimise + close, but NO maximise/
+    // fullscreen button (CustomizeWindowHint stops Qt re-adding defaults).
+    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
+                   Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint |
+                   Qt::WindowCloseButtonHint);
 
     // Seed from the engine's current view so an already-running download paints
     // immediately when opened by double-click.
@@ -554,16 +561,44 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
     refreshConnections();
     updateButtons();
     syncTimer();
+
+    // Size to fit the screen: width follows the content; height is capped well
+    // under the screen height (the scroll area handles overflow) so the plate is
+    // never cut off, wherever the window manager places it. A fixed size also
+    // disables maximise/fullscreen.
+    ensurePolished();
+    adjustSize();
+    int w = qMax(560, width());
+    int h = 620;
+    if (QScreen *s = QGuiApplication::primaryScreen())
+        h = qMin(h, s->availableGeometry().height() - 160);
+    setFixedSize(w, qMax(420, h));
 }
 
 void DownloadDetailsDialog::buildUi()
 {
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(14, 14, 14, 14);
+    outer->setSpacing(10);
 
-    auto *plate = new QWidget(this);
+    // The plate is tall (fields + speed meter + graph + per-connection table), so
+    // put it in a scroll area — it then fits any screen instead of running off the
+    // bottom. The action buttons are added to `outer` below (outside the scroll)
+    // so they're always visible and never cut off.
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->viewport()->setStyleSheet(QStringLiteral("background:transparent;"));
+    // A small explicit minimum decouples the scroll area from the (tall) content's
+    // minimum height, so the dialog can be capped well under the screen height and
+    // the content simply scrolls.
+    scroll->setMinimumHeight(200);
+    outer->addWidget(scroll, 1);
+
+    auto *plate = new QWidget;            // QScrollArea::setWidget takes ownership
     plate->setObjectName(QStringLiteral("Plate"));
-    outer->addWidget(plate);
+    scroll->setWidget(plate);
 
     auto *v = new QVBoxLayout(plate);
     v->setContentsMargins(18, 16, 18, 16);
@@ -670,18 +705,19 @@ void DownloadDetailsDialog::buildUi()
     m_table->setMaximumHeight(160);          // table only for segmented; graph fills the rest
     v->addWidget(m_table);
 
-    // --- Buttons ---
+    // --- Buttons (outside the scroll area, pinned at the bottom so they're
+    //     always visible and never cut off the way they were before) ---
     auto *btns = new QHBoxLayout;
-    m_pause  = new QPushButton(QString::fromUtf8("❚❚  Pause"), plate);
-    m_resume = new QPushButton(QString::fromUtf8("▷  Resume"), plate);
-    m_cancel = new QPushButton(QString::fromUtf8("✕  Cancel"), plate);
+    m_pause  = new QPushButton(QString::fromUtf8("❚❚  Pause"), this);
+    m_resume = new QPushButton(QString::fromUtf8("▷  Resume"), this);
+    m_cancel = new QPushButton(QString::fromUtf8("✕  Cancel"), this);
     m_cancel->setObjectName(QStringLiteral("DdCancel"));
     for (auto *b : {m_pause, m_resume, m_cancel}) b->setCursor(Qt::PointingHandCursor);
     btns->addWidget(m_pause);
     btns->addWidget(m_resume);
     btns->addStretch(1);
     btns->addWidget(m_cancel);
-    v->addLayout(btns);
+    outer->addLayout(btns);
 
     connect(m_pause,  &QPushButton::clicked, this, [this]{ m_engine->pause(m_id); });
     connect(m_resume, &QPushButton::clicked, this, [this]{ m_engine->resume(m_id); });
@@ -751,23 +787,36 @@ void DownloadDetailsDialog::refreshFields()
     m_vUrl->setToolTip(m_url);
 
     m_vStatus->setText(m_detail.isEmpty() ? statusLabel(m_state) : m_detail);
-    m_vSize->setText(m_total > 0 ? humanSize(m_total) : QStringLiteral("Unknown"));
 
-    if (m_total > 0)
-        m_vDone->setText(QStringLiteral("%1  (%2%)")
-                             .arg(humanSize(m_done)).arg(int(m_done * 100 / m_total)));
-    else
-        m_vDone->setText(humanSize(m_done));
+    // A playlist reports VIDEO COUNTS in done/total (not bytes), so label them
+    // as videos and skip the byte-based ETA (count/speed isn't a time).
+    const bool playlist = m_engine->isPlaylist(m_id);
+    if (playlist) {
+        m_vSize->setText(m_total > 0 ? QStringLiteral("%1 videos").arg(m_total)
+                                     : QStringLiteral("playlist"));
+        m_vDone->setText(m_total > 0
+            ? QStringLiteral("%1 of %2 videos  (%3%)").arg(m_done).arg(m_total)
+                  .arg(int(m_done * 100 / m_total))
+            : QStringLiteral("%1 videos").arg(m_done));
+    } else {
+        m_vSize->setText(m_total > 0 ? humanSize(m_total) : QStringLiteral("Unknown"));
+        if (m_total > 0)
+            m_vDone->setText(QStringLiteral("%1  (%2%)")
+                                 .arg(humanSize(m_done)).arg(int(m_done * 100 / m_total)));
+        else
+            m_vDone->setText(humanSize(m_done));
+    }
 
     const QString rate = humanSpeed(m_bps);
     m_vRate->setText(rate.isEmpty() ? QStringLiteral("—") : rate);
 
     // ETA off the smoothed (EMA) speed, not the raw instantaneous sample: with
     // 16 bursty segments the per-tick rate swings wildly, so dividing by it gave
-    // an ETA that jumped between seconds and minutes every refresh.
+    // an ETA that jumped between seconds and minutes every refresh. (Not shown
+    // for playlists, where done/total are video counts rather than bytes.)
     const bool active = (m_state == DownloadState::Downloading ||
                          m_state == DownloadState::Probing);
-    m_vEta->setText((active && m_total > 0 && m_avgBps > 1.0 && m_done < m_total)
+    m_vEta->setText((!playlist && active && m_total > 0 && m_avgBps > 1.0 && m_done < m_total)
         ? humanTime(qint64((m_total - m_done) / m_avgBps))
         : QStringLiteral("—"));
 

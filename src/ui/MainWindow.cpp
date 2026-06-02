@@ -39,6 +39,8 @@
 #include <QTimer>
 #include <QDropEvent>
 #include <QAbstractItemView>
+#include <QScreen>
+#include <QGuiApplication>
 #include <functional>
 #include <initializer_list>
 
@@ -495,13 +497,51 @@ void MainWindow::onCheckUpdates()
 
 void MainWindow::onSettings()
 {
-    SettingsDialog dlg(m_engine, this);
-    if (dlg.exec() == QDialog::Accepted && m_clipboard) {
-        // The dialog persisted the clipboard-monitor choice; re-sync our monitor
-        // (which the dialog doesn't own) from the saved value.
-        const bool on = QSettings().value(QStringLiteral("clipboardMonitor"), false).toBool();
-        m_clipboard->setEnabled(on);
+    // Single instance: if it's already open, just surface it (restore if the
+    // user minimised it) instead of spawning a second window.
+    if (m_settingsDlg) {
+        m_settingsDlg->showNormal();
+        m_settingsDlg->raise();
+        m_settingsDlg->activateWindow();
+        return;
     }
+
+    // Non-modal, parentless window:
+    //  * Parentless + non-modal => Qt sets NO WM_TRANSIENT_FOR, so dragging the
+    //    Settings window can never move the main window (the earlier drag bug).
+    //  * Non-modal so it can actually be minimised and tucked away while you keep
+    //    using the main window (a minimised *modal* dialog would just freeze the
+    //    app).
+    auto *dlg = new SettingsDialog(m_engine, nullptr);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    // Explicit decorations: title + system menu + minimise + close, but NO
+    // maximise/fullscreen button. CustomizeWindowHint stops Qt re-adding the
+    // defaults. Combined with the dialog's fixed height, it can't be maximised.
+    dlg->setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
+                        Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint |
+                        Qt::WindowCloseButtonHint);
+    m_settingsDlg = dlg;
+
+    // Re-sync the clipboard monitor from the (just-saved) setting on OK; clean up
+    // on any close (accept/reject/window-close) since it's heap-allocated.
+    connect(dlg, &QDialog::accepted, this, [this]() {
+        if (m_clipboard)
+            m_clipboard->setEnabled(
+                QSettings().value(QStringLiteral("clipboardMonitor"), false).toBool());
+    });
+    connect(dlg, &QDialog::finished, dlg, &QObject::deleteLater);
+
+    // Lock to the natural size (width = content's sizeHint, height already fixed
+    // in the dialog). A fixed-size window can't be maximised or made fullscreen,
+    // so the WM drops those actions entirely — and the content never clips.
+    dlg->ensurePolished();
+    dlg->adjustSize();
+    dlg->setFixedSize(dlg->size());
+    // Center over the main window before showing (no parent to do it for us).
+    dlg->move(frameGeometry().center() - dlg->rect().center());
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void MainWindow::setClipboardMonitoring(bool on)
@@ -668,14 +708,35 @@ void MainWindow::openDetails(int id)
     if (id < 0)
         return;
     if (auto dlg = m_openDialogs.value(id)) {   // QPointer: null if already closed
-        dlg->show();
+        dlg->showNormal();                      // restore if it was minimised
         dlg->raise();
         dlg->activateWindow();
         return;
     }
-    auto *dlg = new DownloadDetailsDialog(m_engine, id, this);  // WA_DeleteOnClose
+    // Independent top-level window (no parent): it shows cleanly even when the
+    // main window is hidden (a browser handoff), gets its own taskbar entry, and
+    // dragging it never moves the main window.
+    auto *dlg = new DownloadDetailsDialog(m_engine, id, nullptr);  // WA_DeleteOnClose
     m_openDialogs.insert(id, dlg);
+    // Center over the main window if it's on screen, otherwise over the screen —
+    // then clamp the position so the whole window stays within the available
+    // screen area and is never cut off at the bottom/edges.
+    dlg->ensurePolished();
+    dlg->adjustSize();
+    if (QScreen *s = QGuiApplication::primaryScreen()) {
+        const QRect avail = s->availableGeometry();
+        const QRect ref = (isVisible() && !isMinimized()) ? frameGeometry() : avail;
+        const int titleBar = 40;   // leave room for the WM title bar above the widget
+        int x = ref.center().x() - dlg->width() / 2;
+        int y = ref.center().y() - dlg->height() / 2;
+        x = qBound(avail.left(), x, qMax(avail.left(), avail.right() - dlg->width() + 1));
+        y = qBound(avail.top() + titleBar, y,
+                   qMax(avail.top() + titleBar, avail.bottom() - dlg->height() + 1));
+        dlg->move(x, y);
+    }
     dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void MainWindow::showAndRaise()
@@ -833,6 +894,15 @@ void MainWindow::onTaskAdded(int id)
 
     applyFilter(m_search->text());
     updateStats();
+
+    // When a download starts while the main window isn't on screen (e.g. a
+    // browser link handoff), pop its details plate instead of surfacing the main
+    // list window — exactly the requested "click a link → plate opens, main
+    // window stays closed" flow. Skipped during the startup restore replay and
+    // for multi-video playlist jobs. When the user is already in the main window
+    // (visible), downloads just appear in the list as before.
+    if (!m_restoring && !m_engine->isPlaylist(id) && (!isVisible() || isMinimized()))
+        openDetails(id);
 }
 
 void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
@@ -841,8 +911,16 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
     if (row < 0)
         return;
 
-    if (auto *sizeItem = m_table->item(row, ColSize))
-        sizeItem->setText(total > 0 ? humanSize(total) : humanSize(done));
+    // A playlist reports progress as VIDEO COUNTS (done/total = videos), so show
+    // "N videos" instead of treating the count as a byte size.
+    const bool playlist = m_engine->isPlaylist(id);
+    if (auto *sizeItem = m_table->item(row, ColSize)) {
+        if (playlist)
+            sizeItem->setText(total > 0 ? QStringLiteral("%1 videos").arg(total)
+                                        : QStringLiteral("playlist"));
+        else
+            sizeItem->setText(total > 0 ? humanSize(total) : humanSize(done));
+    }
 
     if (auto *pc = m_table->cellWidget(row, ColProgress)) {
         auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar"));

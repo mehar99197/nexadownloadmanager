@@ -104,6 +104,14 @@ void SegmentDownloader::stop() {
     }
 }
 
+void SegmentDownloader::setEnd(qint64 newEnd) {
+    m_seg.end = newEnd;
+    // pump() caps writes at the (now smaller) segment length, so the worker will
+    // stop on its own. If we've already fetched up to the new end, finish now.
+    if (m_seg.complete() && m_reply)
+        m_reply->abort();
+}
+
 void SegmentDownloader::onReadyRead() {
     pump();
 }

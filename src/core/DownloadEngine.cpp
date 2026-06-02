@@ -99,6 +99,7 @@ QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
 {
     QList<int> ids = m_tasks.keys();
     ids.append(m_grabbers.keys());
+    ids.append(m_siteVideos.keys());     // yt-dlp video/playlist grabs
     ids.append(m_torrentIds.values());
     std::sort(ids.begin(), ids.end());
 
@@ -218,12 +219,14 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
                                    playlist, this);
         g->setSubtitles(m_embedSubs, m_subLangs);
+        g->setPlaylistConcurrency(m_plConcurrency);
         m_siteVideos.insert(id, g);
         if (playlist)
             m_playlistIds.insert(id);   // suppress the single-file details plate
         connect(g, &YtDlpGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
+        connect(g, &YtDlpGrabber::renamed,      this, &DownloadEngine::taskRenamed);
         emit taskAdded(id);
         g->start();
         return id;

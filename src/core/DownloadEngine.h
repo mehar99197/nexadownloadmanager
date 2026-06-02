@@ -85,6 +85,11 @@ public:
     bool    subtitlesEnabled() const { return m_embedSubs; }
     QString subtitleLangs() const { return m_subLangs; }
 
+    // How many playlist videos to download in parallel (applied to new playlist
+    // grabs). Higher uses more of the bandwidth that one-at-a-time leaves idle.
+    void setPlaylistConcurrency(int n) { m_plConcurrency = qBound(1, n, 8); }
+    int  playlistConcurrency() const { return m_plConcurrency; }
+
     // BitTorrent session caps (bytes/sec, 0 = unlimited) and seed-to-ratio.
     // Remembered and (re)applied whenever the torrent session is created.
     void   setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec);
@@ -188,6 +193,7 @@ private:
     int                    m_streamConcurrency = 16;   // HLS parallel segment fetches
     bool                   m_embedSubs = false;        // yt-dlp: fetch + embed subtitles
     QString                m_subLangs = QStringLiteral("en");
+    int                    m_plConcurrency = 3;        // playlist videos in parallel
     int                    m_torrentDlLimit = 0;       // B/s, 0 = unlimited
     int                    m_torrentUlLimit = 0;
     double                 m_seedRatio = 0.0;          // 0 = don't seed past completion

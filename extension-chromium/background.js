@@ -124,6 +124,37 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 
 const VIDEO_TYPES = new Set(["HLS", "DASH", "video", "audio"]);
 
+// ---- quality-probe cache -------------------------------------------------
+// yt-dlp -J (real video qualities) is network + subprocess bound — a few
+// seconds. We cache it per video URL so that, after a page-load prefetch,
+// opening the panel is an O(1) cache hit (instant) instead of a fresh probe.
+// In-flight requests are de-duplicated so a prefetch racing a click never runs
+// yt-dlp twice. Bounded size + TTL keep it small and reasonably fresh.
+const FMT_CACHE_TTL = 5 * 60 * 1000;   // 5 minutes
+const FMT_CACHE_MAX = 32;              // evict oldest beyond this
+const fmtCache = new Map();            // url -> { result, ts }
+const fmtInflight = new Map();         // url -> Promise<result>
+
+async function listFormatsCached(url) {
+  const hit = fmtCache.get(url);
+  if (hit && (Date.now() - hit.ts) < FMT_CACHE_TTL)
+    return hit.result;                 // best case: O(1), no probe
+  if (fmtInflight.has(url))
+    return fmtInflight.get(url);        // coalesce a concurrent prefetch + click
+  const p = (async () => {
+    const r = await sendNative({ type: "list-formats", url });
+    if (r && r.ok) {                   // only cache successes; let failures retry
+      fmtCache.set(url, { result: r, ts: Date.now() });
+      if (fmtCache.size > FMT_CACHE_MAX)
+        fmtCache.delete(fmtCache.keys().next().value);   // evict oldest (insertion order)
+    }
+    fmtInflight.delete(url);
+    return r;
+  })();
+  fmtInflight.set(url, p);
+  return p;
+}
+
 // ---- Messages from popup / content scripts -------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -136,9 +167,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const list = (tabMedia.get(tab?.id) || []).filter((m) => VIDEO_TYPES.has(m.type));
       sendResponse({ count: list.length, signature: list.map((m) => m.url).join("|") });
     } else if (msg.type === "nexa-list-formats") {
-      // Ask the desktop app (yt-dlp -J) for a site video's real qualities.
-      const r = await sendNative({ type: "list-formats", url: msg.url });
-      sendResponse(r);
+      // A site video's real qualities (yt-dlp -J), served from cache when warm.
+      sendResponse(await listFormatsCached(msg.url));
+    } else if (msg.type === "nexa-prefetch-formats") {
+      // Page-load prefetch: warm the cache in the background, reply immediately
+      // (the content script doesn't wait on this).
+      listFormatsCached(msg.url);      // fire-and-forget
+      sendResponse({ ok: true, prefetching: true });
     } else if (msg.type === "nexa-get-qualities") {
       sendResponse(await buildQualities(tab));
     } else if (msg.type === "nexa-get-media") {

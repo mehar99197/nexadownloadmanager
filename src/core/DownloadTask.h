@@ -38,6 +38,11 @@ public:
     // throttles its reads against it. Null = unlimited.
     void setRateLimiter(RateLimiter *limiter) { m_limiter = limiter; }
 
+    // Dynamic re-segmentation (work-stealing): when a connection finishes its
+    // segment, it splits the largest remaining segment and takes the tail, so no
+    // connection idles near the end. On by default (the IDM-style speed-up).
+    void setDynamicResegment(bool on) { m_dynamicResegment = on; }
+
     // Given a server-provided filename, returns the full path to save to
     // (categorised + de-duplicated). Set by the engine; used when a
     // Content-Disposition header reveals the real filename.
@@ -91,6 +96,8 @@ private:
     void buildSegments(qint64 total, bool rangesSupported);
     void launchSegments();
     void clearSegments();
+    SegmentDownloader *makeWorker(const SegmentInfo &seg);   // create + wire + track
+    bool tryResegment();          // split the largest remaining segment, steal its tail
     void persist();
     void checkAllComplete();
     void retrySegment(int index, const QString &reason);  // resume a failed segment
@@ -108,6 +115,7 @@ private:
     qint64                    m_done = 0;
     DownloadState             m_state = DownloadState::Queued;
     bool                      m_rangesSupported = false;
+    bool                      m_dynamicResegment = true;   // work-stealing on by default
 
     QNetworkReply            *m_probe = nullptr;
     QVector<SegmentInfo>      m_segments;

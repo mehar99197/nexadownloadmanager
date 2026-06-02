@@ -13,6 +13,10 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QScrollArea>
+#include <QFrame>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QSettings>
 
 namespace nexa {
@@ -26,6 +30,7 @@ constexpr auto kClipboard  = "clipboardMonitor";
 constexpr auto kMaxConc    = "maxConcurrent";
 constexpr auto kSpeedKB    = "speedLimitKB";
 constexpr auto kStreamConc = "streamConcurrency";
+constexpr auto kPlConc     = "playlistConcurrency";
 constexpr auto kSubs       = "subtitlesEnabled";
 constexpr auto kSubLangs   = "subtitleLangs";
 constexpr auto kTorrentDl  = "torrentDlKB";
@@ -54,6 +59,7 @@ void SettingsDialog::loadInto(DownloadEngine *engine)
     engine->setMaxConcurrent(s.value(QLatin1String(kMaxConc), 4).toInt());
     engine->setSpeedLimit(qint64(s.value(QLatin1String(kSpeedKB), 0).toInt()) * 1024);
     engine->setStreamConcurrency(s.value(QLatin1String(kStreamConc), 16).toInt());
+    engine->setPlaylistConcurrency(s.value(QLatin1String(kPlConc), 3).toInt());
     engine->setSubtitles(s.value(QLatin1String(kSubs), false).toBool(),
                          s.value(QLatin1String(kSubLangs), QStringLiteral("en")).toString());
     engine->setTorrentSpeedLimits(s.value(QLatin1String(kTorrentDl), 0).toInt() * 1024,
@@ -67,6 +73,14 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
 {
     setWindowTitle(QStringLiteral("Settings"));
     setMinimumWidth(460);
+    // Lock the height (the scroll area handles the long form). The height is
+    // FIXED so the window can't be dragged taller/shorter — vertical resizing
+    // used to reflow the form and leave the bottom shifting around with a gap.
+    // Kept under the screen height so it always fits.
+    int h = 660;
+    if (QScreen *s = QGuiApplication::primaryScreen())
+        h = qMin(h, s->availableGeometry().height() - 80);
+    setFixedHeight(qMax(360, h));
     // Make spin boxes / checkboxes legible on the dark theme.
     setStyleSheet(QStringLiteral(
         "QSpinBox, QDoubleSpinBox, QLineEdit { background:#0e1424; border:1px solid #232b42;"
@@ -76,9 +90,21 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(14, 14, 14, 14);
-    auto *plate = new QWidget(this);
+    outer->setSpacing(10);
+
+    // The form is long; put it in a scroll area so the dialog fits on small
+    // screens. The OK/Cancel row lives OUTSIDE the scroll area (added at the
+    // end) so Save/Cancel are always reachable without scrolling.
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->viewport()->setStyleSheet(QStringLiteral("background:transparent;"));
+    outer->addWidget(scroll, 1);
+
+    auto *plate = new QWidget;            // QScrollArea::setWidget takes ownership
     plate->setObjectName(QStringLiteral("Plate"));
-    outer->addWidget(plate);
+    scroll->setWidget(plate);
     auto *v = new QVBoxLayout(plate);
     v->setContentsMargins(18, 16, 18, 16);
     v->setSpacing(8);
@@ -127,6 +153,11 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_streamConc->setRange(1, 64);
     m_streamConc->setValue(m_engine->streamConcurrency());
     dl->addRow(QStringLiteral("HLS stream connections"), m_streamConc);
+
+    m_plConc = new QSpinBox(plate);
+    m_plConc->setRange(1, 8);
+    m_plConc->setValue(m_engine->playlistConcurrency());
+    dl->addRow(QStringLiteral("Playlist videos in parallel"), m_plConc);
     v->addLayout(dl);
 
     // ---- Video (yt-dlp) ---------------------------------------------------
@@ -184,14 +215,13 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     clearBtn->setCursor(Qt::PointingHandCursor);
     v->addWidget(clearBtn, 0, Qt::AlignLeft);
 
-    // ---- Buttons ----------------------------------------------------------
-    auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, plate);
+    // ---- Buttons (outside the scroll area, so they're always visible) -----
+    auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     if (auto *ok = btns->button(QDialogButtonBox::Ok)) {
         ok->setObjectName(QStringLiteral("Primary"));
         ok->setText(QStringLiteral("Save"));
     }
-    v->addSpacing(4);
-    v->addWidget(btns);
+    outer->addWidget(btns);
 
     connect(browse, &QPushButton::clicked, this, [this]() {
         const QString d = QFileDialog::getExistingDirectory(
@@ -217,6 +247,7 @@ void SettingsDialog::apply()
     m_engine->setMaxConcurrent(m_maxConc->value());
     m_engine->setSpeedLimit(qint64(m_speedKB->value()) * 1024);
     m_engine->setStreamConcurrency(m_streamConc->value());
+    m_engine->setPlaylistConcurrency(m_plConc->value());
     m_engine->setSubtitles(m_subs->isChecked(), m_subLangs->text());
     m_engine->setTorrentSpeedLimits(m_torrentDlKB->value() * 1024,
                                     m_torrentUlKB->value() * 1024);
@@ -231,6 +262,7 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kMaxConc), m_maxConc->value());
     s.setValue(QLatin1String(kSpeedKB), m_speedKB->value());
     s.setValue(QLatin1String(kStreamConc), m_streamConc->value());
+    s.setValue(QLatin1String(kPlConc), m_plConc->value());
     s.setValue(QLatin1String(kSubs), m_subs->isChecked());
     s.setValue(QLatin1String(kSubLangs), m_subLangs->text().trimmed());
     s.setValue(QLatin1String(kTorrentDl), m_torrentDlKB->value());

@@ -274,12 +274,7 @@ void DownloadTask::launchSegments()
             ++m_completedSegments;
             continue;
         }
-        auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, m_limiter, this);
-        connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
-        connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
-        connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
-        connect(w, &SegmentDownloader::shortFinish, this, &DownloadTask::onSegmentShortFinish);
-        m_workers.append(w);
+        makeWorker(seg);
         ++m_activeSegments;
     }
     for (auto *w : m_workers)
@@ -287,6 +282,73 @@ void DownloadTask::launchSegments()
 
     if (m_activeSegments == 0)
         checkAllComplete();
+}
+
+SegmentDownloader *DownloadTask::makeWorker(const SegmentInfo &seg)
+{
+    auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, m_limiter, this);
+    connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
+    connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
+    connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
+    connect(w, &SegmentDownloader::shortFinish, this, &DownloadTask::onSegmentShortFinish);
+    m_workers.append(w);
+    return w;
+}
+
+// Dynamic re-segmentation (work-stealing): a connection that just finished its
+// segment grabs the SECOND HALF of whichever active segment has the most bytes
+// still to fetch. The donor is shrunk to stop at the split point and the freed
+// connection downloads the tail — so all connections stay busy until the very
+// end instead of trickling down to one slow stream. This is the IDM-style trick
+// that keeps the aggregate speed high through the tail of a download.
+bool DownloadTask::tryResegment()
+{
+    // Only meaningful for a real multi-range download with a known size.
+    if (!m_dynamicResegment || !m_rangesSupported || m_total <= 0)
+        return false;
+
+    // Pick the active worker with the largest un-fetched remainder.
+    SegmentDownloader *donor = nullptr;
+    int    donorIdx = -1;
+    qint64 best = 0, donorPos = 0;
+    for (auto *w : m_workers) {
+        const int si = w->index();
+        if (si < 0 || si >= m_segments.size() || m_segments[si].complete())
+            continue;
+        const qint64 pos = m_segments[si].start + w->bytesDone();   // next byte it will write
+        const qint64 remaining = m_segments[si].end - pos + 1;
+        if (remaining > best) { best = remaining; donor = w; donorIdx = si; donorPos = pos; }
+    }
+
+    // Not worth splitting a small remainder (the overhead/extra connection costs
+    // more than it saves once the tail is tiny).
+    static const qint64 kMinSplit = 4 * 1024 * 1024;   // 4 MB
+    if (!donor || best < kMinSplit)
+        return false;
+
+    const qint64 oldEnd = m_segments[donorIdx].end;
+    const qint64 mid    = donorPos + (oldEnd - donorPos + 1) / 2;   // first byte of the tail
+    if (mid <= donorPos || mid > oldEnd)                            // safety: keep ranges valid
+        return false;
+
+    // Shrink the donor to [start, mid-1]; it stops there. The freed connection
+    // fetches the tail [mid, oldEnd] — contiguous, non-overlapping, no gap.
+    m_segments[donorIdx].end = mid - 1;
+    donor->setEnd(mid - 1);
+
+    SegmentInfo tail;
+    tail.index = m_segments.size();
+    tail.start = mid;
+    tail.end   = oldEnd;
+    tail.done  = 0;
+    m_segments.append(tail);
+    makeWorker(tail)->start();
+
+    if (kDebug)
+        qDebug().noquote() << "NEXA RESEG" << m_id << "split seg" << donorIdx
+                           << "@" << mid << "-> seg" << tail.index
+                           << "(" << (oldEnd - mid + 1) << "B)";
+    return true;
 }
 
 void DownloadTask::clearSegments()
@@ -317,6 +379,10 @@ void DownloadTask::onSegmentCompleted(int index)
     if (index >= 0 && index < m_segments.size())
         m_segments[index].done = m_segments[index].length();
     ++m_completedSegments;
+    // The connection is now free — instead of going idle, steal the tail of the
+    // largest remaining segment so throughput stays high through the end.
+    if (m_state == DownloadState::Downloading)
+        tryResegment();
     persist();
     checkAllComplete();
 }

@@ -31,6 +31,11 @@ public:
     void start();              // begins / resumes from seg.done
     void stop();               // aborts the in-flight request (keeps bytes done)
 
+    // Shrink this segment's end (dynamic re-segmentation): the worker then stops
+    // at the new boundary so a freed connection can take the tail. Only ever
+    // moved EARLIER, and only ahead of the current write position.
+    void setEnd(qint64 newEnd);
+
     int    index()     const { return m_seg.index; }
     qint64 bytesDone() const { return m_seg.done; }
     qint64 length()    const { return m_seg.length(); }
