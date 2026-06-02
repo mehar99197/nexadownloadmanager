@@ -16,6 +16,7 @@ namespace nexa {
 
 class SegmentDownloader;
 class Database;
+class RateLimiter;
 
 // Represents one download: probes the server, splits the file into byte-range
 // segments, runs them concurrently, tracks progress/speed, and supports
@@ -32,6 +33,10 @@ public:
 
     void setHeaders(const HeaderList &headers) { m_headers = headers; }
     HeaderList headers() const { return m_headers; }
+
+    // Shared global rate limiter (owned by the engine). When set, each segment
+    // throttles its reads against it. Null = unlimited.
+    void setRateLimiter(RateLimiter *limiter) { m_limiter = limiter; }
 
     // Given a server-provided filename, returns the full path to save to
     // (categorised + de-duplicated). Set by the engine; used when a
@@ -96,6 +101,7 @@ private:
     QString                   m_savePath;
     QNetworkAccessManager    *m_nam = nullptr;
     Database                 *m_db = nullptr;
+    RateLimiter              *m_limiter = nullptr;
 
     HeaderList                m_headers;
     qint64                    m_total = -1;     // -1 = unknown
@@ -117,6 +123,7 @@ private:
     QElapsedTimer             m_clock;
     qint64                    m_lastTickBytes = 0;
     qint64                    m_lastTickMs = 0;
+    int                       m_ticksSincePersist = 0;   // throttle periodic DB saves
 };
 
 } // namespace nexa

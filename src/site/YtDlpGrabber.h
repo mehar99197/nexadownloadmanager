@@ -33,6 +33,11 @@ public:
     void start();
     void cancel();
 
+    // Download and embed subtitles into the output (manual + auto-generated) for
+    // the given comma-separated languages (e.g. "en,en-US"). Off by default; the
+    // engine wires this to the user's Settings value. No-op for audio-only grabs.
+    void setSubtitles(bool embed, const QString &langs);
+
     int           id()       const { return m_id; }
     QUrl          url()      const { return m_url; }
     QString       savePath() const { return m_savePath; }
@@ -66,6 +71,8 @@ private:
     HeaderList      m_headers;
     QStringList     m_authArgs;   // pre-built domain-scoped yt-dlp auth flags
     bool            m_playlist = false;   // download the whole playlist
+    bool            m_embedSubs = false;  // fetch + embed subtitles
+    QString         m_subLangs = QStringLiteral("en");   // comma-separated languages
     int             m_plItem = 0;         // current playlist item (1-based)
     int             m_plTotal = 0;        // playlist item count
     DownloadState   m_state = DownloadState::Queued;

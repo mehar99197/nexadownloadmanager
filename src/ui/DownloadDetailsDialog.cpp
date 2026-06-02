@@ -762,8 +762,13 @@ void DownloadDetailsDialog::refreshFields()
     const QString rate = humanSpeed(m_bps);
     m_vRate->setText(rate.isEmpty() ? QStringLiteral("—") : rate);
 
-    m_vEta->setText((m_total > 0 && m_bps > 1.0)
-        ? humanTime(qint64((m_total - m_done) / m_bps))
+    // ETA off the smoothed (EMA) speed, not the raw instantaneous sample: with
+    // 16 bursty segments the per-tick rate swings wildly, so dividing by it gave
+    // an ETA that jumped between seconds and minutes every refresh.
+    const bool active = (m_state == DownloadState::Downloading ||
+                         m_state == DownloadState::Probing);
+    m_vEta->setText((active && m_total > 0 && m_avgBps > 1.0 && m_done < m_total)
+        ? humanTime(qint64((m_total - m_done) / m_avgBps))
         : QStringLiteral("—"));
 
     // Resume capability: known only for HTTP DownloadTasks (after probe).
@@ -825,8 +830,12 @@ void DownloadDetailsDialog::refreshConnections()
             auto setCell = [&](int col, const QString &text, const QColor &fg) {
                 QTableWidgetItem *it = m_table->item(i, col);
                 if (!it) { it = new QTableWidgetItem; m_table->setItem(i, col, it); }
-                it->setText(text);
-                it->setForeground(fg);
+                // Skip the write when nothing changed: with 16–32 rows refreshed
+                // every 500 ms, guarding here avoids needless dataChanged/repaint
+                // churn (the index column in particular never changes after
+                // creation, so it's written exactly once).
+                if (it->text() != text) it->setText(text);
+                if (it->foreground().color() != fg) it->setForeground(fg);
             };
             setCell(CN,          QString::number(s.index + 1), QColor(0x8b94a7));
             setCell(CDownloaded, humanSize(s.done),            QColor(0xc7cedb));
@@ -872,6 +881,8 @@ void DownloadDetailsDialog::onProgress(int id, qint64 done, qint64 total, double
 {
     if (id != m_id) return;
     m_done = done; m_total = total; m_bps = bps;
+    // Exponential moving average for a steady ETA (≈ last 5 samples dominate).
+    m_avgBps = (m_avgBps < 1.0) ? bps : m_avgBps * 0.8 + bps * 0.2;
     ++m_phase;                       // keeps the indeterminate rail moving
     m_speedMeter->setSpeed(bps);
     m_speedGraph->addSample(bps);
@@ -887,8 +898,10 @@ void DownloadDetailsDialog::onStateChanged(int id, DownloadState state, const QS
     m_state = state;
     m_detail = detail;
     // Needle falls to zero when not actively downloading.
-    if (state != DownloadState::Downloading && state != DownloadState::Probing)
+    if (state != DownloadState::Downloading && state != DownloadState::Probing) {
         m_speedMeter->setSpeed(0.0);
+        m_avgBps = 0.0;              // a later resume re-converges from scratch
+    }
     refreshHeader();
     refreshFields();
     refreshOverallBar();

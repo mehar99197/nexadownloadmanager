@@ -21,6 +21,8 @@ add_executable(nexa
     resources.qrc
     src/main.cpp
     src/core/Database.cpp
+    src/core/RateLimiter.cpp
+    src/core/UpdateChecker.cpp
     src/core/SegmentDownloader.cpp
     src/core/DownloadTask.cpp
     src/core/DownloadEngine.cpp
@@ -36,6 +38,8 @@ add_executable(nexa
     src/ui/UiHelpers.cpp
     src/ui/DownloadDetailsDialog.cpp
     src/ui/SiteLoginsDialog.cpp
+    src/ui/SettingsDialog.cpp
+    src/ui/ClipboardMonitor.cpp
     src/ui/MainWindow.cpp
 )
 

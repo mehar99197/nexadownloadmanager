@@ -3,8 +3,14 @@
 
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QSslServer>
+#include <QSslSocket>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QSslKey>
 #include <QHostAddress>
 #include <QTimer>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -124,10 +130,59 @@ WebServer::WebServer(DownloadEngine *engine, QObject *parent)
 {
 }
 
+// If NEXA_TLS_CERT + NEXA_TLS_KEY point at a PEM cert/key, build a QSslServer so
+// the dashboard is served over HTTPS (QSslSocket is a QTcpSocket, so the rest of
+// the server is unchanged). Returns nullptr if TLS wasn't requested or failed,
+// so the caller falls back to plain HTTP.
+static QSslServer *makeTlsServer(QObject *parent)
+{
+    const QString certPath = qEnvironmentVariable("NEXA_TLS_CERT");
+    const QString keyPath  = qEnvironmentVariable("NEXA_TLS_KEY");
+    if (certPath.isEmpty() || keyPath.isEmpty())
+        return nullptr;
+
+    QFile cf(certPath), kf(keyPath);
+    if (!cf.open(QIODevice::ReadOnly) || !kf.open(QIODevice::ReadOnly)) {
+        qWarning() << "Nexa TLS: cannot read cert/key; serving plain HTTP";
+        return nullptr;
+    }
+    const QSslCertificate cert(&cf, QSsl::Pem);
+    const QByteArray keyPem = kf.readAll();
+    // PEM private keys may be RSA, EC or DSA — try each until one parses.
+    QSslKey key(keyPem, QSsl::Rsa, QSsl::Pem);
+    if (key.isNull()) key = QSslKey(keyPem, QSsl::Ec,  QSsl::Pem);
+    if (key.isNull()) key = QSslKey(keyPem, QSsl::Dsa, QSsl::Pem);
+    if (cert.isNull() || key.isNull()) {
+        qWarning() << "Nexa TLS: invalid cert/key; serving plain HTTP";
+        return nullptr;
+    }
+
+    auto *ssl = new QSslServer(parent);
+    QSslConfiguration cfg = QSslConfiguration::defaultConfiguration();
+    cfg.setLocalCertificate(cert);
+    cfg.setPrivateKey(key);
+    ssl->setSslConfiguration(cfg);
+    // A client that opens a TCP connection but never finishes the TLS handshake
+    // isn't covered by the per-request idle timer (that only arms once a socket
+    // surfaces as a connection), so bound the handshake itself and log failures
+    // (a silent dead-but-bound port is otherwise hard to diagnose).
+    ssl->setHandshakeTimeout(15000);
+    QObject::connect(ssl, &QSslServer::errorOccurred, ssl,
+                     [](QSslSocket *, QAbstractSocket::SocketError e) {
+        qWarning() << "Nexa TLS handshake error:" << e;
+    });
+    return ssl;
+}
+
 bool WebServer::start(quint16 port, bool lanAccessible, const QString &token)
 {
     m_token = token;
-    m_server = new QTcpServer(this);
+    if (QSslServer *ssl = makeTlsServer(this)) {
+        m_server = ssl;
+        m_tls = true;
+    } else {
+        m_server = new QTcpServer(this);
+    }
     connect(m_server, &QTcpServer::newConnection, this, &WebServer::onNewConnection);
 
     const QHostAddress addr = lanAccessible ? QHostAddress::Any : QHostAddress::LocalHost;
@@ -177,6 +232,10 @@ void WebServer::closeConnection(QTcpSocket *sock)
     if (!m_conns.contains(sock))
         return;
     m_conns.remove(sock);
+    // Drop our readyRead/disconnected handlers first: abort() emits disconnected
+    // synchronously, and without this that slot would also run m_conns.remove +
+    // deleteLater on the same socket. Disconnecting makes teardown happen once.
+    sock->disconnect(this);
     sock->abort();
     sock->deleteLater();
 }
@@ -269,6 +328,13 @@ bool WebServer::tryParse(const QByteArray &buf, Request &req, bool &needMore) co
 
 void WebServer::dispatch(QTcpSocket *sock, const Request &req)
 {
+    // CORS preflight: answered before the auth gate (the browser sends OPTIONS
+    // with no Authorization header). The CORS headers ride on every response.
+    if (req.method == QLatin1String("OPTIONS")) {
+        sendResponse(sock, 204, QStringLiteral("text/plain"), QByteArray());
+        return;
+    }
+
     // Auth gate. Prefer an Authorization: Bearer header (the API calls use it);
     // fall back to ?token= for the initial page link the user opens.
     if (!m_token.isEmpty()) {
@@ -385,6 +451,13 @@ void WebServer::sendResponse(QTcpSocket *sock, int code, const QString &contentT
     resp += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
     resp += "Cache-Control: no-store\r\n";
     resp += "Referrer-Policy: no-referrer\r\n";   // keep ?token= out of Referer
+    // CORS: the API is gated by a Bearer token (not cookies), so allowing any
+    // origin is safe — a cross-origin page still can't call it without the token.
+    // This lets custom dashboards / scripts on other origins use the REST API.
+    resp += "Access-Control-Allow-Origin: *\r\n";
+    resp += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+    resp += "Access-Control-Allow-Headers: Authorization, Content-Type\r\n";
+    resp += "Access-Control-Max-Age: 600\r\n";
     resp += "Connection: close\r\n";
     resp += "\r\n";
     resp += body;

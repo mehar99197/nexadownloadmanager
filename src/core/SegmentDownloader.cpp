@@ -1,4 +1,5 @@
 #include "core/SegmentDownloader.h"
+#include "core/RateLimiter.h"
 #include "auth/AuthUtils.h"
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -11,9 +12,10 @@ SegmentDownloader::SegmentDownloader(const SegmentInfo &seg,
                                      const QString &filePath,
                                      const HeaderList &headers,
                                      QNetworkAccessManager *nam,
+                                     RateLimiter *limiter,
                                      QObject *parent)
     : QObject(parent), m_seg(seg), m_url(url), m_filePath(filePath),
-      m_headers(headers) {
+      m_headers(headers), m_limiter(limiter) {
     // Each segment gets its OWN network manager. QNetworkAccessManager caps at
     // 6 simultaneous connections *per host*, so sharing one would throttle us to
     // 6 parallel segments. A dedicated manager per segment unlocks the full
@@ -21,6 +23,20 @@ SegmentDownloader::SegmentDownloader(const SegmentInfo &seg,
     Q_UNUSED(nam);
     m_nam = new QNetworkAccessManager(this);
     m_file.setFileName(m_filePath);
+    // While a global speed limit is active, the limiter wakes us ~20×/s so we
+    // can drain bytes we had to leave buffered when the token budget ran dry.
+    if (m_limiter) {
+        connect(m_limiter, &RateLimiter::replenished, this, &SegmentDownloader::pump);
+        // If the limit is toggled mid-download, (un)bound the socket read buffer
+        // on the in-flight reply so backpressure is applied/relaxed immediately
+        // (otherwise an unbounded buffer would keep filling at full line speed).
+        connect(m_limiter, &RateLimiter::limitedChanged, this, [this](bool limited) {
+            if (m_reply)
+                m_reply->setReadBufferSize(limited ? (2 * 1024 * 1024) : 0);
+            if (limited)
+                pump();
+        });
+    }
 }
 
 SegmentDownloader::~SegmentDownloader() {
@@ -72,6 +88,11 @@ void SegmentDownloader::start() {
     req.setRawHeader("Range", range);
 
     m_reply = m_nam->get(req);
+    // When throttled, bound Qt's read buffer so that pausing our reads actually
+    // applies TCP backpressure (the socket stops being drained, the sender slows)
+    // instead of letting unread data pile up in memory at full line speed.
+    // Unlimited downloads keep an unbounded buffer for maximum throughput.
+    m_reply->setReadBufferSize(m_limiter && m_limiter->isLimited() ? (2 * 1024 * 1024) : 0);
     connect(m_reply, &QNetworkReply::readyRead, this, &SegmentDownloader::onReadyRead);
     connect(m_reply, &QNetworkReply::finished, this, &SegmentDownloader::onFinished);
 }
@@ -84,27 +105,44 @@ void SegmentDownloader::stop() {
 }
 
 void SegmentDownloader::onReadyRead() {
+    pump();
+}
+
+void SegmentDownloader::pump() {
     if (!m_reply)
         return;
-    const QByteArray chunk = m_reply->readAll();
-    if (chunk.isEmpty())
-        return;
+    // Drain as much as the rate limiter currently allows. Reading only the
+    // granted amount (not readAll) leaves the rest buffered; replenished() calls
+    // us again when more budget accrues. With no limiter, `granted == want` so
+    // this is a straight readAll-equivalent at full speed.
+    while (true) {
+        const qint64 avail = m_reply->bytesAvailable();
+        if (avail <= 0)
+            break;
+        // Never read past this segment's boundary (guards against servers that
+        // ignore the Range header and stream the whole file).
+        const qint64 segLeft = m_seg.length() - m_seg.done;
+        if (segLeft <= 0)
+            break;
+        const qint64 want = qMin(avail, segLeft);
+        const qint64 granted = m_limiter ? m_limiter->consume(want) : want;
+        if (granted <= 0)
+            break;   // out of budget for now — replenished() will resume us
 
-    // Never write past this segment's boundary (guards against servers that
-    // ignore the Range header and stream the whole file).
-    qint64 allowed = m_seg.length() - m_seg.done;
-    qint64 toWrite = qMin<qint64>(chunk.size(), allowed);
-    if (toWrite <= 0)
-        return;
-
-    const qint64 written = m_file.write(chunk.constData(), toWrite);
-    if (written < 0) {
-        emit failed(m_seg.index, QStringLiteral("write failed: %1").arg(m_file.errorString()));
-        stop();
-        return;
+        const QByteArray chunk = m_reply->read(granted);
+        if (chunk.isEmpty())
+            break;
+        if (m_limiter && chunk.size() < granted)
+            m_limiter->refund(granted - chunk.size());   // keep the rate accurate
+        const qint64 written = m_file.write(chunk.constData(), chunk.size());
+        if (written < 0) {
+            emit failed(m_seg.index, QStringLiteral("write failed: %1").arg(m_file.errorString()));
+            stop();
+            return;
+        }
+        m_seg.done += written;
+        emit progressed(m_seg.index, written);
     }
-    m_seg.done += written;
-    emit progressed(m_seg.index, written);
 
     if (m_seg.complete() && m_reply) {
         // Got everything we need for this segment; stop early.
@@ -115,6 +153,23 @@ void SegmentDownloader::onReadyRead() {
 void SegmentDownloader::onFinished() {
     if (!m_reply)
         return;
+    // Final drain: write any bytes still buffered (left unread under the rate
+    // limit when the token budget ran out). They're already downloaded, so
+    // writing them now doesn't violate the cap — and it prevents a throttled
+    // transfer from looking "short" below and being wrongly truncated/retried.
+    while (m_reply->bytesAvailable() > 0) {
+        const qint64 segLeft = m_seg.length() - m_seg.done;
+        if (segLeft <= 0)
+            break;
+        const QByteArray chunk = m_reply->read(qMin(m_reply->bytesAvailable(), segLeft));
+        if (chunk.isEmpty())
+            break;
+        const qint64 w = m_file.write(chunk.constData(), chunk.size());
+        if (w <= 0)
+            break;
+        m_seg.done += w;
+        emit progressed(m_seg.index, w);
+    }
     const QNetworkReply::NetworkError err = m_reply->error();
     const QString errorString = m_reply->errorString();
     const int httpStatus = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

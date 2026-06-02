@@ -44,14 +44,38 @@ QString HlsGrabber::tempDir() const
     return base + QStringLiteral("/nexa-stream-%1").arg(m_id);
 }
 
+void HlsGrabber::setConcurrency(int n)
+{
+    m_concurrency = qBound(1, n, 64);
+}
+
 void HlsGrabber::setState(DownloadState s, const QString &detail)
 {
     m_state = s;
+    // A failed grab can't be resumed from its partial temp files (HLS restarts
+    // from scratch), so drop them now instead of leaking a temp dir per error
+    // until the job is eventually removed.
+    if (s == DownloadState::Error)
+        cleanupTemp();
     emit stateChanged(m_id, s, detail);
 }
 
 void HlsGrabber::start()
 {
+    // HLS has no partial resume: a (re)start downloads from scratch. Reset all
+    // per-run state and clear any stale temp dir so a restart after a cancel or
+    // error can't append to the previous run's segment list or files.
+    cleanupTemp();
+    ++m_runGen;            // any reply tagged with an older gen is now stale
+    m_cancelled = false;
+    m_resolvedVariant = false;
+    m_segments.clear();
+    m_nextToFetch = 0;
+    m_inFlight = 0;
+    m_doneCount = 0;
+    m_bytes = 0;
+    m_localPlaylist.clear();
+
     m_clock.start();
     QDir().mkpath(tempDir());
 
@@ -70,6 +94,7 @@ void HlsGrabber::cancel()
     m_cancelled = true;
     if (m_playlistReply) { m_playlistReply->abort(); m_playlistReply = nullptr; }
     if (m_ffmpeg) { m_ffmpeg->kill(); }
+    cleanupTemp();   // partial segments are unusable on the next (scratch) start
     setState(DownloadState::Paused, QStringLiteral("cancelled"));
 }
 
@@ -217,7 +242,7 @@ void HlsGrabber::handleMedia(const QString &text)
 
 void HlsGrabber::pumpDownloads()
 {
-    while (m_inFlight < kConcurrency && m_nextToFetch < m_segments.size()) {
+    while (m_inFlight < m_concurrency && m_nextToFetch < m_segments.size()) {
         const int idx = m_nextToFetch++;
         const Segment &seg = m_segments[idx];
 
@@ -232,6 +257,7 @@ void HlsGrabber::pumpDownloads()
 
         QNetworkReply *reply = nam->get(req);
         reply->setProperty("segIndex", idx);
+        reply->setProperty("gen", m_runGen);
         reply->setProperty("ownNam", QVariant::fromValue<void*>(nam));
         connect(reply, &QNetworkReply::finished, this, &HlsGrabber::onSegmentFinished);
         ++m_inFlight;
@@ -246,13 +272,18 @@ void HlsGrabber::onSegmentFinished()
     const int idx = reply->property("segIndex").toInt();
     auto *nam = static_cast<QNetworkAccessManager*>(reply->property("ownNam").value<void*>());
 
-    --m_inFlight;
-
-    if (m_cancelled) {
+    // Reject replies from a previous run (a cancel/restart bumped m_runGen) or
+    // after we've cancelled / already errored. These mustn't touch m_inFlight or
+    // index into the current m_segments — the old index may be out of bounds.
+    const bool stale = reply->property("gen").toInt() != m_runGen ||
+                       m_cancelled || m_state == DownloadState::Error;
+    if (stale) {
         reply->deleteLater();
         if (nam) nam->deleteLater();
         return;
     }
+
+    --m_inFlight;
 
     if (reply->error() != QNetworkReply::NoError) {
         reply->deleteLater();
@@ -266,6 +297,8 @@ void HlsGrabber::onSegmentFinished()
     reply->deleteLater();
     if (nam) nam->deleteLater();
 
+    if (idx < 0 || idx >= m_segments.size())   // defense-in-depth (gen guard already covers this)
+        return;
     QFile f(tempDir() + QStringLiteral("/") + m_segments[idx].localFile);
     if (f.open(QIODevice::WriteOnly)) {
         f.write(data);

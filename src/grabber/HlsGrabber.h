@@ -31,6 +31,10 @@ public:
     void start();
     void cancel();
 
+    // Parallel segment fetches. Defaults to 16; the engine wires this to the
+    // user's Settings value so it can be tuned (or throttled on slow links).
+    void setConcurrency(int n);
+
     int           id()        const { return m_id; }
     QUrl          url()       const { return m_url; }
     QString       savePath()  const { return m_savePath; }
@@ -81,12 +85,13 @@ private:
     int                    m_nextToFetch = 0;
     int                    m_inFlight = 0;
     int                    m_doneCount = 0;
+    int                    m_runGen = 0;        // bumped each (re)start; tags replies
     qint64                 m_bytes = 0;
     bool                   m_resolvedVariant = false;
     bool                   m_cancelled = false;
     QElapsedTimer          m_clock;
 
-    static constexpr int kConcurrency = 16;   // parallel segment fetches (accelerator)
+    int                    m_concurrency = 16;   // parallel segment fetches (accelerator)
 };
 
 } // namespace nexa

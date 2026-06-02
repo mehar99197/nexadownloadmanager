@@ -26,6 +26,12 @@ public:
     QString       nameOf(int id) const;
     DownloadState stateOf(int id) const;
 
+    // Session-wide rate caps in bytes/sec; 0 = unlimited. Applied live.
+    void setSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec);
+    // Seed until upload/download ratio reaches `ratio`, then stop. 0 (default)
+    // means don't seed at all — stop the moment the download completes.
+    void setSeedRatio(double ratio);
+
     static bool isTorrentUrl(const QString &s);   // magnet: or *.torrent
 
 signals:

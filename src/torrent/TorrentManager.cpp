@@ -30,6 +30,9 @@ struct TorrentManager::Impl {
     QHash<int, lt::torrent_handle>  handles;
     QHash<int, QString>             names;
     QSet<int>                       completed;   // ids we've already signalled done
+    int                             dlLimit = 0; // session download cap, B/s (0=∞)
+    int                             ulLimit = 0; // session upload cap, B/s (0=∞)
+    double                          seedRatio = 0.0;  // 0 = don't seed past completion
 };
 
 TorrentManager::TorrentManager(QObject *parent)
@@ -73,6 +76,23 @@ TorrentManager::TorrentManager(QObject *parent)
 TorrentManager::~TorrentManager()
 {
     delete d->session;   // blocks briefly while the session shuts down
+}
+
+void TorrentManager::setSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec)
+{
+    d->dlLimit = qMax(0, downloadBytesPerSec);
+    d->ulLimit = qMax(0, uploadBytesPerSec);
+    if (!d->session)
+        return;
+    lt::settings_pack sp;
+    sp.set_int(lt::settings_pack::download_rate_limit, d->dlLimit);
+    sp.set_int(lt::settings_pack::upload_rate_limit,   d->ulLimit);
+    d->session->apply_settings(sp);   // live; affects all current + future torrents
+}
+
+void TorrentManager::setSeedRatio(double ratio)
+{
+    d->seedRatio = qMax(0.0, ratio);
 }
 
 bool TorrentManager::isTorrentUrl(const QString &s)
@@ -163,11 +183,14 @@ DownloadState TorrentManager::stateOf(int id) const
         return DownloadState::Queued;
 
     const lt::torrent_status st = it->status();
-    if (st.flags & lt::torrent_flags::paused)
-        return DownloadState::Paused;
+    // Finished/seeding wins over the paused flag: a completed download that we
+    // auto-paused (seed ratio reached, or "don't seed") is still Completed, not
+    // Paused. Only an unfinished, paused torrent reports Paused.
     if (st.state == lt::torrent_status::finished ||
         st.state == lt::torrent_status::seeding)
         return DownloadState::Completed;
+    if (st.flags & lt::torrent_flags::paused)
+        return DownloadState::Paused;
     if (st.state == lt::torrent_status::downloading_metadata ||
         st.state == lt::torrent_status::checking_files ||
         st.state == lt::torrent_status::checking_resume_data)
@@ -215,11 +238,22 @@ void TorrentManager::poll()
 
         if (isFinished) {
             if (!d->completed.contains(id)) {
+                // First time we see it done: the file is usable now, so signal
+                // Completed. Stop immediately unless the user opted to seed to a
+                // ratio, in which case we keep seeding in the background.
                 d->completed.insert(id);
-                it->pause();   // stop seeding — this is a download manager
+                if (d->seedRatio <= 0.0)
+                    it->pause();
                 emit stateChanged(id, DownloadState::Completed,
                                   QStringLiteral("complete (%1 peers)").arg(st.num_peers));
                 emit finished(id);
+            } else if (d->seedRatio > 0.0 && !paused) {
+                // Already completed and seeding: stop once the target share ratio
+                // (uploaded / downloaded) is reached, so we don't seed forever.
+                const qint64 down = qMax<qint64>(1, qint64(st.all_time_download));
+                const double ratio = double(st.all_time_upload) / double(down);
+                if (ratio >= d->seedRatio)
+                    it->pause();
             }
             continue;
         }

@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QUrl>
 
 namespace nexa {
@@ -22,7 +23,7 @@ AiClient::AiClient(QObject *parent)
 }
 
 void AiClient::send(const QString &systemPrompt, const QString &userMessage,
-                    int maxTokens, std::function<void(QString)> onText)
+                    int maxTokens, std::function<void(QString)> onText, int attempt)
 {
     if (!isConfigured()) {
         onText(QString());
@@ -43,14 +44,44 @@ void AiClient::send(const QString &systemPrompt, const QString &userMessage,
                                 {QStringLiteral("content"), userMessage}}}}};
 
     QNetworkReply *reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [reply, onText]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, onText, systemPrompt, userMessage, maxTokens, attempt]() {
         reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError netErr = reply->error();
+
+        if (netErr != QNetworkReply::NoError) {
+            // Retry only transient failures: rate limits (429), request timeout
+            // (408), any 5xx, and connection-level errors. Client errors like
+            // 401 (bad key) / 400 (bad request) won't fix themselves — give up.
+            const bool retryable =
+                status == 429 || status == 408 || status >= 500 ||
+                netErr == QNetworkReply::TimeoutError ||
+                netErr == QNetworkReply::TemporaryNetworkFailureError ||
+                netErr == QNetworkReply::ConnectionRefusedError ||
+                netErr == QNetworkReply::RemoteHostClosedError ||
+                netErr == QNetworkReply::HostNotFoundError ||
+                netErr == QNetworkReply::UnknownNetworkError;
+            if (retryable && attempt + 1 < kMaxAttempts) {
+                const int backoffMs = 600 * (1 << attempt);   // 600 ms, then 1200 ms
+                QTimer::singleShot(backoffMs, this,
+                    [this, systemPrompt, userMessage, maxTokens, onText, attempt]() {
+                        send(systemPrompt, userMessage, maxTokens, onText, attempt + 1);
+                    });
+                return;
+            }
             onText(QString());
             return;
         }
-        // Anthropic shape: { "content": [ { "type": "text", "text": "..." } ] }
+
+        // Anthropic shape: { "content": [ { "type": "text", "text": "..." } ] }.
+        // A 200 with an error envelope or no text blocks yields an empty string
+        // so callers fall back to their default behaviour instead of crashing.
         const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+        if (obj.value(QStringLiteral("type")).toString() == QLatin1String("error")) {
+            onText(QString());
+            return;
+        }
         const QJsonArray content = obj.value(QStringLiteral("content")).toArray();
         QString text;
         for (const QJsonValue &block : content) {

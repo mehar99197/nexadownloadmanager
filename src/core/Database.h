@@ -30,8 +30,14 @@ public:
     void removeTask(int id);
     QVector<TaskRecord> loadAll();
 
+    // Delete completed downloads (and their segment rows) last touched more than
+    // `olderThanDays` days ago; pass 0 to clear all completed history. Returns
+    // the number of download rows removed. Surfaced via Settings.
+    int  clearCompleted(int olderThanDays = 0);
+
 private:
     void ensureSchema();
+    void pruneOrphanSegments();   // drop segment rows with no parent download
     QSqlDatabase m_db;
     int          m_nextId = 1;
 };

@@ -6,6 +6,7 @@
 #include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
+#include "core/RateLimiter.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -29,6 +30,7 @@ DownloadEngine::DownloadEngine(QObject *parent)
 {
     m_nam = new QNetworkAccessManager(this);
     m_db = new Database();
+    m_limiter = new RateLimiter(this);   // global HTTP speed cap (0 = unlimited)
 
     const QString dataDir =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -215,6 +217,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         const QString fmt = YtDlpGrabber::formatForQuality(siteFormat);
         auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
                                    playlist, this);
+        g->setSubtitles(m_embedSubs, m_subLangs);
         m_siteVideos.insert(id, g);
         if (playlist)
             m_playlistIds.insert(id);   // suppress the single-file details plate
@@ -276,6 +279,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
             merged += authHeaders;   // domain-scoped Cookie/Authorization, if any
             g = new HlsGrabber(id, url, out, merged, this);
         }
+        g->setConcurrency(m_streamConcurrency);
         m_grabbers.insert(id, g);
         connect(g, &HlsGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &HlsGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
@@ -291,6 +295,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         path = pathForName(suggestedName);   // URL has no filename; use the hint
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
+    t->setRateLimiter(m_limiter);
     // Merge domain-scoped auth into the browser headers; SegmentDownloader replays
     // them via its existing setRawHeader loop, with no coupling to the manager.
     HeaderList merged = headers;
@@ -356,6 +361,35 @@ void DownloadEngine::ensureTorrents()
     connect(m_torrents, &TorrentManager::progress,     this, &DownloadEngine::taskProgress);
     connect(m_torrents, &TorrentManager::stateChanged, this, &DownloadEngine::taskStateChanged);
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
+    // Apply any caps the user set before the (lazily created) session existed.
+    m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
+    m_torrents->setSeedRatio(m_seedRatio);
+}
+
+void DownloadEngine::setSpeedLimit(qint64 bytesPerSec)
+{
+    if (m_limiter)
+        m_limiter->setLimit(bytesPerSec);
+}
+
+qint64 DownloadEngine::speedLimit() const
+{
+    return m_limiter ? m_limiter->limit() : 0;
+}
+
+void DownloadEngine::setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec)
+{
+    m_torrentDlLimit = qMax(0, downloadBytesPerSec);
+    m_torrentUlLimit = qMax(0, uploadBytesPerSec);
+    if (m_torrents)
+        m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
+}
+
+void DownloadEngine::setSeedRatio(double ratio)
+{
+    m_seedRatio = qMax(0.0, ratio);
+    if (m_torrents)
+        m_torrents->setSeedRatio(m_seedRatio);
 }
 
 void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
@@ -433,6 +467,30 @@ QString DownloadEngine::hostOf(int id) const
     else if (m_torrents && m_torrents->has(id)) return QStringLiteral("peer swarm");
     const QString h = u.host();
     return h.isEmpty() ? QStringLiteral("local file") : h;
+}
+
+QString DownloadEngine::urlOf(int id) const
+{
+    if (auto *t = m_tasks.value(id)) return t->url().toString();
+    if (auto *g = m_grabbers.value(id)) return g->url().toString();
+    if (auto *y = m_siteVideos.value(id)) return y->url().toString();
+    return QString();   // torrents have no single source URL
+}
+
+void DownloadEngine::reorderQueue(const QList<int> &idsInDisplayOrder)
+{
+    QList<int> np;
+    np.reserve(m_pending.size());
+    // Take the queued ids in the order the UI presents them...
+    for (int id : idsInDisplayOrder)
+        if (m_pending.contains(id) && !np.contains(id))
+            np.append(id);
+    // ...then keep any still-pending ids the list didn't mention (safety).
+    for (int id : m_pending)
+        if (!np.contains(id))
+            np.append(id);
+    m_pending = np;
+    schedule();
 }
 
 bool DownloadEngine::allTerminal() const
@@ -529,6 +587,22 @@ void DownloadEngine::remove(int id, bool deleteFile)
     schedule();           // promote a queued download into the freed slot
 }
 
+int DownloadEngine::clearCompleted()
+{
+    // Snapshot first: remove() mutates the maps we'd otherwise be iterating.
+    int cleared = 0;
+    const auto snap = snapshot();
+    for (const auto &s : snap) {
+        if (s.state == DownloadState::Completed) {
+            remove(s.id, false);   // keep the file; just drop it from the list
+            ++cleared;
+        }
+    }
+    if (m_db)
+        m_db->clearCompleted(0);   // scrub any persisted completed rows too
+    return cleared;
+}
+
 void DownloadEngine::loadPersisted()
 {
     if (!m_db)
@@ -538,6 +612,7 @@ void DownloadEngine::loadPersisted()
         if (m_tasks.contains(rec.id))
             continue;
         auto *t = new DownloadTask(rec.id, QUrl(rec.url), rec.savePath, m_nam, m_db, this);
+        t->setRateLimiter(m_limiter);
         t->setNameResolver([this](const QString &name) { return pathForName(name); });
         if (!rec.segments.isEmpty())
             t->restore(rec.total, rec.segments);

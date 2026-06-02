@@ -10,6 +10,8 @@ class QNetworkReply;
 
 namespace nexa {
 
+class RateLimiter;
+
 // Downloads a single byte-range of a file and writes it directly into the
 // destination file at the correct offset. Multiple SegmentDownloaders run
 // concurrently on the same Qt event loop (async network I/O = real parallelism
@@ -22,6 +24,7 @@ public:
                       const QString &filePath,
                       const HeaderList &headers,
                       QNetworkAccessManager *nam,
+                      RateLimiter *limiter = nullptr,
                       QObject *parent = nullptr);
     ~SegmentDownloader() override;
 
@@ -44,11 +47,14 @@ private slots:
     void onFinished();
 
 private:
+    void pump();   // read what the rate limiter allows, write it, repeat
+
     SegmentInfo             m_seg;
     QUrl                    m_url;
     QString                 m_filePath;
     HeaderList              m_headers;
     QNetworkAccessManager  *m_nam = nullptr;
+    RateLimiter            *m_limiter = nullptr;
     QNetworkReply          *m_reply = nullptr;
     QFile                   m_file;
     bool                    m_stopped = false;

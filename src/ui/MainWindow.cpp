@@ -2,7 +2,10 @@
 #include "ui/UiHelpers.h"
 #include "ui/DownloadDetailsDialog.h"
 #include "ui/SiteLoginsDialog.h"
+#include "ui/SettingsDialog.h"
+#include "ui/ClipboardMonitor.h"
 #include "core/DownloadEngine.h"
+#include "core/UpdateChecker.h"
 #include "core/DownloadTask.h"
 
 #include <QTableWidget>
@@ -32,6 +35,11 @@
 #include <QIcon>
 #include <QColor>
 #include <QUrl>
+#include <QSettings>
+#include <QTimer>
+#include <QDropEvent>
+#include <QAbstractItemView>
+#include <functional>
 #include <initializer_list>
 
 namespace nexa {
@@ -51,6 +59,37 @@ using nexa::Accent;
 namespace {
 
 enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColCount };
+
+// The rows carry cell widgets (file tile, progress bar, status). Qt's built-in
+// InternalMove reorders the underlying items but leaves those widgets behind,
+// misaligning the table. So we fully own the drop: capture source/target rows
+// and hand them to a callback; MainWindow then re-lays the table (rebuilding the
+// widgets correctly). No Q_OBJECT needed — a std::function avoids moc on a
+// .cpp-local class.
+class ReorderTable : public QTableWidget {
+public:
+    using QTableWidget::QTableWidget;
+    std::function<void(int from, int to)> onReorder;
+
+protected:
+    void dropEvent(QDropEvent *event) override
+    {
+        const int from = currentRow();
+        const QModelIndex idx = indexAt(event->position().toPoint());
+        const int to = idx.isValid() ? idx.row() : rowCount() - 1;
+        // Never let the base class run its (widget-losing) move.
+        event->setDropAction(Qt::IgnoreAction);
+        event->accept();
+        // We swallowed the event instead of chaining to the base, so reset the
+        // view's drag bookkeeping ourselves — otherwise the drop indicator /
+        // autoscroll timer can be left running ("stuck in drag" feel).
+        setState(NoState);
+        stopAutoScroll();
+        viewport()->update();
+        if (from >= 0 && to >= 0 && from != to && onReorder)
+            onReorder(from, to);
+    }
+};
 
 // ---- cell builders (children are named so the slots can find + update them) --
 
@@ -200,16 +239,28 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     // Gear: the less-common actions, so the bar stays clean.
     connect(gearBtn, &QPushButton::clicked, this, [this, gearBtn]() {
         QMenu menu(this);
+        menu.addAction(QStringLiteral("Settings…"),       this, &MainWindow::onSettings);
         menu.addAction(QStringLiteral("Smart Add (AI)…"), this, &MainWindow::promptSmartAdd);
         menu.addAction(QStringLiteral("Site logins…"),    this, &MainWindow::onSiteLogins);
+        QAction *clip = menu.addAction(QStringLiteral("Monitor clipboard for links"));
+        clip->setCheckable(true);
+        clip->setChecked(m_clipboard && m_clipboard->isEnabled());
+        connect(clip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
         menu.addAction(QStringLiteral("Remove selected"), this, &MainWindow::removeSelected);
         menu.addSeparator();
         menu.addAction(QStringLiteral("Open download folder"), this, &MainWindow::openDownloadFolder);
+        menu.addAction(QStringLiteral("Check for updates…"), this, &MainWindow::onCheckUpdates);
         menu.exec(gearBtn->mapToGlobal(QPoint(0, gearBtn->height() + 4)));
     });
 
     // ---- Downloads table --------------------------------------------------
-    m_table = new QTableWidget(0, ColCount, central);
+    auto *table = new ReorderTable(0, ColCount, central);
+    table->onReorder = [this](int from, int to) {
+        // Defer past the drop machinery: rebuilding the table mid-dropEvent
+        // would delete the rows Qt is still holding.
+        QTimer::singleShot(0, this, [this, from, to]() { moveRow(from, to); });
+    };
+    m_table = table;
     m_table->setHorizontalHeaderLabels(
         {QStringLiteral("FILE"), QStringLiteral("SIZE"), QStringLiteral("PROGRESS"),
          QStringLiteral("SPEED"), QStringLiteral("STATUS")});
@@ -226,6 +277,12 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // Drag a row to reorder the queue (handled by ReorderTable::dropEvent).
+    m_table->setDragEnabled(true);
+    m_table->setAcceptDrops(true);
+    m_table->setDragDropMode(QAbstractItemView::InternalMove);
+    m_table->setDropIndicatorShown(true);
+    m_table->setDragDropOverwriteMode(false);
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->verticalHeader()->setVisible(false);
@@ -269,6 +326,57 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         onTaskStateChanged(s.id, s.state, QString());
     }
     m_restoring = false;
+
+    // IDM-style clipboard capture: watch for copied download links and offer
+    // them via a toast. Remembers the on/off choice across sessions.
+    m_clipboard = new ClipboardMonitor(this);
+    connect(m_clipboard, &ClipboardMonitor::downloadableUrlDetected,
+            this, &MainWindow::onClipboardUrl);
+    QSettings settings;
+    if (settings.value(QStringLiteral("clipboardMonitor"), false).toBool())
+        m_clipboard->setEnabled(true);
+
+    // Update checker (version notification only — never auto-installs). A silent
+    // check runs shortly after launch if NEXA_UPDATE_URL is configured; the gear
+    // menu's "Check for updates…" forces one with explicit feedback.
+    m_updates = new UpdateChecker(this);
+    connect(m_updates, &UpdateChecker::updateAvailable, this,
+            [this](const QString &ver, const QString &url, const QString &notes) {
+        const QString skip = QSettings().value(QStringLiteral("skipUpdateVersion")).toString();
+        if (!m_manualUpdateCheck && ver == skip)
+            return;   // user chose to skip this version on a prior silent check
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("Update available"));
+        box.setText(QStringLiteral("Nexa %1 is available (you have %2).")
+                        .arg(ver, QApplication::applicationVersion()));
+        if (!notes.isEmpty())
+            box.setInformativeText(notes);
+        QPushButton *get  = box.addButton(QStringLiteral("Download"), QMessageBox::AcceptRole);
+        QPushButton *skipB = box.addButton(QStringLiteral("Skip this version"), QMessageBox::DestructiveRole);
+        box.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == get && !url.isEmpty())
+            QDesktopServices::openUrl(QUrl(url));
+        else if (box.clickedButton() == skipB)
+            QSettings().setValue(QStringLiteral("skipUpdateVersion"), ver);
+        m_manualUpdateCheck = false;
+    });
+    connect(m_updates, &UpdateChecker::upToDate, this, [this]() {
+        if (m_manualUpdateCheck)
+            QMessageBox::information(this, QStringLiteral("Up to date"),
+                QStringLiteral("You're running the latest version of Nexa."));
+        m_manualUpdateCheck = false;
+    });
+    connect(m_updates, &UpdateChecker::checkFailed, this, [this](const QString &why) {
+        if (m_manualUpdateCheck)
+            QMessageBox::warning(this, QStringLiteral("Update check failed"), why);
+        m_manualUpdateCheck = false;
+    });
+    if (m_updates->isConfigured())
+        QTimer::singleShot(3000, this, [this]() {
+            m_manualUpdateCheck = false;
+            m_updates->check(QApplication::applicationVersion());
+        });
 
     updateStats();
 }
@@ -379,6 +487,47 @@ void MainWindow::onSiteLogins()
     dlg.exec();
 }
 
+void MainWindow::onCheckUpdates()
+{
+    m_manualUpdateCheck = true;
+    m_updates->check(QApplication::applicationVersion());
+}
+
+void MainWindow::onSettings()
+{
+    SettingsDialog dlg(m_engine, this);
+    if (dlg.exec() == QDialog::Accepted && m_clipboard) {
+        // The dialog persisted the clipboard-monitor choice; re-sync our monitor
+        // (which the dialog doesn't own) from the saved value.
+        const bool on = QSettings().value(QStringLiteral("clipboardMonitor"), false).toBool();
+        m_clipboard->setEnabled(on);
+    }
+}
+
+void MainWindow::setClipboardMonitoring(bool on)
+{
+    if (m_clipboard)
+        m_clipboard->setEnabled(on);
+    QSettings().setValue(QStringLiteral("clipboardMonitor"), on);
+    if (!on && m_captureToast)
+        m_captureToast->close();
+}
+
+void MainWindow::onClipboardUrl(const QUrl &url)
+{
+    // Replace any toast still on screen so a rapid second copy doesn't stack.
+    if (m_captureToast)
+        m_captureToast->close();
+
+    auto *toast = new CaptureToast(url);
+    m_captureToast = toast;
+    connect(toast, &CaptureToast::accepted, this, [this](const QUrl &u) {
+        m_engine->addDownload(u);
+        showAndRaise();        // surface the list so the user sees it land
+    });
+    toast->show();
+}
+
 void MainWindow::promptSmartAdd()
 {
     if (!m_engine->aiAvailable()) {
@@ -415,6 +564,69 @@ int MainWindow::selectedId() const
     if (rows.isEmpty())
         return -1;
     return idAtRow(rows.first().row());
+}
+
+QList<int> MainWindow::currentOrder() const
+{
+    QList<int> ids;
+    ids.reserve(m_table->rowCount());
+    for (int r = 0; r < m_table->rowCount(); ++r) {
+        const int id = idAtRow(r);
+        if (id >= 0)
+            ids.append(id);
+    }
+    return ids;
+}
+
+void MainWindow::rebuildInOrder(const QList<int> &order)
+{
+    // Snapshot current state per id, then re-lay every row in the new order,
+    // replaying state so progress bars / speeds / status survive the rebuild.
+    QHash<int, DownloadEngine::TaskSnapshot> snaps;
+    for (const auto &s : m_engine->snapshot())
+        snaps.insert(s.id, s);
+
+    m_table->setRowCount(0);
+    m_idToRow.clear();
+    m_restoring = true;          // suppress per-row details auto-open side effects
+    for (int id : order) {
+        if (!snaps.contains(id))
+            continue;
+        const DownloadEngine::TaskSnapshot s = snaps.value(id);
+        onTaskAdded(id);
+        if (s.done > 0 || s.total > 0)
+            onTaskProgress(id, s.done, s.total, s.speed);
+        onTaskStateChanged(id, s.state, QString());
+    }
+    m_restoring = false;
+    applyFilter(m_search->text());
+    updateStats();
+}
+
+void MainWindow::moveRow(int from, int to)
+{
+    const int rows = m_table->rowCount();
+    if (from < 0 || from >= rows)
+        return;
+    to = qBound(0, to, rows - 1);
+    if (from == to)
+        return;
+    QList<int> order = currentOrder();
+    if (from >= order.size())
+        return;
+    order.move(from, to);
+    rebuildInOrder(order);
+    m_engine->reorderQueue(order);   // make the actual start order follow the UI
+    m_table->selectRow(to);
+}
+
+void MainWindow::moveSelected(int delta)
+{
+    const auto rows = m_table->selectionModel()->selectedRows();
+    if (rows.isEmpty())
+        return;
+    const int from = rows.first().row();
+    moveRow(from, from + delta);
 }
 
 void MainWindow::pauseAll()
@@ -519,7 +731,8 @@ void MainWindow::applyFilter(const QString &text)
         const int id = idAtRow(row);
         const bool match = q.isEmpty() ||
             m_engine->nameOf(id).toLower().contains(q) ||
-            m_engine->hostOf(id).toLower().contains(q);
+            m_engine->hostOf(id).toLower().contains(q) ||
+            m_engine->urlOf(id).toLower().contains(q);
         m_table->setRowHidden(row, !match);
     }
 }
@@ -534,11 +747,23 @@ void MainWindow::showRowMenu(const QPoint &pos)
     if (id < 0)
         return;
 
+    const int row = idx.row();
     QMenu menu(this);
     menu.addAction(QStringLiteral("Details…"), this, [this, id]() { openDetails(id); });
     menu.addSeparator();
     menu.addAction(QStringLiteral("Pause"),  this, [this, id]() { m_engine->pause(id); });
     menu.addAction(QStringLiteral("Resume"), this, [this, id]() { m_engine->resume(id); });
+    menu.addSeparator();
+    // Reorder the queue (also possible by dragging the row).
+    QAction *top = menu.addAction(QStringLiteral("Move to top"),
+                                  this, [this, row]() { moveRow(row, 0); });
+    QAction *up  = menu.addAction(QStringLiteral("Move up"),
+                                  this, [this]() { moveSelected(-1); });
+    QAction *dn  = menu.addAction(QStringLiteral("Move down"),
+                                  this, [this]() { moveSelected(+1); });
+    top->setEnabled(row > 0);
+    up->setEnabled(row > 0);
+    dn->setEnabled(row < m_table->rowCount() - 1);
     menu.addSeparator();
     menu.addAction(QStringLiteral("Remove"), this, &MainWindow::removeSelected);
     menu.exec(m_table->viewport()->mapToGlobal(pos));

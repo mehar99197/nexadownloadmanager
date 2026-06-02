@@ -35,6 +35,9 @@ public:
     // the port can't be bound.
     bool start(quint16 port, bool lanAccessible, const QString &token = QString());
     quint16 port() const { return m_port; }
+    // True when serving HTTPS (a cert/key pair was supplied via NEXA_TLS_CERT /
+    // NEXA_TLS_KEY); lets the caller print the right scheme in the dashboard URL.
+    bool isTls() const { return m_tls; }
 
 private slots:
     void onNewConnection();
@@ -67,6 +70,7 @@ private:
     DownloadEngine *m_engine;
     QTcpServer     *m_server = nullptr;
     quint16         m_port = 0;
+    bool            m_tls = false;
     QString         m_token;
     QHash<QTcpSocket*, Conn> m_conns;             // live connections
 

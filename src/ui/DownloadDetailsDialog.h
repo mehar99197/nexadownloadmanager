@@ -48,6 +48,7 @@ private:
     qint64  m_done = 0;
     qint64  m_total = -1;
     double  m_bps = 0.0;
+    double  m_avgBps = 0.0;        // smoothed speed (EMA) — drives a stable ETA
     DownloadState m_state = DownloadState::Queued;
     QString m_detail;
     int     m_phase = 0;           // drives the indeterminate strip pulse

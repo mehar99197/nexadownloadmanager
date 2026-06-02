@@ -6,6 +6,7 @@
 #include "ipc/IpcServer.h"
 #include "web/WebServer.h"
 #include "ui/MainWindow.h"
+#include "ui/SettingsDialog.h"
 
 #include <QHostInfo>
 #include <QNetworkInterface>
@@ -155,6 +156,10 @@ int main(int argc, char *argv[])
     }
 
     nexa::DownloadEngine engine;
+    // Apply the user's saved preferences (download dir, concurrency, speed caps,
+    // subtitles, torrent limits, …) before anything runs. CLI flags below may
+    // still override individual values for this session.
+    nexa::SettingsDialog::loadInto(&engine);
     engine.loadPersisted();        // restore unfinished downloads from last run
 
     // Listen for downloads handed off by the browser extension via nexa-host.
@@ -225,8 +230,10 @@ int main(int argc, char *argv[])
         dashboard = new nexa::WebServer(&engine, &app);
         if (dashboard->start(dashPort, dashLan, dashToken)) {
             const QString host = dashLan ? localIpv4() : QStringLiteral("127.0.0.1");
-            qInfo().noquote() << QStringLiteral("Nexa dashboard: http://%1:%2/?token=%3")
-                                     .arg(host).arg(dashboard->port()).arg(dashToken);
+            const QString scheme = dashboard->isTls() ? QStringLiteral("https")
+                                                       : QStringLiteral("http");
+            qInfo().noquote() << QStringLiteral("Nexa dashboard: %1://%2:%3/?token=%4")
+                                     .arg(scheme, host).arg(dashboard->port()).arg(dashToken);
             if (!dashLan)
                 qInfo().noquote() << "  (loopback only; pass --dashboard-lan to reach it from other devices)";
         } else {

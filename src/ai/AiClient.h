@@ -34,9 +34,13 @@ public:
 
 private:
     // Sends one user message with a system prompt; delivers the model's text
-    // (empty string on any failure) to onText.
+    // (empty string on any failure) to onText. Retries transient failures
+    // (network errors, HTTP 429/5xx) up to kMaxAttempts with exponential backoff;
+    // `attempt` is the internal retry counter and should be left at its default.
     void send(const QString &systemPrompt, const QString &userMessage,
-              int maxTokens, std::function<void(QString)> onText);
+              int maxTokens, std::function<void(QString)> onText, int attempt = 0);
+
+    static constexpr int kMaxAttempts = 3;   // initial try + 2 retries
 
     QNetworkAccessManager *m_nam = nullptr;
     QString                m_key;

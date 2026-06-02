@@ -156,6 +156,13 @@ QString YtDlpGrabber::fileName() const
     return QFileInfo(m_savePath).fileName();
 }
 
+void YtDlpGrabber::setSubtitles(bool embed, const QString &langs)
+{
+    m_embedSubs = embed;
+    if (!langs.trimmed().isEmpty())
+        m_subLangs = langs.trimmed();
+}
+
 void YtDlpGrabber::setState(DownloadState s, const QString &detail)
 {
     m_state = s;
@@ -205,6 +212,15 @@ void YtDlpGrabber::start()
          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
          << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
          << QStringLiteral("-o") << tmpl;
+
+    // Subtitles (opt-in): fetch manual + auto-generated tracks for the chosen
+    // languages and embed them into the muxed MP4 (mov_text). Harmless for
+    // audio-only grabs — yt-dlp simply finds nothing to embed.
+    if (m_embedSubs) {
+        args << QStringLiteral("--write-subs") << QStringLiteral("--write-auto-subs")
+             << QStringLiteral("--sub-langs") << m_subLangs
+             << QStringLiteral("--embed-subs");
+    }
 
     // Speed: real multi-connection downloading. YouTube serves high-quality
     // video/audio as a single googlevideo URL, which yt-dlp's own downloader can

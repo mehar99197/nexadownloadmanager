@@ -274,7 +274,7 @@ void DownloadTask::launchSegments()
             ++m_completedSegments;
             continue;
         }
-        auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, this);
+        auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, m_limiter, this);
         connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
         connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
         connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
@@ -303,6 +303,13 @@ void DownloadTask::onSegmentProgressed(int index, qint64 delta)
     m_done += delta;
     if (index >= 0 && index < m_segments.size())
         m_segments[index].done += delta;
+    // Forward progress means this connection is healthy again: clear its retry
+    // budget so only *consecutive* failures (no progress between them) count
+    // toward the give-up limit, rather than failures accumulated over the whole
+    // download. (Also stops the short-read and network-error paths, which share
+    // m_retries, from starving each other.)
+    if (delta > 0 && m_retries.contains(index))
+        m_retries.remove(index);
 }
 
 void DownloadTask::onSegmentCompleted(int index)
@@ -458,8 +465,14 @@ void DownloadTask::emitSpeedTick()
     emit progress(m_id, m_done, m_total, bps);
 
     // Persist segment offsets periodically so a crash/kill resumes from disk,
-    // not from the start of each in-flight segment.
-    persist();
+    // not from the start of each in-flight segment. The speed tick fires every
+    // 500 ms but a DB save every 500 ms is wasteful, so throttle to every 4th
+    // tick (~2 s). Segment completions and state changes still persist
+    // immediately, so nothing important waits on this cadence.
+    if (++m_ticksSincePersist >= 4) {
+        m_ticksSincePersist = 0;
+        persist();
+    }
 }
 
 void DownloadTask::setState(DownloadState s, const QString &detail)

@@ -19,6 +19,7 @@ class YtDlpGrabber;
 class AiClient;
 class Database;
 class AuthenticationManager;
+class RateLimiter;
 
 // Top-level controller: owns the network stack + database and manages the set
 // of DownloadTasks. The UI talks only to this class.
@@ -44,6 +45,10 @@ public:
     void resume(int id);
     void remove(int id, bool deleteFile = false);
 
+    // Remove every completed job from the list and scrub completed history from
+    // the database. Returns how many were cleared. Surfaced via Settings.
+    int  clearCompleted();
+
     // Batch add: accepts whitespace/newline-separated URLs and expands numeric
     // ranges like "http://x/file[1-20].jpg" into individual downloads.
     QList<int> addBatch(const QString &text, const HeaderList &headers = {});
@@ -60,10 +65,33 @@ public:
     void setMaxConcurrent(int n) { m_maxConcurrent = qMax(1, n); schedule(); }
     int  maxConcurrent() const { return m_maxConcurrent; }
 
+    // Global HTTP download speed cap in bytes/sec (0 = unlimited), shared across
+    // all active segmented downloads via a token-bucket RateLimiter.
+    void   setSpeedLimit(qint64 bytesPerSec);
+    qint64 speedLimit() const;
+
     // Sort completed files into per-type subfolders (Video/, Audio/, ...).
     void setAutoCategorize(bool on) { m_autoCategorize = on; }
     bool autoCategorize() const { return m_autoCategorize; }
     static QString categoryFor(const QString &fileName);
+
+    // Parallel segment fetches for HLS stream grabs (applied to new grabbers).
+    void setStreamConcurrency(int n) { m_streamConcurrency = qBound(1, n, 64); }
+    int  streamConcurrency() const { return m_streamConcurrency; }
+
+    // Subtitle embedding for yt-dlp video grabs (applied to new grabbers).
+    void setSubtitles(bool embed, const QString &langs = QStringLiteral("en"))
+    { m_embedSubs = embed; if (!langs.trimmed().isEmpty()) m_subLangs = langs.trimmed(); }
+    bool    subtitlesEnabled() const { return m_embedSubs; }
+    QString subtitleLangs() const { return m_subLangs; }
+
+    // BitTorrent session caps (bytes/sec, 0 = unlimited) and seed-to-ratio.
+    // Remembered and (re)applied whenever the torrent session is created.
+    void   setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec);
+    void   setSeedRatio(double ratio);
+    double seedRatio() const { return m_seedRatio; }
+    int    torrentDownloadLimit() const { return m_torrentDlLimit; }
+    int    torrentUploadLimit() const { return m_torrentUlLimit; }
 
     // AI helpers (require $ANTHROPIC_API_KEY). aiAvailable() reflects key presence.
     bool aiAvailable() const;
@@ -82,6 +110,13 @@ public:
     QString       nameOf(int id) const;
     DownloadState stateOf(int id) const;
     QString       hostOf(int id) const;   // source host, for the UI row subtitle
+    QString       urlOf(int id) const;    // full source URL (empty for torrents)
+
+    // Reorder the waiting queue to match the given display order: any ids in
+    // `idsInDisplayOrder` that are still queued are moved to that relative order
+    // (others are left untouched), then the scheduler re-evaluates. Lets the UI
+    // drag/reorder which queued download starts next.
+    void reorderQueue(const QList<int> &idsInDisplayOrder);
 
     // True only for yt-dlp --yes-playlist jobs (many videos in one job). The UI
     // uses this to suppress the single-file "details" plate for playlists.
@@ -140,6 +175,7 @@ private:
     TorrentManager        *m_torrents = nullptr;
     AiClient              *m_ai = nullptr;
     AuthenticationManager *m_auth = nullptr;
+    RateLimiter           *m_limiter = nullptr;   // global HTTP speed cap
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
     QHash<int, YtDlpGrabber*> m_siteVideos;
@@ -149,6 +185,12 @@ private:
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;
     int                    m_maxConcurrent = 4;
+    int                    m_streamConcurrency = 16;   // HLS parallel segment fetches
+    bool                   m_embedSubs = false;        // yt-dlp: fetch + embed subtitles
+    QString                m_subLangs = QStringLiteral("en");
+    int                    m_torrentDlLimit = 0;       // B/s, 0 = unlimited
+    int                    m_torrentUlLimit = 0;
+    double                 m_seedRatio = 0.0;          // 0 = don't seed past completion
     bool                   m_autoCategorize = true;
     bool                   m_aiRename = false;
     bool                   m_inSchedule = false;

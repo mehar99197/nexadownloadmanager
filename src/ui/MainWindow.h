@@ -15,6 +15,8 @@ namespace nexa {
 
 class DownloadEngine;
 class DownloadDetailsDialog;
+class ClipboardMonitor;
+class UpdateChecker;
 
 // Main application window: a header + action bar + a table of downloads with
 // live progress/speed and a summary footer, driven entirely by DownloadEngine
@@ -46,6 +48,10 @@ private slots:
     void removeSelected();
     void openDownloadFolder();
     void onSiteLogins();             // register a cookies.txt for an auth-gated site
+    void onSettings();               // open the Preferences dialog
+    void onCheckUpdates();           // manual "Check for updates…"
+    void setClipboardMonitoring(bool on);   // toggle IDM-style link capture (persisted)
+    void onClipboardUrl(const QUrl &url);   // a download-able URL was copied; offer it
     void openDetails(int id);        // open or raise the per-download details plate
     void applyFilter(const QString &text);
 
@@ -60,6 +66,10 @@ private:
     int  rowForId(int id) const;
     int  selectedId() const;
     int  idAtRow(int row) const;
+    QList<int> currentOrder() const;          // ids in present row order
+    void rebuildInOrder(const QList<int> &order);  // re-lay the table in a new order
+    void moveRow(int from, int to);           // reorder one row (drag or menu)
+    void moveSelected(int delta);             // menu: shift selection up/down
     void updateStats();              // refresh header pill + footer summary
     void refreshFileCell(int row, int id);
     void setRowStatus(int row, nexa::DownloadState state, const QString &detail);
@@ -77,6 +87,10 @@ private:
     QSet<int>       m_autoOpened;   // ids that already auto-popped (dedupe, lifetime)
     bool            m_restoring = false;  // true during startup snapshot replay
     QSystemTrayIcon *m_tray = nullptr;    // background/tray presence (may be null)
+    ClipboardMonitor *m_clipboard = nullptr;          // IDM-style link capture
+    QPointer<QWidget> m_captureToast;                 // at most one toast on screen
+    UpdateChecker    *m_updates = nullptr;            // version-check (not auto-install)
+    bool              m_manualUpdateCheck = false;    // menu check vs silent startup check
 };
 
 } // namespace nexa
