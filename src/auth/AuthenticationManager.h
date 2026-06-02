@@ -62,11 +62,12 @@ struct AuthResult {
 // One domain's credential. A value type (copyable, no QObject) so it can live in
 // a QHash and be passed around freely.
 struct DomainAuth {
-    enum class Kind { None, CookieFile, BearerToken };
+    enum class Kind { None, CookieFile, BearerToken, BrowserCookies };
     Kind    kind = Kind::None;
     QString domain;            // registration key, e.g. "udemy.com" (host-suffix matched)
     QString cookieFilePath;    // absolute path to a Netscape cookies.txt (Kind::CookieFile)
     QString bearerToken;       // raw token value, no "Bearer " prefix (Kind::BearerToken)
+    QString browser;           // yt-dlp browser name e.g. "chrome" (Kind::BrowserCookies)
     qint64  expiresAt = 0;     // bearer expiry, unix epoch seconds; 0 = never expires
     bool    isExpired(qint64 nowEpoch) const {
         return kind == Kind::BearerToken && expiresAt > 0 && expiresAt <= nowEpoch;
@@ -85,10 +86,22 @@ public:
     // success the path is stored and replayed later. Fast local IO; non-blocking.
     AuthResult registerCookieFile(const QString &domain, const QString &cookieFilePath);
 
+    // Register a Netscape cookies.txt supplied as TEXT rather than a path. The
+    // browser extension can only send cookie CONTENT (MV3 has no disk access), so
+    // this writes the text to a private 0600 temp file and registers that via
+    // registerCookieFile. The temp file is tracked and removed in the destructor.
+    AuthResult registerCookieData(const QString &domain, const QString &cookiesTxt);
+
     // Register a raw Authorization: Bearer token for a domain. `expiresAt` is an
     // optional unix-epoch-seconds expiry (0 = no expiry); validated against now.
     AuthResult registerBearerToken(const QString &domain, const QString &token,
                                    qint64 expiresAt = 0);
+
+    // Register "use my logged-in browser's cookies" for a domain. yt-dlp reads
+    // them live via --cookies-from-browser <browser>, so the user needs no manual
+    // cookies.txt export — just be logged in. `browser` is a yt-dlp browser name
+    // (chrome, chromium, edge, brave, firefox, opera, vivaldi, safari, whale).
+    AuthResult registerBrowserCookies(const QString &domain, const QString &browser);
 
     // Remove any credential for a domain. Returns true if one was present.
     bool unregister(const QString &domain);

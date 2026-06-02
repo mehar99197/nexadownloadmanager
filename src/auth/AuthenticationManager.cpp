@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QUuid>
 #include <utility>
 
 namespace nexa {
@@ -87,6 +88,53 @@ AuthResult AuthenticationManager::registerCookieFile(const QString &domain,
     return AuthResult::success();
 }
 
+AuthResult AuthenticationManager::registerCookieData(const QString &domain,
+                                                     const QString &cookiesTxt)
+{
+    if (domain.trimmed().isEmpty())
+        return AuthResult::failure(AuthError::UnknownDomain, QStringLiteral("empty domain"));
+
+    // Bound the work BEFORE touching disk: never write a hostile multi-MB blob.
+    const QByteArray bytes = cookiesTxt.toUtf8();
+    if (bytes.isEmpty())
+        return AuthResult::failure(AuthError::EmptyFile, QStringLiteral("no cookie text"));
+    if (bytes.size() > 5 * 1024 * 1024)
+        return AuthResult::failure(AuthError::MalformedFormat,
+                                   QStringLiteral("cookie text too large (>5 MB)"));
+
+    // Private dir (0700) + file (0600), mirroring writeYtDlpAuthConfig, so a
+    // session cookie is never briefly world-readable.
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (dir.isEmpty())
+        dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    dir += QStringLiteral("/nexa-auth");
+    QDir().mkpath(dir);
+    QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+
+    // QUuid (not a timestamp) so two extension handoffs in the same millisecond
+    // can't collide and corrupt each other's cookie file.
+    const QString path = dir + QStringLiteral("/cookies-")
+                       + QUuid::createUuid().toString(QUuid::Id128)
+                       + QStringLiteral(".txt");
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return AuthResult::failure(AuthError::FileNotFound, path);
+    f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);   // lock before writing
+    f.write(bytes);
+    f.close();
+
+    // Track for destructor cleanup regardless of the validation outcome.
+    if (!m_tempAuthFiles.contains(path))
+        m_tempAuthFiles.append(path);
+
+    const AuthResult ar = registerCookieFile(domain, path);
+    if (!ar.ok) {
+        QFile::remove(path);
+        m_tempAuthFiles.removeAll(path);
+    }
+    return ar;
+}
+
 AuthResult AuthenticationManager::registerBearerToken(const QString &domain,
                                                       const QString &token,
                                                       qint64 expiresAt)
@@ -113,6 +161,31 @@ AuthResult AuthenticationManager::registerBearerToken(const QString &domain,
     a.domain = domain.toLower();
     a.bearerToken = tok;
     a.expiresAt = expiresAt;
+    m_byDomain.insert(a.domain, a);
+    return AuthResult::success();
+}
+
+AuthResult AuthenticationManager::registerBrowserCookies(const QString &domain,
+                                                         const QString &browser)
+{
+    if (domain.trimmed().isEmpty())
+        return AuthResult::failure(AuthError::UnknownDomain, QStringLiteral("empty domain"));
+    // Allowlist the browser name: it is passed to yt-dlp as a CLI value, so keep
+    // it to the known set (no injection surface, and a clear error on a typo).
+    static const QStringList kBrowsers = {
+        QStringLiteral("chrome"), QStringLiteral("chromium"), QStringLiteral("edge"),
+        QStringLiteral("brave"), QStringLiteral("firefox"), QStringLiteral("opera"),
+        QStringLiteral("vivaldi"), QStringLiteral("safari"), QStringLiteral("whale"),
+    };
+    const QString b = browser.trimmed().toLower();
+    if (!kBrowsers.contains(b))
+        return AuthResult::failure(AuthError::MalformedFormat,
+            QStringLiteral("unsupported browser '%1'").arg(browser));
+
+    DomainAuth a;
+    a.kind = DomainAuth::Kind::BrowserCookies;
+    a.domain = domain.toLower();
+    a.browser = b;
     m_byDomain.insert(a.domain, a);
     return AuthResult::success();
 }
@@ -336,6 +409,10 @@ QStringList AuthenticationManager::ytDlpArgs(const QUrl &url)
         if (!cfg.isEmpty())
             return {QStringLiteral("--config-location"), cfg};
         return {};   // could not write the config — fail closed (no auth) rather than leak
+    }
+    if (a.kind == DomainAuth::Kind::BrowserCookies) {
+        // yt-dlp reads the live cookies straight from the logged-in browser.
+        return {QStringLiteral("--cookies-from-browser"), a.browser};
     }
     return {};   // none / excluded host
 }

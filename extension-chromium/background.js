@@ -8,6 +8,51 @@
 const HOST = "com.nexa.host";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|mkv|webm|flv|ts|mp3|m4a|aac|zip|rar|7z|iso|exe|dmg|pkg|deb|apk|pdf)(\?|$)/i;
 
+// Firefox exposes the promise-based `browser.*`; Chrome only `chrome.*`. Use this
+// for the NEW auth-cookie calls so existing (working) chrome.* lines are untouched.
+const X = (typeof browser !== "undefined") ? browser : chrome;
+
+// Auth-gated sites Nexa routes through yt-dlp with cookies. MUST stay in sync with
+// kAuthSites in src/site/YtDlpGrabber.cpp so the engine actually uses the cookies.
+const NEXA_AUTH_SITES = [
+  "udemy.com", "vimeo.com", "coursera.org",
+  "skillshare.com", "pluralsight.com", "linkedin.com"
+];
+
+// The registrable auth domain for a URL (host-suffix match), e.g.
+// "www.udemy.com" -> "udemy.com". Empty string if it's not an auth site.
+function authDomainFor(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return ""; }
+  for (const d of NEXA_AUTH_SITES)
+    if (host === d || host.endsWith("." + d)) return d;
+  return "";
+}
+
+// Export all cookies of `authDomain` (incl. subdomains) as Netscape cookies.txt
+// TEXT, the exact 7-tab format Nexa's CookieFile parser requires. The extension
+// can't write a file (MV3 sandbox), so we send the text and the engine writes it.
+async function exportCookiesAsNetscape(authDomain) {
+  let cookies = [];
+  try { cookies = await X.cookies.getAll({ domain: authDomain }); }
+  catch { return ""; }
+  const lines = ["# Netscape HTTP Cookie File", "# Exported by Nexa"];
+  for (const c of cookies) {
+    // The C++ parser rejects the WHOLE file on any control char, so skip a bad
+    // cookie rather than poison the export.
+    if (/[\x00-\x1f\x7f]/.test(c.name) || /[\x00-\x1f\x7f]/.test(c.value)) continue;
+    const dom = c.domain;
+    const includeSub = dom.startsWith(".") ? "TRUE" : "FALSE";
+    const path = c.path || "/";
+    const secure = c.secure ? "TRUE" : "FALSE";
+    // WebExtensions expirationDate is epoch SECONDS (float); session cookies omit it.
+    const expires = (c.session || !c.expirationDate) ? 0 : Math.floor(c.expirationDate);
+    const prefix = c.httpOnly ? "#HttpOnly_" : "";
+    lines.push(`${prefix}${dom}\t${includeSub}\t${path}\t${secure}\t${expires}\t${c.name}\t${c.value}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
 // Per-tab detected media stream URLs (for the floating download button).
 const tabMedia = new Map();
 
@@ -22,6 +67,9 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "nexa-link",  title: "Download with Nexa",        contexts: ["link"] });
   chrome.contextMenus.create({ id: "nexa-media", title: "Download video/audio with Nexa", contexts: ["video", "audio", "image"] });
   chrome.contextMenus.create({ id: "nexa-page",  title: "Download all links on page",  contexts: ["page"] });
+  // On a course page (Udemy/Coursera/…) this grabs every lecture via yt-dlp
+  // --yes-playlist, carrying your site cookies. Use it on the course URL.
+  chrome.contextMenus.create({ id: "nexa-course", title: "Download whole course with Nexa", contexts: ["page", "link"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -31,6 +79,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     await handoff(info.srcUrl, tab);
   } else if (info.menuItemId === "nexa-page" && tab?.id) {
     chrome.tabs.sendMessage(tab.id, { type: "nexa-collect-links" });
+  } else if (info.menuItemId === "nexa-course") {
+    // Course/playlist URL (the link, or the current page) -> playlist download.
+    const target = info.linkUrl || tab?.url;
+    if (target) await handoff(target, tab, tab?.url, "", "", /*playlist=*/true);
   }
 });
 
@@ -197,6 +249,14 @@ async function handoff(url, tab, referrer, filename, quality, playlist) {
       playlist: !!playlist,          // download the whole playlist (yt-dlp --yes-playlist)
       headers: {}
     };
+    // For auth-gated sites (Udemy/Coursera/…), attach this site's cookies as a
+    // Netscape cookies.txt so yt-dlp can fetch courses you're enrolled in. (The
+    // plain Cookie header above is ignored by yt-dlp for these sites.)
+    const authDomain = authDomainFor(url);
+    if (authDomain) {
+      const txt = await exportCookiesAsNetscape(authDomain);
+      if (txt) { payload.authDomain = authDomain; payload.authCookiesText = txt; }
+    }
     const reply = await sendNative(payload);
     if (reply?.ok) notify("Sent to Nexa", filenameOf(url));
     else notify("Nexa error", reply?.message || "could not reach the app");

@@ -44,6 +44,17 @@ qint64 parseSize(const QString &s)
     return m.hasMatch() ? qint64(applyUnit(m.captured(1).toDouble(), m.captured(2))) : -1;
 }
 
+// A readable course/playlist folder name pulled from the page URL slug, e.g.
+//   udemy.com/course/pythonforbeginnersintro/learn/lecture/123 -> "pythonforbeginnersintro"
+//   youtube.com/playlist?list=PL... (no /course/) -> "" (caller falls back).
+// Far friendlier than yt-dlp's numeric playlist_id when no real title is known.
+QString urlSlug(const QUrl &url)
+{
+    static const QRegularExpression courseRe(QStringLiteral("/course/([^/]+)"));
+    const auto m = courseRe.match(url.path());
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
 } // namespace
 
 YtDlpGrabber::YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir,
@@ -55,8 +66,11 @@ YtDlpGrabber::YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir
       m_authArgs(authArgs), m_playlist(playlist)
 {
     if (m_playlist) {
-        // A playlist yields many files in a subfolder; show the playlist name.
-        const QString base = m_fixedName.isEmpty() ? QStringLiteral("Playlist") : m_fixedName;
+        // A playlist yields many files in a subfolder; show the course/playlist
+        // name (caller-supplied title, else the URL slug, else "Playlist").
+        QString base = m_fixedName.isEmpty() ? urlSlug(m_url) : m_fixedName;
+        if (base.isEmpty())
+            base = QStringLiteral("Playlist");
         m_savePath = QDir(m_dir).filePath(base);
     } else {
         const QString placeholder = m_fixedName.isEmpty() ? QStringLiteral("video") : m_fixedName;
@@ -87,6 +101,25 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
         host == QStringLiteral("youtu.be") ||
         host.endsWith(QStringLiteral(".youtu.be")))
         return !url.path().contains(QStringLiteral("/videoplayback"));  // not a raw media URL
+
+    // Public video sites whose real stream the browser can't grab (blob/MSE or
+    // signed CDN) but yt-dlp can. Routing the PAGE url through yt-dlp gives the
+    // actual video instead of a sniffed static asset. No login needed.
+    static const QStringList kVideoSites = {
+        QStringLiteral("tiktok.com"),
+        QStringLiteral("instagram.com"),
+        QStringLiteral("twitter.com"),
+        QStringLiteral("x.com"),
+        QStringLiteral("facebook.com"),
+        QStringLiteral("fb.watch"),
+        QStringLiteral("reddit.com"),
+        QStringLiteral("dailymotion.com"),
+        QStringLiteral("twitch.tv"),
+        QStringLiteral("bilibili.com"),
+    };
+    for (const QString &s : kVideoSites)
+        if (host == s || host.endsWith(QLatin1Char('.') + s))
+            return true;
 
     // Other yt-dlp-extracted sites we route through yt-dlp so its extractor (and
     // our domain-scoped cookie/bearer auth) handle login-gated video. yt-dlp
@@ -136,10 +169,21 @@ void YtDlpGrabber::start()
     m_cancelled = false;
     QDir().mkpath(m_dir);
 
-    // Playlist: number each video into a per-playlist subfolder. Single video:
-    // the page title (or the caller's fixed name).
+    // Playlist/course: put every video inside a folder named after the course.
+    // The caller-supplied name (e.g. the course title from the extension) wins;
+    // else yt-dlp's playlist title, then its id. Udemy leaves playlist_title
+    // empty ("NA"), so never rely on it alone. Sanitise the literal folder name:
+    // strip path separators AND yt-dlp template-special chars (% ( ) { }) so a
+    // course title can't break the -o template or escape the download dir.
+    QString plFolder = m_fixedName.trimmed();
+    if (plFolder.isEmpty())
+        plFolder = urlSlug(m_url);            // e.g. "pythonforbeginnersintro" from the URL
+    plFolder.replace(QRegularExpression(QStringLiteral("[/\\\\%(){}]+")), QStringLiteral("_"));
+    if (plFolder.isEmpty())
+        plFolder = QStringLiteral("%(playlist_title,playlist_id)s");   // last resort
+
     const QString tmpl = m_playlist
-        ? QDir(m_dir).filePath(QStringLiteral("%(playlist_title)s/%(playlist_index)03d - %(title)s.%(ext)s"))
+        ? QDir(m_dir).filePath(plFolder + QStringLiteral("/%(playlist_index)03d - %(title)s.%(ext)s"))
         : (m_fixedName.isEmpty()
                ? QDir(m_dir).filePath(QStringLiteral("%(title)s.%(ext)s"))
                : QDir(m_dir).filePath(m_fixedName + QStringLiteral(".%(ext)s")));

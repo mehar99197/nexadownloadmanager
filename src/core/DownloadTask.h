@@ -58,6 +58,12 @@ public:
     qint64         doneBytes()  const { return m_done; }
     DownloadState  state()      const { return m_state; }
 
+    // Live read of the per-connection byte ranges, for the details window. Safe
+    // only because the engine + segment workers run single-threaded on the GUI
+    // event loop (no worker threads); snapshot if that ever changes.
+    const QVector<SegmentInfo>& segments() const { return m_segments; }
+    bool           rangesSupported() const { return m_rangesSupported; }
+
     static int preferredSegmentCount(qint64 totalBytes);
 
 signals:

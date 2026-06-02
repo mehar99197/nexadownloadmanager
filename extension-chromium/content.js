@@ -20,18 +20,70 @@
   let lastSignature = "";
   let lastHref = location.href;
 
-  // ---- site-video (YouTube etc.) detection -----------------------------
+  // ---- site-video detection (YouTube + other yt-dlp sites) -------------
+  // Public sites: the panel probes real qualities via yt-dlp -J. Auth sites:
+  // -J can't see login-gated formats (no cookies), so offer Best/Audio and let
+  // the handoff carry the site cookies. Both download via yt-dlp in the engine.
+  // Keep these in sync with kVideoSites/kAuthSites in src/site/YtDlpGrabber.cpp.
+  const PUBLIC_VIDEO_HOSTS = ["tiktok.com", "instagram.com", "twitter.com", "x.com",
+    "facebook.com", "fb.watch", "reddit.com", "dailymotion.com", "twitch.tv", "bilibili.com"];
+  const AUTH_VIDEO_HOSTS = ["udemy.com", "coursera.org", "vimeo.com", "skillshare.com",
+    "pluralsight.com", "linkedin.com"];
+  function hostIn(list) {
+    const h = location.host.toLowerCase();
+    return list.some((d) => h === d || h.endsWith("." + d));
+  }
+  function isPublicSite() { return hostIn(PUBLIC_VIDEO_HOSTS); }
+  function isAuthSite()   { return hostIn(AUTH_VIDEO_HOSTS); }
+  function isYouTubeHost() {
+    return /(^|\.)youtube\.com$/.test(location.host) || /(^|\.)youtu\.be$/.test(location.host);
+  }
+
   function isSiteVideo() {
     const h = location.host;
     if (/(^|\.)youtube\.com$/.test(h))
       return location.pathname === "/watch" || location.pathname.startsWith("/shorts/");
-    return /(^|\.)youtu\.be$/.test(h) && location.pathname.length > 1;
+    if (/(^|\.)youtu\.be$/.test(h)) return location.pathname.length > 1;
+    return isPublicSite() || isAuthSite();
   }
+
+  // The actual video URL to hand to yt-dlp. Usually the page URL; on the TikTok
+  // For-You feed (URL isn't a single video) pick the most-centered video link.
+  function videoUrl() {
+    const h = location.host.toLowerCase();
+    if (/(^|\.)tiktok\.com$/.test(h) && !/\/video\/\d+/.test(location.pathname)) {
+      const cy = window.innerHeight / 2;
+      let best = "", bestDist = Infinity;
+      for (const a of document.querySelectorAll('a[href*="/video/"]')) {
+        const href = a.getAttribute("href") || "";
+        if (!/\/@[^/]+\/video\/\d+/.test(href)) continue;
+        const r = a.getBoundingClientRect();
+        if (!r.width && !r.height) continue;            // hidden
+        const d = Math.abs((r.top + r.bottom) / 2 - cy);
+        if (d < bestDist) { bestDist = d; best = href; }
+      }
+      if (best) { try { return new URL(best, location.origin).href; } catch (_) {} }
+    }
+    return location.href;
+  }
+
   function siteTitle() {
     return (document.title || "video")
       .replace(/\s*-\s*YouTube\s*$/i, "")   // trailing " - YouTube"
       .replace(/^\(\d+\)\s*/, "")            // leading "(7) " notification count
       .trim();
+  }
+  // The course's name, used as the download FOLDER for "Entire course". Prefer a
+  // course-title element, else clean the page title (Udemy: "Course: <name>").
+  function courseTitle() {
+    const el = document.querySelector(
+      '[data-purpose="course-header-title"], h1[data-purpose="lead-title"], ' +
+      'a[data-purpose="course-header-back-button"]');
+    let t = (el && el.textContent || document.title || "Course");
+    return t.replace(/\s*[|–-]\s*Udemy\s*$/i, "")
+            .replace(/^\s*Course:\s*/i, "")
+            .replace(/^\(\d+\)\s*/, "")
+            .trim() || "Course";
   }
 
   // ---- playlist detection (YouTube) ------------------------------------
@@ -77,8 +129,14 @@
       qualities: YT_QUALITIES.map((q) => ({ label: q.label, quality: q.quality, meta: q.meta }))
     };
   }
+  // Fallback list, shown only when the live yt-dlp enumeration is unavailable
+  // (e.g. the desktop app isn't running yet). yt-dlp's "height<=N" selector
+  // degrades gracefully, so offering 4K/1440p here is safe even on a video that
+  // tops out lower — it just yields that video's best.
   const YT_QUALITIES = [
     { label: "Best available", quality: "best", meta: "video + audio" },
+    { label: "2160p (4K)", quality: "2160", meta: "video + audio" },
+    { label: "1440p (HD)", quality: "1440", meta: "video + audio" },
     { label: "1080p", quality: "1080", meta: "video + audio" },
     { label: "720p", quality: "720", meta: "video + audio" },
     { label: "480p", quality: "480", meta: "video + audio" },
@@ -186,25 +244,54 @@
     }
 
     if (isSiteVideo()) {
+      const vurl = videoUrl();
       const hasPlaylist = !!playlistId();
+      // Let yt-dlp name non-YouTube videos from their real title (the page title
+      // isn't the caption); keep the cleaned title as the name for YouTube.
+      const dlName = isYouTubeHost() ? siteTitle() : "";
       // Build groups: [this video] (+ [entire playlist] when the video is in one).
       const withPlaylist = (videoGroup) =>
         hasPlaylist ? [videoGroup, playlistGroup()] : [videoGroup];
 
-      // YouTube & co: ask the engine (yt-dlp -J) for this video's REAL qualities.
+      // Auth sites (Udemy/Coursera/…): the -J probe can't see login-gated
+      // formats, so offer Best/Audio directly — the handoff carries the cookies.
+      if (isAuthSite()) {
+        // yt-dlp's "course" extractor is broken on a bare /course/<slug>/ URL, but
+        // a LECTURE url (what we're on inside a course) enumerates every lecture —
+        // so "Entire course" sends this lecture URL with the playlist flag.
+        const onLecture = /\/learn\/lecture\//.test(location.pathname);
+        const quals = [];
+        if (onLecture)
+          quals.push({ label: "⬇  Entire course — all lectures", quality: "best",
+                       meta: "every video", course: true, name: courseTitle() });
+        quals.push({ label: onLecture ? "This lecture only" : "Best available",
+                     quality: "best", meta: "video + audio" });
+        quals.push({ label: "Audio only (m4a)", quality: "audio", meta: "" });
+        renderPanel(withPlaylist({ title: siteTitle(), name: dlName, site: true,
+                                   url: vurl, qualities: quals }));
+        return;
+      }
+
+      // YouTube + public sites: ask the engine (yt-dlp -J) for REAL qualities.
       renderPanel(withPlaylist({ title: siteTitle(), qualities: [{ label: "Loading qualities…" }] }));
-      chrome.runtime.sendMessage({ type: "nexa-list-formats", url: location.href }, (r) => {
+      chrome.runtime.sendMessage({ type: "nexa-list-formats", url: vurl }, (r) => {
         let quals;
         if (!chrome.runtime.lastError && r && r.ok && Array.isArray(r.qualities) && r.qualities.length) {
-          // Every quality is delivered as video+audio (yt-dlp merges).
+          // Every quality is delivered as video+audio (yt-dlp merges). The label
+          // already carries the frame-rate ("2160p60"); append the 4K/HD note.
           quals = [{ label: "Best available", quality: "best", meta: "video + audio" }];
           for (const q of r.qualities)
-            quals.push({ label: q.label, quality: String(q.height), meta: "video + audio" });
+            quals.push({
+              label: q.note ? `${q.label}  ${q.note}` : q.label,
+              quality: String(q.height),
+              meta: "video + audio"
+            });
           quals.push({ label: "Audio only (m4a)", quality: "audio", meta: "" });
         } else {
           quals = YT_QUALITIES.map((q) => ({ label: q.label, quality: q.quality, meta: q.meta }));
         }
-        renderPanel(withPlaylist({ title: siteTitle(), name: siteTitle(), site: true, qualities: quals }));
+        renderPanel(withPlaylist({ title: siteTitle(), name: dlName, site: true,
+                                   url: vurl, qualities: quals }));
       });
       return;
     }
@@ -243,8 +330,9 @@
       g.qualities.forEach((q) => {
         const row = el("div", {
           class: "nx-q",
-          data: { url: q.url || "", quality: q.quality || "", name: g.name || "",
-                  plurl: g.playlist ? (g.playlistUrl || "") : "" }
+          data: { url: q.url || "", quality: q.quality || "", name: q.name || g.name || "",
+                  plurl: g.playlist ? (g.playlistUrl || "") : "",
+                  siteurl: g.url || "", course: q.course ? "1" : "" }
         }, [
           el("span", { text: q.label }),
           el("span", { style: "display:flex;gap:8px;align-items:center" }, [
@@ -257,19 +345,20 @@
           row.addEventListener("click", () => {
             const quality = row.dataset.quality;
             const plurl = row.dataset.plurl;
-            const msg = {
-              type: "nexa-download",
-              filename: row.dataset.name || document.title
-            };
+            const msg = { type: "nexa-download" };
             if (plurl) {                     // entire playlist: playlist URL + quality
               msg.url = plurl;
               msg.quality = quality;
               msg.playlist = true;
-            } else if (quality) {            // single site video: page URL + quality
-              msg.url = location.href;
+              msg.filename = row.dataset.name || "";
+            } else if (quality) {            // single site video: resolved page URL
+              msg.url = row.dataset.siteurl || location.href;
               msg.quality = quality;
-            } else {
+              msg.filename = row.dataset.name || "";   // empty -> yt-dlp uses real title
+              if (row.dataset.course === "1") msg.playlist = true;  // whole course
+            } else {                         // sniffed direct media URL
               msg.url = row.dataset.url;
+              msg.filename = row.dataset.name || document.title;
             }
             panel.style.display = "none";
             toast("Sending to Nexa…");

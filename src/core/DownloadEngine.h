@@ -81,6 +81,11 @@ public:
     // Unified accessors that work for both file downloads and stream grabs.
     QString       nameOf(int id) const;
     DownloadState stateOf(int id) const;
+    QString       hostOf(int id) const;   // source host, for the UI row subtitle
+
+    // True only for yt-dlp --yes-playlist jobs (many videos in one job). The UI
+    // uses this to suppress the single-file "details" plate for playlists.
+    bool          isPlaylist(int id) const { return m_playlistIds.contains(id); }
 
     // True when at least one job exists and all (downloads + grabs) are done
     // or errored — used by --batch mode to know when to exit.
@@ -120,6 +125,10 @@ private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     QString pathForName(const QString &fileName) const;  // categorise + de-dup
     void    wireTask(DownloadTask *t);
+    // Fetch a remote .torrent file (async, following redirects), then hand the
+    // local copy to the libtorrent session. libtorrent can't load an http URL.
+    void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
+                             const HeaderList &headers);
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
     void    ensureTorrents();        // lazily create the libtorrent session
@@ -135,6 +144,7 @@ private:
     QHash<int, HlsGrabber*>   m_grabbers;
     QHash<int, YtDlpGrabber*> m_siteVideos;
     QSet<int>              m_torrentIds;
+    QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
     QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;

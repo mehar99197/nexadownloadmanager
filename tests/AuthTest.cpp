@@ -99,6 +99,53 @@ int main(int argc, char **argv)
               "missing file -> FileNotFound");
     }
 
+    // ---- registerCookieData: cookie TEXT (extension path) ---------------
+    {
+        AuthenticationManager m;
+        const QString txt = QStringLiteral(
+            "# Netscape HTTP Cookie File\n"
+            ".udemy.com\tTRUE\t/\tTRUE\t%1\taccess_token\tTOKENXYZ\n").arg(future);
+        const AuthResult r = m.registerCookieData(QStringLiteral("udemy.com"), txt);
+        CHECK(r.ok, "valid cookie TEXT registers via registerCookieData");
+
+        // round-trips to a real --cookies temp file that exists and is 0600
+        const QStringList a = m.ytDlpArgs(QUrl("https://www.udemy.com/course/x/learn/lecture/1"));
+        CHECK(a.size() == 2 && a.at(0) == "--cookies", "cookie data -> {--cookies, tempPath}");
+        CHECK(QFile::exists(a.value(1)), "registerCookieData wrote a temp cookies.txt");
+        const auto perms = QFile(a.value(1)).permissions();
+        CHECK(!(perms & (QFile::ReadGroup | QFile::ReadOther | QFile::WriteGroup | QFile::WriteOther)),
+              "temp cookies.txt is owner-only (0600)");
+
+        CHECK(m.registerCookieData("x.com", QString()).code == AuthError::EmptyFile,
+              "empty cookie text -> EmptyFile");
+        CHECK(m.registerCookieData("x.com",
+                  QStringLiteral(".x.com\tTRUE\t/\tTRUE\t%1\tonlysix\n").arg(future)).code
+                  == AuthError::MalformedFormat,
+              "6-field cookie text -> MalformedFormat");
+        CHECK(m.registerCookieData("x.com", QString(6 * 1024 * 1024, QLatin1Char('a'))).code
+                  == AuthError::MalformedFormat,
+              "oversized cookie text (>5 MB) rejected before write");
+        CHECK(m.registerCookieData(QString(), txt).code == AuthError::UnknownDomain,
+              "empty domain rejected");
+    }
+
+    // ---- browser cookies (--cookies-from-browser) -----------------------
+    {
+        AuthenticationManager m;
+        CHECK(m.registerBrowserCookies("udemy.com", "chrome").ok,
+              "registerBrowserCookies(chrome) succeeds");
+        const QStringList a = m.ytDlpArgs(QUrl("https://www.udemy.com/course/x/learn/lecture/1"));
+        CHECK(a.size() == 2 && a.at(0) == "--cookies-from-browser" && a.at(1) == "chrome",
+              "browser cookies -> {--cookies-from-browser, chrome}");
+        CHECK(m.validateFor(QUrl("https://www.udemy.com/x")).ok,
+              "browser-cookies credential validates (no expiry check)");
+        CHECK(m.registerBrowserCookies("x.com", "internetexplorer").code == AuthError::MalformedFormat,
+              "unsupported browser rejected");
+        // never injected for an excluded host (YouTube)
+        CHECK(m.ytDlpArgs(QUrl("https://youtu.be/x")).isEmpty(),
+              "browser cookies never applied to a YouTube host");
+    }
+
     // ---- bearer tokens --------------------------------------------------
     {
         AuthenticationManager m;

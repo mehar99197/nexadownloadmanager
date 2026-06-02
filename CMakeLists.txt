@@ -33,6 +33,9 @@ add_executable(nexa
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/web/WebServer.cpp
+    src/ui/UiHelpers.cpp
+    src/ui/DownloadDetailsDialog.cpp
+    src/ui/SiteLoginsDialog.cpp
     src/ui/MainWindow.cpp
 )
 

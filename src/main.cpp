@@ -30,38 +30,75 @@ int main(int argc, char *argv[])
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
 
-    // Modern dark theme, shared palette with the web dashboard.
+    // Modern dark theme — deep navy canvas with a soft glow, accent-tinted
+    // controls, and color-coded rows. Mirrors the redesigned mockup.
     app.setStyleSheet(QStringLiteral(R"(
-        QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
-        #HeaderBar { background: #1e293b; border-bottom: 1px solid #334155; }
-        #BrandTitle { font-size: 16px; font-weight: 600; color: #f8fafc; }
-        #Stats { color: #94a3b8; }
-        #ActionBar { background: #0b1220; border-bottom: 1px solid #1e293b; }
-        QPushButton { background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
-                      border-radius: 8px; padding: 7px 14px; font-weight: 600; }
-        QPushButton:hover { background: #334155; }
-        QPushButton:pressed { background: #0b1220; }
-        QPushButton#Primary { background: #3b82f6; border: 0; color: white; }
-        QPushButton#Primary:hover { background: #2563eb; }
-        QTableWidget { background: #0f172a; border: 0; outline: 0;
-                       alternate-background-color: #131f37;
-                       selection-background-color: #1d4ed8; selection-color: white; }
-        QTableWidget::item { padding: 4px 10px; border: 0; }
-        QHeaderView::section { background: #1e293b; color: #94a3b8; padding: 8px 10px;
-                       border: 0; border-bottom: 1px solid #334155; font-weight: 600; }
-        QProgressBar { background: #1e293b; border: 0; border-radius: 6px;
-                       text-align: center; color: #e2e8f0; }
-        QProgressBar::chunk { background: #3b82f6; border-radius: 6px; }
-        QStatusBar { background: #1e293b; border-top: 1px solid #334155; }
-        QStatusBar QLabel, QStatusBar { color: #94a3b8; }
+        QWidget { background: #0a0e1a; color: #e6edf3; font-size: 13px; }
+        QLabel { background: transparent; }
+        #Root { background: qradialgradient(cx:0.5, cy:1.25, radius:1.15,
+                    stop:0 #112a2a, stop:0.5 #0a0e1a, stop:1 #0a0e1a); }
+
+        #HeaderBar { background: transparent; }
+        #BrandTitle { font-size: 15px; font-weight: 700; color: #f3f6fb; }
+        #ActivePill { color: #34d399; border: 1px solid rgba(52,211,153,0.45);
+                      background: rgba(52,211,153,0.10); border-radius: 12px;
+                      padding: 4px 13px; font-size: 12px; font-weight: 600; }
+
+        #ActionBar { background: transparent; }
+        QPushButton { background: #151b2c; color: #cbd5e1; border: 1px solid #232b42;
+                      border-radius: 10px; padding: 9px 15px; font-weight: 600; }
+        QPushButton:hover { background: #1b2236; border-color: #2d3650; }
+        QPushButton:pressed { background: #11162a; }
+        QPushButton#Primary { background: rgba(99,102,241,0.16); color: #c7d2fe;
+                      border: 1px solid rgba(99,102,241,0.55); }
+        QPushButton#Primary:hover { background: rgba(99,102,241,0.26); }
+        QPushButton#IconBtn { padding: 9px 12px; font-size: 14px; color: #94a3b8; }
+
+        QLineEdit#Search { background: #0e1424; border: 1px solid #232b42; border-radius: 10px;
+                    padding: 8px 13px; color: #e6edf3; selection-background-color: #6366f1; }
+        QLineEdit#Search:focus { border-color: #3949ab; }
+
+        QLabel#f_name { color: #e6edf3; font-weight: 600; font-size: 13px; }
+        QLabel#f_host { color: #6b7488; font-size: 11px; }
+        QLabel#p_pct  { color: #8b94a7; font-size: 11px; }
+
+        QTableWidget { background: transparent; border: 0; outline: 0; }
+        QTableWidget::item { border: 0; border-bottom: 1px solid #141b2b; padding: 0; }
+        QTableWidget::item:hover { background: rgba(255,255,255,0.02); }
+        QTableWidget::item:selected { background: #182040; color: #ffffff; }
+        QHeaderView::section { background: transparent; color: #5b6478; padding: 8px 12px;
+                       border: 0; border-bottom: 1px solid #1a2233;
+                       font-size: 10px; font-weight: 700; }
+
+        QProgressBar { background: #1a2133; border: 0; border-radius: 3px; }
+        QProgressBar::chunk { background: #60a5fa; border-radius: 3px; }
+
+        QStatusBar { background: #090c15; border-top: 1px solid #161d2c; }
         QStatusBar::item { border: 0; }
-        QScrollBar:vertical { background: #0f172a; width: 11px; margin: 0; }
-        QScrollBar::handle:vertical { background: #334155; border-radius: 5px; min-height: 28px; }
-        QScrollBar::handle:vertical:hover { background: #475569; }
+
+        QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+        QScrollBar::handle:vertical { background: #2a3450; border-radius: 5px; min-height: 30px; }
+        QScrollBar::handle:vertical:hover { background: #3a466a; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        QLineEdit { background: #0b1220; border: 1px solid #334155; border-radius: 6px;
-                    padding: 7px; color: #e2e8f0; selection-background-color: #3b82f6; }
-        QToolTip { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+
+        QMenu { background: #141b2b; color: #e6edf3; border: 1px solid #232b42;
+                border-radius: 8px; padding: 6px; }
+        QMenu::item { padding: 7px 18px; border-radius: 6px; }
+        QMenu::item:selected { background: #1f2740; }
+        QToolTip { background: #141b2b; color: #e6edf3; border: 1px solid #232b42; padding: 4px 8px; }
+
+        /* ---- Per-download details plate ---- */
+        QDialog { background: #0a0e1a; }
+        #Plate { background: #141b2c; border: 1px solid #232b42; border-radius: 14px; }
+        #Dd_title { color: #f3f6fb; font-size: 15px; font-weight: 700; }
+        #Dd_host  { color: #6b7488; font-size: 11px; }
+        #Dd_seclabel { color: #6b7488; font-size: 11px; }
+        #Dd_barpct { color: #8b94a7; font-size: 11px; }
+        QLabel[ddRole="label"] { color: #8b94a7; font-size: 11px; }
+        QLabel[ddRole="value"] { color: #e6edf3; font-size: 13px; }
+        #DdCancel { background: rgba(239,68,68,0.14); color: #fda4a4;
+                    border: 1px solid rgba(239,68,68,0.50); }
+        #DdCancel:hover { background: rgba(239,68,68,0.24); }
     )"));
 
     qRegisterMetaType<nexa::DownloadState>("nexa::DownloadState");

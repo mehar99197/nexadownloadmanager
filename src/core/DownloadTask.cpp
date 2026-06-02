@@ -96,11 +96,10 @@ bool DownloadTask::renameTo(const QString &newFileName)
 // capping at 16 (more than that rarely helps and annoys servers).
 int DownloadTask::preferredSegmentCount(qint64 totalBytes)
 {
-    if (totalBytes <= 0)              return 1;
-    if (totalBytes < 1 * 1024 * 1024) return 1;    // < 1 MB: not worth splitting
-    if (totalBytes < 10 * 1024 * 1024) return 4;
-    if (totalBytes < 100 * 1024 * 1024) return 8;
-    return 16;
+    if (totalBytes <= 0)               return 1;
+    if (totalBytes < 1 * 1024 * 1024)  return 1;    // < 1 MB: not worth splitting
+    if (totalBytes < 10 * 1024 * 1024) return 8;    // 1–10 MB
+    return 16;                                       // ≥ 10 MB: full 16-way acceleration
 }
 
 void DownloadTask::start()

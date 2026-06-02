@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QProcess>
 #include <QSet>
+#include <QHash>
 #include <QUrl>
 #include <QDebug>
 #include <algorithm>
@@ -123,9 +124,14 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         const QString authDomain = obj.value(QStringLiteral("authDomain")).toString();
         if (!authDomain.isEmpty()) {
             AuthResult ar = AuthResult::success();
+            // The extension sends cookie TEXT (no disk path under MV3); a CLI/UI
+            // could send a path. Text wins when both are present.
+            const QString cookiesText = obj.value(QStringLiteral("authCookiesText")).toString();
             const QString cookiesFile = obj.value(QStringLiteral("authCookiesFile")).toString();
             const QString bearer      = obj.value(QStringLiteral("bearer")).toString();
-            if (!cookiesFile.isEmpty()) {
+            if (!cookiesText.isEmpty()) {
+                ar = am->registerCookieData(authDomain, cookiesText);
+            } else if (!cookiesFile.isEmpty()) {
                 ar = am->registerCookieFile(authDomain, cookiesFile);
             } else if (!bearer.isEmpty()) {
                 const qint64 exp = qint64(obj.value(QStringLiteral("bearerExpiresAt")).toDouble(0));
@@ -169,28 +175,40 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
             [proc, out]() { out->append(proc->readAllStandardOutput()); });
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this, sock, proc, out](int, QProcess::ExitStatus) {
-        // Collect the distinct video heights that have audio available so every
-        // listed quality can be delivered as video+audio.
+        // Collect EVERY distinct video height yt-dlp reports (audio is muxed in
+        // separately, so a video-only DASH format like 2160p still counts). For
+        // each height keep the highest frame-rate seen so a quality can be
+        // labelled like YouTube's own menu — "2160p60", "1080p60".
         const QJsonObject info = QJsonDocument::fromJson(*out).object();
         const QJsonArray formats = info.value(QStringLiteral("formats")).toArray();
-        QSet<int> heights;
+        QHash<int, int> heightFps;     // video height -> max fps
         bool hasAudio = false;
         for (const QJsonValue &fv : formats) {
             const QJsonObject f = fv.toObject();
             const QString vcodec = f.value(QStringLiteral("vcodec")).toString();
             const QString acodec = f.value(QStringLiteral("acodec")).toString();
             const int h = f.value(QStringLiteral("height")).toInt();
+            const int fps = int(f.value(QStringLiteral("fps")).toDouble() + 0.5);
             if (acodec != QLatin1String("none") && !acodec.isEmpty())
                 hasAudio = true;
             if (vcodec != QLatin1String("none") && !vcodec.isEmpty() && h > 0)
-                heights.insert(h);
+                heightFps[h] = qMax(heightFps.value(h, 0), fps);
         }
-        QList<int> sorted = heights.values();
+        QList<int> sorted = heightFps.keys();
         std::sort(sorted.begin(), sorted.end(), std::greater<int>());
 
         QJsonArray quals;
-        for (int h : sorted)
-            quals.append(QJsonObject{{"height", h}, {"label", QStringLiteral("%1p").arg(h)}});
+        for (int h : sorted) {
+            const int fps = heightFps.value(h);
+            QString label = QStringLiteral("%1p").arg(h);
+            if (fps >= 50)                       // annotate high frame-rates only
+                label += QString::number(fps);   // e.g. "1080p60"
+            const QString note = h >= 2160 ? QStringLiteral("4K")
+                               : h >= 1080 ? QStringLiteral("HD")
+                                           : QString();
+            quals.append(QJsonObject{{"height", h}, {"fps", fps},
+                                     {"label", label}, {"note", note}});
+        }
 
         sendFramed(sock, QJsonObject{{"ok", true},
                                      {"hasAudio", hasAudio},

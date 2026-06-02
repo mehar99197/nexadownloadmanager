@@ -8,6 +8,8 @@
 #include "auth/AuthenticationManager.h"
 
 #include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
 #include <QStandardPaths>
 #include <QFileInfo>
 #include <QDir>
@@ -214,6 +216,8 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
                                    playlist, this);
         m_siteVideos.insert(id, g);
+        if (playlist)
+            m_playlistIds.insert(id);   // suppress the single-file details plate
         connect(g, &YtDlpGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
@@ -233,7 +237,21 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 : m_downloadDir;
         m_torrentIds.insert(id);
         emit taskAdded(id);
-        if (!m_torrents->add(id, asText, dir)) {
+
+        // libtorrent loads a magnet URI or a LOCAL .torrent file — never an
+        // http(s) URL (the in-engine .torrent fetch was dropped in libtorrent 2).
+        // So a remote .torrent is downloaded first, then its local copy is added.
+        const bool isMagnet = asText.startsWith(QStringLiteral("magnet:"), Qt::CaseInsensitive);
+        const bool isRemote = url.scheme() == QLatin1String("http") ||
+                              url.scheme() == QLatin1String("https");
+        if (!isMagnet && isRemote) {
+            HeaderList merged = headers;
+            merged += authHeaders;
+            fetchTorrentFile(id, url, dir, merged);   // async; drives state itself
+            return id;
+        }
+
+        if (!m_torrents->add(id, asText, dir)) {      // magnet or local .torrent
             m_torrentIds.remove(id);
             return -1;
         }
@@ -340,6 +358,54 @@ void DownloadEngine::ensureTorrents()
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
 }
 
+void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
+                                      const HeaderList &headers)
+{
+    emit taskStateChanged(id, DownloadState::Probing, QStringLiteral("fetching .torrent…"));
+
+    QNetworkRequest req(url);
+    for (const auto &h : headers)
+        req.setRawHeader(h.first, h.second);
+    // cdimage.kali.org → kali.download is a 302; follow redirects to the file.
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, id, saveDir, reply]() {
+        reply->deleteLater();
+        if (!m_torrentIds.contains(id))            // removed while in flight
+            return;
+        if (reply->error() != QNetworkReply::NoError) {
+            emit taskStateChanged(id, DownloadState::Error,
+                QStringLiteral("could not fetch .torrent: %1").arg(reply->errorString()));
+            m_torrentIds.remove(id);
+            return;
+        }
+        const QByteArray data = reply->readAll();
+        // A .torrent is a bencoded dictionary, so it must begin with 'd'. This
+        // rejects an HTML error/login page served with a 200.
+        if (!data.startsWith('d')) {
+            emit taskStateChanged(id, DownloadState::Error,
+                QStringLiteral("not a valid .torrent (got %1 bytes)").arg(data.size()));
+            m_torrentIds.remove(id);
+            return;
+        }
+        QDir().mkpath(saveDir);
+        const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                          + QStringLiteral("/nexa-%1.torrent").arg(id);
+        QFile f(tmp);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            emit taskStateChanged(id, DownloadState::Error, QStringLiteral("cannot write temp .torrent"));
+            m_torrentIds.remove(id);
+            return;
+        }
+        f.write(data);
+        f.close();
+        if (!m_torrents->add(id, tmp, saveDir))    // add() emits its own Error on failure
+            m_torrentIds.remove(id);
+    });
+}
+
 QString DownloadEngine::nameOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->fileName();
@@ -356,6 +422,17 @@ DownloadState DownloadEngine::stateOf(int id) const
     if (auto *y = m_siteVideos.value(id)) return y->state();
     if (m_torrents && m_torrents->has(id)) return m_torrents->stateOf(id);
     return DownloadState::Queued;
+}
+
+QString DownloadEngine::hostOf(int id) const
+{
+    QUrl u;
+    if (auto *t = m_tasks.value(id)) u = t->url();
+    else if (auto *g = m_grabbers.value(id)) u = g->url();
+    else if (auto *y = m_siteVideos.value(id)) u = y->url();
+    else if (m_torrents && m_torrents->has(id)) return QStringLiteral("peer swarm");
+    const QString h = u.host();
+    return h.isEmpty() ? QStringLiteral("local file") : h;
 }
 
 bool DownloadEngine::allTerminal() const
@@ -418,6 +495,7 @@ void DownloadEngine::remove(int id, bool deleteFile)
 
     if (auto *y = m_siteVideos.take(id)) {
         const QString path = y->savePath();
+        m_playlistIds.remove(id);
         y->cancel();
         y->deleteLater();
         if (deleteFile && !path.isEmpty())

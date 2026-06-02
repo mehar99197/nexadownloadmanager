@@ -86,7 +86,7 @@ private:
     bool                   m_cancelled = false;
     QElapsedTimer          m_clock;
 
-    static constexpr int kConcurrency = 8;
+    static constexpr int kConcurrency = 16;   // parallel segment fetches (accelerator)
 };
 
 } // namespace nexa

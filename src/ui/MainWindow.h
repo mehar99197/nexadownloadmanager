@@ -1,17 +1,22 @@
 #pragma once
 #include <QMainWindow>
 #include <QHash>
+#include <QSet>
+#include <QPointer>
 #include "core/Types.h"
 
 class QTableWidget;
 class QLabel;
+class QLineEdit;
 
 namespace nexa {
 
 class DownloadEngine;
+class DownloadDetailsDialog;
 
-// Main application window: a toolbar + a table of downloads with live
-// progress/speed, driven entirely by DownloadEngine signals.
+// Main application window: a header + action bar + a table of downloads with
+// live progress/speed and a summary footer, driven entirely by DownloadEngine
+// signals. Styled to match the NexaDL redesign mockup.
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -20,9 +25,13 @@ public:
 private slots:
     void promptAddUrl();
     void promptSmartAdd();           // natural-language AI add
-    void pauseSelected();
-    void resumeSelected();
+    void pauseAll();
+    void resumeAll();
     void removeSelected();
+    void openDownloadFolder();
+    void onSiteLogins();             // register a cookies.txt for an auth-gated site
+    void openDetails(int id);        // open or raise the per-download details plate
+    void applyFilter(const QString &text);
 
     void onTaskAdded(int id);
     void onTaskProgress(int id, qint64 done, qint64 total, double bps);
@@ -34,13 +43,23 @@ private slots:
 private:
     int  rowForId(int id) const;
     int  selectedId() const;
-    void updateStats();          // refresh the "N active · X/s" header readout
+    int  idAtRow(int row) const;
+    void updateStats();              // refresh header pill + footer summary
+    void refreshFileCell(int row, int id);
+    void setRowStatus(int row, nexa::DownloadState state, const QString &detail);
+    void showRowMenu(const QPoint &pos);
 
     DownloadEngine *m_engine;
-    QTableWidget   *m_table;
-    QLabel         *m_status;
-    QLabel         *m_statsLabel = nullptr;
+    QTableWidget   *m_table = nullptr;
+    QLineEdit      *m_search = nullptr;
+    QLabel         *m_activePill = nullptr;   // "N active" header pill
+    QLabel         *m_footerLeft = nullptr;
+    QLabel         *m_footerRight = nullptr;
     QHash<int, int> m_idToRow;   // task id -> table row
+
+    QHash<int, QPointer<DownloadDetailsDialog>> m_openDialogs;  // one plate per id
+    QSet<int>       m_autoOpened;   // ids that already auto-popped (dedupe, lifetime)
+    bool            m_restoring = false;  // true during startup snapshot replay
 };
 
 } // namespace nexa
