@@ -4,8 +4,101 @@
 #include <QFileInfo>
 #include <QStringList>
 #include <QDateTime>
+#include <QHash>
+#include <QSet>
+#include <limits>
 
 namespace nexa {
+
+QByteArray CookieFile::dedupe(const QByteArray &netscapeText)
+{
+    const QList<QByteArray> rawLines = netscapeText.split('\n');
+
+    // How "specific" a cookie's domain is for a host. Host-only (no leading dot)
+    // beats a dot-prefixed parent domain; a longer domain beats a shorter one.
+    auto specificity = [](const QString &domain) -> int {
+        QString d = domain;
+        const bool hostOnly = !d.startsWith(QLatin1Char('.'));
+        if (!hostOnly) d = d.mid(1);
+        return d.size() * 2 + (hostOnly ? 1 : 0);
+    };
+
+    struct Pick { int idx; int spec; qint64 exp; };
+    QHash<QString, Pick> bestByName;   // cookie name -> chosen line
+    QList<int> dataLineForName;        // first-seen order of names (output order)
+    QHash<QString, int> orderIndex;
+
+    // Pass 1: decide the winner for each duplicated name.
+    for (int i = 0; i < rawLines.size(); ++i) {
+        QString line = QString::fromUtf8(rawLines[i]);
+        while (line.endsWith(QLatin1Char('\r'))) line.chop(1);
+        if (line.trimmed().isEmpty())
+            continue;
+        QString body = line;
+        if (body.startsWith(QLatin1Char('#'))) {
+            if (body.startsWith(QStringLiteral("#HttpOnly_")))
+                body = body.mid(QStringLiteral("#HttpOnly_").size());
+            else
+                continue;   // ordinary comment — not a cookie
+        }
+        const QStringList f = body.split(QLatin1Char('\t'), Qt::KeepEmptyParts);
+        if (f.size() != 7)
+            continue;       // leave malformed lines for parse() to reject later
+        const QString domain = f.at(0);
+        const QString name   = f.at(5);
+        const qint64  exp    = f.at(4).toLongLong();
+        const int     spec   = specificity(domain);
+        // expiry 0 == session cookie: treat as the freshest (still-live) value.
+        const qint64 expKey = (exp == 0) ? std::numeric_limits<qint64>::max() : exp;
+        auto it = bestByName.find(name);
+        if (it == bestByName.end()) {
+            bestByName.insert(name, {i, spec, expKey});
+            orderIndex.insert(name, dataLineForName.size());
+            dataLineForName.append(i);
+        } else if (spec > it->spec || (spec == it->spec && expKey >= it->exp)) {
+            *it = {i, spec, expKey};   // more specific, or equally specific but fresher
+        }
+    }
+
+    // Pass 2: re-emit. Comments/blank lines pass through; for cookie lines, emit a
+    // name only once (its winning line) at the position it first appeared.
+    QByteArray out;
+    QSet<QString> emitted;
+    for (int i = 0; i < rawLines.size(); ++i) {
+        QString line = QString::fromUtf8(rawLines[i]);
+        bool hadCR = false;
+        while (line.endsWith(QLatin1Char('\r'))) { line.chop(1); hadCR = true; }
+        Q_UNUSED(hadCR);
+
+        auto passthrough = [&]() {
+            out += rawLines[i];
+            if (i != rawLines.size() - 1) out += '\n';
+        };
+
+        if (line.trimmed().isEmpty()) { passthrough(); continue; }
+        QString body = line;
+        bool httpOnly = false;
+        if (body.startsWith(QLatin1Char('#'))) {
+            if (body.startsWith(QStringLiteral("#HttpOnly_"))) {
+                httpOnly = true;
+                body = body.mid(QStringLiteral("#HttpOnly_").size());
+            } else { passthrough(); continue; }   // comment header preserved
+        }
+        const QStringList f = body.split(QLatin1Char('\t'), Qt::KeepEmptyParts);
+        if (f.size() != 7) { passthrough(); continue; }
+        const QString name = f.at(5);
+        const auto it = bestByName.constFind(name);
+        if (it == bestByName.constEnd() || it->idx != i)
+            continue;                              // a duplicate that lost — drop it
+        if (emitted.contains(name))
+            continue;
+        emitted.insert(name);
+        Q_UNUSED(httpOnly);
+        out += rawLines[i];
+        if (i != rawLines.size() - 1) out += '\n';
+    }
+    return out;
+}
 
 CookieFile::ParseResult CookieFile::parse(const QString &path, QVector<Cookie> &out)
 {

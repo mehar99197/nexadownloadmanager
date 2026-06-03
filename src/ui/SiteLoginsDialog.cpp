@@ -181,7 +181,9 @@ void SiteLoginsDialog::buildUi()
         "Download courses you're enrolled in (Udemy, Coursera, Vimeo, …). Easiest: pick "
         "the browser you're logged in with and click “Use browser login” — Nexa reads "
         "that site's cookies for you, no export needed. Or register an exported "
-        "cookies.txt below. Only content your own login can access is downloadable."));
+        "cookies.txt below. Only content your own login can access is downloadable.\n\n"
+        "Note: DRM-protected lectures (Widevine) can't be downloaded by any tool — they "
+        "only play inside the browser. Such a course saves just its non-DRM videos."));
     v->addWidget(hint);
 
     // Domain row
@@ -216,24 +218,6 @@ void SiteLoginsDialog::buildUi()
     browRow->addWidget(useBrowser);
     v->addLayout(browRow);
     connect(useBrowser, &QPushButton::clicked, this, &SiteLoginsDialog::onUseBrowser);
-
-    // Profile row — which browser profile to read cookies from. Critical when you
-    // use multiple Chrome profiles and are logged into the site in a non-default
-    // one; the default profile has no session and the download would fail.
-    auto *profRow = new QHBoxLayout;
-    auto *profLbl = new QLabel(QStringLiteral("Profile"), plate);
-    profLbl->setProperty("ddRole", "label");
-    profLbl->setFixedWidth(80);
-    m_profile = new QComboBox(plate);
-    m_profile->setToolTip(QStringLiteral(
-        "Pick the browser profile you're logged into the site with. Use multiple "
-        "Chrome profiles? Choose the one that has the site open and signed in."));
-    profRow->addWidget(profLbl);
-    profRow->addWidget(m_profile, 1);
-    v->addLayout(profRow);
-    connect(m_browser, &QComboBox::currentTextChanged,
-            this, &SiteLoginsDialog::onBrowserChanged);
-    populateProfiles();   // seed for the initially-selected browser
 
     auto *orLbl = new QLabel(QStringLiteral("— or register an exported cookies.txt —"), plate);
     orLbl->setProperty("ddRole", "label");
@@ -287,32 +271,10 @@ void SiteLoginsDialog::onBrowse()
         m_path->setText(p);
 }
 
-void SiteLoginsDialog::populateProfiles()
-{
-    if (!m_profile)
-        return;
-    m_profile->clear();
-    const QString browser = m_browser ? m_browser->currentText().trimmed() : QString();
-    const auto profiles = detectChromiumProfiles(browser);
-    // First entry = AUTO: at click-time we scan every profile's cookie DB and pick
-    // the one most recently logged into the site (empty data == "auto"). Then list
-    // each detected profile explicitly so the user can override the auto choice.
-    m_profile->addItem(QStringLiteral("Auto-detect (recommended)"), QString());
-    for (const auto &p : profiles)
-        m_profile->addItem(QStringLiteral("%1  (%2)").arg(p.second, p.first), p.first);
-    m_profile->setEnabled(true);
-}
-
-void SiteLoginsDialog::onBrowserChanged()
-{
-    populateProfiles();
-}
-
 void SiteLoginsDialog::onUseBrowser()
 {
     const QString domain  = m_domain->currentText().trimmed();
     const QString browser = m_browser->currentText().trimmed();
-    QString profile = m_profile ? m_profile->currentData().toString() : QString();
     if (domain.isEmpty()) {
         m_status->setText(QStringLiteral("Pick a site first."));
         m_status->setStyleSheet(QStringLiteral("color:#f59e0b;"));
@@ -324,22 +286,15 @@ void SiteLoginsDialog::onUseBrowser()
         m_status->setStyleSheet(QStringLiteral("color:#ef4444;"));
         return;
     }
-    // Auto-detect (empty data): find the profile most recently logged into the site.
-    bool autoPicked = false;
-    if (profile.isEmpty()) {
-        const QString best = bestProfileForDomain(browser, domain);
-        if (!best.isEmpty()) { profile = best; autoPicked = true; }
-    }
+    // Silently pick the browser profile most recently logged into the site (no UI
+    // list — the user just clicks one button). Empty -> the browser's default.
+    const QString profile = bestProfileForDomain(browser, domain);
     // Registering REPLACES any prior credential for this domain (old cookies gone).
     const AuthResult ar = am->registerBrowserCookies(domain, browser, profile);
     if (ar.ok) {
-        QString where = browser;
-        if (!profile.isEmpty())
-            where = QStringLiteral("%1 / %2%3").arg(browser, profile,
-                        autoPicked ? QStringLiteral(" (auto-detected)") : QString());
         m_status->setText(QStringLiteral("✓ Will use your %1 login for %2. Just stay logged in, "
                                          "then paste a course/lecture URL in New Download.")
-                              .arg(where, domain));
+                              .arg(browser, domain));
         m_status->setStyleSheet(QStringLiteral("color:#22c55e;"));
     } else {
         m_status->setText(QStringLiteral("✕ %1").arg(ar.detail));

@@ -247,7 +247,7 @@ void YtDlpGrabber::start()
     QStringList args = common;
     args << QStringLiteral("--no-playlist")
          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
-         << runUrl.toString();
+         << QStringLiteral("--") << runUrl.toString();   // -- : URL never parsed as a flag
 
     m_proc = new QProcess(this);
     m_proc->setProcessChannelMode(QProcess::MergedChannels);
@@ -322,6 +322,9 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
 
     for (int j = 0; j < K; ++j) {
         const QString outf = m_outFile + QStringLiteral(".%1").arg(j);
+        // yt-dlp --print-to-file APPENDS; remove any leftover from a previous run
+        // of this id (pause→resume reuses the same paths) so counts aren't doubled.
+        QFile::remove(outf);
         m_plOutFiles << outf;
         QStringList a = common;
         a << QStringLiteral("--yes-playlist")
@@ -333,7 +336,7 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
           // a late stage so this does NOT imply --simulate (downloads still run).
           << QStringLiteral("--print-to-file")
           << QStringLiteral("after_move:%(playlist_count)s|%(filepath)s") << outf
-          << runUrl.toString();
+          << QStringLiteral("--") << runUrl.toString();
 
         auto *p = new QProcess(this);
         p->setProcessChannelMode(QProcess::MergedChannels);
@@ -402,6 +405,9 @@ void YtDlpGrabber::onOutput()
         // of a generic "code N". Checked on every line, not just ERROR: lines.
         if (const QString why = authReasonFromYtDlpLine(line); !why.isEmpty())
             m_lastError = QStringLiteral("ERROR: ") + why;
+        if (line.contains(QStringLiteral("DRM protected"), Qt::CaseInsensitive))
+            m_lastError = QStringLiteral("ERROR: this video is DRM-protected — "
+                                         "Udemy DRM can't be downloaded");
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp" << m_id << line;
 
@@ -674,6 +680,13 @@ void YtDlpGrabber::onPlOutput()
             m_lastError = line;
         if (const QString why = authReasonFromYtDlpLine(line); !why.isEmpty())
             m_lastError = QStringLiteral("ERROR: ") + why;
+        // Tally DRM-protected lectures (Widevine — undownloadable), keyed by lecture
+        // id so the same failure across retries counts once. Surfaced on completion.
+        if (line.contains(QStringLiteral("DRM protected"), Qt::CaseInsensitive)) {
+            static const QRegularExpression drmRe(QStringLiteral("\\[udemy\\]\\s*(\\d+)"));
+            const auto dm = drmRe.match(line);
+            m_drmVideoIds.insert(dm.hasMatch() ? dm.captured(1) : line);
+        }
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp[pl]" << m_id << line;
 
@@ -772,12 +785,24 @@ void YtDlpGrabber::onPlProcFinished()
     if (kDebug)
         qDebug().noquote() << "NEXA PL-DONE" << m_id << "videos=" << total
                            << "folder=" << folder;
+    const int drm = m_drmVideoIds.size();
     if (total > 0) {
         m_plDoneVideos = total;
         emit progress(m_id, total, m_plTotal > 0 ? m_plTotal : total, 0.0);
-        setState(DownloadState::Completed,
-                 QStringLiteral("saved %1 video%2").arg(total).arg(total == 1 ? "" : "s"));
+        // Be honest about DRM: a course where most lectures are Widevine-protected
+        // saves only its few plain videos — say so, or "saved 2 videos" reads like
+        // it stopped early. yt-dlp/aria2 cannot decrypt Udemy DRM; nothing can here.
+        QString detail = QStringLiteral("saved %1 video%2").arg(total).arg(total == 1 ? "" : "s");
+        if (drm > 0)
+            detail += QStringLiteral(" · %1 DRM-protected (can't download)").arg(drm);
+        setState(DownloadState::Completed, detail);
         emit finished(m_id);
+    } else if (drm > 0) {
+        // Every lecture that ran was DRM-protected — make the reason unmistakable
+        // rather than surfacing a raw yt-dlp error line.
+        setState(DownloadState::Error,
+                 QStringLiteral("all %1 video%2 are DRM-protected — Udemy DRM can't be downloaded")
+                     .arg(drm).arg(drm == 1 ? "" : "s"));
     } else {
         QString why = m_lastError;
         why.remove(QRegularExpression(QStringLiteral("^ERROR:\\s*"),

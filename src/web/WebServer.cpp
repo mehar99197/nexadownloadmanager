@@ -344,7 +344,15 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
             provided = auth.mid(7).trimmed();
         else
             provided = req.query.value(QStringLiteral("token"));
-        if (provided != m_token) {
+        // Constant-time compare so a LAN attacker can't time-probe the token.
+        auto ctEquals = [](const QString &a, const QString &b) {
+            const QByteArray x = a.toUtf8(), y = b.toUtf8();
+            if (x.size() != y.size()) return false;
+            quint8 d = 0;
+            for (int i = 0; i < x.size(); ++i) d |= quint8(x[i]) ^ quint8(y[i]);
+            return d == 0;
+        };
+        if (!ctEquals(provided, m_token)) {
             sendResponse(sock, 401, QStringLiteral("text/plain"), "unauthorized");
             return;
         }
@@ -376,6 +384,12 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         url = url.trimmed();
         if (url.isEmpty()) {
             sendJson(sock, 400, R"({"ok":false,"error":"missing url"})");
+            return;
+        }
+        // Never let a LAN client read local files via file:// (the dashboard is
+        // token-gated but still network-exposed). Patterns/magnets/http unaffected.
+        if (QUrl::fromUserInput(url).scheme().compare(QLatin1String("file"), Qt::CaseInsensitive) == 0) {
+            sendJson(sock, 400, R"({"ok":false,"error":"unsupported url scheme"})");
             return;
         }
         const QList<int> ids = m_engine->addBatch(url);

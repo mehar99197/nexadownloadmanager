@@ -5,7 +5,10 @@
 
 class QLabel;
 class QPushButton;
+class QToolButton;
 class QTableWidget;
+class QWidget;
+class QScrollArea;
 class QTimer;
 
 namespace nexa {
@@ -41,6 +44,7 @@ private:
     void updateButtons();
     bool isSegmented() const;      // task(id) && rangesSupported && segments > 1
     void syncTimer();              // start/stop the poll timer for the current state
+    void relayoutHeight();         // re-fit the fixed box after the conn panel expands/collapses
 
     DownloadEngine *m_engine;
     int     m_id;
@@ -63,6 +67,9 @@ private:
     SpeedMeter   *m_speedMeter = nullptr;
     SpeedGraph   *m_speedGraph = nullptr;
     QLabel *m_barPct = nullptr, *m_connCount = nullptr;
+    QToolButton *m_connToggle = nullptr;   // expand/collapse the connection panel
+    QWidget   *m_connBox = nullptr;        // collapsible body: strip + table
+    QScrollArea *m_scroll = nullptr;       // scrolls the panel into view on expand
     ConnStrip *m_strip = nullptr;
     QTableWidget *m_table = nullptr;
     // buttons

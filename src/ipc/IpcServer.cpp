@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QUrl>
 #include <QDebug>
+#include <QPointer>
 #include <algorithm>
 
 namespace nexa {
@@ -46,6 +47,9 @@ bool IpcServer::start(const QString &name)
             return false;                    // a real instance owns it
         QLocalServer::removeServer(name);    // stale file left by a crash
     }
+    // Restrict the socket to the current user so another local account can't
+    // inject downloads (incl. file:// reads) through our IPC channel.
+    m_server->setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_server->listen(name)) {
         qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
         return false;
@@ -69,18 +73,27 @@ void IpcServer::onReadyRead()
     if (!sock)
         return;
 
-    // Expect [4-byte LE length][JSON]. Wait until the whole frame has arrived.
-    const QByteArray buf = sock->peek(sock->bytesAvailable());
-    if (buf.size() < 4)
-        return;
-    const quint32 len = quint32((quint8)buf[0]) | (quint32((quint8)buf[1]) << 8) |
-                        (quint32((quint8)buf[2]) << 16) | (quint32((quint8)buf[3]) << 24);
-    if (quint32(buf.size()) < 4 + len)
-        return;
-
-    sock->read(4);                         // consume length prefix
-    const QByteArray json = sock->read(len);
-    handlePayload(sock, json);
+    // Frames are [4-byte LE length][JSON]. Consume EVERY whole frame already
+    // buffered (peers may coalesce several), and reject an absurd length up front
+    // so a bogus/hostile prefix can't trigger a multi-gigabyte read (the old
+    // `4 + len` check also overflowed for len near UINT32_MAX).
+    static constexpr quint32 kMaxFrame = 8u * 1024 * 1024;   // 8 MB ceiling
+    for (;;) {
+        const QByteArray buf = sock->peek(sock->bytesAvailable());
+        if (buf.size() < 4)
+            return;
+        const quint32 len = quint32((quint8)buf[0]) | (quint32((quint8)buf[1]) << 8) |
+                            (quint32((quint8)buf[2]) << 16) | (quint32((quint8)buf[3]) << 24);
+        if (len > kMaxFrame) {               // refuse and drop the peer
+            sock->abort();
+            return;
+        }
+        if (quint64(buf.size()) < quint64(len) + 4)   // 64-bit math: no overflow
+            return;                                    // whole frame not here yet
+        sock->read(4);                                 // consume length prefix
+        const QByteArray json = sock->read(len);
+        handlePayload(sock, json);
+    }
 }
 
 void IpcServer::sendFramed(QLocalSocket *sock, const QJsonObject &o) const
@@ -122,6 +135,14 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     const QUrl url = QUrl::fromUserInput(obj.value(QStringLiteral("url")).toString());
     if (!url.isValid()) {
         sendReply(QJsonObject{{"ok", false}, {"message", "invalid url"}});
+        return;
+    }
+    // Only network schemes from this untrusted channel — never file:// (local-file
+    // read) or other schemes that QUrl::fromUserInput would happily accept.
+    static const QSet<QString> kAllowedSchemes = {
+        QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("magnet")};
+    if (!kAllowedSchemes.contains(url.scheme().toLower())) {
+        sendReply(QJsonObject{{"ok", false}, {"message", "unsupported url scheme"}});
         return;
     }
 
@@ -172,9 +193,20 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if (!userAgent.isEmpty()) headers.append({QByteArrayLiteral("User-Agent"), userAgent.toUtf8()});
     if (!referrer.isEmpty())  headers.append({QByteArrayLiteral("Referer"),    referrer.toUtf8()});
 
+    // Reject header names/values carrying CR/LF or other control chars so an
+    // untrusted extension can't smuggle extra headers via injection.
+    auto headerSafe = [](const QString &s) {
+        for (const QChar c : s)
+            if (c < QChar(0x20) && c != QChar('\t'))
+                return false;
+        return true;
+    };
     const QJsonObject extra = obj.value(QStringLiteral("headers")).toObject();
-    for (auto it = extra.begin(); it != extra.end(); ++it)
-        headers.append({it.key().toUtf8(), it.value().toString().toUtf8()});
+    for (auto it = extra.begin(); it != extra.end(); ++it) {
+        const QString v = it.value().toString();
+        if (headerSafe(it.key()) && headerSafe(v))
+            headers.append({it.key().toUtf8(), v.toUtf8()});
+    }
 
     const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
     const QString quality = obj.value(QStringLiteral("quality")).toString();   // YouTube etc.
@@ -190,10 +222,15 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
 {
     auto *proc = new QProcess(this);
     auto *out = new QByteArray;
+    // The peer can disconnect during the multi-second `yt-dlp -J`; a raw sock would
+    // dangle. A QPointer goes null on delete so the finished callback can bail.
+    QPointer<QLocalSocket> safeSock(sock);
     connect(proc, &QProcess::readyReadStandardOutput, this,
             [proc, out]() { out->append(proc->readAllStandardOutput()); });
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, sock, proc, out](int, QProcess::ExitStatus) {
+            [this, safeSock, proc, out](int, QProcess::ExitStatus) {
+        if (!safeSock) { proc->deleteLater(); delete out; return; }
+        QLocalSocket *sock = safeSock;
         // Collect EVERY distinct video height yt-dlp reports (audio is muxed in
         // separately, so a video-only DASH format like 2160p still counts). For
         // each height keep the highest frame-rate seen so a quality can be
@@ -237,9 +274,10 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
         delete out;
     });
     // -J extraction is network-bound (a few seconds); the host waits for us.
+    // `--` ends option parsing so a URL starting with '-' can't be read as a flag.
     proc->start(QStringLiteral("yt-dlp"),
                 {QStringLiteral("-J"), QStringLiteral("--no-warnings"),
-                 QStringLiteral("--no-playlist"), url.toString()});
+                 QStringLiteral("--no-playlist"), QStringLiteral("--"), url.toString()});
     if (!proc->waitForStarted(3000)) {
         sendFramed(sock, QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});
         proc->deleteLater();

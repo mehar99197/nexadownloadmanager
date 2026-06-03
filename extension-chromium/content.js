@@ -541,8 +541,10 @@
       if (badge) badge.textContent = String(count);
       // Refresh an open panel if the media set changed.
       const sig = info.signature || "";
-      if (count > 0 && panel && panel.style.display === "block" && sig !== lastSignature)
-        togglePanel(), togglePanel();   // close+reopen to refetch
+      if (count > 0 && panel && panel.style.display === "block" && sig !== lastSignature) {
+        panel.style.display = "none";   // force a clean re-open (re-render) regardless of toggle parity
+        togglePanel();
+      }
       lastSignature = sig;
     });
   }
@@ -560,13 +562,18 @@
   window.addEventListener("yt-navigate-finish", () => setTimeout(onNav, 0), true);
   document.addEventListener("yt-page-data-updated", () => setTimeout(onNav, 0), true);
   window.addEventListener("popstate", () => setTimeout(onNav, 0));
-  for (const m of ["pushState", "replaceState"]) {
-    const orig = history[m];
-    history[m] = function () {
-      const r = orig.apply(this, arguments);
-      setTimeout(onNav, 0);
-      return r;
-    };
+  // Patch history ONCE per page. The content script can be re-injected on SPA
+  // navigations; without this guard the wrappers stack and onNav fires N times.
+  if (!history.__nexaPatched) {
+    history.__nexaPatched = true;
+    for (const m of ["pushState", "replaceState"]) {
+      const orig = history[m];
+      history[m] = function () {
+        const r = orig.apply(this, arguments);
+        setTimeout(onNav, 0);
+        return r;
+      };
+    }
   }
 
   // Collect every link on the page (used by the "download all links" menu).

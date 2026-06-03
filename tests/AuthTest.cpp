@@ -198,6 +198,44 @@ int main(int argc, char **argv)
               "no auth args for youtu.be (preserves extractor safeguard)");
     }
 
+    // ---- Cookie de-dup (CookieFile::dedupe) -----------------------------
+    {
+        // A jar from repeated logins: access_token at BOTH .udemy.com (stale) and
+        // www.udemy.com (current), two csrftoken, plus a unique #HttpOnly_ cookie.
+        // dedupe() must keep ONE per name, preferring the host-specific (www) one.
+        const QByteArray fut = QByteArray::number(future);
+        const QByteArray jar =
+            QByteArray("# Netscape HTTP Cookie File\n")
+            + ".udemy.com\tTRUE\t/\tTRUE\t"     + fut + "\taccess_token\tSTALE\n"
+            + "www.udemy.com\tFALSE\t/\tTRUE\t" + fut + "\taccess_token\tCURRENT\n"
+            + ".udemy.com\tTRUE\t/\tTRUE\t"     + fut + "\tcsrftoken\tC1\n"
+            + "www.udemy.com\tFALSE\t/\tTRUE\t" + fut + "\tcsrftoken\tC2\n"
+            + "#HttpOnly_www.udemy.com\tFALSE\t/\tTRUE\t" + fut + "\tsess\tONLY\n";
+        const QString s = QString::fromUtf8(CookieFile::dedupe(jar));
+        CHECK(s.count(QStringLiteral("access_token")) == 1, "dedupe keeps one access_token");
+        CHECK(s.contains(QStringLiteral("access_token\tCURRENT")), "dedupe keeps host-specific (www) token");
+        CHECK(!s.contains(QStringLiteral("STALE")), "dedupe drops the stale .udemy.com token");
+        CHECK(s.count(QStringLiteral("csrftoken")) == 1, "dedupe keeps one csrftoken");
+        CHECK(s.contains(QStringLiteral("#HttpOnly_www.udemy.com")) && s.contains(QStringLiteral("sess\tONLY")),
+              "dedupe preserves a unique #HttpOnly_ cookie");
+        CHECK(s.startsWith(QStringLiteral("# Netscape")), "dedupe preserves a comment header");
+    }
+
+    // ---- Browser-login profile (registerBrowserCookies + ytDlpArgs) -----
+    {
+        AuthenticationManager m;
+        CHECK(m.registerBrowserCookies("udemy.com", "chrome", "Profile 2").ok,
+              "browser-login with a profile registers");
+        const QStringList a = m.ytDlpArgs(QUrl("https://www.udemy.com/x"));
+        CHECK(a.size() == 2 && a.at(0) == "--cookies-from-browser" && a.at(1) == "chrome:Profile 2",
+              "profile -> --cookies-from-browser chrome:Profile 2");
+        CHECK(m.registerBrowserCookies("udemy.com", "firefox").ok, "re-register replaces prior credential");
+        CHECK(m.ytDlpArgs(QUrl("https://www.udemy.com/x")).value(1) == "firefox",
+              "latest registration wins (no profile -> plain browser name)");
+        CHECK(m.registerBrowserCookies("x.com", "chrome", "../etc").code == AuthError::MalformedFormat,
+              "profile with a path separator is rejected");
+    }
+
     // ---- 401/403 classifiers (AuthUtils) --------------------------------
     CHECK(authIsStatus(401) && authIsStatus(403), "401/403 are auth statuses");
     CHECK(!authIsStatus(200) && !authIsStatus(404), "200/404 are not auth statuses");

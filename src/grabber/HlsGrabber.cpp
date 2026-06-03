@@ -93,7 +93,14 @@ void HlsGrabber::cancel()
 {
     m_cancelled = true;
     if (m_playlistReply) { m_playlistReply->abort(); m_playlistReply = nullptr; }
-    if (m_ffmpeg) { m_ffmpeg->kill(); }
+    // Disconnect BEFORE killing: otherwise the killed process's finished() fires
+    // onMuxFinished, which would overwrite this "cancelled" state with an Error.
+    if (m_ffmpeg) {
+        m_ffmpeg->disconnect(this);
+        m_ffmpeg->kill();
+        m_ffmpeg->deleteLater();
+        m_ffmpeg = nullptr;
+    }
     cleanupTemp();   // partial segments are unusable on the next (scratch) start
     setState(DownloadState::Paused, QStringLiteral("cancelled"));
 }
@@ -207,6 +214,24 @@ void HlsGrabber::handleMedia(const QString &text)
             out += fixed + '\n';
             continue;
         }
+        // fMP4/CMAF initialization segment. Download it (with our auth headers) like
+        // any other segment and rewrite the URI to the local file — otherwise the
+        // relative "init.mp4" stays relative and FFmpeg can't fetch it (mux fails).
+        if (line.startsWith(QStringLiteral("#EXT-X-MAP"))) {
+            QString fixed = line;
+            const auto m = QRegularExpression(QStringLiteral("URI=\"([^\"]+)\"")).match(line);
+            if (m.hasMatch()) {
+                Segment seg;
+                seg.url = m_url.resolved(QUrl(m.captured(1)));
+                seg.localFile = QStringLiteral("init%1.mp4").arg(segIndex, 5, 10, QChar('0'));
+                m_segments.append(seg);
+                fixed.replace(m.captured(0),
+                              QStringLiteral("URI=\"%1\"").arg(seg.localFile));
+                ++segIndex;
+            }
+            out += fixed + '\n';
+            continue;
+        }
         if (line.startsWith('#')) {
             out += line + '\n';
             continue;
@@ -300,10 +325,13 @@ void HlsGrabber::onSegmentFinished()
     if (idx < 0 || idx >= m_segments.size())   // defense-in-depth (gen guard already covers this)
         return;
     QFile f(tempDir() + QStringLiteral("/") + m_segments[idx].localFile);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(data);
-        f.close();
+    if (!f.open(QIODevice::WriteOnly) || f.write(data) != data.size()) {
+        // A missing/truncated segment file would make FFmpeg fail later with an
+        // opaque error; surface it now as a clear segment error.
+        setState(DownloadState::Error, QStringLiteral("cannot write segment %1").arg(idx));
+        return;
     }
+    f.close();
     m_segments[idx].done = true;
     m_bytes += data.size();
     ++m_doneCount;
@@ -371,6 +399,12 @@ void HlsGrabber::muxViaFfmpegDirect()
 
 void HlsGrabber::onMuxFinished(int exitCode)
 {
+    // A late finish from a process we already killed on cancel must not resurrect
+    // an Error/Completed state over the user's "cancelled".
+    if (m_cancelled) {
+        if (m_ffmpeg) { m_ffmpeg->deleteLater(); m_ffmpeg = nullptr; }
+        return;
+    }
     const bool ok = (exitCode == 0) && QFileInfo::exists(m_savePath) &&
                     QFileInfo(m_savePath).size() > 0;
     if (m_ffmpeg) { m_ffmpeg->deleteLater(); m_ffmpeg = nullptr; }

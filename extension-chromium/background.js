@@ -36,8 +36,22 @@ async function exportCookiesAsNetscape(authDomain) {
   let cookies = [];
   try { cookies = await X.cookies.getAll({ domain: authDomain }); }
   catch { return ""; }
-  const lines = ["# Netscape HTTP Cookie File", "# Exported by Nexa"];
+  // De-dupe by cookie NAME. A jar from repeated logins carries several with the
+  // same name (e.g. access_token at .udemy.com AND www.udemy.com); forwarding all
+  // of them makes the server honour a STALE one and bounce to a login page. Keep
+  // the most host-specific domain, tie-break by latest expiry. (The engine also
+  // de-dupes, but cleaning at the source keeps the handoff small and correct.)
+  const spec = (d) => (d.startsWith(".") ? 0 : 1) + d.replace(/^\./, "").length * 2;
+  const expOf = (c) => (c.session || !c.expirationDate) ? Number.MAX_SAFE_INTEGER : c.expirationDate;
+  const best = new Map();
   for (const c of cookies) {
+    const prev = best.get(c.name);
+    if (!prev || spec(c.domain) > spec(prev.domain) ||
+        (spec(c.domain) === spec(prev.domain) && expOf(c) >= expOf(prev)))
+      best.set(c.name, c);
+  }
+  const lines = ["# Netscape HTTP Cookie File", "# Exported by Nexa"];
+  for (const c of best.values()) {
     // The C++ parser rejects the WHOLE file on any control char, so skip a bad
     // cookie rather than poison the export.
     if (/[\x00-\x1f\x7f]/.test(c.name) || /[\x00-\x1f\x7f]/.test(c.value)) continue;
@@ -54,12 +68,35 @@ async function exportCookiesAsNetscape(authDomain) {
 }
 
 // Per-tab detected media stream URLs (for the floating download button).
+// NOTE: an MV3 service worker is terminated when idle and loses module globals,
+// so this Map is mirrored into chrome.storage.session (survives worker restarts,
+// cleared when the browser closes) and re-warmed on demand.
 const tabMedia = new Map();
+const sessKey = (tabId) => "media_" + tabId;
+function persistTabMedia(tabId, list) {
+  try { chrome.storage.session.set({ [sessKey(tabId)]: list }); } catch (_) {}
+}
+function dropTabMedia(tabId) {
+  tabMedia.delete(tabId);
+  try { chrome.storage.session.remove(sessKey(tabId)); } catch (_) {}
+}
+// Read a tab's media list, re-hydrating from session storage if the worker was
+// restarted and the in-memory Map is cold.
+async function getTabMedia(tabId) {
+  if (tabId == null) return [];
+  if (tabMedia.has(tabId)) return tabMedia.get(tabId);
+  try {
+    const v = await chrome.storage.session.get(sessKey(tabId));
+    const list = v[sessKey(tabId)] || [];
+    if (list.length) tabMedia.set(tabId, list);   // re-warm memory
+    return list;
+  } catch (_) { return []; }
+}
 
 let integrationEnabled = true;
 chrome.storage.local.get({ enabled: true }, (v) => (integrationEnabled = v.enabled));
-chrome.storage.onChanged.addListener((c) => {
-  if (c.enabled) integrationEnabled = c.enabled.newValue;
+chrome.storage.onChanged.addListener((c, area) => {
+  if (area === "local" && c.enabled) integrationEnabled = c.enabled.newValue;
 });
 
 // ---- Context menus -------------------------------------------------------
@@ -97,8 +134,11 @@ chrome.downloads.onCreated.addListener(async (item) => {
     await chrome.downloads.erase({ id: item.id });
   } catch (_) { /* already gone */ }
 
-  const tab = await activeTab();
-  await handoff(item.url, tab, item.referrer, item.filename);
+  // Don't assume the ACTIVE tab started this — a background tab may have. Use the
+  // download item's OWN referrer; cookies come from the URL (cookieHeader), so the
+  // tab isn't needed. Falling back to an unrelated active tab's URL would attach a
+  // wrong/misleading Referer.
+  await handoff(item.url, null, item.referrer, item.filename);
 });
 
 // ---- Media sniffing ------------------------------------------------------
@@ -110,16 +150,17 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (!list.some((m) => m.url === details.url)) {
       list.push({ url: details.url, type: mediaType(details.url) });
       tabMedia.set(details.tabId, list);
+      persistTabMedia(details.tabId, list);   // survive a worker restart
       // (No icon badge — the user asked not to show a count on the extension icon.)
     }
   },
   { urls: ["<all_urls>"] }
 );
 
-chrome.tabs.onRemoved.addListener((tabId) => tabMedia.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => dropTabMedia(tabId));
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (info.status === "loading")
-    tabMedia.delete(tabId);
+    dropTabMedia(tabId);
 });
 
 const VIDEO_TYPES = new Set(["HLS", "DASH", "video", "audio"]);
@@ -164,7 +205,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(r);
     } else if (msg.type === "nexa-media-count") {
       // Count only video/stream media for the floating pill.
-      const list = (tabMedia.get(tab?.id) || []).filter((m) => VIDEO_TYPES.has(m.type));
+      const list = (await getTabMedia(tab?.id)).filter((m) => VIDEO_TYPES.has(m.type));
       sendResponse({ count: list.length, signature: list.map((m) => m.url).join("|") });
     } else if (msg.type === "nexa-list-formats") {
       // A site video's real qualities (yt-dlp -J), served from cache when warm.
@@ -177,7 +218,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg.type === "nexa-get-qualities") {
       sendResponse(await buildQualities(tab));
     } else if (msg.type === "nexa-get-media") {
-      sendResponse(tabMedia.get(tab?.id) || []);   // legacy (popup.js)
+      sendResponse(await getTabMedia(tab?.id));   // legacy (popup.js)
     } else if (msg.type === "nexa-download-list") {
       const results = [];
       for (const u of msg.urls) results.push(await handoff(u, tab));
@@ -189,7 +230,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Build the per-video quality groups shown in the floating panel.
 async function buildQualities(tab) {
-  const list = (tabMedia.get(tab?.id) || []).filter((m) => VIDEO_TYPES.has(m.type));
+  const list = (await getTabMedia(tab?.id)).filter((m) => VIDEO_TYPES.has(m.type));
   const title = tab?.title || "Video";
   const baseName = sanitizeName(tab?.title) || "video";
   const groups = [];
@@ -224,7 +265,9 @@ async function buildQualities(tab) {
 async function fetchHlsVariants(url) {
   try {
     const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) return null;   // a 403/redirect HTML body must not be parsed as a playlist
     const text = await res.text();
+    if (!/#EXTM3U/.test(text)) return null;              // not an HLS playlist at all
     if (!/#EXT-X-STREAM-INF/i.test(text)) return null;   // media playlist, not a master
     const lines = text.split("\n");
     const out = [];

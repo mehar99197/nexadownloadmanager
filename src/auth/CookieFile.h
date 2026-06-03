@@ -54,6 +54,17 @@ public:
     static QByteArray cookieHeaderFor(const QVector<Cookie> &jar, const QUrl &url,
                                       qint64 nowEpoch);
 
+    // Collapse duplicate cookies (same NAME) that pile up in a raw browser export
+    // when a site has been logged into more than once — e.g. an `access_token` at
+    // BOTH ".udemy.com" and "www.udemy.com" with different values. A browser sends
+    // one effective value per name to a host, but a dumped jar carries them all;
+    // yt-dlp forwards every one and the server may honour the STALE token and bounce
+    // the request to a login page. For each name we keep a single cookie — the most
+    // host-specific domain, breaking ties by latest expiry — and drop the rest.
+    // Input and output are Netscape cookies.txt TEXT; the "#HttpOnly_" prefix and a
+    // leading comment header are preserved. Non-cookie/comment lines pass through.
+    static QByteArray dedupe(const QByteArray &netscapeText);
+
 private:
     // Whether `host` is covered by a cookie's domain, honouring includeSubdomains.
     static bool domainApplies(const QString &host, const Cookie &c);

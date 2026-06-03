@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QToolButton>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QScrollArea>
@@ -211,7 +212,7 @@ class SpeedMeter : public QWidget {
 public:
     explicit SpeedMeter(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(200, 200);
+        setFixedSize(150, 150);   // compact so the whole dialog fits its fixed box
         m_animTimer = new QTimer(this);
         m_animTimer->setInterval(25);   // ~40 fps
         connect(m_animTimer, &QTimer::timeout, this, [this]{
@@ -562,18 +563,23 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
     updateButtons();
     syncTimer();
 
-    // Size to fit the screen: width follows the content; height is capped well
-    // under the screen height (the scroll area handles overflow) so the plate is
-    // never cut off, wherever the window manager places it. A fixed size also
-    // disables maximise/fullscreen.
+    // Size to a sensible fixed box. The content lives in a scroll area (built in
+    // buildUi) so that whatever size the window actually gets, nothing is ever
+    // clipped or squished: the connection panel is collapsed by default (compact,
+    // no scrollbar), and if the user expands it on a short screen the view scrolls
+    // vertically instead of overlapping. Horizontal scrolling never happens — the
+    // long values (URL/Status) are elided.
     ensurePolished();
-    adjustSize();
-    int w = qMax(560, width());
-    int h = 620;
-    if (QScreen *s = QGuiApplication::primaryScreen())
-        h = qMin(h, s->availableGeometry().height() - 160);
-    setFixedSize(w, qMax(420, h));
+    int w = 580, h = 720;
+    if (QScreen *s = QGuiApplication::primaryScreen()) {
+        const QRect a = s->availableGeometry();
+        w = qMin(w, a.width()  - 80);
+        h = qMin(h, a.height() - 60);
+    }
+    setFixedSize(qMax(460, w), qMax(420, h));
 }
+
+void DownloadDetailsDialog::relayoutHeight() {}   // (retained for the header decl; sizing is fixed + scroll-backed)
 
 void DownloadDetailsDialog::buildUi()
 {
@@ -581,19 +587,17 @@ void DownloadDetailsDialog::buildUi()
     outer->setContentsMargins(14, 14, 14, 14);
     outer->setSpacing(10);
 
-    // The plate is tall (fields + speed meter + graph + per-connection table), so
-    // put it in a scroll area — it then fits any screen instead of running off the
-    // bottom. The action buttons are added to `outer` below (outside the scroll)
-    // so they're always visible and never cut off.
+    // The plate lives in a scroll area so the layout can NEVER overlap/clip,
+    // whatever size the window ends up: the connection panel is collapsed by
+    // default (so the content fits and no scrollbar shows), and if the user expands
+    // it on a short screen the view simply scrolls vertically. Horizontal scrolling
+    // is disabled — the long values are elided — so it can't appear. The buttons are
+    // added to `outer` (outside the scroll) so they're always visible.
     auto *scroll = new QScrollArea(this);
+    m_scroll = scroll;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->viewport()->setStyleSheet(QStringLiteral("background:transparent;"));
-    // A small explicit minimum decouples the scroll area from the (tall) content's
-    // minimum height, so the dialog can be capped well under the screen height and
-    // the content simply scrolls.
-    scroll->setMinimumHeight(200);
     outer->addWidget(scroll, 1);
 
     auto *plate = new QWidget;            // QScrollArea::setWidget takes ownership
@@ -601,8 +605,8 @@ void DownloadDetailsDialog::buildUi()
     scroll->setWidget(plate);
 
     auto *v = new QVBoxLayout(plate);
-    v->setContentsMargins(18, 16, 18, 16);
-    v->setSpacing(14);
+    v->setContentsMargins(18, 14, 18, 14);
+    v->setSpacing(10);
 
     // --- Header: tile + title/host, state pill on the right ---
     auto *head = new QHBoxLayout;
@@ -633,9 +637,17 @@ void DownloadDetailsDialog::buildUi()
     auto addField = [&](int row, const QString &name) -> QLabel * {
         auto *l = new QLabel(name, plate);
         l->setProperty("ddRole", "label");
-        l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        l->setAlignment(Qt::AlignRight | Qt::AlignTop);   // top: stays aligned when value wraps
         auto *val = new QLabel(plate);
         val->setProperty("ddRole", "value");
+        // A long value must NEVER widen the dialog. Word-wrap is NOT used: a URL/
+        // error string has no spaces, so a wrapped label's minimumSizeHint becomes
+        // the full (huge) text width and pushes the fixed box wider. Instead the
+        // long values (URL, Status) are elided to a fixed budget in refreshFields(),
+        // and Ignored horizontal policy keeps even that out of the layout minimum.
+        val->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        val->setMinimumWidth(0);
+        val->setWordWrap(false);
         grid->addWidget(l,   row, 0);
         grid->addWidget(val, row, 1);
         return val;
@@ -660,34 +672,57 @@ void DownloadDetailsDialog::buildUi()
     m_barPct = new QLabel(QStringLiteral("0%"), plate);
     m_barPct->setObjectName(QStringLiteral("Dd_barpct"));
     m_barPct->setAlignment(Qt::AlignRight);
-    m_speedGraph = new SpeedGraph(plate);     // fills the space beside the meter
+    m_speedGraph = new SpeedGraph(plate);     // sits beside the meter
+    // Fixed height (not Expanding): an expanding graph ate every spare pixel and
+    // pushed the collapsible "Connection details" toggle below the visible area.
+    m_speedGraph->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_speedGraph->setFixedHeight(104);
     barCol->addWidget(m_bar);
     barCol->addWidget(m_barPct);
-    barCol->addWidget(m_speedGraph, 1);
+    barCol->addWidget(m_speedGraph);
     barRow->addLayout(barCol, 1);
 
     m_speedMeter = new SpeedMeter(plate);
     barRow->addWidget(m_speedMeter, 0, Qt::AlignVCenter);
-    v->addLayout(barRow, 1);                  // this row absorbs the extra space
+    v->addLayout(barRow);                     // natural height (gauge ~180); NO stretch
+                                              // here, or it would eat all slack and push
+                                              // the collapsible toggle below the fold.
 
-    // --- Connections strip ---
+    // --- Connection details (COLLAPSIBLE) ---------------------------------
+    // The per-connection strip + table is what appears when a download becomes
+    // segmented; left always-on it overflowed the fixed box (the reported bug).
+    // It's now a collapsible panel — hidden by default, expanded on demand via the
+    // header toggle — so the dialog stays compact and the user opts in to the detail.
     auto *secRow = new QHBoxLayout;
-    auto *sec = new QLabel(QStringLiteral("Start positions and download progress by connections"), plate);
-    sec->setObjectName(QStringLiteral("Dd_seclabel"));
+    m_connToggle = new QToolButton(plate);
+    m_connToggle->setObjectName(QStringLiteral("Dd_conntoggle"));
+    m_connToggle->setAutoRaise(true);                       // flat look, no stylesheet
+    m_connToggle->setCheckable(true);
+    m_connToggle->setCursor(Qt::PointingHandCursor);
+    m_connToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_connToggle->setArrowType(Qt::RightArrow);             // ▸ collapsed
+    m_connToggle->setText(QStringLiteral("Connection details"));
+    m_connToggle->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     m_connCount = new QLabel(plate);
     m_connCount->setObjectName(QStringLiteral("Dd_seclabel"));
-    m_connCount->setAlignment(Qt::AlignRight);
-    secRow->addWidget(sec);
+    m_connCount->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_connCount->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_connCount->setMinimumWidth(0);
+    secRow->addWidget(m_connToggle, 0);
     secRow->addStretch(1);
-    secRow->addWidget(m_connCount);
+    secRow->addWidget(m_connCount, 0);
     v->addLayout(secRow);
 
-    m_strip = new ConnStrip(plate);
+    // Collapsible body.
+    m_connBox = new QWidget(plate);
+    auto *cbv = new QVBoxLayout(m_connBox);
+    cbv->setContentsMargins(0, 0, 0, 0);
+    cbv->setSpacing(8);
+    m_strip = new ConnStrip(m_connBox);
     m_strip->setFixedHeight(26);
-    v->addWidget(m_strip);
+    cbv->addWidget(m_strip);
 
-    // --- Connection table ---
-    m_table = new QTableWidget(0, 3, plate);
+    m_table = new QTableWidget(0, 3, m_connBox);
     m_table->setObjectName(QStringLiteral("Dd_table"));
     m_table->setHorizontalHeaderLabels({QStringLiteral("N."), QStringLiteral("Downloaded"),
                                         QStringLiteral("Info")});
@@ -702,8 +737,25 @@ void DownloadDetailsDialog::buildUi()
     m_table->setColumnWidth(CN, 44);
     m_table->setColumnWidth(CDownloaded, 150);
     m_table->verticalHeader()->setDefaultSectionSize(30);
-    m_table->setMaximumHeight(160);          // table only for segmented; graph fills the rest
-    v->addWidget(m_table);
+    m_table->setMaximumHeight(110);
+    // Don't let a wide "Info" cell push the dialog out: the table scrolls internally.
+    m_table->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    cbv->addWidget(m_table);
+
+    m_connBox->setVisible(false);   // collapsed by default
+    v->addWidget(m_connBox);
+    v->addStretch(1);               // slack lands here, not in the speed graph, so the
+                                    // toggle stays put and the graph keeps a sane height
+
+    connect(m_connToggle, &QToolButton::toggled, this, [this](bool on) {
+        m_connBox->setVisible(on);
+        m_connToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        // Scroll the just-revealed panel into view (the view scrolls only if the
+        // panel can't all fit; otherwise this is a no-op). Deferred so the layout
+        // has updated the panel's geometry first.
+        if (on && m_scroll)
+            QTimer::singleShot(0, this, [this]{ m_scroll->ensureWidgetVisible(m_connBox, 0, 0); });
+    });
 
     // --- Buttons (outside the scroll area, pinned at the bottom so they're
     //     always visible and never cut off the way they were before) ---
@@ -782,11 +834,20 @@ void DownloadDetailsDialog::refreshFields()
     if (auto *t = m_engine->task(m_id)) m_url = t->url().toString();
     else                                m_url = m_engine->hostOf(m_id);
 
+    // Elide long single-line values to a fixed pixel budget that fits the value
+    // column of the fixed-width box. A URL/error string has NO spaces, so word-wrap
+    // cannot break it — its minimumSizeHint would then equal the full text width and
+    // force the whole dialog wider than its fixed box (the bug that appeared the
+    // moment a real URL/status arrived on download start). Eliding keeps the label's
+    // content bounded, so the box never grows; the full text stays in the tooltip.
+    static const int kValW = 348;
     const QFontMetrics fm(m_vUrl->font());
-    m_vUrl->setText(fm.elidedText(m_url, Qt::ElideMiddle, 360));
+    m_vUrl->setText(fm.elidedText(m_url, Qt::ElideMiddle, kValW));
     m_vUrl->setToolTip(m_url);
 
-    m_vStatus->setText(m_detail.isEmpty() ? statusLabel(m_state) : m_detail);
+    const QString statusFull = m_detail.isEmpty() ? statusLabel(m_state) : m_detail;
+    m_vStatus->setText(fm.elidedText(statusFull, Qt::ElideRight, kValW));
+    m_vStatus->setToolTip(statusFull);
 
     // A playlist reports VIDEO COUNTS in done/total (not bytes), so label them
     // as videos and skip the byte-based ETA (count/speed isn't a time).
@@ -861,7 +922,8 @@ void DownloadDetailsDialog::refreshConnections()
         const QVector<SegmentInfo> segs = t->segments();
         m_strip->setData(segs, t->totalBytes(), statusColor(m_state), m_phase);
 
-        m_table->setVisible(true);
+        // Visibility of the table is owned by the collapsible panel (m_connBox),
+        // not by download state — so a started download no longer forces it open.
         if (m_table->rowCount() != segs.size())
             m_table->setRowCount(segs.size());
         for (int i = 0; i < segs.size(); ++i) {
@@ -895,8 +957,9 @@ void DownloadDetailsDialog::refreshConnections()
         return;
     }
 
-    // Fallback: single aggregate rail; no per-connection table.
-    m_table->setVisible(false);
+    // Fallback: single aggregate rail; clear the per-connection table.
+    if (m_table->rowCount() != 0)
+        m_table->setRowCount(0);
     SegmentInfo s;
     s.index = 0; s.start = 0;
     s.end  = (m_total > 0) ? (m_total - 1) : (qint64(1) << 62);
@@ -969,7 +1032,11 @@ void DownloadDetailsDialog::onRemoved(int id)
 {
     if (id != m_id) return;
     m_tick->stop();
-    close();                         // WA_DeleteOnClose frees us
+    // Stop all engine signals to this dialog first: taskRemoved may arrive in the
+    // same call stack as other signals, and we're about to be deleted — no later
+    // slot must run on this dying object.
+    m_engine->disconnect(this);
+    close();                         // WA_DeleteOnClose frees us (via deleteLater)
 }
 
 void DownloadDetailsDialog::onTick()

@@ -42,6 +42,7 @@ private:
     QSpinBox       *m_torrentUlKB = nullptr;
     QDoubleSpinBox *m_seedRatio = nullptr;
     QCheckBox      *m_aiRename = nullptr;
+    QCheckBox      *m_errLog = nullptr;     // opt-in troubleshooting log to a file
 };
 
 } // namespace nexa

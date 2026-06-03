@@ -95,12 +95,18 @@ AuthResult AuthenticationManager::registerCookieData(const QString &domain,
         return AuthResult::failure(AuthError::UnknownDomain, QStringLiteral("empty domain"));
 
     // Bound the work BEFORE touching disk: never write a hostile multi-MB blob.
-    const QByteArray bytes = cookiesTxt.toUtf8();
-    if (bytes.isEmpty())
+    const QByteArray raw = cookiesTxt.toUtf8();
+    if (raw.isEmpty())
         return AuthResult::failure(AuthError::EmptyFile, QStringLiteral("no cookie text"));
-    if (bytes.size() > 5 * 1024 * 1024)
+    if (raw.size() > 5 * 1024 * 1024)
         return AuthResult::failure(AuthError::MalformedFormat,
                                    QStringLiteral("cookie text too large (>5 MB)"));
+
+    // Collapse duplicate cookies a raw browser export accumulates from repeated
+    // logins (e.g. two `access_token`s at .udemy.com and www.udemy.com). Left
+    // intact, yt-dlp forwards them all and the site honours the stale one and
+    // bounces to a login page — the cookies LOOK valid but the download fails.
+    const QByteArray bytes = CookieFile::dedupe(raw);
 
     // Private dir (0700) + file (0600), mirroring writeYtDlpAuthConfig, so a
     // session cookie is never briefly world-readable.

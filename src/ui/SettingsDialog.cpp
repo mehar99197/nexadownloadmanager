@@ -1,5 +1,6 @@
 #include "ui/SettingsDialog.h"
 #include "core/DownloadEngine.h"
+#include "core/Logging.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -37,6 +38,7 @@ constexpr auto kTorrentDl  = "torrentDlKB";
 constexpr auto kTorrentUl  = "torrentUlKB";
 constexpr auto kSeedRatio  = "seedRatio";
 constexpr auto kAiRename   = "aiRename";
+constexpr auto kErrLog     = "errorLogging";
 
 QLabel *sectionHeader(const QString &text, QWidget *parent)
 {
@@ -66,6 +68,7 @@ void SettingsDialog::loadInto(DownloadEngine *engine)
                                   s.value(QLatin1String(kTorrentUl), 0).toInt() * 1024);
     engine->setSeedRatio(s.value(QLatin1String(kSeedRatio), 0.0).toDouble());
     engine->setAiRename(s.value(QLatin1String(kAiRename), false).toBool());
+    setLoggingEnabled(s.value(QLatin1String(kErrLog), false).toBool());
 }
 
 SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
@@ -160,8 +163,8 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     dl->addRow(QStringLiteral("Playlist videos in parallel"), m_plConc);
     v->addLayout(dl);
 
-    // ---- Video (yt-dlp) ---------------------------------------------------
-    v->addWidget(sectionHeader(QStringLiteral("Video sites (yt-dlp)"), plate));
+    // ---- Video sites ------------------------------------------------------
+    v->addWidget(sectionHeader(QStringLiteral("Video sites"), plate));
     m_subs = new QCheckBox(QStringLiteral("Download and embed subtitles"), plate);
     m_subs->setChecked(m_engine->subtitlesEnabled());
     v->addWidget(m_subs);
@@ -211,6 +214,12 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     }
     v->addWidget(m_aiRename);
 
+    m_errLog = new QCheckBox(QStringLiteral("Save error logs to a file (for troubleshooting)"), plate);
+    m_errLog->setChecked(st.value(QLatin1String(kErrLog), false).toBool());
+    m_errLog->setToolTip(QStringLiteral("Writes warnings/errors to a small log you can export "
+                                        "from the gear menu → “Export logs…”."));
+    v->addWidget(m_errLog);
+
     auto *clearBtn = new QPushButton(QStringLiteral("Clear completed downloads"), plate);
     clearBtn->setCursor(Qt::PointingHandCursor);
     v->addWidget(clearBtn, 0, Qt::AlignLeft);
@@ -253,6 +262,7 @@ void SettingsDialog::apply()
                                     m_torrentUlKB->value() * 1024);
     m_engine->setSeedRatio(m_seedRatio->value());
     m_engine->setAiRename(m_aiRename->isChecked());
+    setLoggingEnabled(m_errLog->isChecked());   // live toggle of the file log
 
     // Persist everything (clipboard included — MainWindow re-syncs it on close).
     QSettings s;
@@ -269,6 +279,7 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kTorrentUl), m_torrentUlKB->value());
     s.setValue(QLatin1String(kSeedRatio), m_seedRatio->value());
     s.setValue(QLatin1String(kAiRename), m_aiRename->isChecked());
+    s.setValue(QLatin1String(kErrLog), m_errLog->isChecked());
 }
 
 } // namespace nexa

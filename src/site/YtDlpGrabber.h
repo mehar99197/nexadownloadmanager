@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QVector>
 #include <QHash>
+#include <QSet>
 #include <QElapsedTimer>
 #include "core/Types.h"
 
@@ -110,6 +111,10 @@ private:
     int             m_conns = 16;         // parallel fragment connections in use
     QString         m_lastError;          // last "ERROR:" line from yt-dlp
     QStringList     m_tail;               // recent output lines (for diagnostics)
+    QSet<QString>   m_drmVideoIds;        // distinct lectures yt-dlp reported DRM-protected
+                                          // (Widevine — undownloadable); surfaced in the
+                                          // completion message so a mostly-DRM course doesn't
+                                          // look like it "stopped early".
 };
 
 } // namespace nexa

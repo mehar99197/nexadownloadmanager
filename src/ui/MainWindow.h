@@ -6,6 +6,7 @@
 #include "core/Types.h"
 
 class QTableWidget;
+class QStackedWidget;
 class QLabel;
 class QLineEdit;
 class QSystemTrayIcon;
@@ -50,10 +51,14 @@ private slots:
     void onSiteLogins();             // register a cookies.txt for an auth-gated site
     void onSettings();               // open the Preferences dialog
     void onCheckUpdates();           // manual "Check for updates…"
+    void onUpdateTools();            // self-update the bundled yt-dlp (extractors rot)
+    void onExportLogs();             // save the opt-in troubleshooting log to a file
     void setClipboardMonitoring(bool on);   // toggle IDM-style link capture (persisted)
     void onClipboardUrl(const QUrl &url);   // a download-able URL was copied; offer it
     void openDetails(int id);        // open or raise the per-download details plate
     void applyFilter(const QString &text);
+    void showFilterMenu();           // toolbar "Filter" — limit the list by state
+    void showSortMenu();             // toolbar "Sort" — reorder the visible rows
 
     void onTaskAdded(int id);
     void onTaskProgress(int id, qint64 done, qint64 total, double bps);
@@ -71,16 +76,31 @@ private:
     void moveRow(int from, int to);           // reorder one row (drag or menu)
     void moveSelected(int delta);             // menu: shift selection up/down
     void updateStats();              // refresh header pill + footer summary
+    void updateEmptyState();         // show the empty page when there are no downloads
     void refreshFileCell(int row, int id);
     void setRowStatus(int row, nexa::DownloadState state, const QString &detail);
     void showRowMenu(const QPoint &pos);
+    QWidget *buildActionsCell(int id);        // per-row pause/resume + more buttons
+    void showRowMenuFor(int id, const QPoint &globalPos);   // menu for one task id
 
     DownloadEngine *m_engine;
     QTableWidget   *m_table = nullptr;
+    QStackedWidget *m_content = nullptr;      // swaps table <-> empty-state page
     QLineEdit      *m_search = nullptr;
-    QLabel         *m_activePill = nullptr;   // "N active" header pill
     QLabel         *m_footerLeft = nullptr;
     QLabel         *m_footerRight = nullptr;
+
+    // Dashboard metric tiles (updated live in updateStats()).
+    QLabel *m_metActiveVal = nullptr, *m_metActiveSub = nullptr;
+    QLabel *m_metSpeedVal  = nullptr, *m_metSpeedSub  = nullptr;
+    QLabel *m_metDoneVal   = nullptr, *m_metDoneSub   = nullptr;
+    QLabel *m_metStoreVal  = nullptr, *m_metStoreSub  = nullptr;
+
+    // Toolbar "Filter": -1 = all, else only show rows in this DownloadState.
+    int m_stateFilter = -1;
+    // Count of downloads that completed during THIS session (metrics "+N").
+    int m_completedThisSession = 0;
+    QSet<int> m_countedDone;   // ids already counted, so a re-emit doesn't double-count
     QHash<int, int> m_idToRow;   // task id -> table row
 
     QHash<int, QPointer<DownloadDetailsDialog>> m_openDialogs;  // one plate per id

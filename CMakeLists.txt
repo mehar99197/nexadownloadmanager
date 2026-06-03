@@ -92,8 +92,18 @@ if(NEXA_BUILD_TESTS)
     )
     target_include_directories(nexa_auth_test PRIVATE src)
     target_link_libraries(nexa_auth_test PRIVATE Qt6::Core Qt6::Network)
+
+    # Formatter tests (humanSize/humanSpeed/humanTime). UiHelpers pulls Widgets.
+    add_executable(nexa_format_test
+        tests/FormatTest.cpp
+        src/ui/UiHelpers.cpp
+    )
+    target_include_directories(nexa_format_test PRIVATE src)
+    target_link_libraries(nexa_format_test PRIVATE Qt6::Core Qt6::Widgets)
+
     enable_testing()
-    add_test(NAME auth COMMAND nexa_auth_test)
+    add_test(NAME auth   COMMAND nexa_auth_test)
+    add_test(NAME format COMMAND nexa_format_test)
 endif()
 
 # ===========================================================================

@@ -7,6 +7,7 @@
 #include "core/DownloadEngine.h"
 #include "core/UpdateChecker.h"
 #include "core/DownloadTask.h"
+#include "core/Logging.h"
 
 #include <QTableWidget>
 #include <QHeaderView>
@@ -18,6 +19,14 @@
 #include <QMenu>
 #include <QShortcut>
 #include <QKeySequence>
+#include <QProcess>
+#include <QFileDialog>
+#include <QFile>
+#include <QPainter>
+#include <QPixmap>
+#include <QPen>
+#include <QPainterPath>
+#include <QStorageInfo>
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QDialog>
@@ -31,6 +40,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QWidget>
+#include <QStackedWidget>
+#include <QStyle>
 #include <QFileInfo>
 #include <QIcon>
 #include <QColor>
@@ -43,6 +54,7 @@
 #include <QGuiApplication>
 #include <functional>
 #include <initializer_list>
+#include <algorithm>
 
 namespace nexa {
 
@@ -60,7 +72,7 @@ using nexa::Accent;
 
 namespace {
 
-enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColCount };
+enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColActions, ColCount };
 
 // The rows carry cell widgets (file tile, progress bar, status). Qt's built-in
 // InternalMove reorders the underlying items but leaves those widgets behind,
@@ -126,36 +138,89 @@ QWidget *buildFileCell(const QString &name, const QString &host)
 
 QWidget *buildProgressCell()
 {
+    // Thin 3px track + a percentage label to its RIGHT (design spec).
     auto *w = new QWidget;
     w->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *v = new QVBoxLayout(w);
-    v->setContentsMargins(4, 10, 16, 10);
-    v->setSpacing(4);
+    auto *h = new QHBoxLayout(w);
+    h->setContentsMargins(4, 0, 12, 0);
+    h->setSpacing(8);
     auto *bar = new QProgressBar(w);
     bar->setObjectName(QStringLiteral("p_bar"));
     bar->setTextVisible(false);
-    bar->setFixedHeight(6);
+    bar->setFixedHeight(3);
     bar->setRange(0, 100);
     bar->setValue(0);
     auto *pct = new QLabel(QStringLiteral("0%"), w);
     pct->setObjectName(QStringLiteral("p_pct"));
-    v->addWidget(bar);
-    v->addWidget(pct);
+    pct->setFixedWidth(34);
+    pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    h->addWidget(bar, 1);
+    h->addWidget(pct);
     return w;
 }
 
 QWidget *buildStatusCell()
 {
+    // A pill badge whose colours come from QSS via the "st" property (set in
+    // setRowStatus): #s_badge[st="active"|"paused"|"done"|"queued"|"error"].
     auto *w = new QWidget;
     w->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *h = new QHBoxLayout(w);
-    h->setContentsMargins(12, 0, 8, 0);
+    h->setContentsMargins(4, 0, 4, 0);
     auto *l = new QLabel(w);
-    l->setObjectName(QStringLiteral("s_lbl"));
-    l->setTextFormat(Qt::RichText);
-    h->addWidget(l);
-    h->addStretch(1);
+    l->setObjectName(QStringLiteral("s_badge"));
+    l->setAlignment(Qt::AlignCenter);
+    h->addWidget(l, 0, Qt::AlignCenter);
     return w;
+}
+
+// A small monochrome magnifier for the search field's leading icon (drawn, not an
+// emoji glyph, so it renders identically everywhere and matches the muted theme).
+QIcon searchIcon()
+{
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(0x66, 0x66, 0x66));
+    pen.setWidth(2);
+    p.setPen(pen);
+    p.drawEllipse(QRectF(2.5, 2.5, 8, 8));     // lens
+    p.drawLine(QPointF(10.5, 10.5), QPointF(14, 14));   // handle
+    p.end();
+    return QIcon(pm);
+}
+
+// Small monochrome toolbar glyphs (drawn so they render identically everywhere).
+QPixmap glyphCanvas() { QPixmap pm(16, 16); pm.fill(Qt::transparent); return pm; }
+QIcon pauseGlyph()
+{
+    QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(QRectF(4, 3, 3, 10), QColor(0x88, 0x88, 0x88));
+    p.fillRect(QRectF(9, 3, 3, 10), QColor(0x88, 0x88, 0x88));
+    p.end(); return QIcon(pm);
+}
+QIcon playGlyph()
+{
+    QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path; path.moveTo(5, 3); path.lineTo(13, 8); path.lineTo(5, 13); path.closeSubpath();
+    p.fillPath(path, QColor(0x88, 0x88, 0x88)); p.end(); return QIcon(pm);
+}
+QIcon funnelGlyph()
+{
+    QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath path; path.moveTo(3, 3); path.lineTo(13, 3); path.lineTo(9.5, 8);
+    path.lineTo(9.5, 13); path.lineTo(6.5, 11); path.lineTo(6.5, 8); path.closeSubpath();
+    p.fillPath(path, QColor(0x88, 0x88, 0x88)); p.end(); return QIcon(pm);
+}
+QIcon sortGlyph()
+{
+    QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(QColor(0x88, 0x88, 0x88)); pen.setWidth(2); p.setPen(pen);
+    p.drawLine(3, 4, 11, 4);   // descending bars (a "sort" depiction)
+    p.drawLine(3, 8, 9, 8);
+    p.drawLine(3, 12, 7, 12);
+    p.end(); return QIcon(pm);
 }
 
 } // namespace
@@ -166,6 +231,8 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     setWindowTitle(QStringLiteral("NexaDL — Download Manager"));
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
     resize(960, 600);
+    // Below this the action-bar buttons + search would clip (no wrapping).
+    setMinimumSize(760, 460);
 
     auto *central = new QWidget(this);
     central->setObjectName(QStringLiteral("Root"));
@@ -173,73 +240,50 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // ---- Header: traffic-light accent + title (left), "N active" pill (right) --
+    // ---- Header bar: logo + brand + breadcrumb (center) + actions (right) --
     auto *header = new QWidget(central);
     header->setObjectName(QStringLiteral("HeaderBar"));
+    header->setFixedHeight(48);
     auto *hl = new QHBoxLayout(header);
-    hl->setContentsMargins(20, 16, 20, 14);
-    hl->setSpacing(8);
+    hl->setContentsMargins(16, 0, 16, 0);
+    hl->setSpacing(10);
 
-    auto dot = [&](const char *color) {
-        auto *d = new QLabel(header);
-        d->setFixedSize(12, 12);
-        d->setStyleSheet(QStringLiteral("background:%1;border-radius:6px;").arg(color));
-        return d;
-    };
-    hl->addWidget(dot("#ff5f57"));
-    hl->addWidget(dot("#febc2e"));
-    hl->addWidget(dot("#28c840"));
-    hl->addSpacing(14);
+    // White square box with a black download arrow (the brand mark).
+    auto *logo = new QLabel(QString::fromUtf8("↓"), header);
+    logo->setObjectName(QStringLiteral("BrandLogo"));
+    logo->setFixedSize(28, 28);
+    logo->setAlignment(Qt::AlignCenter);
+    auto *brand = new QLabel(QStringLiteral("NexaDL"), header);
+    brand->setObjectName(QStringLiteral("BrandTitle"));
+    auto *crumb = new QLabel(QString::fromUtf8("Workspace   ›   Downloads"), header);
+    crumb->setObjectName(QStringLiteral("Breadcrumb"));
 
-    auto *title = new QLabel(QStringLiteral("NexaDL — Download Manager"), header);
-    title->setObjectName(QStringLiteral("BrandTitle"));
-    m_activePill = new QLabel(QStringLiteral("0 active"), header);
-    m_activePill->setObjectName(QStringLiteral("ActivePill"));
+    auto *settingsBtn = new QPushButton(QString::fromUtf8("⚙"), header);
+    settingsBtn->setObjectName(QStringLiteral("IconBtn"));
+    settingsBtn->setCursor(Qt::PointingHandCursor);
+    settingsBtn->setToolTip(QStringLiteral("Settings, Site logins, Smart Add & more"));
+    auto *folderBtn = new QPushButton(QString::fromUtf8("🗀"), header);
+    folderBtn->setObjectName(QStringLiteral("IconBtn"));
+    folderBtn->setCursor(Qt::PointingHandCursor);
+    folderBtn->setToolTip(QStringLiteral("Open the download folder"));
+    auto *addBtn = new QPushButton(QStringLiteral("+  New Download"), header);
+    addBtn->setObjectName(QStringLiteral("NewDl"));
+    addBtn->setCursor(Qt::PointingHandCursor);
+    addBtn->setToolTip(QStringLiteral("Add a new download (URL, video, magnet, or playlist)"));
 
-    hl->addWidget(title);
+    hl->addWidget(logo);
+    hl->addWidget(brand);
     hl->addStretch(1);
-    hl->addWidget(m_activePill);
+    hl->addWidget(crumb);
+    hl->addStretch(1);
+    hl->addWidget(settingsBtn);
+    hl->addWidget(folderBtn);
+    hl->addWidget(addBtn);
     root->addWidget(header);
 
-    // ---- Action bar -------------------------------------------------------
-    auto *actions = new QWidget(central);
-    actions->setObjectName(QStringLiteral("ActionBar"));
-    auto *al = new QHBoxLayout(actions);
-    al->setContentsMargins(20, 6, 20, 14);
-    al->setSpacing(9);
-
-    auto makeBtn = [&](const QString &text, const char *obj) {
-        auto *b = new QPushButton(text, actions);
-        b->setObjectName(QString::fromLatin1(obj));
-        b->setCursor(Qt::PointingHandCursor);
-        al->addWidget(b);
-        return b;
-    };
-    // Use plain geometric/text glyphs (not colour-emoji code points) so the
-    // icons render monochrome and match the flat UI.
-    auto *addBtn    = makeBtn(QString::fromUtf8("＋  New Download"), "Primary");
-    auto *pauseBtn  = makeBtn(QString::fromUtf8("❚❚  Pause All"), "");
-    auto *resumeBtn = makeBtn(QString::fromUtf8("▷  Resume"), "");
-    auto *gearBtn   = makeBtn(QString::fromUtf8("⚙"), "IconBtn");
-    auto *folderBtn = makeBtn(QString::fromUtf8("🗀"), "IconBtn");
-    al->addStretch(1);
-
-    m_search = new QLineEdit(actions);
-    m_search->setObjectName(QStringLiteral("Search"));
-    m_search->setPlaceholderText(QStringLiteral("Search downloads…"));
-    m_search->setClearButtonEnabled(true);
-    m_search->setFixedWidth(220);
-    al->addWidget(m_search);
-    root->addWidget(actions);
-
     connect(addBtn,    &QPushButton::clicked, this, &MainWindow::promptAddUrl);
-    connect(pauseBtn,  &QPushButton::clicked, this, &MainWindow::pauseAll);
-    connect(resumeBtn, &QPushButton::clicked, this, &MainWindow::resumeAll);
     connect(folderBtn, &QPushButton::clicked, this, &MainWindow::openDownloadFolder);
-    connect(m_search,  &QLineEdit::textChanged, this, &MainWindow::applyFilter);
-
-    // Gear: the less-common actions, so the bar stays clean.
-    connect(gearBtn, &QPushButton::clicked, this, [this, gearBtn]() {
+    connect(settingsBtn, &QPushButton::clicked, this, [this, settingsBtn]() {
         QMenu menu(this);
         menu.addAction(QStringLiteral("Settings…"),       this, &MainWindow::onSettings);
         menu.addAction(QStringLiteral("Smart Add (AI)…"), this, &MainWindow::promptSmartAdd);
@@ -251,9 +295,76 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         menu.addAction(QStringLiteral("Remove selected"), this, &MainWindow::removeSelected);
         menu.addSeparator();
         menu.addAction(QStringLiteral("Open download folder"), this, &MainWindow::openDownloadFolder);
+        menu.addAction(QStringLiteral("Update video tools (yt-dlp)…"), this, &MainWindow::onUpdateTools);
+        menu.addAction(QStringLiteral("Export logs…"), this, &MainWindow::onExportLogs);
         menu.addAction(QStringLiteral("Check for updates…"), this, &MainWindow::onCheckUpdates);
-        menu.exec(gearBtn->mapToGlobal(QPoint(0, gearBtn->height() + 4)));
+        menu.exec(settingsBtn->mapToGlobal(QPoint(0, settingsBtn->height() + 4)));
     });
+
+    // ---- Metrics bar: 4 equal columns, 1px dividers between ----------------
+    auto *metrics = new QWidget(central);
+    metrics->setObjectName(QStringLiteral("MetricsBar"));
+    auto *ml = new QHBoxLayout(metrics);
+    ml->setContentsMargins(0, 0, 0, 0);
+    ml->setSpacing(0);
+    int metricIndex = 0;
+    auto makeMetric = [&](const QString &label, QLabel **valOut, QLabel **subOut) {
+        auto *cell = new QWidget(metrics);
+        cell->setObjectName(metricIndex++ == 0 ? QStringLiteral("MetricFirst")
+                                               : QStringLiteral("Metric"));
+        auto *cv = new QVBoxLayout(cell);
+        cv->setContentsMargins(22, 12, 22, 12);
+        cv->setSpacing(3);
+        auto *lab = new QLabel(label, cell);          lab->setObjectName(QStringLiteral("MetricLabel"));
+        auto *val = new QLabel(QStringLiteral("—"), cell); val->setObjectName(QStringLiteral("MetricValue"));
+        auto *sub = new QLabel(QString(), cell);      sub->setObjectName(QStringLiteral("MetricSub"));
+        cv->addWidget(lab); cv->addWidget(val); cv->addWidget(sub);
+        *valOut = val; *subOut = sub;
+        ml->addWidget(cell, 1);
+    };
+    makeMetric(QStringLiteral("ACTIVE"),    &m_metActiveVal, &m_metActiveSub);
+    makeMetric(QStringLiteral("SPEED"),     &m_metSpeedVal,  &m_metSpeedSub);
+    makeMetric(QStringLiteral("COMPLETED"), &m_metDoneVal,   &m_metDoneSub);
+    makeMetric(QStringLiteral("STORAGE"),   &m_metStoreVal,  &m_metStoreSub);
+    root->addWidget(metrics);
+
+    // ---- Toolbar: ghost actions (left) + search (right) -------------------
+    auto *toolbar = new QWidget(central);
+    toolbar->setObjectName(QStringLiteral("Toolbar"));
+    toolbar->setFixedHeight(42);
+    auto *tl = new QHBoxLayout(toolbar);
+    tl->setContentsMargins(16, 0, 16, 0);
+    tl->setSpacing(8);
+    auto ghost = [&](const QString &t) {
+        auto *b = new QPushButton(t, toolbar);
+        b->setObjectName(QStringLiteral("Ghost"));
+        b->setCursor(Qt::PointingHandCursor);
+        tl->addWidget(b);
+        return b;
+    };
+    auto *pauseBtn  = ghost(QStringLiteral("Pause All"));
+    auto *resumeBtn = ghost(QStringLiteral("Resume"));
+    auto *filterBtn = ghost(QStringLiteral("Filter"));
+    auto *sortBtn   = ghost(QStringLiteral("Sort"));
+    pauseBtn->setIcon(pauseGlyph());
+    resumeBtn->setIcon(playGlyph());
+    filterBtn->setIcon(funnelGlyph());
+    sortBtn->setIcon(sortGlyph());
+    tl->addStretch(1);
+    m_search = new QLineEdit(toolbar);
+    m_search->setObjectName(QStringLiteral("Search"));
+    m_search->setPlaceholderText(QStringLiteral("Search..."));
+    m_search->setClearButtonEnabled(true);
+    m_search->setFixedWidth(240);
+    m_search->addAction(searchIcon(), QLineEdit::LeadingPosition);   // magnifier inside left
+    tl->addWidget(m_search);
+    root->addWidget(toolbar);
+
+    connect(pauseBtn,  &QPushButton::clicked, this, &MainWindow::pauseAll);
+    connect(resumeBtn, &QPushButton::clicked, this, &MainWindow::resumeAll);
+    connect(filterBtn, &QPushButton::clicked, this, &MainWindow::showFilterMenu);
+    connect(sortBtn,   &QPushButton::clicked, this, &MainWindow::showSortMenu);
+    connect(m_search,  &QLineEdit::textChanged, this, &MainWindow::applyFilter);
 
     // ---- Downloads table --------------------------------------------------
     auto *table = new ReorderTable(0, ColCount, central);
@@ -265,17 +376,21 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table = table;
     m_table->setHorizontalHeaderLabels(
         {QStringLiteral("FILE"), QStringLiteral("SIZE"), QStringLiteral("PROGRESS"),
-         QStringLiteral("SPEED"), QStringLiteral("STATUS")});
+         QStringLiteral("SPEED"), QStringLiteral("STATUS"), QString()});
     m_table->horizontalHeader()->setStretchLastSection(false);
     m_table->horizontalHeader()->setSectionResizeMode(ColFile, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColSize, QHeaderView::Fixed);
-    m_table->horizontalHeader()->setSectionResizeMode(ColProgress, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(ColProgress, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColSpeed, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColStatus, QHeaderView::Fixed);
-    m_table->setColumnWidth(ColSize, 92);
-    m_table->setColumnWidth(ColSpeed, 96);
-    m_table->setColumnWidth(ColStatus, 150);
+    m_table->horizontalHeader()->setSectionResizeMode(ColActions, QHeaderView::Fixed);
+    m_table->setColumnWidth(ColSize, 88);
+    m_table->setColumnWidth(ColProgress, 150);
+    m_table->setColumnWidth(ColSpeed, 80);
+    m_table->setColumnWidth(ColStatus, 92);
+    m_table->setColumnWidth(ColActions, 56);
     m_table->horizontalHeader()->setHighlightSections(false);
+    m_table->horizontalHeader()->setFixedHeight(34);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -288,23 +403,57 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table->setShowGrid(false);
     m_table->setFocusPolicy(Qt::NoFocus);
     m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(58);
+    m_table->verticalHeader()->setDefaultSectionSize(50);
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QTableWidget::customContextMenuRequested,
             this, &MainWindow::showRowMenu);
     connect(m_table, &QTableWidget::cellDoubleClicked,
             this, [this](int row, int) { openDetails(idAtRow(row)); });
-    root->addWidget(m_table, 1);
+    // Empty-state page: shown when there are no downloads, instead of a bare
+    // grid of column headers over a blank void. Centered logo + hint.
+    auto *emptyPage = new QWidget(central);
+    emptyPage->setObjectName(QStringLiteral("EmptyPage"));
+    auto *el = new QVBoxLayout(emptyPage);
+    el->setAlignment(Qt::AlignCenter);
+    auto *emptyIcon = new QLabel(emptyPage);
+    emptyIcon->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(64, 64));
+    emptyIcon->setFixedSize(64, 64);
+    emptyIcon->setScaledContents(true);
+    emptyIcon->setStyleSheet(QStringLiteral("opacity:0.5;"));
+    emptyIcon->setAlignment(Qt::AlignCenter);
+    auto *emptyTitle = new QLabel(QStringLiteral("No downloads yet"), emptyPage);
+    emptyTitle->setObjectName(QStringLiteral("EmptyTitle"));
+    emptyTitle->setAlignment(Qt::AlignCenter);
+    auto *emptyHint = new QLabel(
+        QStringLiteral("Click “＋ New Download”, paste a link, or just copy one in your "
+                       "browser — Nexa catches it automatically."), emptyPage);
+    emptyHint->setObjectName(QStringLiteral("EmptyHint"));
+    emptyHint->setAlignment(Qt::AlignCenter);
+    emptyHint->setWordWrap(true);
+    emptyHint->setMaximumWidth(420);
+    el->addWidget(emptyIcon, 0, Qt::AlignHCenter);
+    el->addSpacing(14);
+    el->addWidget(emptyTitle, 0, Qt::AlignHCenter);
+    el->addSpacing(6);
+    el->addWidget(emptyHint, 0, Qt::AlignHCenter);
+
+    // Swap between the empty page and the table depending on how many downloads
+    // exist (updateEmptyState()).
+    m_content = new QStackedWidget(central);
+    m_content->addWidget(emptyPage);   // index 0
+    m_content->addWidget(m_table);     // index 1
+    root->addWidget(m_content, 1);
 
     setCentralWidget(central);
 
-    // ---- Footer summary: counts + speed (left), remaining (right) ---------
+    // ---- Footer: live stats (left) + version (right) ----------------------
     m_footerLeft  = new QLabel(this);
-    m_footerRight = new QLabel(this);
-    m_footerRight->setStyleSheet(QStringLiteral("color:#6b7488;"));
+    m_footerLeft->setObjectName(QStringLiteral("FootStat"));
+    m_footerRight = new QLabel(QStringLiteral("v%1  ·  NexaDL").arg(QApplication::applicationVersion()), this);
+    m_footerRight->setObjectName(QStringLiteral("FootVer"));
     statusBar()->addWidget(m_footerLeft);
     statusBar()->addPermanentWidget(m_footerRight);
-    statusBar()->setSizeGripEnabled(true);
+    statusBar()->setSizeGripEnabled(false);   // window resizes from its edges anyway
 
     auto *del = new QShortcut(QKeySequence::Delete, this);
     connect(del, &QShortcut::activated, this, &MainWindow::removeSelected);
@@ -385,9 +534,9 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
 
 void MainWindow::updateStats()
 {
-    int active = 0, paused = 0, errors = 0;
+    int active = 0, paused = 0, errors = 0, queued = 0, completed = 0;
     double totalSpeed = 0.0;
-    qint64 remaining = 0;
+    qint64 remaining = 0, used = 0;
     for (const auto &s : m_engine->snapshot()) {
         const qint64 left = (s.total > 0) ? qMax<qint64>(0, s.total - s.done) : 0;
         switch (s.state) {
@@ -397,32 +546,64 @@ void MainWindow::updateStats()
             case DownloadState::Paused:
                 ++paused; remaining += left; break;
             case DownloadState::Queued:
-                remaining += left; break;
+                ++queued; remaining += left; break;
             case DownloadState::Error:
                 ++errors; break;
+            case DownloadState::Completed:
+                ++completed; used += (s.total > 0 ? s.total : s.done); break;
             default: break;
         }
     }
+    const QString spd = totalSpeed > 1.0 ? humanSpeed(totalSpeed) : QStringLiteral("0 B/s");
 
-    m_activePill->setText(QStringLiteral("%1 active").arg(active));
+    auto setGood = [](QLabel *l, bool good) {
+        if (l->property("good").toBool() != good) {
+            l->setProperty("good", good);
+            l->style()->unpolish(l); l->style()->polish(l);
+        }
+    };
 
-    const QString spd = totalSpeed > 1.0 ? humanSpeed(totalSpeed)
-                                         : QStringLiteral("0 B/s");
-    QString tail;
-    if (paused || errors) {
-        QStringList bits;
-        if (paused) bits << QStringLiteral("%1 paused").arg(paused);
-        if (errors) bits << QStringLiteral("%1 error").arg(errors);
-        tail = QStringLiteral("&nbsp;&nbsp;&nbsp;<span style='color:#6b7488'>%1</span>")
-                   .arg(bits.join(QStringLiteral(" · ")));
-    }
-    m_footerLeft->setText(
-        QStringLiteral("<span style='color:#34d399'>●</span> "
-                       "<span style='color:#a7b0c2'>%1 active · %2 total</span>%3")
-            .arg(active).arg(spd).arg(tail));
-    m_footerRight->setText(remaining > 0
-        ? QStringLiteral("%1 remaining").arg(humanSize(remaining))
-        : QString());
+    // ---- Metric tiles ----
+    m_metActiveVal->setText(QString::number(active));
+    const int threads = active * qMax(1, m_engine->streamConcurrency());
+    m_metActiveSub->setText(active > 0 ? QStringLiteral("↑ %1 threads").arg(threads)
+                          : queued > 0 ? QStringLiteral("%1 queued").arg(queued)
+                                       : QStringLiteral("idle"));
+    setGood(m_metActiveSub, active > 0);
+
+    m_metSpeedVal->setText(spd);
+    m_metSpeedSub->setText(QStringLiteral("avg per session"));
+
+    m_metDoneVal->setText(QString::number(completed));
+    m_metDoneSub->setText(QStringLiteral("+%1 today").arg(m_completedThisSession));
+    setGood(m_metDoneSub, m_completedThisSession > 0);
+
+    QString cap;
+    const QStorageInfo si(m_engine->downloadDir());
+    if (si.isValid() && si.bytesTotal() > 0)
+        cap = humanSize(si.bytesTotal());
+    m_metStoreVal->setText(humanSize(used));
+    m_metStoreSub->setText(cap.isEmpty() ? QStringLiteral("on disk")
+                                         : QStringLiteral("of %1").arg(cap));
+
+    // ---- Footer: "Active: N   Queued: N   Done: N" (values brighter) -------
+    auto stat = [](const QString &label, int n) {
+        return QStringLiteral("<span style='color:#555555'>%1:</span> "
+                              "<span style='color:#888888'>%2</span>").arg(label).arg(n);
+    };
+    QStringList parts{ stat(QStringLiteral("Active"), active),
+                       stat(QStringLiteral("Queued"), queued),
+                       stat(QStringLiteral("Done"),   completed) };
+    if (errors) parts << stat(QStringLiteral("Errors"), errors);
+    m_footerLeft->setText(parts.join(QStringLiteral("&nbsp;&nbsp;&nbsp;&nbsp;")));
+
+    updateEmptyState();   // table <-> empty page follows the row count
+}
+
+void MainWindow::updateEmptyState()
+{
+    if (m_content && m_table)
+        m_content->setCurrentIndex(m_table->rowCount() > 0 ? 1 : 0);
 }
 
 void MainWindow::promptAddUrl()
@@ -495,6 +676,66 @@ void MainWindow::onCheckUpdates()
     m_updates->check(QApplication::applicationVersion());
 }
 
+void MainWindow::onUpdateTools()
+{
+    // Site extractors rot as YouTube/Udemy/etc. change; let the user self-update
+    // the bundled yt-dlp in place (`yt-dlp -U`) without leaving the app. Works for
+    // the standalone binary; a pip/distro install just reports it can't self-update.
+    auto *proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    auto *out = new QString;
+    statusBar()->showMessage(QStringLiteral("Updating yt-dlp…"));
+    connect(proc, &QProcess::readyReadStandardOutput, this,
+            [proc, out]() { *out += QString::fromUtf8(proc->readAllStandardOutput()); });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc, out](int code, QProcess::ExitStatus st) {
+        statusBar()->clearMessage();
+        const QString log = out->trimmed();
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("Update video tools"));
+        const bool ok = (st == QProcess::NormalExit && code == 0);
+        box.setIcon(ok ? QMessageBox::Information : QMessageBox::Warning);
+        box.setText(ok ? QStringLiteral("yt-dlp update finished.")
+                       : QStringLiteral("yt-dlp update didn't complete."));
+        box.setDetailedText(log.isEmpty() ? QStringLiteral("(no output)") : log);
+        box.exec();
+        proc->deleteLater();
+        delete out;
+    });
+    proc->start(QStringLiteral("yt-dlp"), {QStringLiteral("-U")});
+    if (!proc->waitForStarted(3000)) {
+        statusBar()->clearMessage();
+        QMessageBox::warning(this, QStringLiteral("Update video tools"),
+            QStringLiteral("Couldn't launch yt-dlp — make sure it's installed and on PATH."));
+        proc->deleteLater();
+        delete out;
+    }
+}
+
+void MainWindow::onExportLogs()
+{
+    const QString src = nexa::logFilePath();
+    if (!QFileInfo::exists(src) || QFileInfo(src).size() == 0) {
+        QMessageBox::information(this, QStringLiteral("Export logs"),
+            QStringLiteral("No logs yet.\n\nEnable “Save error logs to a file” in Settings, "
+                           "reproduce the problem, then export here."));
+        return;
+    }
+    const QString dst = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export logs"),
+        QDir::homePath() + QStringLiteral("/nexa-log.txt"),
+        QStringLiteral("Text files (*.txt);;All files (*)"));
+    if (dst.isEmpty())
+        return;
+    QFile::remove(dst);                       // QFile::copy won't overwrite
+    if (QFile::copy(src, dst))
+        QMessageBox::information(this, QStringLiteral("Export logs"),
+            QStringLiteral("Saved to:\n%1").arg(dst));
+    else
+        QMessageBox::warning(this, QStringLiteral("Export logs"),
+            QStringLiteral("Couldn't write the file."));
+}
+
 void MainWindow::onSettings()
 {
     // Single instance: if it's already open, just surface it (restore if the
@@ -537,8 +778,15 @@ void MainWindow::onSettings()
     dlg->ensurePolished();
     dlg->adjustSize();
     dlg->setFixedSize(dlg->size());
-    // Center over the main window before showing (no parent to do it for us).
-    dlg->move(frameGeometry().center() - dlg->rect().center());
+    // Center over the main window, but clamp to the screen so a main window near
+    // an edge can't push Settings partly off-screen.
+    QPoint pos = frameGeometry().center() - dlg->rect().center();
+    if (QScreen *scr = screen()) {
+        const QRect avail = scr->availableGeometry();
+        pos.setX(qBound(avail.left(), pos.x(), avail.right() - dlg->width() + 1));
+        pos.setY(qBound(avail.top(), pos.y(), avail.bottom() - dlg->height() + 1));
+    }
+    dlg->move(pos);
     dlg->show();
     dlg->raise();
     dlg->activateWindow();
@@ -645,6 +893,11 @@ void MainWindow::rebuildInOrder(const QList<int> &order)
 
 void MainWindow::moveRow(int from, int to)
 {
+    // While a search filter is active, rows are hidden (not removed), so the
+    // visual from/to no longer line up with the full queue order — a reorder
+    // would move the wrong task. Disallow reordering until the filter is cleared.
+    if (m_search && !m_search->text().trimmed().isEmpty())
+        return;
     const int rows = m_table->rowCount();
     if (from < 0 || from >= rows)
         return;
@@ -790,12 +1043,70 @@ void MainWindow::applyFilter(const QString &text)
     const QString q = text.trimmed().toLower();
     for (int row = 0; row < m_table->rowCount(); ++row) {
         const int id = idAtRow(row);
-        const bool match = q.isEmpty() ||
+        const bool textMatch = q.isEmpty() ||
             m_engine->nameOf(id).toLower().contains(q) ||
             m_engine->hostOf(id).toLower().contains(q) ||
             m_engine->urlOf(id).toLower().contains(q);
-        m_table->setRowHidden(row, !match);
+        bool stateMatch = (m_stateFilter < 0);
+        if (!stateMatch) {
+            const DownloadState s = m_engine->stateOf(id);
+            if (m_stateFilter == int(DownloadState::Downloading))   // "Active" = downloading OR probing
+                stateMatch = (s == DownloadState::Downloading || s == DownloadState::Probing);
+            else
+                stateMatch = (int(s) == m_stateFilter);
+        }
+        m_table->setRowHidden(row, !(textMatch && stateMatch));
     }
+}
+
+void MainWindow::showFilterMenu()
+{
+    QMenu menu(this);
+    const QList<QPair<QString, int>> opts = {
+        {QStringLiteral("All"),       -1},
+        {QStringLiteral("Active"),    int(DownloadState::Downloading)},
+        {QStringLiteral("Paused"),    int(DownloadState::Paused)},
+        {QStringLiteral("Queued"),    int(DownloadState::Queued)},
+        {QStringLiteral("Completed"), int(DownloadState::Completed)},
+        {QStringLiteral("Errored"),   int(DownloadState::Error)},
+    };
+    for (const auto &o : opts) {
+        QAction *a = menu.addAction(o.first);
+        a->setCheckable(true);
+        a->setChecked(m_stateFilter == o.second);
+        const int st = o.second;
+        connect(a, &QAction::triggered, this, [this, st]() {
+            m_stateFilter = st;
+            applyFilter(m_search->text());
+        });
+    }
+    auto *btn = qobject_cast<QWidget*>(sender());
+    menu.exec(btn ? btn->mapToGlobal(QPoint(0, btn->height() + 4)) : QCursor::pos());
+}
+
+void MainWindow::showSortMenu()
+{
+    QMenu menu(this);
+    auto sortBy = [this](std::function<bool(int, int)> less) {
+        QList<int> order = currentOrder();
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return less(a, b); });
+        rebuildInOrder(order);          // view-only: doesn't touch the engine queue
+        applyFilter(m_search->text());
+    };
+    menu.addAction(QStringLiteral("Name (A–Z)"), this, [this, sortBy]() {
+        sortBy([this](int a, int b) {
+            return m_engine->nameOf(a).compare(m_engine->nameOf(b), Qt::CaseInsensitive) < 0; });
+    });
+    menu.addAction(QStringLiteral("Status"), this, [this, sortBy]() {
+        sortBy([this](int a, int b) { return int(m_engine->stateOf(a)) < int(m_engine->stateOf(b)); });
+    });
+    menu.addAction(QStringLiteral("Host"), this, [this, sortBy]() {
+        sortBy([this](int a, int b) {
+            return m_engine->hostOf(a).compare(m_engine->hostOf(b), Qt::CaseInsensitive) < 0; });
+    });
+    auto *btn = qobject_cast<QWidget*>(sender());
+    menu.exec(btn ? btn->mapToGlobal(QPoint(0, btn->height() + 4)) : QCursor::pos());
 }
 
 void MainWindow::showRowMenu(const QPoint &pos)
@@ -846,20 +1157,101 @@ void MainWindow::refreshFileCell(int row, int id)
 
 void MainWindow::setRowStatus(int row, DownloadState state, const QString &detail)
 {
-    QWidget *cell = m_table->cellWidget(row, ColStatus);
-    if (!cell)
-        return;
-    if (auto *lbl = cell->findChild<QLabel*>(QStringLiteral("s_lbl"))) {
-        lbl->setText(QStringLiteral(
-            "<span style='color:%1'>●</span>&nbsp;&nbsp;"
-            "<span style='color:#cbd5e1'>%2</span>")
-            .arg(statusColor(state).name(), statusLabel(state)));
-        lbl->setToolTip(detail);
+    const QString k =
+        (state == DownloadState::Downloading || state == DownloadState::Probing) ? QStringLiteral("active")
+        : state == DownloadState::Paused    ? QStringLiteral("paused")
+        : state == DownloadState::Completed ? QStringLiteral("done")
+        : state == DownloadState::Error     ? QStringLiteral("error")
+                                            : QStringLiteral("queued");
+    const QString text = k == QLatin1String("active") ? QStringLiteral("ACTIVE")
+                       : k == QLatin1String("paused") ? QStringLiteral("PAUSED")
+                       : k == QLatin1String("done")   ? QStringLiteral("DONE")
+                       : k == QLatin1String("error")  ? QStringLiteral("ERROR")
+                                                      : QStringLiteral("QUEUED");
+    // Status badge — colours come from QSS via the "st" property.
+    if (auto *cell = m_table->cellWidget(row, ColStatus)) {
+        if (auto *b = cell->findChild<QLabel*>(QStringLiteral("s_badge"))) {
+            b->setText(text);
+            b->setToolTip(detail);
+            if (b->property("st").toString() != k) {
+                b->setProperty("st", k);
+                b->style()->unpolish(b);
+                b->style()->polish(b);
+            }
+        }
     }
-    // Match the progress-bar colour to the state.
+    // Progress chunk colour follows the state (blue active / amber paused / green done).
     if (auto *pc = m_table->cellWidget(row, ColProgress))
         if (auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar")))
             paintBar(bar, statusColor(state));
+    // First action button is contextual: pause (running) / resume (paused/error) /
+    // open-folder (done). A queued item has nothing to toggle — show only Remove.
+    if (auto *ac = m_table->cellWidget(row, ColActions)) {
+        if (auto *tg = ac->findChild<QPushButton*>(QStringLiteral("a_toggle"))) {
+            if (state == DownloadState::Completed) {
+                tg->setText(QString::fromUtf8("🗀")); tg->setToolTip(QStringLiteral("Open folder")); tg->setVisible(true);
+            } else if (state == DownloadState::Downloading || state == DownloadState::Probing) {
+                tg->setText(QString::fromUtf8("❚❚")); tg->setToolTip(QStringLiteral("Pause"));       tg->setVisible(true);
+            } else if (state == DownloadState::Queued) {
+                tg->setVisible(false);
+            } else {   // Paused / Error
+                tg->setText(QString::fromUtf8("▶")); tg->setToolTip(QStringLiteral("Resume"));        tg->setVisible(true);
+            }
+        }
+    }
+}
+
+QWidget *MainWindow::buildActionsCell(int id)
+{
+    auto *w = new QWidget;
+    w->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 0, 8, 0);
+    h->setSpacing(4);
+    auto *toggle = new QPushButton(QString::fromUtf8("▶"), w);
+    toggle->setObjectName(QStringLiteral("a_toggle"));
+    toggle->setProperty("ActIcon", true);
+    toggle->setFixedSize(24, 24);
+    toggle->setCursor(Qt::PointingHandCursor);
+    auto *second = new QPushButton(QString::fromUtf8("✕"), w);
+    second->setObjectName(QStringLiteral("a_second"));
+    second->setProperty("ActIcon", true);
+    second->setFixedSize(24, 24);
+    second->setCursor(Qt::PointingHandCursor);
+    second->setToolTip(QStringLiteral("Remove"));
+    h->addStretch(1);
+    h->addWidget(toggle);
+    h->addWidget(second);
+    // First button is state-aware: pause/resume while in flight, open-folder when done.
+    connect(toggle, &QPushButton::clicked, this, [this, id]() {
+        const DownloadState s = m_engine->stateOf(id);
+        if (s == DownloadState::Completed)                                  openDownloadFolder();
+        else if (s == DownloadState::Downloading || s == DownloadState::Probing) m_engine->pause(id);
+        else                                                                m_engine->resume(id);
+    });
+    // Second button removes the task (cancelling it first if still running).
+    connect(second, &QPushButton::clicked, this, [this, id]() {
+        const int r = rowForId(id);
+        if (r >= 0) m_table->selectRow(r);
+        removeSelected();
+    });
+    return w;
+}
+
+void MainWindow::showRowMenuFor(int id, const QPoint &globalPos)
+{
+    const int row = rowForId(id);
+    if (row >= 0)
+        m_table->selectRow(row);
+    QMenu menu(this);
+    menu.addAction(QStringLiteral("Details…"), this, [this, id]() { openDetails(id); });
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Pause"),  this, [this, id]() { m_engine->pause(id); });
+    menu.addAction(QStringLiteral("Resume"), this, [this, id]() { m_engine->resume(id); });
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Open download folder"), this, &MainWindow::openDownloadFolder);
+    menu.addAction(QStringLiteral("Remove"), this, &MainWindow::removeSelected);
+    menu.exec(globalPos);
 }
 
 void MainWindow::onTaskAdded(int id)
@@ -889,6 +1281,7 @@ void MainWindow::onTaskAdded(int id)
     m_table->setItem(row, ColSpeed, speedItem);
 
     m_table->setCellWidget(row, ColStatus, buildStatusCell());
+    m_table->setCellWidget(row, ColActions, buildActionsCell(id));
     const DownloadState st = m_engine->stateOf(id);
     setRowStatus(row, st, QString());
 
@@ -981,6 +1374,11 @@ void MainWindow::onTaskFinished(int id)
     const int row = rowForId(id);
     if (row < 0)
         return;
+    // Count once per id, and never for tasks restored as complete at startup.
+    if (!m_restoring && !m_countedDone.contains(id)) {
+        m_countedDone.insert(id);
+        ++m_completedThisSession;
+    }
     if (auto *pc = m_table->cellWidget(row, ColProgress)) {
         if (auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar"))) {
             bar->setRange(0, 100);

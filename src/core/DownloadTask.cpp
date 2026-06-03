@@ -56,8 +56,11 @@ DownloadTask::~DownloadTask()
 {
     clearSegments();
     if (m_probe) {
-        m_probe->abort();
-        m_probe->deleteLater();
+        QNetworkReply *p = m_probe;
+        m_probe = nullptr;
+        p->disconnect(this);     // never re-enter a slot on a half-destroyed task
+        p->abort();
+        p->deleteLater();
     }
 }
 
@@ -353,11 +356,19 @@ bool DownloadTask::tryResegment()
 
 void DownloadTask::clearSegments()
 {
-    for (auto *w : m_workers) {
+    // Take a copy and clear the member FIRST. stop() can make a worker emit
+    // completed/failed synchronously, which re-enters onSegmentCompleted ->
+    // tryResegment() -> makeWorker() -> m_workers.append(); appending while a
+    // range-for iterates m_workers reallocates the vector and invalidates the
+    // loop pointer (a use-after-free crash on Remove/pause of an active task).
+    // Disconnecting first stops those callbacks from re-entering at all.
+    const QVector<SegmentDownloader*> workers = m_workers;
+    m_workers.clear();
+    for (auto *w : workers) {
+        w->disconnect(this);
         w->stop();
         w->deleteLater();
     }
-    m_workers.clear();
 }
 
 void DownloadTask::onSegmentProgressed(int index, qint64 delta)
@@ -454,6 +465,13 @@ void DownloadTask::retrySegment(int index, const QString &reason)
 void DownloadTask::finalizeShort(qint64 totalReceived)
 {
     m_speedTimer->stop();
+    // A zero-byte "short finish" is a failure, not a success: the server sent no
+    // body. Don't silently leave a 0-byte file marked Completed.
+    if (totalReceived <= 0) {
+        clearSegments();
+        setState(DownloadState::Error, QStringLiteral("server returned no data"));
+        return;
+    }
     clearSegments();
     // Trim the pre-allocated file down to what we actually received.
     QFile f(m_savePath);
@@ -461,6 +479,7 @@ void DownloadTask::finalizeShort(qint64 totalReceived)
         f.resize(totalReceived);
     f.close();
     m_total = totalReceived;
+    m_done  = totalReceived;   // keep done==total so cached progress stays consistent
     if (!m_segments.isEmpty()) {
         m_segments[0].end = totalReceived - 1;
         m_segments[0].done = totalReceived;
@@ -492,9 +511,14 @@ void DownloadTask::pause()
         return;
     m_speedTimer->stop();
     if (m_probe) {
-        m_probe->abort();
-        m_probe->deleteLater();
+        // abort() can fire finished() SYNCHRONOUSLY, re-entering onProbeFinished
+        // which nulls m_probe — then the old code dereferenced a now-null m_probe
+        // (crash on Remove/pause of a still-probing task). Null + disconnect FIRST.
+        QNetworkReply *p = m_probe;
         m_probe = nullptr;
+        p->disconnect(this);
+        p->abort();
+        p->deleteLater();
     }
     clearSegments();
     persist();
