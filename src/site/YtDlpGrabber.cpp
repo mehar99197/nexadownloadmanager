@@ -194,12 +194,19 @@ void YtDlpGrabber::start()
     // empty ("NA"), so never rely on it alone. Sanitise the literal folder name:
     // strip path separators AND yt-dlp template-special chars (% ( ) { }) so a
     // course title can't break the -o template or escape the download dir.
-    QString plFolder = m_fixedName.trimmed();
-    if (plFolder.isEmpty())
-        plFolder = urlSlug(m_url);            // e.g. "pythonforbeginnersintro" from the URL
-    plFolder.replace(QRegularExpression(QStringLiteral("[/\\\\%(){}]+")), QStringLiteral("_"));
-    if (plFolder.isEmpty())
-        plFolder = QStringLiteral("%(playlist_title,playlist_id)s");   // last resort
+    // Folder name for a playlist: PREFER yt-dlp's real playlist_title (it knows
+    // the actual title from the site), and fall back to the caller-supplied name
+    // / URL slug only when yt-dlp has no title (e.g. some auth courses). So even
+    // if the extension sent a placeholder like "YouTube Playlist", a YouTube
+    // playlist still lands in a folder named its real title. The fallback is
+    // stripped of output-template-special chars so it embeds safely as a literal.
+    QString plFallback = m_fixedName.trimmed();
+    if (plFallback.isEmpty())
+        plFallback = urlSlug(m_url);            // e.g. "pythonforbeginnersintro" from the URL
+    plFallback.replace(QRegularExpression(QStringLiteral("[/\\\\%(){}|,]+")), QStringLiteral("_"));
+    if (plFallback.isEmpty())
+        plFallback = QStringLiteral("Playlist");
+    const QString plFolder = QStringLiteral("%(playlist_title|") + plFallback + QStringLiteral(")s");
 
     const QString tmpl = m_playlist
         ? QDir(m_dir).filePath(plFolder + QStringLiteral("/%(playlist_index)03d - %(title)s.%(ext)s"))
@@ -343,16 +350,29 @@ void YtDlpGrabber::cancel()
 {
     m_cancelled = true;
     if (m_proc) {
+        // Disconnect BEFORE killing: otherwise the killed process's queued
+        // finished() can be delivered after a later resume (when m_cancelled is
+        // back to false) and be mistaken for a real completion.
+        m_proc->disconnect(this);
         m_proc->terminate();
         if (!m_proc->waitForFinished(1500))
             m_proc->kill();
+        m_proc->deleteLater();
+        m_proc = nullptr;
     }
     for (QProcess *p : m_plProcs) {     // parallel playlist workers
         if (!p) continue;
+        // Same here: disconnect so a stale finished() from an old worker can't
+        // bump the NEXT run's finished-count and complete it early (which showed
+        // "Complete" at e.g. 318/429 after a pause+resume).
+        p->disconnect(this);
         p->terminate();
         if (!p->waitForFinished(1200))
             p->kill();
+        p->deleteLater();
     }
+    m_plProcs.clear();
+    m_plRates.clear();
     setState(DownloadState::Paused, QStringLiteral("cancelled"));
 }
 
