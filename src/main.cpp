@@ -28,6 +28,16 @@ static QString localIpv4()
 
 int main(int argc, char *argv[])
 {
+    // Running from an AppImage: put the bundled tools (yt-dlp / ffmpeg / aria2 in
+    // the AppDir) first on PATH so every QProcess::start("yt-dlp"/"ffmpeg"/…)
+    // finds them. This is what makes the AppImage fully self-contained — it works
+    // even on a machine that has none of those installed. (Set before anything
+    // launches a child process; child processes inherit this PATH.)
+    if (qEnvironmentVariableIsSet("APPDIR")) {
+        const QByteArray appdir = qgetenv("APPDIR");
+        qputenv("PATH", appdir + "/usr/bin:" + qgetenv("PATH"));
+    }
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));

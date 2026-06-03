@@ -166,7 +166,8 @@ AuthResult AuthenticationManager::registerBearerToken(const QString &domain,
 }
 
 AuthResult AuthenticationManager::registerBrowserCookies(const QString &domain,
-                                                         const QString &browser)
+                                                         const QString &browser,
+                                                         const QString &profile)
 {
     if (domain.trimmed().isEmpty())
         return AuthResult::failure(AuthError::UnknownDomain, QStringLiteral("empty domain"));
@@ -182,10 +183,25 @@ AuthResult AuthenticationManager::registerBrowserCookies(const QString &domain,
         return AuthResult::failure(AuthError::MalformedFormat,
             QStringLiteral("unsupported browser '%1'").arg(browser));
 
+    // The profile is a directory name (e.g. "Default", "Profile 2"), never a path
+    // or flag. Reject anything with path separators / a leading dash so it can't be
+    // smuggled into the yt-dlp "browser:profile" CLI value as an option or traversal.
+    const QString prof = profile.trimmed();
+    if (!prof.isEmpty() && (prof.contains(QLatin1Char('/')) ||
+                            prof.contains(QLatin1Char('\\')) ||
+                            prof.startsWith(QLatin1Char('-')) ||
+                            prof.contains(QLatin1Char(':'))))
+        return AuthResult::failure(AuthError::MalformedFormat,
+            QStringLiteral("invalid browser profile '%1'").arg(profile));
+
     DomainAuth a;
     a.kind = DomainAuth::Kind::BrowserCookies;
     a.domain = domain.toLower();
     a.browser = b;
+    a.browserProfile = prof;
+    // QHash::insert REPLACES any existing entry for this domain — so registering
+    // browser-login here supersedes a previously registered (and now stale)
+    // cookies.txt / bearer / older browser-profile credential for the same site.
     m_byDomain.insert(a.domain, a);
     return AuthResult::success();
 }
@@ -411,8 +427,14 @@ QStringList AuthenticationManager::ytDlpArgs(const QUrl &url)
         return {};   // could not write the config — fail closed (no auth) rather than leak
     }
     if (a.kind == DomainAuth::Kind::BrowserCookies) {
-        // yt-dlp reads the live cookies straight from the logged-in browser.
-        return {QStringLiteral("--cookies-from-browser"), a.browser};
+        // yt-dlp reads the live cookies straight from the logged-in browser. When a
+        // profile is set, target it via the "browser:profile" form (yt-dlp resolves
+        // the profile against the browser's user-data dir) so a non-default Chrome
+        // profile's session is used instead of the default profile's.
+        QString spec = a.browser;
+        if (!a.browserProfile.isEmpty())
+            spec += QLatin1Char(':') + a.browserProfile;
+        return {QStringLiteral("--cookies-from-browser"), spec};
     }
     return {};   // none / excluded host
 }

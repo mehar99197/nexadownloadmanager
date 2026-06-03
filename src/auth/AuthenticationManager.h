@@ -68,6 +68,9 @@ struct DomainAuth {
     QString cookieFilePath;    // absolute path to a Netscape cookies.txt (Kind::CookieFile)
     QString bearerToken;       // raw token value, no "Bearer " prefix (Kind::BearerToken)
     QString browser;           // yt-dlp browser name e.g. "chrome" (Kind::BrowserCookies)
+    QString browserProfile;    // optional browser PROFILE dir, e.g. "Profile 2" (Kind::BrowserCookies);
+                               // empty = the browser's default profile. Lets a user logged into the
+                               // site in a NON-default Chrome profile point yt-dlp at the right one.
     qint64  expiresAt = 0;     // bearer expiry, unix epoch seconds; 0 = never expires
     bool    isExpired(qint64 nowEpoch) const {
         return kind == Kind::BearerToken && expiresAt > 0 && expiresAt <= nowEpoch;
@@ -101,7 +104,14 @@ public:
     // them live via --cookies-from-browser <browser>, so the user needs no manual
     // cookies.txt export — just be logged in. `browser` is a yt-dlp browser name
     // (chrome, chromium, edge, brave, firefox, opera, vivaldi, safari, whale).
-    AuthResult registerBrowserCookies(const QString &domain, const QString &browser);
+    // `profile` is an optional browser PROFILE directory (e.g. "Profile 2"); empty
+    // means the browser's default profile. Essential when the user is logged into
+    // the site in a non-default Chrome/Chromium profile — yt-dlp otherwise reads
+    // only the default profile and finds no session.
+    // Registering REPLACES any prior credential for this domain (the hash is keyed
+    // by domain), so re-clicking "Use browser login" supersedes a stale cookies.txt.
+    AuthResult registerBrowserCookies(const QString &domain, const QString &browser,
+                                      const QString &profile = QString());
 
     // Remove any credential for a domain. Returns true if one was present.
     bool unregister(const QString &domain);
