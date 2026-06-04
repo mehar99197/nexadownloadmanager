@@ -104,17 +104,36 @@ jobs:
           StartupWMClass=nexa
           DESK
 
-          # ── Chrome extension ──────────────────────────────────────────────
+          # ── Extensions — all 4 browsers ──────────────────────────────────
+          # Chrome / Edge / Brave (Chromium-based — same MV3 extension)
           cp -r extension-chromium ${PKG}/usr/share/nexa/extension-chromium
+          # Firefox (MV2, browser_specific_settings, background script)
+          cp -r extension-firefox  ${PKG}/usr/share/nexa/extension-firefox
 
-          # ── Native messaging host manifest ────────────────────────────────
+          # ── Native messaging manifests ────────────────────────────────────
+          CHROME_ORIGINS='["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]'
+          CHROME_JSON="{\"name\":\"com.nexa.host\",\"description\":\"Nexa Download Manager\",\"path\":\"/usr/lib/nexa/nexa-host\",\"type\":\"stdio\",\"allowed_origins\":${CHROME_ORIGINS}}"
+          FIREFOX_JSON='{"name":"com.nexa.host","description":"Nexa Download Manager","path":"/usr/lib/nexa/nexa-host","type":"stdio","allowed_extensions":["nexa@nexa.local"]}'
+
+          # Google Chrome
           mkdir -p ${PKG}/etc/opt/chrome/native-messaging-hosts
+          echo "$CHROME_JSON" > ${PKG}/etc/opt/chrome/native-messaging-hosts/com.nexa.host.json
+
+          # Chromium
           mkdir -p ${PKG}/etc/chromium/native-messaging-hosts
-          cat > ${PKG}/etc/opt/chrome/native-messaging-hosts/com.nexa.host.json <<'JSON'
-          {"name":"com.nexa.host","description":"Nexa Download Manager","path":"/usr/lib/nexa/nexa-host","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}
-          JSON
-          cp ${PKG}/etc/opt/chrome/native-messaging-hosts/com.nexa.host.json \
-             ${PKG}/etc/chromium/native-messaging-hosts/com.nexa.host.json
+          echo "$CHROME_JSON" > ${PKG}/etc/chromium/native-messaging-hosts/com.nexa.host.json
+
+          # Microsoft Edge
+          mkdir -p ${PKG}/etc/opt/edge/native-messaging-hosts
+          echo "$CHROME_JSON" > ${PKG}/etc/opt/edge/native-messaging-hosts/com.nexa.host.json
+
+          # Brave Browser
+          mkdir -p "${PKG}/etc/opt/brave/native-messaging-hosts"
+          echo "$CHROME_JSON" > "${PKG}/etc/opt/brave/native-messaging-hosts/com.nexa.host.json"
+
+          # Firefox
+          mkdir -p ${PKG}/usr/lib/mozilla/native-messaging-hosts
+          echo "$FIREFOX_JSON" > ${PKG}/usr/lib/mozilla/native-messaging-hosts/com.nexa.host.json
 
           # ── Set LD_LIBRARY_PATH wrapper so bundled libs are found ─────────
           cat > ${PKG}/usr/bin/nexa <<'SH'
@@ -130,8 +149,25 @@ jobs:
           #!/bin/sh
           update-desktop-database /usr/share/applications 2>/dev/null || true
           gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-          echo "Nexa Download Manager installed."
-          echo "Load Chrome extension from: /usr/share/nexa/extension-chromium"
+          echo ""
+          echo "=========================================="
+          echo "  Nexa Download Manager installed!"
+          echo "=========================================="
+          echo ""
+          echo "Load browser extension:"
+          echo ""
+          echo "  Chrome / Edge / Brave:"
+          echo "    1. Open chrome://extensions (or edge://extensions / brave://extensions)"
+          echo "    2. Enable Developer mode"
+          echo "    3. Load unpacked -> /usr/share/nexa/extension-chromium"
+          echo ""
+          echo "  Firefox:"
+          echo "    1. Open about:debugging -> This Firefox"
+          echo "    2. Load Temporary Add-on -> /usr/share/nexa/extension-firefox/manifest.json"
+          echo "    (For permanent: sign & submit to addons.mozilla.org)"
+          echo ""
+          echo "Native messaging host is auto-registered for all browsers."
+          echo "=========================================="
           POST
           chmod 755 ${PKG}/DEBIAN/postinst
 
@@ -318,8 +354,10 @@ jobs:
           fi
           ls -lh dist/ffmpeg.exe
 
-      - name: Bundle Chrome extension
-        run: cp -r extension-chromium dist/extension-chromium
+      - name: Bundle extensions (Chrome/Edge/Brave + Firefox)
+        run: |
+          cp -r extension-chromium dist/extension-chromium
+          cp -r extension-firefox  dist/extension-firefox
 
       - name: Write native host manifest
         run: |
@@ -372,8 +410,11 @@ jobs:
             '  FileClose $0',
             '  FileClose $1',
             '  Delete "$INSTDIR\manifest_template.json"',
+            '  ; Register native host for Chrome, Chromium, Edge, Brave',
             '  WriteRegStr HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
             '  WriteRegStr HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  WriteRegStr HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  WriteRegStr HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
             '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL" "$\"$INSTDIR\nexa.exe$\" --background"',
             '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayName" "Nexa Download Manager"',
             '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""',
@@ -388,6 +429,8 @@ jobs:
             '  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL"',
             '  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"',
             '  DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.nexa.host"',
             '  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"',
             '  RMDir /r "$INSTDIR"',
             '  Delete "$DESKTOP\Nexa Download Manager.lnk"',
