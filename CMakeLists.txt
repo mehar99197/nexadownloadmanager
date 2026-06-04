@@ -17,7 +17,9 @@ find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Sql)
 # On Windows (MSYS2/MinGW) use the CMake config package to avoid pkg-config
 # path issues; on Linux use pkg-config as before.
 if(WIN32)
-    find_package(LibtorrentRasterbar REQUIRED)
+    # CONFIG forces only the package config file — skips FindLibtorrentRasterbar.cmake
+    # which runs both config + pkgconfig modes and creates a duplicate alias target.
+    find_package(LibtorrentRasterbar CONFIG REQUIRED)
     set(LIBTORRENT_TARGET LibtorrentRasterbar::torrent-rasterbar)
 else()
     find_package(PkgConfig REQUIRED)
