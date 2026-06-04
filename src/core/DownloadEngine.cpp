@@ -258,17 +258,20 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         m_torrentIds.insert(id);
         emit taskAdded(id);
 
+        // libtorrent loads a magnet URI or a LOCAL .torrent file — never an
+        // http(s) URL (the in-engine .torrent fetch was dropped in libtorrent 2).
+        // So a remote .torrent is downloaded first, then its local copy is added.
         const bool isMagnet = asText.startsWith(QStringLiteral("magnet:"), Qt::CaseInsensitive);
         const bool isRemote = url.scheme() == QLatin1String("http") ||
                               url.scheme() == QLatin1String("https");
         if (!isMagnet && isRemote) {
             HeaderList merged = headers;
             merged += authHeaders;
-            fetchTorrentFile(id, url, dir, merged);
+            fetchTorrentFile(id, url, dir, merged);   // async; drives state itself
             return id;
         }
 
-        if (!m_torrents || !m_torrents->add(id, asText, dir)) {
+        if (!m_torrents || !m_torrents->add(id, asText, dir)) {   // magnet or local .torrent
             m_torrentIds.remove(id);
             return -1;
         }
@@ -429,16 +432,15 @@ void DownloadEngine::schedule()
 
 void DownloadEngine::ensureTorrents()
 {
-#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         return;
     m_torrents = new TorrentManager(this);
     connect(m_torrents, &TorrentManager::progress,     this, &DownloadEngine::taskProgress);
     connect(m_torrents, &TorrentManager::stateChanged, this, &DownloadEngine::taskStateChanged);
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
+    // Apply any caps the user set before the (lazily created) session existed.
     m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
     m_torrents->setSeedRatio(m_seedRatio);
-#endif
 }
 
 void DownloadEngine::setSpeedLimit(qint64 bytesPerSec)

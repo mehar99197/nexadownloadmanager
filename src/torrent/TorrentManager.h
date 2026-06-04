@@ -6,8 +6,6 @@
 
 namespace nexa {
 
-#ifdef NEXA_TORRENT_ENABLED
-
 // Wraps a single libtorrent session and drives many torrents. Magnet links and
 // .torrent files are added here; status is polled on a timer and surfaced
 // through the same signals as DownloadTask/HlsGrabber so the engine and UI
@@ -48,33 +46,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> d;
 };
-
-#else
-
-// ── Stub (no-torrent build: Windows CI, or -DNEXA_TORRENT=OFF) ─────────────
-// m_torrents is always nullptr when NEXA_TORRENT=OFF so connect() is never
-// called — the stub just needs to compile, not emit real signals. We inherit
-// QObject so DownloadEngine::connect(m_torrents, ...) compiles, but we DON'T
-// use Q_OBJECT (avoids needing MOC / TorrentManager.cpp in this build).
-class TorrentManager : public QObject {
-public:
-    explicit TorrentManager(QObject *parent = nullptr) : QObject(parent) {}
-    bool  add(int, const QString &, const QString &) { return false; }
-    void  pause(int)  {}
-    void  resume(int) {}
-    void  remove(int, bool = false) {}
-    bool  has(int)      const { return false; }
-    QString nameOf(int) const { return {}; }
-    DownloadState stateOf(int) const { return DownloadState::Queued; }
-    void  setSpeedLimits(int, int) {}
-    void  setSeedRatio(double) {}
-    static bool isTorrentUrl(const QString &) { return false; }
-    // Fake signal declarations so connect() calls compile (never actually wired)
-    void progress(int, qint64, qint64, double) {}
-    void stateChanged(int, DownloadState, const QString &) {}
-    void finished(int) {}
-};
-
-#endif // NEXA_TORRENT_ENABLED
 
 } // namespace nexa

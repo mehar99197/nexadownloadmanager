@@ -1,5 +1,6 @@
 name: build
 
+# Compiles Nexa on every push / PR so we always know the tree builds clean.
 on:
   push:
     branches: [main]
@@ -8,9 +9,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
-    name: Build (Ubuntu + torrent)
+    name: Build (Ubuntu, Qt6)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,195 +18,19 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build \
+          sudo apt-get install -y \
+            cmake ninja-build \
             qt6-base-dev libqt6sql6-sqlite \
-            libtorrent-rasterbar-dev ffmpeg
+            ffmpeg
 
-      - name: Configure & Build
-        run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
-
-      - name: Smoke test
-        run: test -x build/nexa && test -x build/nexa-host
-
-  # ── Windows self-contained installer (no libtorrent — avoids 40 min vcpkg) ─
-  windows:
-    name: Windows installer (self-contained)
-    runs-on: windows-latest
-    if: github.event_name != 'pull_request'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      # ── Qt6 ────────────────────────────────────────────────────────────────
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.7.3'
-          host: windows
-          target: desktop
-          arch: win64_msvc2019_64
-          cache: true
-
-      # ── Build nexa.exe + nexa-host.exe (torrent disabled = no vcpkg needed) ─
       - name: Configure
-        run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DNEXA_TORRENT=OFF
-        shell: pwsh
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release
-        shell: pwsh
+        run: cmake --build build
 
-      # ── Bundle Qt DLLs ─────────────────────────────────────────────────────
-      - name: Bundle Qt DLLs
+      - name: Smoke test (binaries exist)
         run: |
-          New-Item -ItemType Directory -Path dist -Force
-          Copy-Item build\Release\nexa.exe      dist\
-          Copy-Item build\Release\nexa-host.exe dist\
-          windeployqt --release --no-translations --no-compiler-runtime dist\nexa.exe
-        shell: pwsh
-
-      # ── Bundle yt-dlp.exe ──────────────────────────────────────────────────
-      - name: Bundle yt-dlp
-        run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
-            -OutFile dist\yt-dlp.exe
-        shell: pwsh
-
-      # ── Bundle ffmpeg.exe (static) ─────────────────────────────────────────
-      - name: Bundle ffmpeg
-        run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" `
-            -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
-          $bin = Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg_tmp | Select-Object -First 1
-          Copy-Item $bin.FullName dist\ffmpeg.exe
-          Remove-Item -Recurse -Force ffmpeg_tmp, ffmpeg.zip
-        shell: pwsh
-
-      # ── Bundle Chrome extension ─────────────────────────────────────────────
-      - name: Bundle extension
-        run: |
-          Copy-Item -Recurse extension-chromium dist\extension-chromium
-        shell: pwsh
-
-      # ── NSIS installer ──────────────────────────────────────────────────────
-      - name: Install NSIS
-        run: choco install nsis --no-progress -y
-        shell: pwsh
-
-      - name: Write NSIS script
-        shell: pwsh
-        run: |
-          # Write the native host manifest template (PowerShell, not NSIS FileWrite)
-          $manifest = '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR_PLACEHOLDER\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}'
-          $manifest | Out-File -Encoding UTF8 dist\com.nexa.host.json.template
-
-          # Write NSIS script to a file directly (avoid heredoc quoting issues)
-          $lines = @(
-            '!include "MUI2.nsh"',
-            'Name "Nexa Download Manager"',
-            'OutFile "NexaSetup.exe"',
-            'Unicode True',
-            'InstallDir "$PROGRAMFILES64\Nexa Download Manager"',
-            'RequestExecutionLevel admin',
-            '!define MUI_ABORTWARNING',
-            '!insertmacro MUI_PAGE_WELCOME',
-            '!insertmacro MUI_PAGE_DIRECTORY',
-            '!insertmacro MUI_PAGE_INSTFILES',
-            '!define MUI_FINISHPAGE_RUN "$INSTDIR\nexa.exe"',
-            '!define MUI_FINISHPAGE_RUN_TEXT "Launch Nexa Download Manager"',
-            '!insertmacro MUI_PAGE_FINISH',
-            '!insertmacro MUI_UNPAGE_CONFIRM',
-            '!insertmacro MUI_UNPAGE_INSTFILES',
-            '!insertmacro MUI_LANGUAGE "English"',
-            'Section "Install"',
-            '  SetOutPath "$INSTDIR"',
-            '  File /r "dist\*"',
-            '  ; Fix the native host manifest path',
-            '  FileOpen $0 "$INSTDIR\com.nexa.host.json.template" r',
-            '  FileOpen $1 "$INSTDIR\com.nexa.host.json" w',
-            'loop:',
-            '  FileRead $0 $2',
-            '  IfErrors done',
-            '  FileWrite $1 $2',
-            '  Goto loop',
-            'done:',
-            '  FileClose $0',
-            '  FileClose $1',
-            '  Delete "$INSTDIR\com.nexa.host.json.template"',
-            '  ; Register native messaging host',
-            '  WriteRegStr HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
-            '  WriteRegStr HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
-            '  ; Autostart',
-            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL" "$\"$INSTDIR\nexa.exe$\" --background"',
-            '  ; Add/Remove Programs',
-            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayName" "Nexa Download Manager"',
-            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""',
-            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayIcon" "$INSTDIR\nexa.exe"',
-            '  WriteUninstaller "$INSTDIR\uninstall.exe"',
-            '  CreateDirectory "$SMPROGRAMS\Nexa Download Manager"',
-            '  CreateShortCut "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk" "$INSTDIR\nexa.exe"',
-            '  CreateShortCut "$DESKTOP\Nexa Download Manager.lnk" "$INSTDIR\nexa.exe"',
-            'SectionEnd',
-            'Section "Uninstall"',
-            '  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL"',
-            '  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"',
-            '  DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host"',
-            '  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"',
-            '  RMDir /r "$INSTDIR"',
-            '  Delete "$DESKTOP\Nexa Download Manager.lnk"',
-            '  RMDir /r "$SMPROGRAMS\Nexa Download Manager"',
-            'SectionEnd'
-          )
-          $lines | Out-File -Encoding UTF8 installer.nsi
-          Write-Host "installer.nsi written ($(($lines).Count) lines)"
-
-      - name: Build installer
-        run: |
-          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
-          $size = [math]::Round((Get-Item NexaSetup.exe).Length / 1MB, 1)
-          Write-Host "NexaSetup.exe ready: $size MB"
-        shell: pwsh
-
-      # ── Upload ──────────────────────────────────────────────────────────────
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NexaSetup-Windows-x64
-          path: NexaSetup.exe
-          retention-days: 90
-
-      - name: Create GitHub Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: "Nexa Download Manager — Build ${{ github.run_number }}"
-          body: |
-            ## Nexa Download Manager — Windows Installer
-
-            ### Installation (2 steps only):
-
-            **1.** Download `NexaSetup.exe` → right-click → **Run as administrator** → Next → Install
-
-            **2.** Load Chrome extension:
-            - Chrome → `chrome://extensions/` → **Developer mode** ON
-            - **Load unpacked** → `C:\Program Files\Nexa Download Manager\extension-chromium`
-
-            **Done!** Click any download link in Chrome — Nexa intercepts it automatically.
-
-            ---
-            Includes: **nexa.exe · yt-dlp · ffmpeg · Chrome extension · native host auto-registered**
-            Built from commit: ${{ github.sha }}
-          files: NexaSetup.exe
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          test -x build/nexa
+          test -x build/nexa-host
+          echo "Build OK: $(ls -la build/nexa build/nexa-host)"

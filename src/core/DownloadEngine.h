@@ -186,11 +186,13 @@ private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     QString pathForName(const QString &fileName) const;  // categorise + de-dup
     void    wireTask(DownloadTask *t);
+    // Fetch a remote .torrent file (async, following redirects), then hand the
+    // local copy to the libtorrent session. libtorrent can't load an http URL.
     void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
                              const HeaderList &headers);
-    void    ensureTorrents();        // lazily create the libtorrent session
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
+    void    ensureTorrents();        // lazily create the libtorrent session
 
     struct ProgressInfo { qint64 done = 0; qint64 total = -1; double speed = 0.0; };
 
