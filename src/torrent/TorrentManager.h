@@ -6,6 +6,8 @@
 
 namespace nexa {
 
+#ifdef NEXA_TORRENT_ENABLED
+
 // Wraps a single libtorrent session and drives many torrents. Magnet links and
 // .torrent files are added here; status is polled on a timer and surfaced
 // through the same signals as DownloadTask/HlsGrabber so the engine and UI
@@ -46,5 +48,32 @@ private:
     struct Impl;
     std::unique_ptr<Impl> d;
 };
+
+#else
+
+// ── Stub (no-torrent build: Windows CI, or -DNEXA_TORRENT=OFF) ─────────────
+// Provides the same API so DownloadEngine.cpp compiles completely unchanged.
+// m_torrents is always nullptr in this config so no stub method is ever called.
+class TorrentManager : public QObject {
+    Q_OBJECT
+public:
+    explicit TorrentManager(QObject *parent = nullptr) : QObject(parent) {}
+    bool  add(int, const QString &, const QString &) { return false; }
+    void  pause(int)  {}
+    void  resume(int) {}
+    void  remove(int, bool = false) {}
+    bool  has(int)      const { return false; }
+    QString nameOf(int) const { return {}; }
+    DownloadState stateOf(int) const { return DownloadState::Queued; }
+    void  setSpeedLimits(int, int) {}
+    void  setSeedRatio(double) {}
+    static bool isTorrentUrl(const QString &) { return false; }
+signals:
+    void progress(int, qint64, qint64, double);
+    void stateChanged(int, DownloadState, const QString &);
+    void finished(int);
+};
+
+#endif // NEXA_TORRENT_ENABLED
 
 } // namespace nexa

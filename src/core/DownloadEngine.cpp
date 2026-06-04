@@ -2,9 +2,7 @@
 #include "core/DownloadTask.h"
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
-#ifdef NEXA_TORRENT_ENABLED
 #include "torrent/TorrentManager.h"
-#endif
 #include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
@@ -248,7 +246,6 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         return id;
     }
 
-#ifdef NEXA_TORRENT_ENABLED
     // Torrents (magnet links / .torrent files) go to the libtorrent session.
     const QString asText = (url.scheme() == QLatin1String("magnet"))
                                ? url.toString()
@@ -277,7 +274,6 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         }
         return id;
     }
-#endif
 
     // Adaptive streams (HLS/DASH) go to the grabber, which yields a single MP4.
     if (HlsGrabber::isStreamUrl(url)) {
@@ -433,7 +429,6 @@ void DownloadEngine::schedule()
 
 void DownloadEngine::ensureTorrents()
 {
-#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         return;
     m_torrents = new TorrentManager(this);
@@ -442,7 +437,6 @@ void DownloadEngine::ensureTorrents()
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
     m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
     m_torrents->setSeedRatio(m_seedRatio);
-#endif
 }
 
 void DownloadEngine::setSpeedLimit(qint64 bytesPerSec)
@@ -460,22 +454,17 @@ void DownloadEngine::setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBy
 {
     m_torrentDlLimit = qMax(0, downloadBytesPerSec);
     m_torrentUlLimit = qMax(0, uploadBytesPerSec);
-#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
-#endif
 }
 
 void DownloadEngine::setSeedRatio(double ratio)
 {
     m_seedRatio = qMax(0.0, ratio);
-#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         m_torrents->setSeedRatio(m_seedRatio);
-#endif
 }
 
-#ifdef NEXA_TORRENT_ENABLED
 void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
                                       const HeaderList &headers)
 {
@@ -534,7 +523,6 @@ void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &sa
             m_torrentIds.remove(id);
     });
 }
-#endif // NEXA_TORRENT_ENABLED
 
 QString DownloadEngine::nameOf(int id) const
 {

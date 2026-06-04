@@ -45,6 +45,8 @@ set(NEXA_SOURCES
     src/ui/ClipboardMonitor.cpp
     src/ui/MainWindow.cpp
 )
+# TorrentManager.cpp only needed when libtorrent is available;
+# when NEXA_TORRENT=OFF the stub in TorrentManager.h handles everything.
 if(NEXA_TORRENT)
     list(APPEND NEXA_SOURCES src/torrent/TorrentManager.cpp)
 endif()
