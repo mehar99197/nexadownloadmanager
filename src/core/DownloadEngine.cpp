@@ -429,6 +429,7 @@ void DownloadEngine::schedule()
 
 void DownloadEngine::ensureTorrents()
 {
+#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         return;
     m_torrents = new TorrentManager(this);
@@ -437,6 +438,7 @@ void DownloadEngine::ensureTorrents()
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
     m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
     m_torrents->setSeedRatio(m_seedRatio);
+#endif
 }
 
 void DownloadEngine::setSpeedLimit(qint64 bytesPerSec)
