@@ -13,9 +13,17 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Sql)
 
-# BitTorrent support via libtorrent-rasterbar (pkg-config).
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBTORRENT REQUIRED IMPORTED_TARGET libtorrent-rasterbar)
+# BitTorrent support via libtorrent-rasterbar.
+# On Windows (MSYS2/MinGW) use the CMake config package to avoid pkg-config
+# path issues; on Linux use pkg-config as before.
+if(WIN32)
+    find_package(LibtorrentRasterbar REQUIRED)
+    set(LIBTORRENT_TARGET LibtorrentRasterbar::torrent-rasterbar)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBTORRENT REQUIRED IMPORTED_TARGET libtorrent-rasterbar)
+    set(LIBTORRENT_TARGET PkgConfig::LIBTORRENT)
+endif()
 
 add_executable(nexa
     resources.qrc
@@ -49,7 +57,7 @@ target_link_libraries(nexa PRIVATE
     Qt6::Network
     Qt6::Widgets
     Qt6::Sql
-    PkgConfig::LIBTORRENT
+    ${LIBTORRENT_TARGET}
 )
 
 # Native messaging bridge — a tiny standalone exe the browsers launch.

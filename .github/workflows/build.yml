@@ -60,12 +60,9 @@ jobs:
 
       - name: Configure
         run: |
-          # MSYS2 on GitHub Actions maps /mingw64 to C:/msys64/mingw64
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="C:/msys64/mingw64" \
-            -DPKG_CONFIG_EXECUTABLE="C:/msys64/mingw64/bin/pkg-config.exe" \
-            -DCMAKE_POLICY_DEFAULT_CMP0144=NEW
+            -DCMAKE_PREFIX_PATH=/mingw64
 
       - name: Build
         run: cmake --build build
