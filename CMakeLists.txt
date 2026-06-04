@@ -62,6 +62,15 @@ target_link_libraries(nexa PRIVATE
     ${LIBTORRENT_TARGET}
 )
 
+# On Windows, build the GUI as a windows-subsystem (GUI) app so launching it does
+# NOT pop up a black console window. Qt6::Core supplies the WinMain entry point
+# automatically for WIN32_EXECUTABLE targets. NOTE: only nexa gets this — the
+# native-messaging host (nexa-host) MUST stay a console app, as it speaks the
+# browser's stdio protocol over its console stdin/stdout streams.
+if(WIN32)
+    set_target_properties(nexa PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
 # Native messaging bridge — a tiny standalone exe the browsers launch.
 add_executable(nexa-host
     native-host/nexa-host.cpp

@@ -95,6 +95,14 @@ jobs:
           cp /mingw64/share/qt6/plugins/sqldrivers/qsqlite.dll dist/sqldrivers/
           cp /mingw64/share/qt6/plugins/styles/qwindowsvistastyle.dll dist/styles/ 2>/dev/null || true
 
+          # The QSQLITE driver plugin (qsqlite.dll) is loaded at RUNTIME and depends
+          # on libsqlite3-0.dll — a dep of the PLUGIN, not of nexa.exe — so the
+          # ldd-on-exe pass missed it and Qt reported
+          # "QSqlDatabase: can not load requested driver 'QSQLITE'". Pull the
+          # plugin's own deps + glob libsqlite3 directly.
+          ldd dist/sqldrivers/qsqlite.dll 2>/dev/null | grep -i mingw64 | awk '{print $3}' | xargs -I{} cp -n {} dist/ 2>/dev/null || true
+          cp -n /mingw64/bin/libsqlite3-*.dll dist/ 2>/dev/null || true
+
           # Qt TLS backends are loaded at RUNTIME via the plugin loader, so `ldd`
           # on the exe never lists them. Without this folder Qt prints
           # "No functional TLS backend was found" and every https request fails
