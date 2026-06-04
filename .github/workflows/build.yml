@@ -1,6 +1,7 @@
 name: build
 
-# Compiles Nexa on every push / PR so we always know the tree builds clean.
+# Compiles Nexa on every push/PR (Linux) and produces a Windows installer on
+# every push to main or a manual trigger (workflow_dispatch).
 on:
   push:
     branches: [main]
@@ -9,6 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── Linux CI (fast sanity check on every push/PR) ─────────────────────────
   linux:
     name: Build (Ubuntu, Qt6)
     runs-on: ubuntu-latest
@@ -21,6 +23,7 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build \
             qt6-base-dev libqt6sql6-sqlite \
+            libtorrent-rasterbar-dev \
             ffmpeg
 
       - name: Configure
@@ -29,8 +32,141 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      - name: Smoke test (binaries exist)
+      - name: Smoke test
         run: |
           test -x build/nexa
           test -x build/nexa-host
-          echo "Build OK: $(ls -la build/nexa build/nexa-host)"
+          echo "Build OK: $(ls -lh build/nexa build/nexa-host)"
+
+  # ── Windows installer (runs on push to main + manual trigger) ─────────────
+  windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install Qt6 for Windows (MSVC 64-bit)
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          modules: 'qtwebsockets'
+          cache: true
+
+      # Install libtorrent via vcpkg
+      - name: Install libtorrent (vcpkg)
+        run: |
+          vcpkg install libtorrent:x64-windows
+          vcpkg integrate install
+        shell: pwsh
+
+      # Configure + build with MSVC
+      - name: Configure
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+        shell: pwsh
+
+      - name: Build
+        run: cmake --build build --config Release
+        shell: pwsh
+
+      # Bundle Qt DLLs alongside the exe
+      - name: Deploy Qt DLLs (windeployqt)
+        run: |
+          mkdir -p dist
+          copy build\Release\nexa.exe dist\
+          copy build\Release\nexa-host.exe dist\
+          windeployqt --release --no-translations `
+            --no-compiler-runtime dist\nexa.exe
+        shell: pwsh
+
+      # Copy extension folder so the user has it packaged together
+      - name: Copy extension
+        run: |
+          xcopy /E /I extension-chromium dist\extension-chromium
+        shell: cmd
+
+      # Build an NSIS installer (.exe)
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+        shell: pwsh
+
+      - name: Write NSIS script
+        shell: pwsh
+        run: |
+          $nsis = @'
+          !include "MUI2.nsh"
+          Name "Nexa Download Manager"
+          OutFile "NexaSetup.exe"
+          InstallDir "$PROGRAMFILES64\NexaDL"
+          InstallDirRegKey HKLM "Software\NexaDL" ""
+          RequestExecutionLevel admin
+
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "Install"
+            SetOutPath "$INSTDIR"
+            File /r "dist\*"
+            WriteRegStr HKLM "Software\NexaDL" "" "$INSTDIR"
+            WriteUninstaller "$INSTDIR\uninstall.exe"
+            CreateDirectory "$SMPROGRAMS\Nexa Download Manager"
+            CreateShortCut "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk" "$INSTDIR\nexa.exe"
+            CreateShortCut "$DESKTOP\Nexa Download Manager.lnk" "$INSTDIR\nexa.exe"
+          SectionEnd
+
+          Section "Uninstall"
+            Delete "$INSTDIR\uninstall.exe"
+            RMDir /r "$INSTDIR"
+            Delete "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk"
+            RMDir "$SMPROGRAMS\Nexa Download Manager"
+            Delete "$DESKTOP\Nexa Download Manager.lnk"
+            DeleteRegKey HKLM "Software\NexaDL"
+          SectionEnd
+          '@
+          $nsis | Out-File -Encoding ASCII installer.nsi
+
+      - name: Build installer
+        run: makensis installer.nsi
+        shell: pwsh
+
+      # Upload NexaSetup.exe as a build artifact
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaSetup-Windows-x64
+          path: NexaSetup.exe
+          retention-days: 30
+
+      # Also create a GitHub Release on push to main
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Nexa Download Manager — Build ${{ github.run_number }}"
+          body: |
+            Automated Windows build from commit ${{ github.sha }}
+
+            **Install:**
+            1. Download `NexaSetup.exe` below and run it
+            2. Install the Chrome extension from the `extension-chromium` folder
+               (Chrome → `chrome://extensions/` → Developer mode → Load unpacked)
+          files: NexaSetup.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
