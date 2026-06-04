@@ -74,9 +74,15 @@ private:
     QString         m_token;
     QHash<QTcpSocket*, Conn> m_conns;             // live connections
 
+    QHash<QString, QPair<int, qint64>> m_authFails;   // peer IP -> (count, window-start ms)
+    qint64          m_lastAiMs = 0;                   // /api/ai cooldown timestamp
+
     static constexpr int kMaxRequestBytes = 1 * 1024 * 1024;   // 1 MB per request
     static constexpr int kMaxConnections  = 256;               // bound FDs/memory
     static constexpr int kIdleTimeoutMs   = 8000;              // free slow clients fast
+    static constexpr int kMaxAuthFails    = 20;                // failed auths per IP / window
+    static constexpr qint64 kAuthWindowMs = 60000;             // auth-fail window (1 min)
+    static constexpr qint64 kAiCooldownMs = 3000;              // min gap between /api/ai calls
 };
 
 } // namespace nexa

@@ -16,6 +16,9 @@
 #include <QDir>
 
 #include <cstdio>
+#ifndef _WIN32
+#include <unistd.h>   // geteuid for the engine-binary ownership check
+#endif
 #include <cstdint>
 
 #ifdef _WIN32
@@ -116,8 +119,20 @@ void launchEngine()
 #else
     const QString exe = dir + "/nexa";
 #endif
-    if (QFileInfo::exists(exe))
-        QProcess::startDetached(exe, {QStringLiteral("--background")});
+    const QFileInfo fi(exe);
+    if (!fi.exists())
+        return;
+#ifndef _WIN32
+    // Don't launch an engine binary that isn't ours or is WORLD-writable — that
+    // would let another user plant/modify the binary the browser-launched host
+    // executes. (Group-writable is allowed: build outputs are commonly 0775 under
+    // a umask of 002, and on a personal machine the group is the user's own.)
+    if (fi.ownerId() != ::geteuid())
+        return;
+    if (fi.permissions() & QFileDevice::WriteOther)
+        return;
+#endif
+    QProcess::startDetached(exe, {QStringLiteral("--background")});
 }
 
 } // namespace

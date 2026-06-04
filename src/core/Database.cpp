@@ -83,6 +83,19 @@ void Database::ensureSchema()
         !q.exec(QStringLiteral("ALTER TABLE downloads ADD COLUMN updated_at INTEGER DEFAULT 0")))
         qWarning() << "Nexa DB: adding updated_at column failed:" << q.lastError().text();
 
+    // Same migration for ranges_supported (persisted so a paused single-segment
+    // ranged download resumes with work-stealing still enabled, instead of being
+    // guessed from segment count).
+    bool hasRanges = false;
+    QSqlQuery info2(m_db);
+    if (info2.exec(QStringLiteral("PRAGMA table_info(downloads)"))) {
+        while (info2.next())
+            if (info2.value(1).toString() == QLatin1String("ranges_supported")) { hasRanges = true; break; }
+    }
+    if (!hasRanges &&
+        !q.exec(QStringLiteral("ALTER TABLE downloads ADD COLUMN ranges_supported INTEGER DEFAULT 0")))
+        qWarning() << "Nexa DB: adding ranges_supported column failed:" << q.lastError().text();
+
     // Speeds up the cleanup query (delete completed older than N days) and the
     // by-state scans the engine does. The segments table is already covered for
     // download_id lookups by its (download_id, idx) primary key.
@@ -116,17 +129,19 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
 
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO downloads (id, url, save_path, total, state, updated_at) "
-        "VALUES (:id, :url, :path, :total, :state, :updated) "
+        "INSERT INTO downloads (id, url, save_path, total, state, updated_at, ranges_supported) "
+        "VALUES (:id, :url, :path, :total, :state, :updated, :ranges) "
         "ON CONFLICT(id) DO UPDATE SET "
         " url=excluded.url, save_path=excluded.save_path,"
-        " total=excluded.total, state=excluded.state, updated_at=excluded.updated_at"));
+        " total=excluded.total, state=excluded.state, updated_at=excluded.updated_at,"
+        " ranges_supported=excluded.ranges_supported"));
     q.bindValue(QStringLiteral(":id"), task.id());
     q.bindValue(QStringLiteral(":url"), task.url().toString());
     q.bindValue(QStringLiteral(":path"), task.savePath());
     q.bindValue(QStringLiteral(":total"), task.totalBytes());
     q.bindValue(QStringLiteral(":state"), int(task.state()));
     q.bindValue(QStringLiteral(":updated"), QDateTime::currentSecsSinceEpoch());
+    q.bindValue(QStringLiteral(":ranges"), task.rangesSupported() ? 1 : 0);
     if (!q.exec())
         qWarning() << "Nexa DB saveTask:" << q.lastError().text();
 
@@ -142,7 +157,8 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
         sq.bindValue(QStringLiteral(":start"), s.start);
         sq.bindValue(QStringLiteral(":stop"), s.end);
         sq.bindValue(QStringLiteral(":done"), s.done);
-        sq.exec();
+        if (!sq.exec())
+            qWarning() << "Nexa DB saveTask segment:" << sq.lastError().text();
     }
 
     if (inTx && !m_db.commit()) {
@@ -208,7 +224,8 @@ QVector<TaskRecord> Database::loadAll()
         return out;
 
     QSqlQuery q(m_db);
-    if (!q.exec(QStringLiteral("SELECT id, url, save_path, total, state FROM downloads ORDER BY id")))
+    if (!q.exec(QStringLiteral("SELECT id, url, save_path, total, state, ranges_supported "
+                               "FROM downloads ORDER BY id")))
         return out;
 
     while (q.next()) {
@@ -218,6 +235,7 @@ QVector<TaskRecord> Database::loadAll()
         rec.savePath = q.value(2).toString();
         rec.total = q.value(3).toLongLong();
         rec.state = static_cast<DownloadState>(q.value(4).toInt());
+        rec.rangesSupported = q.value(5).toInt() != 0;
 
         QSqlQuery sq(m_db);
         sq.prepare(QStringLiteral(

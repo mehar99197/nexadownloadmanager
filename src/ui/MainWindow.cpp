@@ -39,11 +39,14 @@
 #include <QDesktopServices>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
+#include <QDir>
 #include <QWidget>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QFileInfo>
 #include <QIcon>
+#include <memory>
 #include <QColor>
 #include <QUrl>
 #include <QSettings>
@@ -182,7 +185,7 @@ QIcon searchIcon()
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(QColor(0x66, 0x66, 0x66));
+    QPen pen(QColor(0x5c, 0x66, 0x75));
     pen.setWidth(2);
     p.setPen(pen);
     p.drawEllipse(QRectF(2.5, 2.5, 8, 8));     // lens
@@ -196,27 +199,27 @@ QPixmap glyphCanvas() { QPixmap pm(16, 16); pm.fill(Qt::transparent); return pm;
 QIcon pauseGlyph()
 {
     QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
-    p.fillRect(QRectF(4, 3, 3, 10), QColor(0x88, 0x88, 0x88));
-    p.fillRect(QRectF(9, 3, 3, 10), QColor(0x88, 0x88, 0x88));
+    p.fillRect(QRectF(4, 3, 3, 10), QColor(0x8a, 0x94, 0xa3));
+    p.fillRect(QRectF(9, 3, 3, 10), QColor(0x8a, 0x94, 0xa3));
     p.end(); return QIcon(pm);
 }
 QIcon playGlyph()
 {
     QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
     QPainterPath path; path.moveTo(5, 3); path.lineTo(13, 8); path.lineTo(5, 13); path.closeSubpath();
-    p.fillPath(path, QColor(0x88, 0x88, 0x88)); p.end(); return QIcon(pm);
+    p.fillPath(path, QColor(0x8a, 0x94, 0xa3)); p.end(); return QIcon(pm);
 }
 QIcon funnelGlyph()
 {
     QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
     QPainterPath path; path.moveTo(3, 3); path.lineTo(13, 3); path.lineTo(9.5, 8);
     path.lineTo(9.5, 13); path.lineTo(6.5, 11); path.lineTo(6.5, 8); path.closeSubpath();
-    p.fillPath(path, QColor(0x88, 0x88, 0x88)); p.end(); return QIcon(pm);
+    p.fillPath(path, QColor(0x8a, 0x94, 0xa3)); p.end(); return QIcon(pm);
 }
 QIcon sortGlyph()
 {
     QPixmap pm = glyphCanvas(); QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing);
-    QPen pen(QColor(0x88, 0x88, 0x88)); pen.setWidth(2); p.setPen(pen);
+    QPen pen(QColor(0x8a, 0x94, 0xa3)); pen.setWidth(2); p.setPen(pen);
     p.drawLine(3, 4, 11, 4);   // descending bars (a "sort" depiction)
     p.drawLine(3, 8, 9, 8);
     p.drawLine(3, 12, 7, 12);
@@ -228,7 +231,7 @@ QIcon sortGlyph()
 MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     : QMainWindow(parent), m_engine(engine)
 {
-    setWindowTitle(QStringLiteral("NexaDL — Download Manager"));
+    setWindowTitle(QStringLiteral("Nexa Download Manager"));
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
     resize(960, 600);
     // Below this the action-bar buttons + search would clip (no wrapping).
@@ -248,14 +251,15 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     hl->setContentsMargins(16, 0, 16, 0);
     hl->setSpacing(10);
 
-    // White square box with a black download arrow (the brand mark).
-    auto *logo = new QLabel(QString::fromUtf8("↓"), header);
+    // Brand mark: the Nexa logo (same asset as the window/empty-state icon).
+    auto *logo = new QLabel(header);
     logo->setObjectName(QStringLiteral("BrandLogo"));
     logo->setFixedSize(28, 28);
     logo->setAlignment(Qt::AlignCenter);
-    auto *brand = new QLabel(QStringLiteral("NexaDL"), header);
+    logo->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(28, 28));
+    auto *brand = new QLabel(QStringLiteral("NDM"), header);
     brand->setObjectName(QStringLiteral("BrandTitle"));
-    auto *crumb = new QLabel(QString::fromUtf8("Workspace   ›   Downloads"), header);
+    auto *crumb = new QLabel(QStringLiteral("Downloads"), header);
     crumb->setObjectName(QStringLiteral("Breadcrumb"));
 
     auto *settingsBtn = new QPushButton(QString::fromUtf8("⚙"), header);
@@ -464,6 +468,25 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     connect(m_engine, &DownloadEngine::taskFinished,     this, &MainWindow::onTaskFinished);
     connect(m_engine, &DownloadEngine::taskRemoved,      this, &MainWindow::onTaskRemoved);
     connect(m_engine, &DownloadEngine::taskRenamed,      this, &MainWindow::onTaskRenamed);
+    // IDM-style: a held (externally-added) download asks before it starts. Resolve
+    // the real filename FIRST so the prompt's "Save as" opens with it (never the
+    // raw URL token). Open as soon as the probe finishes, or after a short timeout
+    // if the server is slow/unavailable.
+    connect(m_engine, &DownloadEngine::confirmRequested, this, [this](int id) {
+        auto opened = std::make_shared<bool>(false);
+        auto *ctx = new QObject(this);                 // scopes the one-shot wait
+        auto open = [this, id, opened, ctx]() {
+            if (*opened) return;
+            *opened = true;
+            ctx->deleteLater();
+            if (m_engine->isHeld(id))
+                showConfirmPrompt(id);
+        };
+        connect(m_engine, &DownloadEngine::nameResolved, ctx,
+                [id, open](int rid, const QString &) { if (rid == id) open(); });
+        QTimer::singleShot(2500, ctx, [open]() { open(); });
+        m_engine->resolveName(id);   // AFTER wiring above (grabbers emit synchronously)
+    });
 
     // Show downloads the engine already knows about (restored from the last
     // session by loadPersisted(), which runs before this window exists).
@@ -588,8 +611,8 @@ void MainWindow::updateStats()
 
     // ---- Footer: "Active: N   Queued: N   Done: N" (values brighter) -------
     auto stat = [](const QString &label, int n) {
-        return QStringLiteral("<span style='color:#555555'>%1:</span> "
-                              "<span style='color:#888888'>%2</span>").arg(label).arg(n);
+        return QStringLiteral("<span style='color:#5c6675'>%1:</span> "
+                              "<span style='color:#8a94a3'>%2</span>").arg(label).arg(n);
     };
     QStringList parts{ stat(QStringLiteral("Active"), active),
                        stat(QStringLiteral("Queued"), queued),
@@ -656,12 +679,217 @@ void MainWindow::promptAddUrl()
     if (dlg.exec() != QDialog::Accepted || edit->text().trimmed().isEmpty())
         return;
 
+    // userInitiated=true: the user already confirmed here, so start directly
+    // rather than firing the second "confirm before download" prompt.
     const int id = m_engine->addDownload(QUrl::fromUserInput(edit->text().trimmed()),
                                          QString(), {}, QString(), QString(),
-                                         plCheck->isChecked());
+                                         plCheck->isChecked(), /*userInitiated=*/true);
     if (id < 0)
         QMessageBox::warning(this, QStringLiteral("Invalid URL"),
                              QStringLiteral("That URL could not be parsed."));
+}
+
+// IDM-style "Download File Info" prompt, shown before a HELD download starts.
+// Lets the user confirm, change the save location, defer, or cancel.
+void MainWindow::showConfirmPrompt(int id)
+{
+    if (!m_engine->isHeld(id))
+        return;
+
+    const QString url   = m_engine->urlOf(id);
+    // Prefer the probed real filename (resolved before we opened); fall back to the
+    // URL-derived name only if the probe found nothing.
+    const QString resolved = m_engine->resolvedNameOf(id);
+    const QString name0 = resolved.isEmpty() ? m_engine->nameOf(id) : resolved;
+    QString folder0 = QFileInfo(m_engine->savePathOf(id)).absolutePath();
+    if (folder0.isEmpty())
+        folder0 = QDir::homePath();
+
+    // Top-level when the main window is hidden (browser handoff), like the plate.
+    QWidget *par = (isVisible() && !isMinimized()) ? this : nullptr;
+    QDialog dlg(par);
+    dlg.setWindowTitle(QStringLiteral("New Download"));
+    // Minimize + close enabled, maximize disabled. Qt::Window (not Dialog) so the
+    // minimize button actually works on GNOME; fixed size (below) is what makes
+    // the WM drop the maximize button.
+    dlg.setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint
+                       | Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint
+                       | Qt::WindowCloseButtonHint);
+
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->setContentsMargins(14, 14, 14, 14);
+    // Size to the content's natural size and make it non-resizable — robust even
+    // when the dialog has no parent (browser handoff, main window hidden), where
+    // adjustSize() on Wayland would otherwise balloon to the whole screen.
+    outer->setSizeConstraint(QLayout::SetFixedSize);
+    auto *plate = new QWidget(&dlg);
+    plate->setObjectName(QStringLiteral("Plate"));
+    outer->addWidget(plate);
+    auto *grid = new QGridLayout(plate);
+    grid->setContentsMargins(18, 16, 18, 16);
+    grid->setHorizontalSpacing(14);
+    grid->setVerticalSpacing(10);
+    grid->setColumnStretch(1, 1);
+
+    auto mkLabel = [&](const QString &t) {
+        auto *l = new QLabel(t, plate);
+        l->setProperty("ddRole", "label");
+        l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        return l;
+    };
+
+    auto *urlEdit = new QLineEdit(url, plate);   // read-only; scrolls for long URLs
+    urlEdit->setReadOnly(true);
+    urlEdit->setMinimumWidth(460);
+    urlEdit->setCursorPosition(0);
+
+    auto *nameEdit = new QLineEdit(name0, plate);
+
+    auto *folderEdit = new QLineEdit(folder0, plate);
+    auto *browse = new QPushButton(QStringLiteral("…"), plate);
+    browse->setFixedWidth(38);
+    browse->setCursor(Qt::PointingHandCursor);
+    auto *folderRow = new QHBoxLayout;
+    folderRow->setSpacing(8);
+    folderRow->addWidget(folderEdit, 1);
+    folderRow->addWidget(browse, 0);
+    connect(browse, &QPushButton::clicked, &dlg, [&]() {
+        const QString d = QFileDialog::getExistingDirectory(
+            &dlg, QStringLiteral("Save to folder"), folderEdit->text());
+        if (!d.isEmpty())
+            folderEdit->setText(d);
+    });
+
+    grid->addWidget(mkLabel(QStringLiteral("URL")),     0, 0); grid->addWidget(urlEdit,  0, 1);
+    grid->addWidget(mkLabel(QStringLiteral("Save as")), 1, 0); grid->addWidget(nameEdit, 1, 1);
+    grid->addWidget(mkLabel(QStringLiteral("Folder")),  2, 0); grid->addLayout(folderRow, 2, 1);
+
+    auto *btnRow = new QHBoxLayout;
+    auto *later  = new QPushButton(QStringLiteral("Download Later"), plate);
+    auto *cancel = new QPushButton(QStringLiteral("Cancel"), plate);
+    auto *start  = new QPushButton(QString::fromUtf8("▶  Start Download"), plate);
+    start->setObjectName(QStringLiteral("Primary"));
+    for (auto *b : {later, cancel, start})
+        b->setCursor(Qt::PointingHandCursor);
+    btnRow->addWidget(later);
+    btnRow->addStretch(1);
+    btnRow->addWidget(cancel);
+    btnRow->addSpacing(10);
+    btnRow->addWidget(start);
+    grid->addLayout(btnRow, 3, 0, 1, 2);
+
+    enum { Cancelled = 0, Started = 1, Later = 2 };
+    connect(start,  &QPushButton::clicked, &dlg, [&]() { dlg.done(Started); });
+    connect(later,  &QPushButton::clicked, &dlg, [&]() { dlg.done(Later); });
+    connect(cancel, &QPushButton::clicked, &dlg, [&]() { dlg.done(Cancelled); });
+
+    // The name was probed before we opened (so the field already shows it). Still
+    // listen for a late result (slow server that resolved after the open timeout),
+    // unless the user has started typing their own name.
+    bool nameEdited = false;
+    connect(nameEdit, &QLineEdit::textEdited, &dlg, [&]() { nameEdited = true; });
+    connect(m_engine, &DownloadEngine::nameResolved, &dlg, [&](int rid, const QString &n) {
+        if (rid == id && !nameEdited && !n.isEmpty()) {
+            nameEdit->setText(n);
+            nameEdit->setCursorPosition(0);
+        }
+    });
+
+    nameEdit->setFocus();
+    nameEdit->selectAll();
+
+    const int res = dlg.exec();   // size is fixed-to-content via SetFixedSize above
+    if (!m_engine->isHeld(id))
+        return;   // the download was removed out from under us
+    if (res == Started || res == Later)
+        m_engine->setSaveLocation(id, folderEdit->text(), nameEdit->text());
+    if (res == Started)
+        m_engine->startHeld(id);
+    else if (res == Later)
+        m_engine->holdLater(id);
+    else
+        m_engine->cancelHeld(id);
+}
+
+// IDM-style "Download complete" prompt with Open / Open folder / Close and a
+// "don't show again" toggle (persisted).
+void MainWindow::showCompleteDialog(int id)
+{
+    QSettings s;
+    if (!s.value(QStringLiteral("ui/showCompleteDialog"), true).toBool())
+        return;
+    const QString path = m_engine->savePathOf(id);
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;   // some grabbers don't resolve a concrete file path — skip quietly
+
+    QWidget *par = (isVisible() && !isMinimized()) ? this : nullptr;
+    QDialog dlg(par);
+    dlg.setWindowTitle(QStringLiteral("Download complete"));
+    // Minimize + close enabled, maximize disabled (Qt::Window so minimize works;
+    // fixed size makes the WM drop the maximize button).
+    dlg.setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint
+                       | Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint
+                       | Qt::WindowCloseButtonHint);
+
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->setContentsMargins(14, 14, 14, 14);
+    // Fixed-to-content size (no fullscreen even when parentless on Wayland).
+    outer->setSizeConstraint(QLayout::SetFixedSize);
+    auto *plate = new QWidget(&dlg);
+    plate->setObjectName(QStringLiteral("Plate"));
+    outer->addWidget(plate);
+    auto *v = new QVBoxLayout(plate);
+    v->setContentsMargins(18, 16, 18, 16);
+    v->setSpacing(8);
+
+    auto *title = new QLabel(QString::fromUtf8("✓  Download complete"), plate);
+    title->setObjectName(QStringLiteral("Dd_title"));
+    auto *nameL = new QLabel(QFileInfo(path).fileName(), plate);
+    nameL->setProperty("ddRole", "value");
+    nameL->setWordWrap(true);
+    auto *savedLbl = new QLabel(QStringLiteral("Saved to"), plate);
+    savedLbl->setProperty("ddRole", "label");
+    auto *pathL = new QLabel(QFileInfo(path).absolutePath(), plate);
+    pathL->setObjectName(QStringLiteral("Dd_host"));
+    pathL->setWordWrap(true);
+    auto *dontShow = new QCheckBox(QStringLiteral("Don't show this dialog again"), plate);
+
+    auto *btnRow = new QHBoxLayout;
+    auto *folderBtn = new QPushButton(QStringLiteral("Open folder"), plate);
+    auto *closeBtn  = new QPushButton(QStringLiteral("Close"), plate);
+    auto *openBtn   = new QPushButton(QStringLiteral("Open"), plate);
+    openBtn->setObjectName(QStringLiteral("Primary"));
+    for (auto *b : {folderBtn, closeBtn, openBtn})
+        b->setCursor(Qt::PointingHandCursor);
+    btnRow->addWidget(folderBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(closeBtn);
+    btnRow->addWidget(openBtn);
+
+    v->addWidget(title);
+    v->addSpacing(2);
+    v->addWidget(nameL);
+    v->addWidget(savedLbl);
+    v->addWidget(pathL);
+    v->addSpacing(4);
+    v->addWidget(dontShow);
+    v->addSpacing(4);
+    v->addLayout(btnRow);
+
+    connect(openBtn, &QPushButton::clicked, &dlg, [&]() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        dlg.accept();
+    });
+    connect(folderBtn, &QPushButton::clicked, &dlg, [&]() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+        dlg.accept();
+    });
+    connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    plate->setMinimumWidth(496);   // match the New Download prompt's width
+    dlg.exec();                    // size is fixed-to-content via SetFixedSize above
+    if (dontShow->isChecked())
+        s.setValue(QStringLiteral("ui/showCompleteDialog"), false);
 }
 
 void MainWindow::onSiteLogins()
@@ -683,7 +911,10 @@ void MainWindow::onUpdateTools()
     // the standalone binary; a pip/distro install just reports it can't self-update.
     auto *proc = new QProcess(this);
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    auto *out = new QString;
+    // Shared buffer (not a raw new/delete): freed exactly once when the last
+    // capturing lambda is destroyed, so the started-vs-finished race below can't
+    // double-free it.
+    auto out = std::make_shared<QString>();
     statusBar()->showMessage(QStringLiteral("Updating yt-dlp…"));
     connect(proc, &QProcess::readyReadStandardOutput, this,
             [proc, out]() { *out += QString::fromUtf8(proc->readAllStandardOutput()); });
@@ -700,15 +931,14 @@ void MainWindow::onUpdateTools()
         box.setDetailedText(log.isEmpty() ? QStringLiteral("(no output)") : log);
         box.exec();
         proc->deleteLater();
-        delete out;
     });
     proc->start(QStringLiteral("yt-dlp"), {QStringLiteral("-U")});
     if (!proc->waitForStarted(3000)) {
         statusBar()->clearMessage();
         QMessageBox::warning(this, QStringLiteral("Update video tools"),
             QStringLiteral("Couldn't launch yt-dlp — make sure it's installed and on PATH."));
+        proc->disconnect(this);   // the finished lambda must not also run/clean up
         proc->deleteLater();
-        delete out;
     }
 }
 
@@ -971,6 +1201,14 @@ void MainWindow::openDetails(int id)
     // dragging it never moves the main window.
     auto *dlg = new DownloadDetailsDialog(m_engine, id, nullptr);  // WA_DeleteOnClose
     m_openDialogs.insert(id, dlg);
+    // Prune the map entry when the user closes the dialog, so opened-then-closed
+    // downloads don't leave a null QPointer behind for the whole session. Guarded
+    // so re-opening (which inserts a fresh dialog) isn't clobbered by the old
+    // dialog's destroyed() firing.
+    connect(dlg, &QObject::destroyed, this, [this, id]() {
+        if (m_openDialogs.value(id).isNull())
+            m_openDialogs.remove(id);
+    });
     // Center over the main window if it's on screen, otherwise over the screen —
     // then clamp the position so the whole window stays within the available
     // screen area and is never cut off at the bottom/edges.
@@ -1320,7 +1558,7 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
         auto *pct = pc->findChild<QLabel*>(QStringLiteral("p_pct"));
         if (bar && pct) {
             if (total > 0) {
-                const int p = int((done * 100) / total);
+                const int p = qBound(0, int((done * 100) / total), 100);  // never show >100% on overshoot
                 bar->setRange(0, 100);
                 bar->setValue(p);
                 pct->setText(QStringLiteral("%1%").arg(p));
@@ -1374,8 +1612,11 @@ void MainWindow::onTaskFinished(int id)
     const int row = rowForId(id);
     if (row < 0)
         return;
-    // Count once per id, and never for tasks restored as complete at startup.
-    if (!m_restoring && !m_countedDone.contains(id)) {
+    // onTaskFinished fires from BOTH the taskFinished signal and onTaskStateChanged
+    // (Completed), so guard the once-only work (count + the completion dialog) to
+    // the FIRST finish for this id — otherwise two completion dialogs pop up.
+    const bool firstFinish = !m_restoring && !m_countedDone.contains(id);
+    if (firstFinish) {
         m_countedDone.insert(id);
         ++m_completedThisSession;
     }
@@ -1392,6 +1633,16 @@ void MainWindow::onTaskFinished(int id)
         speedItem->setForeground(QColor(0x8b94a7));
     }
     updateStats();
+    // On completion, auto-close the per-download details plate and show the
+    // IDM-style completion prompt (Open / Open folder / Close) instead. Only on
+    // the FIRST finish (see firstFinish), so it never double-pops. Skipped for the
+    // startup restore replay and for multi-video playlist jobs.
+    if (firstFinish && !m_engine->isPlaylist(id))
+        QTimer::singleShot(0, this, [this, id]() {
+            if (auto dlg = m_openDialogs.value(id))
+                dlg->close();          // WA_DeleteOnClose -> plate goes away
+            showCompleteDialog(id);
+        });
 }
 
 void MainWindow::onTaskRenamed(int id, const QString &newName)

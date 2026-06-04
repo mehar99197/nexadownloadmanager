@@ -40,10 +40,28 @@ public:
                      const HeaderList &headers = {},
                      const QString &suggestedName = QString(),
                      const QString &siteFormat = QString(),
-                     bool playlist = false);
+                     bool playlist = false,
+                     bool userInitiated = false);   // true = user already confirmed; start now
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);
+
+    // ---- IDM-style "ask before download" confirmation ---------------------
+    // When confirmBeforeStart is on, an externally-added download (browser /
+    // clipboard) is HELD: the task/grabber is created but not started, and
+    // confirmRequested(id) fires so the UI can show a prompt. The UI then calls
+    // one of: startHeld (begin), holdLater (keep paused), or cancelHeld (drop).
+    void setConfirmBeforeStart(bool on) { m_confirmBeforeStart = on; }
+    bool confirmBeforeStart() const     { return m_confirmBeforeStart; }
+    bool isHeld(int id) const           { return m_held.contains(id); }
+    void startHeld(int id);
+    void holdLater(int id);
+    void cancelHeld(int id);
+    // Override where a (held, not-yet-started) download will be saved.
+    void setSaveLocation(int id, const QString &folder, const QString &fileName);
+    // Probe the URL for the real filename (Content-Disposition); emits nameResolved.
+    void resolveName(int id);
+    QString resolvedNameOf(int id) const { return m_resolvedNames.value(id); }
 
     // Remove every completed job from the list and scrub completed history from
     // the database. Returns how many were cleared. Surfaced via Settings.
@@ -114,6 +132,7 @@ public:
     // Unified accessors that work for both file downloads and stream grabs.
     QString       nameOf(int id) const;
     DownloadState stateOf(int id) const;
+    QString       savePathOf(int id) const;   // resolved destination path
     QString       hostOf(int id) const;   // source host, for the UI row subtitle
     QString       urlOf(int id) const;    // full source URL (empty for torrents)
 
@@ -151,6 +170,8 @@ public:
 
 signals:
     void taskAdded(int id);
+    void confirmRequested(int id);   // a held download awaits the user's confirm prompt
+    void nameResolved(int id, const QString &name);   // real filename from a pre-download probe
     void taskProgress(int id, qint64 done, qint64 total, double bytesPerSec);
     void taskStateChanged(int id, nexa::DownloadState state, const QString &detail);
     void taskFinished(int id);
@@ -186,6 +207,9 @@ private:
     QHash<int, YtDlpGrabber*> m_siteVideos;
     QSet<int>              m_torrentIds;
     QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
+    QSet<int>              m_held;          // created but awaiting the user's confirm prompt
+    QHash<int, QString>    m_resolvedNames; // real filename from the pre-prompt probe
+    bool                   m_confirmBeforeStart = false;
     QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;

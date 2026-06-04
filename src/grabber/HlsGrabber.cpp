@@ -135,7 +135,14 @@ void HlsGrabber::onPlaylistFetched()
     if (finalUrl.isValid())
         m_url = finalUrl;
 
-    const QString text = QString::fromUtf8(r->readAll());
+    // A real m3u8 is small; cap the body so a server returning a multi-GB blob
+    // for a .m3u8 can't be buffered whole into memory.
+    const QByteArray body = r->readAll();
+    if (body.size() > 8 * 1024 * 1024) {
+        setState(DownloadState::Error, QStringLiteral("playlist too large"));
+        return;
+    }
+    const QString text = QString::fromUtf8(body);
     if (!text.contains(QStringLiteral("#EXTM3U"))) {
         setState(DownloadState::Error, QStringLiteral("not a valid m3u8 playlist"));
         return;
@@ -194,6 +201,17 @@ void HlsGrabber::handleMedia(const QString &text)
 {
     const QStringList lines = text.split('\n');
 
+    // A segment/key/init URI from an untrusted playlist must be http(s) ONLY:
+    // `file:///etc/passwd` (local-file read) or an internal-network http target
+    // (SSRF) would otherwise be fetched and muxed into the output the user opens.
+    auto httpOk = [](const QUrl &u) {
+        const QString s = u.scheme().toLower();
+        return s == QStringLiteral("http") || s == QStringLiteral("https");
+    };
+    // Cap the number of segments so a malicious/huge playlist can't exhaust
+    // memory / file descriptors / disk or freeze the UI building the list.
+    constexpr int kMaxSegments = 100000;
+
     // Build a local playlist that mirrors the original but points segment URIs
     // at local files. #EXT-X-KEY URIs are absolutised so FFmpeg can fetch keys.
     QString out;
@@ -208,6 +226,11 @@ void HlsGrabber::handleMedia(const QString &text)
             const auto m = QRegularExpression(QStringLiteral("URI=\"([^\"]+)\"")).match(line);
             if (m.hasMatch()) {
                 const QUrl keyAbs = m_url.resolved(QUrl(m.captured(1)));
+                if (!httpOk(keyAbs)) {
+                    setState(DownloadState::Error,
+                             QStringLiteral("playlist key URI is not http(s)"));
+                    return;
+                }
                 fixed.replace(m.captured(0),
                               QStringLiteral("URI=\"%1\"").arg(keyAbs.toString()));
             }
@@ -223,6 +246,15 @@ void HlsGrabber::handleMedia(const QString &text)
             if (m.hasMatch()) {
                 Segment seg;
                 seg.url = m_url.resolved(QUrl(m.captured(1)));
+                if (!httpOk(seg.url)) {
+                    setState(DownloadState::Error,
+                             QStringLiteral("playlist init-segment URI is not http(s)"));
+                    return;
+                }
+                if (m_segments.size() >= kMaxSegments) {
+                    setState(DownloadState::Error, QStringLiteral("playlist too large"));
+                    return;
+                }
                 seg.localFile = QStringLiteral("init%1.mp4").arg(segIndex, 5, 10, QChar('0'));
                 m_segments.append(seg);
                 fixed.replace(m.captured(0),
@@ -240,6 +272,15 @@ void HlsGrabber::handleMedia(const QString &text)
         // A media segment URI.
         Segment seg;
         seg.url = m_url.resolved(QUrl(line));
+        if (!httpOk(seg.url)) {
+            setState(DownloadState::Error,
+                     QStringLiteral("playlist segment URI is not http(s)"));
+            return;
+        }
+        if (m_segments.size() >= kMaxSegments) {
+            setState(DownloadState::Error, QStringLiteral("playlist too large"));
+            return;
+        }
         seg.localFile = QStringLiteral("seg%1.ts").arg(segIndex, 5, 10, QChar('0'));
         m_segments.append(seg);
         out += seg.localFile + '\n';
@@ -358,6 +399,7 @@ void HlsGrabber::startMux()
     m_ffmpeg->setWorkingDirectory(tempDir());
     const QStringList args = {
         QStringLiteral("-y"),
+        QStringLiteral("-rw_timeout"), QStringLiteral("30000000"),   // 30s I/O timeout
         QStringLiteral("-allowed_extensions"), QStringLiteral("ALL"),
         QStringLiteral("-protocol_whitelist"), QStringLiteral("file,crypto,data,http,https,tcp,tls"),
         QStringLiteral("-i"), m_localPlaylist,
@@ -368,6 +410,7 @@ void HlsGrabber::startMux()
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
     m_ffmpeg->start(QStringLiteral("ffmpeg"), args);
+    m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 
 void HlsGrabber::muxViaFfmpegDirect()
@@ -375,15 +418,19 @@ void HlsGrabber::muxViaFfmpegDirect()
     setState(DownloadState::Downloading, QStringLiteral("downloading via FFmpeg"));
     QDir().mkpath(QFileInfo(m_savePath).absolutePath());
 
-    QStringList args = { QStringLiteral("-y") };
-    // Forward captured headers (cookies/UA/referrer) to FFmpeg.
+    QStringList args = { QStringLiteral("-y"),
+                         QStringLiteral("-rw_timeout"), QStringLiteral("30000000") };  // 30s I/O timeout
+    // Forward captured headers (cookies/UA/referrer) to FFmpeg. Strip any CR/LF
+    // from values so a header can't smuggle extra request headers into ffmpeg.
+    auto noCRLF = [](const QString &s) { QString o = s; o.remove('\r'); o.remove('\n'); return o; };
     QString hdr;
     QString ua;
     for (const auto &h : m_headers) {
         if (h.first.compare("User-Agent", Qt::CaseInsensitive) == 0)
-            ua = QString::fromUtf8(h.second);
+            ua = noCRLF(QString::fromUtf8(h.second));
         else
-            hdr += QString::fromUtf8(h.first) + ": " + QString::fromUtf8(h.second) + "\r\n";
+            hdr += noCRLF(QString::fromUtf8(h.first)) + ": "
+                 + noCRLF(QString::fromUtf8(h.second)) + "\r\n";
     }
     if (!ua.isEmpty()) args << QStringLiteral("-user_agent") << ua;
     if (!hdr.isEmpty()) args << QStringLiteral("-headers") << hdr;
@@ -395,6 +442,7 @@ void HlsGrabber::muxViaFfmpegDirect()
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
     m_ffmpeg->start(QStringLiteral("ffmpeg"), args);
+    m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 
 void HlsGrabber::onMuxFinished(int exitCode)

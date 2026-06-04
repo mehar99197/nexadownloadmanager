@@ -12,6 +12,8 @@
 #include <QSet>
 #include <QHash>
 #include <QUrl>
+#include <QRegularExpression>
+#include <QAbstractSocket>
 #include <QDebug>
 #include <QPointer>
 #include <algorithm>
@@ -45,14 +47,30 @@ bool IpcServer::start(const QString &name)
         probe.abort();
         if (alive)
             return false;                    // a real instance owns it
-        QLocalServer::removeServer(name);    // stale file left by a crash
     }
     // Restrict the socket to the current user so another local account can't
     // inject downloads (incl. file:// reads) through our IPC channel.
     m_server->setSocketOptions(QLocalServer::UserAccessOption);
+    // Try to bind. Only remove the socket file when it's CONFIRMED stale (no live
+    // peer) — blindly removeServer()-then-listen could delete a socket a
+    // concurrently-starting instance just bound (probe/bind race).
     if (!m_server->listen(name)) {
-        qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
-        return false;
+        if (m_server->serverError() != QAbstractSocket::AddressInUseError) {
+            qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
+            return false;
+        }
+        QLocalSocket probe2;
+        probe2.connectToServer(name);
+        if (probe2.waitForConnected(200)) {   // someone won the race — yield to them
+            probe2.abort();
+            return false;
+        }
+        probe2.abort();
+        QLocalServer::removeServer(name);     // confirmed stale file from a crash
+        if (!m_server->listen(name)) {
+            qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
+            return false;
+        }
     }
     connect(m_server, &QLocalServer::newConnection, this, &IpcServer::onNewConnection);
     return true;
@@ -133,16 +151,24 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     }
 
     const QUrl url = QUrl::fromUserInput(obj.value(QStringLiteral("url")).toString());
-    if (!url.isValid()) {
+    // Require an explicit, allowlisted scheme — never file:// (local-file read) or
+    // other schemes that QUrl::fromUserInput would happily accept — AND a real
+    // host for http(s), so its heuristics can't upgrade a bare/relative token into
+    // an unintended target.
+    static const QSet<QString> kAllowedSchemes = {
+        QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("magnet")};
+    const QString scheme = url.scheme().toLower();
+    if (!url.isValid() || scheme.isEmpty()) {
         sendReply(QJsonObject{{"ok", false}, {"message", "invalid url"}});
         return;
     }
-    // Only network schemes from this untrusted channel — never file:// (local-file
-    // read) or other schemes that QUrl::fromUserInput would happily accept.
-    static const QSet<QString> kAllowedSchemes = {
-        QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("magnet")};
-    if (!kAllowedSchemes.contains(url.scheme().toLower())) {
+    if (!kAllowedSchemes.contains(scheme)) {
         sendReply(QJsonObject{{"ok", false}, {"message", "unsupported url scheme"}});
+        return;
+    }
+    if ((scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+        && url.host().isEmpty()) {
+        sendReply(QJsonObject{{"ok", false}, {"message", "invalid url host"}});
         return;
     }
 
@@ -163,16 +189,21 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if (AuthenticationManager *am = m_engine->auth()) {
         const QString authDomain = obj.value(QStringLiteral("authDomain")).toString();
         if (!authDomain.isEmpty()) {
+            // Validate the domain is a plain hostname (no path/scheme/wildcard) so
+            // a local peer can't poison the auth store for an arbitrary scope.
+            static const QRegularExpression domRe(QStringLiteral("\\A[A-Za-z0-9.-]{1,253}\\z"));
+            if (!domRe.match(authDomain).hasMatch() || authDomain.startsWith(QLatin1Char('.'))) {
+                sendReply(QJsonObject{{"ok", false}, {"message", "invalid auth domain"}});
+                return;
+            }
             AuthResult ar = AuthResult::success();
-            // The extension sends cookie TEXT (no disk path under MV3); a CLI/UI
-            // could send a path. Text wins when both are present.
+            // Only cookie TEXT or a bearer token are accepted from this untrusted
+            // channel. We deliberately do NOT accept an authCookiesFile path — that
+            // would let any local peer make Nexa read an arbitrary file (~/.ssh/…).
             const QString cookiesText = obj.value(QStringLiteral("authCookiesText")).toString();
-            const QString cookiesFile = obj.value(QStringLiteral("authCookiesFile")).toString();
             const QString bearer      = obj.value(QStringLiteral("bearer")).toString();
             if (!cookiesText.isEmpty()) {
                 ar = am->registerCookieData(authDomain, cookiesText);
-            } else if (!cookiesFile.isEmpty()) {
-                ar = am->registerCookieFile(authDomain, cookiesFile);
             } else if (!bearer.isEmpty()) {
                 const qint64 exp = qint64(obj.value(QStringLiteral("bearerExpiresAt")).toDouble(0));
                 ar = am->registerBearerToken(authDomain, bearer, exp);
@@ -184,26 +215,36 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         }
     }
 
-    // Assemble the headers the extension captured for this request.
+    // Reject header names/values carrying any control char (incl. TAB) or DEL so
+    // an untrusted extension can't smuggle extra headers via injection.
+    auto headerSafe = [](const QString &s) {
+        for (const QChar c : s)
+            if (c < QChar(0x20) || c == QChar(0x7f))
+                return false;
+        return true;
+    };
+    // Headers a remote peer must never set on our request (request smuggling /
+    // framing). The injection guard above blocks CR/LF; this blocks misuse of
+    // otherwise-valid header names.
+    static const QSet<QString> kDeniedHeaders = {
+        QStringLiteral("host"), QStringLiteral("content-length"),
+        QStringLiteral("transfer-encoding"), QStringLiteral("connection")};
+
+    // Assemble the headers the extension captured for this request — every value
+    // goes through the same CR/LF injection guard (cookies/UA/referrer included).
     HeaderList headers;
     const QString cookies   = obj.value(QStringLiteral("cookies")).toString();
     const QString userAgent = obj.value(QStringLiteral("userAgent")).toString();
     const QString referrer  = obj.value(QStringLiteral("referrer")).toString();
-    if (!cookies.isEmpty())   headers.append({QByteArrayLiteral("Cookie"),     cookies.toUtf8()});
-    if (!userAgent.isEmpty()) headers.append({QByteArrayLiteral("User-Agent"), userAgent.toUtf8()});
-    if (!referrer.isEmpty())  headers.append({QByteArrayLiteral("Referer"),    referrer.toUtf8()});
+    if (!cookies.isEmpty()   && headerSafe(cookies))   headers.append({QByteArrayLiteral("Cookie"),     cookies.toUtf8()});
+    if (!userAgent.isEmpty() && headerSafe(userAgent)) headers.append({QByteArrayLiteral("User-Agent"), userAgent.toUtf8()});
+    if (!referrer.isEmpty()  && headerSafe(referrer))  headers.append({QByteArrayLiteral("Referer"),    referrer.toUtf8()});
 
-    // Reject header names/values carrying CR/LF or other control chars so an
-    // untrusted extension can't smuggle extra headers via injection.
-    auto headerSafe = [](const QString &s) {
-        for (const QChar c : s)
-            if (c < QChar(0x20) && c != QChar('\t'))
-                return false;
-        return true;
-    };
     const QJsonObject extra = obj.value(QStringLiteral("headers")).toObject();
     for (auto it = extra.begin(); it != extra.end(); ++it) {
         const QString v = it.value().toString();
+        if (kDeniedHeaders.contains(it.key().toLower()))
+            continue;   // never let a peer set Host/Content-Length/etc.
         if (headerSafe(it.key()) && headerSafe(v))
             headers.append({it.key().toUtf8(), v.toUtf8()});
     }

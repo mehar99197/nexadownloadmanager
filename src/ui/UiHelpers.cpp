@@ -35,14 +35,14 @@ QString humanTime(qint64 s)
 QColor statusColor(DownloadState s)
 {
     switch (s) {
-        case DownloadState::Completed:   return QColor(0x22c55e);  // green
-        case DownloadState::Downloading: return QColor(0x8b5cf6);  // violet
-        case DownloadState::Probing:     return QColor(0x38bdf8);  // cyan
-        case DownloadState::Paused:      return QColor(0xf59e0b);  // amber
-        case DownloadState::Error:       return QColor(0xef4444);  // red
+        case DownloadState::Completed:   return QColor(0x34d399);  // emerald
+        case DownloadState::Downloading: return QColor(0x22d3ee);  // cyan (brand)
+        case DownloadState::Probing:     return QColor(0xa78bfa);  // violet (brand)
+        case DownloadState::Paused:      return QColor(0xfbbf24);  // amber
+        case DownloadState::Error:       return QColor(0xfb7185);  // rose
         case DownloadState::Queued:      return QColor(0x94a3b8);  // grey
     }
-    return QColor(0xe6edf3);
+    return QColor(0xe8edf4);
 }
 
 QString statusLabel(DownloadState s)
@@ -88,8 +88,14 @@ void paintIcon(QLabel *icon, const QString &name)
 void paintBar(QProgressBar *bar, const QColor &c)
 {
     bar->setStyleSheet(QStringLiteral(
-        "QProgressBar { background: #1a2133; border: 0; border-radius: 3px; } "
-        "QProgressBar::chunk { background: %1; border-radius: 3px; }").arg(c.name()));
+        "QProgressBar { background: #1b222c; border: 0; border-radius: 3px; } "
+        "QProgressBar::chunk { background: %1; border-radius: 3px; }")
+        // Active downloads use the brand cyan→purple gradient; other states keep
+        // their solid semantic colour (done=emerald, paused=amber, error=rose).
+        .arg(c == QColor(0x22d3ee)
+                 ? QStringLiteral("qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                                  "stop:0 #22d3ee, stop:1 #8b5cf6)")
+                 : c.name()));
 }
 
 } // namespace nexa

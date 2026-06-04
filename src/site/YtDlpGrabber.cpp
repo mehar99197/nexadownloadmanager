@@ -257,6 +257,7 @@ void YtDlpGrabber::start()
 
     setState(DownloadState::Downloading, QStringLiteral("starting yt-dlp"));
     m_proc->start(QStringLiteral("yt-dlp"), args);
+    m_proc->closeWriteChannel();   // EOF on stdin: an interactive prompt aborts, never hangs
 }
 
 // yt-dlp flags shared by the single-video process and every parallel playlist
@@ -267,6 +268,8 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
     QStringList args;
     args << QStringLiteral("--newline") << QStringLiteral("--progress")
          << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
+         // Give up on a stalled network read instead of hanging forever.
+         << QStringLiteral("--socket-timeout") << QStringLiteral("30")
          << QStringLiteral("--no-mtime") << QStringLiteral("--restrict-filenames")
          << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
          // Machine-readable progress (byte counts, speed, fragment indices).
@@ -346,6 +349,7 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
         m_plProcs << p;
         m_plRates.insert(p, 0.0);
         p->start(QStringLiteral("yt-dlp"), a);
+        p->closeWriteChannel();   // EOF on stdin: a prompt aborts, never hangs
     }
 }
 
@@ -536,9 +540,17 @@ void YtDlpGrabber::resolveOutputFile()
         const QString p = QString::fromUtf8(f.readAll()).trimmed();
         f.close();
         QFile::remove(m_outFile);
+        // The path comes from yt-dlp expanding a SITE-controlled title template;
+        // ensure it actually landed inside our output dir (defense-in-depth on top
+        // of --restrict-filenames) before trusting it as the save path.
         if (!p.isEmpty() && QFileInfo::exists(p)) {
-            m_savePath = p;
-            return;
+            const QString canon = QFileInfo(p).canonicalFilePath();
+            const QString base  = QFileInfo(m_dir).canonicalFilePath();
+            if (!canon.isEmpty() && !base.isEmpty()
+                && (canon == base || canon.startsWith(base + QLatin1Char('/')))) {
+                m_savePath = canon;
+                return;
+            }
         }
     }
     // Fallback: newest media file in the output directory.

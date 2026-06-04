@@ -18,10 +18,33 @@ namespace nexa {
 
 static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
+// Headers that carry the user's site credentials. These must NEVER be sent to a
+// host other than the one they were captured for (a cross-host redirect to a CDN
+// or third party would otherwise leak the session cookie / bearer token).
+static bool isSensitiveHeader(const QByteArray &name)
+{
+    const QByteArray l = name.toLower();
+    return l == "cookie" || l == "authorization";
+}
+
+// Apply the captured headers to `req`, dropping the sensitive ones unless the
+// request targets the credential host (so cookies/tokens stay scoped to it).
+static void applyScopedHeaders(QNetworkRequest &req, const HeaderList &headers,
+                               const QString &credHost)
+{
+    const bool sameHost = credHost.isEmpty() || req.url().host() == credHost;
+    for (const auto &h : headers) {
+        if (!sameHost && isSensitiveHeader(h.first))
+            continue;
+        req.setRawHeader(h.first, h.second);
+    }
+}
+
 // Extract a filename from a Content-Disposition header, handling both the plain
 // `filename="x"` form and the RFC 5987 `filename*=UTF-8''x` (percent-encoded)
-// form. Returns a sanitised basename, or empty if none.
-static QString filenameFromContentDisposition(const QByteArray &header)
+// form. Returns a sanitised basename, or empty if none. Public static so the
+// engine's pre-download name probe can reuse it.
+QString DownloadTask::filenameFromContentDisposition(const QByteArray &header)
 {
     if (header.isEmpty())
         return QString();
@@ -113,13 +136,17 @@ void DownloadTask::start()
 
     setState(DownloadState::Probing, QStringLiteral("contacting server"));
 
+    // The captured cookies/tokens belong to THIS host; we follow redirects
+    // manually (onProbeFinished) so they can be stripped before a cross-host hop.
+    m_credHost = m_url.host();
+    m_probeRedirects = 0;
+
     QNetworkRequest req(m_url);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
+                     QNetworkRequest::ManualRedirectPolicy);
     req.setRawHeader("Accept-Encoding", "identity");
-    for (const auto &h : m_headers)
-        req.setRawHeader(h.first, h.second);
+    applyScopedHeaders(req, m_headers, m_credHost);
     // A ranged HEAD-style probe: ask for the first byte to learn whether the
     // server honours Range, plus Content-Length / final redirected URL.
     req.setRawHeader("Range", "bytes=0-0");
@@ -142,16 +169,47 @@ void DownloadTask::onProbeFinished()
         return;
     }
 
-    // Follow redirects: use the final URL for the real download.
-    const QUrl finalUrl = r->url();
-    if (finalUrl.isValid() && finalUrl != m_url)
-        m_url = finalUrl;
-
     const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    // Follow redirects MANUALLY so we can drop the site cookie/bearer before
+    // sending the probe to a different host (Qt's auto-redirect would re-send
+    // them, leaking credentials to the CDN/third party).
+    if (status >= 300 && status < 400) {
+        const QByteArray loc = r->rawHeader("Location");
+        const QUrl target = loc.isEmpty() ? QUrl()
+                                          : r->url().resolved(QUrl::fromEncoded(loc));
+        if (target.isValid() && m_probeRedirects < 8) {
+            ++m_probeRedirects;
+            m_url = target;                       // the download follows the chain
+            QNetworkRequest req(m_url);
+            req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
+            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::ManualRedirectPolicy);
+            req.setRawHeader("Accept-Encoding", "identity");
+            applyScopedHeaders(req, m_headers, m_credHost);   // strips creds if cross-host
+            req.setRawHeader("Range", "bytes=0-0");
+            m_probe = m_nam->get(req);
+            connect(m_probe, &QNetworkReply::finished, this, &DownloadTask::onProbeFinished);
+            return;
+        }
+        setState(DownloadState::Error, QStringLiteral("too many redirects"));
+        return;
+    }
+
     if (authIsStatus(status)) {
         // 401/403 on the size probe: surface the auth-specific reason immediately
         // instead of falling through to range parsing on an error page.
         setState(DownloadState::Error, authErrorDetail(status));
+        return;
+    }
+    // Any other 4xx/5xx is a dead/blocked/rate-limited link, NOT a file. Without
+    // this guard a 404/500 HTML error page (which carries a Content-Length) would
+    // be parsed for size and written to disk as the user's file — silent
+    // corruption for every broken link. Only an HTTP reply has a status; a 0
+    // status (e.g. ftp/file) is left to the size-parsing path below.
+    if (status >= 400) {
+        setState(DownloadState::Error,
+                 QStringLiteral("server returned HTTP %1").arg(status));
         return;
     }
     bool ranges = false;
@@ -252,11 +310,14 @@ void DownloadTask::buildSegments(qint64 total, bool rangesSupported)
     }
 }
 
-void DownloadTask::restore(qint64 totalBytes, const QVector<SegmentInfo> &segments)
+void DownloadTask::restore(qint64 totalBytes, const QVector<SegmentInfo> &segments,
+                           bool rangesSupported)
 {
     m_total = totalBytes;
     m_segments = segments;
-    m_rangesSupported = segments.size() > 1;
+    // Use the persisted capability; fall back to the old segment-count heuristic
+    // for rows written before the ranges_supported column existed (default 0).
+    m_rangesSupported = rangesSupported || segments.size() > 1;
     m_done = 0;
     for (const auto &s : m_segments)
         m_done += s.done;
@@ -289,7 +350,16 @@ void DownloadTask::launchSegments()
 
 SegmentDownloader *DownloadTask::makeWorker(const SegmentInfo &seg)
 {
-    auto *w = new SegmentDownloader(seg, m_url, m_savePath, m_headers, m_nam, m_limiter, this);
+    // After redirects m_url may point at a different host than the one the
+    // cookies/tokens were captured for; strip those sensitive headers so the bulk
+    // segment requests never replay the site credential to a cross-host CDN.
+    HeaderList workerHeaders;
+    workerHeaders.reserve(m_headers.size());
+    const bool sameHost = m_credHost.isEmpty() || m_url.host() == m_credHost;
+    for (const auto &h : m_headers)
+        if (sameHost || !isSensitiveHeader(h.first))
+            workerHeaders.append(h);
+    auto *w = new SegmentDownloader(seg, m_url, m_savePath, workerHeaders, m_nam, m_limiter, this);
     connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
     connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
     connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
@@ -535,6 +605,28 @@ void DownloadTask::resume()
         start();
         return;
     }
+
+    // Validate the partial file still matches our segment offsets. If it was
+    // deleted / moved / truncated between sessions, the SegmentDownloader would
+    // seek() past EOF on a freshly-created empty file, leaving the unfetched
+    // leading bytes as zero-filled holes — a silently corrupt "completed" file.
+    // When the file no longer backs our progress, reset and re-probe instead.
+    {
+        const QFileInfo fi(m_savePath);
+        const bool fileBacksProgress =
+            fi.exists()
+            && (m_total <= 0 || fi.size() >= m_total)   // preallocated to full size
+            && fi.size() >= m_done;                     // holds at least our claimed bytes
+        if (!fileBacksProgress) {
+            for (auto &s : m_segments) s.done = 0;
+            m_done = 0;
+            m_segments.clear();                         // force a clean re-probe + prealloc
+            persist();
+            start();
+            return;
+        }
+    }
+
     setState(DownloadState::Downloading, QStringLiteral("resuming"));
     m_clock.start();
     m_lastTickBytes = m_done;

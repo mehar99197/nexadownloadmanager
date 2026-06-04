@@ -1,0 +1,50 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Squircle background: app's violet accent (#8b5cf6) as a lit gradient -->
+    <linearGradient id="bg" x1="40" y1="24" x2="216" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#a78bfa"/>
+      <stop offset="0.52" stop-color="#8b5cf6"/>
+      <stop offset="1"   stop-color="#6d28d9"/>
+    </linearGradient>
+    <!-- Top gloss highlight -->
+    <linearGradient id="gloss" x1="128" y1="8" x2="128" y2="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="1"   stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Arrow fill: subtle white→lilac so it reads as glossy, not flat -->
+    <linearGradient id="arrow" x1="128" y1="66" x2="128" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ede9fe"/>
+    </linearGradient>
+    <!-- Depth shadow under the arrow (blur only; offset applied on the shape) -->
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <!-- Reusable arrow geometry -->
+    <path id="dl" d="M150 66 L150 120 L178 120 L137 178 L96 120 L124 120 L124 66
+                     Q124 60 130 60 L144 60 Q150 60 150 66 Z"/>
+  </defs>
+
+  <!-- Squircle plate -->
+  <rect x="8" y="8" width="240" height="240" rx="58" ry="58" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="58" ry="58" fill="url(#gloss)"/>
+  <!-- Hairline inner ring for a crafted edge -->
+  <rect x="13.5" y="13.5" width="229" height="229" rx="53" ry="53"
+        fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="2"/>
+
+  <!-- Speed streaks: motion trailing the arrow (asymmetry = velocity) -->
+  <g stroke-linecap="round" fill="none">
+    <line x1="40" y1="92"  x2="86" y2="92"  stroke="#ffffff" stroke-opacity="0.92" stroke-width="13"/>
+    <line x1="30" y1="124" x2="74" y2="124" stroke="#ffffff" stroke-opacity="0.55" stroke-width="13"/>
+    <line x1="44" y1="156" x2="82" y2="156" stroke="#ffffff" stroke-opacity="0.30" stroke-width="13"/>
+  </g>
+
+  <!-- Soft drop shadow: same geometry, dark, blurred, nudged down -->
+  <use href="#dl" transform="translate(0,6)" fill="#2e0a63" fill-opacity="0.5" filter="url(#soft)"/>
+  <!-- Download arrow (stem + chevron) -->
+  <use href="#dl" fill="url(#arrow)"/>
+
+  <!-- Save tray: grounds the glyph as 'download to disk' -->
+  <rect x="96" y="196" width="82" height="15" rx="7.5" fill="url(#arrow)" opacity="0.95"/>
+</svg>

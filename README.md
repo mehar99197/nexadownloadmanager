@@ -1,4 +1,8 @@
-# Nexa Download Manager
+<p align="center">
+  <img src="assets/nexa-256.png" alt="Nexa Download Manager" width="128" height="128">
+</p>
+
+<h1 align="center">Nexa Download Manager</h1>
 
 A cross-platform, multi-connection download manager built to **beat IDM** —
 segmented downloads, pause/resume, browser integration via native messaging,

@@ -16,6 +16,15 @@ CHROME_EXT_ID="${2:-REPLACE_WITH_CHROME_EXTENSION_ID}"
 FIREFOX_EXT_ID="nexa@nexa.local"
 NAME="com.nexa.host"
 
+# A Chrome extension id is exactly 32 chars in [a-p]. Refuse the placeholder or a
+# malformed id so we never write a manifest whose allowed_origins authorizes the
+# wrong (or a wildcard) extension to talk to the native host.
+if ! printf '%s' "$CHROME_EXT_ID" | grep -qE '^[a-p]{32}$'; then
+  echo "error: invalid Chrome extension id '$CHROME_EXT_ID' (need 32 chars, a-p)." >&2
+  echo "       usage: install.sh <host-binary> <chrome-extension-id>" >&2
+  exit 1
+fi
+
 HOST_BIN="$(realpath "$HOST_BIN" 2>/dev/null || echo "$HOST_BIN")"
 if [ ! -x "$HOST_BIN" ]; then
   echo "warning: $HOST_BIN is not an executable yet — build the project first." >&2

@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QCursor>
 #include <QFontMetrics>
 
 namespace nexa {
@@ -183,13 +184,19 @@ CaptureToast::CaptureToast(const QUrl &url, QWidget *parent)
 
 void CaptureToast::positionToCorner()
 {
-    QScreen *screen = QGuiApplication::primaryScreen();
+    // Prefer the screen under the cursor (multi-monitor), fall back to primary.
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
     if (!screen)
         return;
     const QRect area = screen->availableGeometry();
     adjustSize();
     const int margin = 22;
-    move(area.right() - width() - margin, area.bottom() - height() - margin);
+    // Clamp so the toast is always fully on-screen even if it's wide/tall.
+    const int x = qMax(area.left() + margin, area.right()  - width()  - margin);
+    const int y = qMax(area.top()  + margin, area.bottom() - height() - margin);
+    move(x, y);
 }
 
 } // namespace nexa

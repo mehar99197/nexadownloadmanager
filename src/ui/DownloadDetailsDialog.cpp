@@ -58,7 +58,7 @@ protected:
 
         QPainterPath track;
         track.addRoundedRect(r, R, R);
-        p.fillPath(track, QColor(0x1a2133));   // rail track
+        p.fillPath(track, QColor(0x1b222c));   // rail track
         p.setClipPath(track);                  // round the fill ends
 
         const double W = r.width();
@@ -100,7 +100,7 @@ protected:
 private:
     QVector<SegmentInfo> m_segs;
     qint64 m_total = -1;
-    QColor m_accent = QColor(0x8b5cf6);
+    QColor m_accent = QColor(0x22d3ee);
     int    m_phase = 0;
 };
 
@@ -200,7 +200,7 @@ protected:
 private:
     int    m_min = 0, m_max = 100, m_val = 0;
     int    m_phase = 0;
-    QColor m_accent{0x8b5cf6};
+    QColor m_accent{0x22d3ee};
     QTimer *m_timer = nullptr;
 };
 
@@ -276,10 +276,10 @@ protected:
         const QRectF arcRect (C.x()-arcR,  C.y()-arcR,  arcR*2,  arcR*2);
         const QRectF arcRect2(C.x()-arcR2, C.y()-arcR2, arcR2*2, arcR2*2);
 
-        // ── Zone track arcs: green (0-40%), amber (40-75%), red (75-100%) ─
-        // Drawn as coloured dim zones behind the main arc.
+        // ── Zone track arcs (dim cyan → blue → purple, behind the main arc) ─
+        // Brand gradient (low → high speed) instead of the classic green→red.
         struct Zone { int startPct, endPct; QColor col; };
-        for (auto z : { Zone{0,40,QColor(0x14532d)}, Zone{40,75,QColor(0x78350f)}, Zone{75,100,QColor(0x7f1d1d)} }) {
+        for (auto z : { Zone{0,40,QColor(0x0e3a44)}, Zone{40,75,QColor(0x1c2c55)}, Zone{75,100,QColor(0x34245e)} }) {
             const int s16 = int((225.0 - z.startPct * 2.70) * 16);
             const int sp16= int(-(z.endPct - z.startPct) * 2.70 * 16);
             p.setPen(QPen(z.col, 9, Qt::SolidLine, Qt::FlatCap));
@@ -289,17 +289,17 @@ protected:
 
         // ── Average speed arc (thin, inner ring) ─────────────────────────
         if (m_avgFrac > 0.005) {
-            p.setPen(QPen(QColor(99, 102, 241, 140), 4, Qt::SolidLine, Qt::FlatCap));
+            p.setPen(QPen(QColor(34, 211, 238, 150), 4, Qt::SolidLine, Qt::FlatCap));
             p.drawArc(arcRect2, 225*16, int(-m_avgFrac * 270.0 * 16));
         }
 
         // ── Main fill arc (conical gradient) ─────────────────────────────
         if (m_curFrac > 0.003) {
             QConicalGradient cg(C, 225.0);
-            cg.setColorAt(0.000, QColor(0x22c55e));
-            cg.setColorAt(0.375, QColor(0xfbbf24));
-            cg.setColorAt(0.750, QColor(0xef4444));
-            cg.setColorAt(1.000, QColor(0xef4444));
+            cg.setColorAt(0.000, QColor(0x22d3ee));   // cyan (low)
+            cg.setColorAt(0.375, QColor(0x4aa6f5));   // sky/blue
+            cg.setColorAt(0.750, QColor(0x8b5cf6));   // violet
+            cg.setColorAt(1.000, QColor(0xa855f7));   // purple (high)
             p.setPen(QPen(QBrush(cg), 9, Qt::SolidLine, Qt::FlatCap));
             p.drawArc(arcRect, 225*16, int(-m_curFrac * 270.0 * 16));
 
@@ -307,9 +307,9 @@ protected:
             const double tipAng = (225.0 - m_curFrac * 270.0) * M_PI / 180.0;
             const QPointF tip(C.x() + arcR * std::cos(tipAng),
                               C.y() - arcR * std::sin(tipAng));
-            const QColor gc = (m_curFrac < 0.5) ? QColor(0x22c55e)
-                            : (m_curFrac < 0.75) ? QColor(0xfbbf24)
-                                                 : QColor(0xef4444);
+            const QColor gc = (m_curFrac < 0.5) ? QColor(0x22d3ee)
+                            : (m_curFrac < 0.75) ? QColor(0x6aa0f5)
+                                                 : QColor(0xa855f7);
             const double glowR = 10.0 + 5.0 * (0.5 + 0.5 * std::sin(m_pulse));
             QRadialGradient glow(tip, glowR);
             QColor gc2 = gc; gc2.setAlpha(int(200 * (0.6 + 0.4 * std::sin(m_pulse))));
@@ -399,11 +399,11 @@ protected:
             const double nLen = R * 0.59, cwt = R * 0.14;
             const QPointF tip(C.x() + nLen * std::cos(nAng), C.y() - nLen * std::sin(nAng));
             const QPointF cwPt(C.x() - cwt  * std::cos(nAng), C.y() + cwt  * std::sin(nAng));
-            p.setPen(QPen(QColor(255,107,53,45), 10, Qt::SolidLine, Qt::RoundCap));
+            p.setPen(QPen(QColor(34,211,238,70), 10, Qt::SolidLine, Qt::RoundCap));   // cyan glow
             p.drawLine(cwPt, tip);
-            p.setPen(QPen(QColor(0xff6b35), 2.8, Qt::SolidLine, Qt::RoundCap));
+            p.setPen(QPen(QColor(0xe6f9ff), 2.8, Qt::SolidLine, Qt::RoundCap));      // bright needle
             p.drawLine(cwPt, tip);
-            p.setPen(QPen(QColor(255,220,190,160), 1, Qt::SolidLine, Qt::RoundCap));
+            p.setPen(QPen(QColor(255,255,255,210), 1, Qt::SolidLine, Qt::RoundCap)); // highlight
             p.drawLine(cwPt, tip);
         }
 
@@ -523,7 +523,7 @@ private:
     static constexpr int kN = 100;
     QVector<double> m_samples;
     int    m_head = 0;
-    QColor m_accent{0x8b5cf6};
+    QColor m_accent{0x22d3ee};
 };
 
 // ---------------------------------------------------------------------------
@@ -534,8 +534,9 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
-    // Decorations: title + system menu + minimise + close, but NO maximise/
-    // fullscreen button (CustomizeWindowHint stops Qt re-adding defaults).
+    // Minimize + close enabled, maximize disabled. Qt::Window (not Dialog) so
+    // minimize works on GNOME; the fixed size (relayoutHeight) makes the WM drop
+    // the maximize button.
     setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
                    Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint |
                    Qt::WindowCloseButtonHint);
@@ -563,23 +564,42 @@ DownloadDetailsDialog::DownloadDetailsDialog(DownloadEngine *engine, int id, QWi
     updateButtons();
     syncTimer();
 
-    // Size to a sensible fixed box. The content lives in a scroll area (built in
-    // buildUi) so that whatever size the window actually gets, nothing is ever
-    // clipped or squished: the connection panel is collapsed by default (compact,
-    // no scrollbar), and if the user expands it on a short screen the view scrolls
-    // vertically instead of overlapping. Horizontal scrolling never happens — the
-    // long values (URL/Status) are elided.
+    // Size the window to fit its content. The content lives in a scroll area
+    // (built in buildUi) so that on a short screen nothing is ever clipped — the
+    // view scrolls vertically instead. The connection panel is collapsed by
+    // default, so the window opens compact (no empty space below the toggle) and
+    // grows only when the user expands the panel (see relayoutHeight()).
     ensurePolished();
-    int w = 580, h = 720;
+    relayoutHeight();
+}
+
+// Re-fit the window to its current content height (called on open and whenever the
+// connection panel expands/collapses). Without this the window kept a tall fixed
+// height while the panel was collapsed, leaving a blank gap below the toggle.
+void DownloadDetailsDialog::relayoutHeight()
+{
+    if (!m_scroll) return;
+    QWidget *plate = m_scroll->widget();
+    if (!plate) return;
+    plate->adjustSize();
+
+    // outer margins (14 top+bottom) + spacing + the pinned button row, plus a hair
+    // of slack so the scroll area never shows a scrollbar when content actually fits.
+    const int chrome = 14 * 2 + 10 + (m_pause ? m_pause->sizeHint().height() : 36) + 4;
+    int w = 580;
+    int h = plate->sizeHint().height() + chrome;
+    // Apply the minimum-size floor BEFORE the screen clamp, so on a very short
+    // screen the window never exceeds the available height (which would push the
+    // pinned Pause/Resume/Cancel row — outside the scroll area — off-screen).
+    w = qMax(460, w);
+    h = qMax(420, h);
     if (QScreen *s = QGuiApplication::primaryScreen()) {
         const QRect a = s->availableGeometry();
         w = qMin(w, a.width()  - 80);
         h = qMin(h, a.height() - 60);
     }
-    setFixedSize(qMax(460, w), qMax(420, h));
+    setFixedSize(w, h);   // fixed -> WM drops the maximize button; content fits
 }
-
-void DownloadDetailsDialog::relayoutHeight() {}   // (retained for the header decl; sizing is fixed + scroll-backed)
 
 void DownloadDetailsDialog::buildUi()
 {
@@ -750,11 +770,16 @@ void DownloadDetailsDialog::buildUi()
     connect(m_connToggle, &QToolButton::toggled, this, [this](bool on) {
         m_connBox->setVisible(on);
         m_connToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
-        // Scroll the just-revealed panel into view (the view scrolls only if the
-        // panel can't all fit; otherwise this is a no-op). Deferred so the layout
+        // Grow/shrink the window to fit the new content so an expanded panel isn't
+        // clipped and a collapsed one leaves no blank gap. Deferred so the layout
         // has updated the panel's geometry first.
-        if (on && m_scroll)
-            QTimer::singleShot(0, this, [this]{ m_scroll->ensureWidgetVisible(m_connBox, 0, 0); });
+        QTimer::singleShot(0, this, [this, on]{
+            relayoutHeight();
+            // On a short screen the panel may not fully fit even after the window
+            // grew to the screen cap — scroll it into view in that case.
+            if (on && m_scroll)
+                m_scroll->ensureWidgetVisible(m_connBox, 0, 0);
+        });
     });
 
     // --- Buttons (outside the scroll area, pinned at the bottom so they're
@@ -822,7 +847,7 @@ void DownloadDetailsDialog::refreshHeader()
         "border-radius:11px; padding:3px 11px; font-size:11px; font-weight:600;")
         .arg(c.name()).arg(c.red()).arg(c.green()).arg(c.blue()));
 
-    const int pct = (m_total > 0) ? int(m_done * 100 / m_total) : -1;
+    const int pct = (m_total > 0) ? qBound(0, int(m_done * 100 / m_total), 100) : -1;
     setWindowTitle(pct >= 0 ? QStringLiteral("%1%  %2").arg(pct).arg(name)
                             : QStringLiteral("%1").arg(name));
 }
@@ -857,13 +882,13 @@ void DownloadDetailsDialog::refreshFields()
                                      : QStringLiteral("playlist"));
         m_vDone->setText(m_total > 0
             ? QStringLiteral("%1 of %2 videos  (%3%)").arg(m_done).arg(m_total)
-                  .arg(int(m_done * 100 / m_total))
+                  .arg(qBound(0, int(m_done * 100 / m_total), 100))
             : QStringLiteral("%1 videos").arg(m_done));
     } else {
         m_vSize->setText(m_total > 0 ? humanSize(m_total) : QStringLiteral("Unknown"));
         if (m_total > 0)
             m_vDone->setText(QStringLiteral("%1  (%2%)")
-                                 .arg(humanSize(m_done)).arg(int(m_done * 100 / m_total)));
+                                 .arg(humanSize(m_done)).arg(qBound(0, int(m_done * 100 / m_total), 100)));
         else
             m_vDone->setText(humanSize(m_done));
     }
@@ -885,11 +910,11 @@ void DownloadDetailsDialog::refreshFields()
     if (auto *t = m_engine->task(m_id)) {
         const bool yes = t->rangesSupported();
         m_vResume->setText(yes ? QStringLiteral("Yes") : QStringLiteral("No"));
-        m_vResume->setStyleSheet(yes ? QStringLiteral("color:#22c55e;")
-                                     : QStringLiteral("color:#ef4444;"));
+        m_vResume->setStyleSheet(yes ? QStringLiteral("color:#34d399;")
+                                     : QStringLiteral("color:#fb7185;"));
     } else {
         m_vResume->setText(QStringLiteral("Unknown"));
-        m_vResume->setStyleSheet(QStringLiteral("color:#8b94a7;"));
+        m_vResume->setStyleSheet(QStringLiteral("color:#8a94a3;"));
     }
 }
 
@@ -898,8 +923,8 @@ void DownloadDetailsDialog::refreshOverallBar()
     m_bar->setAccent(statusColor(m_state));
     m_speedGraph->setAccent(statusColor(m_state));
     if (m_total > 0) {
-        const int pct = int(m_state == DownloadState::Completed ? 100
-                            : m_done * 100 / m_total);
+        const int pct = (m_state == DownloadState::Completed) ? 100
+                            : qBound(0, int(m_done * 100 / m_total), 100);
         m_bar->setRange(0, 100);
         m_bar->setValue(pct);
         m_barPct->setText(QStringLiteral("%1%").arg(pct));

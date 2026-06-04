@@ -39,6 +39,8 @@ constexpr auto kTorrentUl  = "torrentUlKB";
 constexpr auto kSeedRatio  = "seedRatio";
 constexpr auto kAiRename   = "aiRename";
 constexpr auto kErrLog     = "errorLogging";
+constexpr auto kConfirmStart  = "ui/confirmBeforeStart";   // IDM-style ask-before-download
+constexpr auto kShowComplete  = "ui/showCompleteDialog";   // IDM-style completion prompt
 
 QLabel *sectionHeader(const QString &text, QWidget *parent)
 {
@@ -68,6 +70,7 @@ void SettingsDialog::loadInto(DownloadEngine *engine)
                                   s.value(QLatin1String(kTorrentUl), 0).toInt() * 1024);
     engine->setSeedRatio(s.value(QLatin1String(kSeedRatio), 0.0).toDouble());
     engine->setAiRename(s.value(QLatin1String(kAiRename), false).toBool());
+    engine->setConfirmBeforeStart(s.value(QLatin1String(kConfirmStart), true).toBool());
     setLoggingEnabled(s.value(QLatin1String(kErrLog), false).toBool());
 }
 
@@ -134,6 +137,13 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_clipboard = new QCheckBox(QStringLiteral("Monitor the clipboard for download links"), plate);
     m_clipboard->setChecked(st.value(QLatin1String(kClipboard), false).toBool());
     v->addWidget(m_clipboard);
+    m_confirmStart = new QCheckBox(QStringLiteral("Ask before starting a download "
+                                                 "(confirm the file & save location first)"), plate);
+    m_confirmStart->setChecked(st.value(QLatin1String(kConfirmStart), true).toBool());
+    v->addWidget(m_confirmStart);
+    m_showComplete = new QCheckBox(QStringLiteral("Show a dialog when a download completes"), plate);
+    m_showComplete->setChecked(st.value(QLatin1String(kShowComplete), true).toBool());
+    v->addWidget(m_showComplete);
 
     // ---- Downloads --------------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("Downloads"), plate));
@@ -262,6 +272,7 @@ void SettingsDialog::apply()
                                     m_torrentUlKB->value() * 1024);
     m_engine->setSeedRatio(m_seedRatio->value());
     m_engine->setAiRename(m_aiRename->isChecked());
+    m_engine->setConfirmBeforeStart(m_confirmStart->isChecked());   // live toggle
     setLoggingEnabled(m_errLog->isChecked());   // live toggle of the file log
 
     // Persist everything (clipboard included — MainWindow re-syncs it on close).
@@ -269,6 +280,8 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kDir), dir);
     s.setValue(QLatin1String(kCategorize), m_categorize->isChecked());
     s.setValue(QLatin1String(kClipboard), m_clipboard->isChecked());
+    s.setValue(QLatin1String(kConfirmStart), m_confirmStart->isChecked());
+    s.setValue(QLatin1String(kShowComplete), m_showComplete->isChecked());
     s.setValue(QLatin1String(kMaxConc), m_maxConc->value());
     s.setValue(QLatin1String(kSpeedKB), m_speedKB->value());
     s.setValue(QLatin1String(kStreamConc), m_streamConc->value());

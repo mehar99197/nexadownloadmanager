@@ -143,13 +143,20 @@ void SegmentDownloader::pump() {
         if (m_limiter && chunk.size() < granted)
             m_limiter->refund(granted - chunk.size());   // keep the rate accurate
         const qint64 written = m_file.write(chunk.constData(), chunk.size());
-        if (written < 0) {
-            emit failed(m_seg.index, QStringLiteral("write failed: %1").arg(m_file.errorString()));
+        if (written > 0) {
+            m_seg.done += written;            // account for whatever actually landed
+            emit progressed(m_seg.index, written);
+        }
+        if (written != chunk.size()) {
+            // A short write (disk full) silently drops the unwritten tail of
+            // `chunk`, which we've already consumed from the reply — that would be
+            // an undetectable gap/corruption. Treat it as a (retryable) failure.
+            emit failed(m_seg.index,
+                written < 0 ? QStringLiteral("write failed: %1").arg(m_file.errorString())
+                            : QStringLiteral("disk full (incomplete write)"));
             stop();
             return;
         }
-        m_seg.done += written;
-        emit progressed(m_seg.index, written);
     }
 
     if (m_seg.complete() && m_reply) {
@@ -173,10 +180,12 @@ void SegmentDownloader::onFinished() {
         if (chunk.isEmpty())
             break;
         const qint64 w = m_file.write(chunk.constData(), chunk.size());
-        if (w <= 0)
-            break;
-        m_seg.done += w;
-        emit progressed(m_seg.index, w);
+        if (w > 0) {
+            m_seg.done += w;
+            emit progressed(m_seg.index, w);
+        }
+        if (w != chunk.size())
+            break;   // short write (disk full): leave the segment incomplete -> retried
     }
     const QNetworkReply::NetworkError err = m_reply->error();
     const QString errorString = m_reply->errorString();

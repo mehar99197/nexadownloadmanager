@@ -58,11 +58,14 @@ public:
     void resume();
 
     // Restore an interrupted task's segment layout from the database.
-    void restore(qint64 totalBytes, const QVector<SegmentInfo> &segments);
+    void restore(qint64 totalBytes, const QVector<SegmentInfo> &segments,
+                 bool rangesSupported);
 
     int            id()         const { return m_id; }
     QUrl           url()        const { return m_url; }
     QString        savePath()   const { return m_savePath; }
+    void           setSavePath(const QString &p) { m_savePath = p; }   // before start only
+    static QString filenameFromContentDisposition(const QByteArray &header);
     QString        fileName()   const;
     qint64         totalBytes() const { return m_total; }
     qint64         doneBytes()  const { return m_done; }
@@ -111,6 +114,8 @@ private:
     RateLimiter              *m_limiter = nullptr;
 
     HeaderList                m_headers;
+    QString                   m_credHost;       // host the sensitive headers are scoped to
+    int                       m_probeRedirects = 0;
     qint64                    m_total = -1;     // -1 = unknown
     qint64                    m_done = 0;
     DownloadState             m_state = DownloadState::Queued;

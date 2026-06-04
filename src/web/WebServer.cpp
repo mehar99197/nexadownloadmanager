@@ -9,6 +9,7 @@
 #include <QSslCertificate>
 #include <QSslKey>
 #include <QHostAddress>
+#include <QDateTime>
 #include <QTimer>
 #include <QFile>
 #include <QJsonDocument>
@@ -32,6 +33,7 @@ const char *reasonPhrase(int code)
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
         case 413: return "Payload Too Large";
+        case 429: return "Too Many Requests";
         default:  return "Internal Server Error";
     }
 }
@@ -250,6 +252,7 @@ void WebServer::onReadyRead(QTcpSocket *sock)
 
     if (buf.size() > kMaxRequestBytes) {
         sendResponse(sock, 413, QStringLiteral("text/plain"), "too large");
+        closeConnection(sock);   // drop the buffer/state now, don't wait on the FIN
         return;
     }
 
@@ -298,8 +301,13 @@ bool WebServer::tryParse(const QByteArray &buf, Request &req, bool &needMore) co
         const int colon = line.indexOf(':');
         if (colon <= 0)
             continue;
-        req.headers.insert(QString::fromLatin1(line.left(colon)).trimmed().toLower(),
-                           QString::fromUtf8(line.mid(colon + 1)).trimmed());
+        const QString key = QString::fromLatin1(line.left(colon)).trimmed().toLower();
+        // Reject a request that presents two conflicting Content-Length headers
+        // (a classic request-smuggling vector) rather than last-wins silently.
+        if (key == QLatin1String("content-length") && req.headers.contains(key)
+            && req.headers.value(key) != QString::fromUtf8(line.mid(colon + 1)).trimmed())
+            return false;   // -> 400
+        req.headers.insert(key, QString::fromUtf8(line.mid(colon + 1)).trimmed());
     }
 
     // We don't implement chunked transfer decoding; reject it explicitly rather
@@ -338,6 +346,18 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
     // Auth gate. Prefer an Authorization: Bearer header (the API calls use it);
     // fall back to ?token= for the initial page link the user opens.
     if (!m_token.isEmpty()) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const QString peer = sock->peerAddress().toString();
+        // Per-IP failed-auth rate limit: throttle a client hammering 401s (matters
+        // if an operator overrode the strong default with a weak --dashboard-token).
+        auto &f = m_authFails[peer];
+        if (nowMs - f.second > kAuthWindowMs)
+            f = {0, nowMs};                       // window expired -> reset
+        if (f.first >= kMaxAuthFails) {
+            sendResponse(sock, 429, QStringLiteral("text/plain"), "too many attempts");
+            return;
+        }
+
         QString provided;
         const QString auth = req.headers.value(QStringLiteral("authorization"));
         if (auth.startsWith(QLatin1String("Bearer "), Qt::CaseInsensitive))
@@ -353,9 +373,11 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
             return d == 0;
         };
         if (!ctEquals(provided, m_token)) {
+            f.first++;                            // count this failure for the window
             sendResponse(sock, 401, QStringLiteral("text/plain"), "unauthorized");
             return;
         }
+        m_authFails.remove(peer);                 // success: clear the counter
     }
 
     if (req.method == QLatin1String("GET") && req.path == QLatin1String("/")) {
@@ -398,6 +420,14 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
     }
 
     if (req.method == QLatin1String("POST") && req.path == QLatin1String("/api/ai")) {
+        // Cooldown: each AI command hits a paid LLM and can auto-add downloads, so
+        // a token-holding client can't drive unbounded spend by spamming it.
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs - m_lastAiMs < kAiCooldownMs) {
+            sendJson(sock, 429, R"({"ok":false,"error":"rate limited; try again shortly"})");
+            return;
+        }
+        m_lastAiMs = nowMs;
         if (!m_engine->aiAvailable()) {
             sendJson(sock, 400, R"({"ok":false,"error":"AI not configured; set ANTHROPIC_API_KEY"})");
             return;

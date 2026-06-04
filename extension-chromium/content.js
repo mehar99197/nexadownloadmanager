@@ -22,6 +22,43 @@
   let prefetchedUrl = "";       // video URL whose qualities we've warmed the cache for
   let prefetchArmedUrl = "";    // URL the debounced prefetch timer is counting for
   let prefetchTimer = null;
+  let pollTimer = null;         // the 2s poll interval (cleared on context loss)
+  let nexaStopped = false;      // true once our extension context is invalidated
+
+  // ---- extension-context safety ----------------------------------------
+  // When the extension is reloaded/updated/disabled, content scripts already
+  // injected in open tabs keep running but their context is invalidated — any
+  // chrome.* call then throws "Extension context invalidated". Our 2s poll would
+  // otherwise throw on every tick (hundreds of console errors). So: detect the
+  // dead context, tear our timers/UI down, and make every sendMessage a safe
+  // no-op once it's gone.
+  function extAlive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch (_) { return false; }
+  }
+  function shutdown() {
+    if (nexaStopped) return;
+    nexaStopped = true;
+    clearInterval(pollTimer);
+    clearTimeout(prefetchTimer);
+    if (pill)  pill.style.display = "none";
+    if (panel) panel.style.display = "none";
+  }
+  // Drop-in replacement for chrome.runtime.sendMessage that never throws on a
+  // dead context. Touches lastError so Chrome doesn't log "Unchecked
+  // runtime.lastError", and shuts us down when the context is gone.
+  function sendMessageSafe(msg, cb) {
+    if (nexaStopped || !extAlive()) { shutdown(); return; }
+    try {
+      chrome.runtime.sendMessage(msg, (resp) => {
+        const err = chrome.runtime.lastError;
+        if (err && /context invalidated|message port closed|receiving end does not exist/i
+                     .test(err.message || "")) { shutdown(); return; }
+        if (cb) cb(resp);
+      });
+    } catch (_) {
+      shutdown();   // synchronous "Extension context invalidated"
+    }
+  }
 
   // ---- site-video detection (YouTube + other yt-dlp sites) -------------
   // Public sites: the panel probes real qualities via yt-dlp -J. Auth sites:
@@ -372,7 +409,7 @@
 
       // YouTube + public sites: ask the engine (yt-dlp -J) for REAL qualities.
       renderPanel(withPlaylist({ title: siteTitle(), qualities: [{ label: "Loading qualities…" }] }));
-      chrome.runtime.sendMessage({ type: "nexa-list-formats", url: vurl }, (r) => {
+      sendMessageSafe({ type: "nexa-list-formats", url: vurl }, (r) => {
         let quals;
         if (!chrome.runtime.lastError && r && r.ok && Array.isArray(r.qualities) && r.qualities.length) {
           // Every quality is delivered as video+audio (yt-dlp merges). The label
@@ -394,7 +431,7 @@
       return;
     }
     renderPanel([{ title: "Loading qualities…", qualities: [] }]);
-    chrome.runtime.sendMessage({ type: "nexa-get-qualities" }, (groups) => {
+    sendMessageSafe({ type: "nexa-get-qualities" }, (groups) => {
       if (chrome.runtime.lastError) { renderPanel([]); return; }
       renderPanel(groups || []);
     });
@@ -478,7 +515,7 @@
             // Report the REAL handoff result. The background worker relays the
             // native-host reply, so a missing host / dead engine surfaces here
             // instead of a misleading success toast.
-            chrome.runtime.sendMessage(msg, (r) => {
+            sendMessageSafe(msg, (r) => {
               if (chrome.runtime.lastError || !r || r.ok === false) {
                 const why = (r && r.message) ||
                   (chrome.runtime.lastError && chrome.runtime.lastError.message) ||
@@ -515,12 +552,13 @@
     prefetchTimer = setTimeout(() => {
       if (videoUrl() !== vurl) return;          // navigated away while waiting
       prefetchedUrl = vurl;
-      chrome.runtime.sendMessage({ type: "nexa-prefetch-formats", url: vurl },
+      sendMessageSafe({ type: "nexa-prefetch-formats", url: vurl },
                                  () => void chrome.runtime.lastError);
     }, 1200);
   }
 
   function poll() {
+    if (nexaStopped || !extAlive()) { shutdown(); return; }
     // YouTube & co: always offer the pill (streams can't be sniffed). On a
     // dedicated playlist page there's no single video, but the playlist is still
     // downloadable, so offer the pill there too.
@@ -533,7 +571,7 @@
     }
     // Left a site-video page (SPA nav): hide the pill until media is sniffed.
     if (pill) pill.style.display = "none";
-    chrome.runtime.sendMessage({ type: "nexa-media-count" }, (info) => {
+    sendMessageSafe({ type: "nexa-media-count" }, (info) => {
       if (chrome.runtime.lastError || !info) return;
       ensureUi();
       const count = info.count || 0;
@@ -554,6 +592,7 @@
   // script). We watch three signals: YouTube's own navigation event, the
   // history API, and a cheap href diff on each interval tick.
   function onNav() {
+    if (nexaStopped) return;
     if (location.href === lastHref) return;
     lastHref = location.href;
     if (panel) panel.style.display = "none";   // stale panel from the old video
@@ -577,15 +616,17 @@
   }
 
   // Collect every link on the page (used by the "download all links" menu).
-  chrome.runtime.onMessage.addListener((msg) => {
+  chrome.runtime.onMessage.addListener((msg, sender) => {
+    // Only honour messages from our own extension (the background worker).
+    if (!sender || sender.id !== chrome.runtime.id) return;
     if (msg.type === "nexa-collect-links") {
       const urls = Array.from(document.querySelectorAll("a[href]"))
         .map((a) => a.href).filter((h) => /^https?:/i.test(h));
-      chrome.runtime.sendMessage({ type: "nexa-download-list", urls: [...new Set(urls)] });
+      sendMessageSafe({ type: "nexa-download-list", urls: [...new Set(urls)] });
     }
   });
 
-  setInterval(() => { onNav(); poll(); }, 2000);
+  pollTimer = setInterval(() => { if (nexaStopped) return; onNav(); poll(); }, 2000);
   setTimeout(poll, 600);
   poll();
 })();

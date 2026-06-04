@@ -6,9 +6,30 @@
 #include <QDateTime>
 #include <QHash>
 #include <QSet>
+#include <QList>
 #include <limits>
+#include <algorithm>
 
 namespace nexa {
+
+// Two Netscape cookie domains "overlap" when some single host would be sent BOTH
+// (so they are true duplicates to collapse). A dot-prefixed domain matches itself
+// and all subdomains; a host-only domain matches only that exact host. Disjoint
+// siblings (e.g. www.x.com vs api.x.com) do NOT overlap and must both survive.
+static bool domainsOverlap(const QString &da, const QString &db)
+{
+    const bool dotA = da.startsWith(QLatin1Char('.'));
+    const bool dotB = db.startsWith(QLatin1Char('.'));
+    const QString a = dotA ? da.mid(1) : da;
+    const QString b = dotB ? db.mid(1) : db;
+    if (a.compare(b, Qt::CaseInsensitive) == 0) return true;
+    auto isSub = [](const QString &child, const QString &parent) {
+        return child.endsWith(QLatin1Char('.') + parent, Qt::CaseInsensitive);
+    };
+    if (dotA && isSub(b, a)) return true;   // b is a subdomain covered by dotted a
+    if (dotB && isSub(a, b)) return true;   // a is a subdomain covered by dotted b
+    return false;
+}
 
 QByteArray CookieFile::dedupe(const QByteArray &netscapeText)
 {
@@ -23,12 +44,9 @@ QByteArray CookieFile::dedupe(const QByteArray &netscapeText)
         return d.size() * 2 + (hostOnly ? 1 : 0);
     };
 
-    struct Pick { int idx; int spec; qint64 exp; };
-    QHash<QString, Pick> bestByName;   // cookie name -> chosen line
-    QList<int> dataLineForName;        // first-seen order of names (output order)
-    QHash<QString, int> orderIndex;
-
-    // Pass 1: decide the winner for each duplicated name.
+    // Pass 1: collect every cookie line as a record.
+    struct Rec { int idx; QString domain; QString path; QString name; int spec; qint64 exp; };
+    QVector<Rec> recs;
     for (int i = 0; i < rawLines.size(); ++i) {
         QString line = QString::fromUtf8(rawLines[i]);
         while (line.endsWith(QLatin1Char('\r'))) line.chop(1);
@@ -44,58 +62,55 @@ QByteArray CookieFile::dedupe(const QByteArray &netscapeText)
         const QStringList f = body.split(QLatin1Char('\t'), Qt::KeepEmptyParts);
         if (f.size() != 7)
             continue;       // leave malformed lines for parse() to reject later
-        const QString domain = f.at(0);
-        const QString name   = f.at(5);
-        const qint64  exp    = f.at(4).toLongLong();
-        const int     spec   = specificity(domain);
+        const qint64 exp = f.at(4).toLongLong();
         // expiry 0 == session cookie: treat as the freshest (still-live) value.
         const qint64 expKey = (exp == 0) ? std::numeric_limits<qint64>::max() : exp;
-        auto it = bestByName.find(name);
-        if (it == bestByName.end()) {
-            bestByName.insert(name, {i, spec, expKey});
-            orderIndex.insert(name, dataLineForName.size());
-            dataLineForName.append(i);
-        } else if (spec > it->spec || (spec == it->spec && expKey >= it->exp)) {
-            *it = {i, spec, expKey};   // more specific, or equally specific but fresher
-        }
+        recs.append({ i, f.at(0), f.at(2), f.at(5), specificity(f.at(0)), expKey });
     }
 
-    // Pass 2: re-emit. Comments/blank lines pass through; for cookie lines, emit a
-    // name only once (its winning line) at the position it first appeared.
-    QByteArray out;
-    QSet<QString> emitted;
-    for (int i = 0; i < rawLines.size(); ++i) {
-        QString line = QString::fromUtf8(rawLines[i]);
-        bool hadCR = false;
-        while (line.endsWith(QLatin1Char('\r'))) { line.chop(1); hadCR = true; }
-        Q_UNUSED(hadCR);
+    // Group TRUE duplicates: same name + path + OVERLAPPING domain. Within each
+    // group keep the most-specific, then freshest, line. Disjoint same-name
+    // cookies (different non-overlapping subdomains) stay separate so neither is
+    // lost — keying on name alone previously deleted the cookie the target host
+    // needed (intermittent auth failures + jar corruption).
+    const int n = recs.size();
+    QVector<int> winnerOf(n, -1);
+    QVector<bool> taken(n, false);
+    for (int a = 0; a < n; ++a) {
+        if (taken[a]) continue;
+        QVector<int> members{ a };
+        taken[a] = true;
+        for (int b = a + 1; b < n; ++b) {
+            if (taken[b]) continue;
+            if (recs[b].name == recs[a].name && recs[b].path == recs[a].path
+                && domainsOverlap(recs[a].domain, recs[b].domain)) {
+                members.append(b);
+                taken[b] = true;
+            }
+        }
+        int win = members.first();
+        for (int m : members)
+            if (recs[m].spec > recs[win].spec
+                || (recs[m].spec == recs[win].spec && recs[m].exp >= recs[win].exp))
+                win = m;
+        for (int m : members) winnerOf[m] = win;
+    }
+    QHash<int,int> winLineForIdx;   // raw-line idx -> winning raw-line idx
+    for (int k = 0; k < n; ++k)
+        winLineForIdx.insert(recs[k].idx, recs[winnerOf[k]].idx);
 
+    // Pass 2: re-emit. Comments/blanks/malformed pass through; a cookie line is
+    // kept only when it is its group's winner.
+    QByteArray out;
+    for (int i = 0; i < rawLines.size(); ++i) {
         auto passthrough = [&]() {
             out += rawLines[i];
             if (i != rawLines.size() - 1) out += '\n';
         };
-
-        if (line.trimmed().isEmpty()) { passthrough(); continue; }
-        QString body = line;
-        bool httpOnly = false;
-        if (body.startsWith(QLatin1Char('#'))) {
-            if (body.startsWith(QStringLiteral("#HttpOnly_"))) {
-                httpOnly = true;
-                body = body.mid(QStringLiteral("#HttpOnly_").size());
-            } else { passthrough(); continue; }   // comment header preserved
-        }
-        const QStringList f = body.split(QLatin1Char('\t'), Qt::KeepEmptyParts);
-        if (f.size() != 7) { passthrough(); continue; }
-        const QString name = f.at(5);
-        const auto it = bestByName.constFind(name);
-        if (it == bestByName.constEnd() || it->idx != i)
-            continue;                              // a duplicate that lost — drop it
-        if (emitted.contains(name))
-            continue;
-        emitted.insert(name);
-        Q_UNUSED(httpOnly);
-        out += rawLines[i];
-        if (i != rawLines.size() - 1) out += '\n';
+        const auto it = winLineForIdx.constFind(i);
+        if (it == winLineForIdx.constEnd()) { passthrough(); continue; }  // not a cookie line
+        if (it.value() != i) continue;                                    // a duplicate that lost
+        passthrough();
     }
     return out;
 }
@@ -296,22 +311,38 @@ QByteArray CookieFile::cookieHeaderFor(const QVector<Cookie> &jar, const QUrl &u
                reqPath.at(cookiePath.length()) == QLatin1Char('/');
     };
 
-    QByteArray header;
+    // Collect matching cookies, de-duplicating by NAME so a jar that was NOT run
+    // through dedupe() (e.g. a user-supplied cookies.txt via Site Logins) can't
+    // emit two values for the same name (`access_token=STALE; access_token=NEW`),
+    // which makes a server honour the stale one and bounce to login. Keep the
+    // most-specific match (host-only domain, then longer path).
+    struct Pick { QByteArray value; int score; int order; };
+    QHash<QString, Pick> best;
+    int seen = 0;
     for (const Cookie &c : jar) {
-        if (c.isExpired(nowEpoch))
-            continue;
-        if (!domainApplies(host, c))
-            continue;
-        if (!pathMatches(urlPath, c.path))
-            continue;
-        if (c.secure && !isHttps)
-            continue;   // never leak a Secure cookie over http
-
+        if (c.isExpired(nowEpoch))      continue;
+        if (!domainApplies(host, c))    continue;
+        if (!pathMatches(urlPath, c.path)) continue;
+        if (c.secure && !isHttps)       continue;   // never leak a Secure cookie over http
+        const bool hostOnly = !c.domain.startsWith(QLatin1Char('.'));
+        const int score = (hostOnly ? 1'000'000 : 0) + c.domain.size() * 1000 + c.path.size();
+        auto it = best.find(c.name);
+        if (it == best.end())
+            best.insert(c.name, { c.value.toUtf8(), score, seen++ });
+        else if (score > it->score)
+            *it = { c.value.toUtf8(), score, it->order };
+    }
+    // Emit in first-seen order for stable output.
+    QList<QString> names = best.keys();
+    std::sort(names.begin(), names.end(),
+              [&](const QString &a, const QString &b) { return best[a].order < best[b].order; });
+    QByteArray header;
+    for (const QString &n : names) {
         if (!header.isEmpty())
             header += "; ";
-        header += c.name.toUtf8();
+        header += n.toUtf8();
         header += '=';
-        header += c.value.toUtf8();
+        header += best[n].value;
     }
     return header;
 }

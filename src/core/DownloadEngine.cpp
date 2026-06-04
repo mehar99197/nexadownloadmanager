@@ -121,11 +121,19 @@ QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
 
 DownloadEngine::~DownloadEngine()
 {
-    qDeleteAll(m_tasks);
-    m_tasks.clear();
+    // Destroy everything that might touch the engine/DB on teardown BEFORE the DB
+    // is freed. These are QObject children, so Qt would otherwise delete them
+    // AFTER this body runs — i.e. after `delete m_db` — and a grabber/torrent
+    // emitting a final state or running a pending callback would hit a freed DB.
+    qDeleteAll(m_tasks);            m_tasks.clear();
+    qDeleteAll(m_grabbers);        m_grabbers.clear();
+    qDeleteAll(m_siteVideos);     m_siteVideos.clear();
+    delete m_torrents;             m_torrents = nullptr;
+    delete m_ai;                   m_ai = nullptr;
     if (m_db) {
         m_db->close();
         delete m_db;
+        m_db = nullptr;
     }
 }
 
@@ -184,12 +192,17 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 const HeaderList &headers, const QString &suggestedName,
-                                const QString &siteFormat, bool playlist)
+                                const QString &siteFormat, bool playlist, bool userInitiated)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
 
     const int id = m_db->nextId();
+    // IDM-style: hold an externally-added download for confirmation instead of
+    // starting it. Torrents/magnets are excluded (they're add-and-seed and don't
+    // map cleanly onto the held flow); the manual New Download dialog passes
+    // userInitiated=true because the user already confirmed there.
+    const bool hold = m_confirmBeforeStart && !userInitiated;
 
     // Resolve domain-scoped auth for this URL ONCE, into the two forms the
     // download classes already understand: finished yt-dlp CLI flags and
@@ -227,6 +240,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
         connect(g, &YtDlpGrabber::renamed,      this, &DownloadEngine::taskRenamed);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
         emit taskAdded(id);
         g->start();
         return id;
@@ -257,7 +271,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
             return id;
         }
 
-        if (!m_torrents->add(id, asText, dir)) {      // magnet or local .torrent
+        if (!m_torrents || !m_torrents->add(id, asText, dir)) {   // magnet or local .torrent
             m_torrentIds.remove(id);
             return -1;
         }
@@ -287,6 +301,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         connect(g, &HlsGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &HlsGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &HlsGrabber::finished,     this, &DownloadEngine::taskFinished);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
         emit taskAdded(id);
         g->start();
         return id;
@@ -309,10 +324,69 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     m_tasks.insert(id, t);
     wireTask(t);
 
+    if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
     emit taskAdded(id);
     m_pending.append(id);   // honour the concurrency limit instead of starting now
     schedule();
     return id;
+}
+
+// ---- IDM-style held-download confirmation actions -------------------------
+
+void DownloadEngine::startHeld(int id)
+{
+    if (!m_held.remove(id))
+        return;
+    m_resolvedNames.remove(id);
+    emit taskAdded(id);                 // the row appears now, on confirmation
+    if (m_tasks.contains(id)) {          // plain HTTP/FTP
+        m_pending.append(id);
+        schedule();
+    } else if (auto *g = m_grabbers.value(id)) {     // HLS
+        g->start();
+    } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp site video
+        y->start();
+    }
+}
+
+void DownloadEngine::holdLater(int id)
+{
+    if (!m_held.remove(id))
+        return;
+    m_resolvedNames.remove(id);
+    emit taskAdded(id);                 // row appears, but left paused/idle
+    emit taskStateChanged(id, DownloadState::Paused, QStringLiteral("queued"));
+}
+
+void DownloadEngine::cancelHeld(int id)
+{
+    if (!m_held.remove(id))
+        return;
+    m_resolvedNames.remove(id);
+    // Destroy the created-but-never-started object; no row was ever emitted.
+    if (auto *t = m_tasks.take(id))       t->deleteLater();
+    if (auto *g = m_grabbers.take(id))    g->deleteLater();
+    if (auto *y = m_siteVideos.take(id))  y->deleteLater();
+    m_playlistIds.remove(id);
+}
+
+void DownloadEngine::setSaveLocation(int id, const QString &folder, const QString &fileName)
+{
+    const QString f = folder.trimmed();
+    if (f.isEmpty())
+        return;
+    QDir().mkpath(f);
+    if (auto *t = m_tasks.value(id)) {               // HTTP/FTP: full path
+        const QString name = fileName.trimmed().isEmpty()
+            ? QFileInfo(t->savePath()).fileName() : fileName.trimmed();
+        t->setSavePath(QDir(f).filePath(name));
+    } else if (auto *g = m_grabbers.value(id)) {     // HLS: full path
+        const QString name = fileName.trimmed().isEmpty()
+            ? QFileInfo(g->savePath()).fileName() : fileName.trimmed();
+        g->setSavePath(QDir(f).filePath(name));
+    } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp: redirect the output dir
+        y->setOutputDir(f);
+    }
 }
 
 void DownloadEngine::wireTask(DownloadTask *t)
@@ -419,6 +493,13 @@ void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &sa
             return;
         }
         const QByteArray data = reply->readAll();
+        // Bound the body: a real .torrent is tiny; anything huge is a hostile/wrong
+        // response we shouldn't buffer or hand to libtorrent.
+        if (data.size() > 16 * 1024 * 1024) {
+            emit taskStateChanged(id, DownloadState::Error, QStringLiteral(".torrent too large"));
+            m_torrentIds.remove(id);
+            return;
+        }
         // A .torrent is a bencoded dictionary, so it must begin with 'd'. This
         // rejects an HTML error/login page served with a 200.
         if (!data.startsWith('d')) {
@@ -438,6 +519,10 @@ void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &sa
         }
         f.write(data);
         f.close();
+        if (!m_torrents) {                         // session torn down meanwhile
+            m_torrentIds.remove(id);
+            return;
+        }
         if (!m_torrents->add(id, tmp, saveDir))    // add() emits its own Error on failure
             m_torrentIds.remove(id);
     });
@@ -454,6 +539,7 @@ QString DownloadEngine::nameOf(int id) const
 
 DownloadState DownloadEngine::stateOf(int id) const
 {
+    if (m_held.contains(id)) return DownloadState::Paused;   // awaiting confirm prompt
     if (auto *t = m_tasks.value(id)) return t->state();
     if (auto *g = m_grabbers.value(id)) return g->state();
     if (auto *y = m_siteVideos.value(id)) return y->state();
@@ -472,12 +558,67 @@ QString DownloadEngine::hostOf(int id) const
     return h.isEmpty() ? QStringLiteral("local file") : h;
 }
 
+QString DownloadEngine::savePathOf(int id) const
+{
+    if (auto *t = m_tasks.value(id)) return t->savePath();
+    if (auto *g = m_grabbers.value(id)) return g->savePath();
+    if (auto *y = m_siteVideos.value(id)) return y->savePath();
+    return QString();
+}
+
 QString DownloadEngine::urlOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->url().toString();
     if (auto *g = m_grabbers.value(id)) return g->url().toString();
     if (auto *y = m_siteVideos.value(id)) return y->url().toString();
     return QString();   // torrents have no single source URL
+}
+
+// Lightweight pre-download probe so the confirm prompt can show the REAL filename
+// (from Content-Disposition or the final redirected URL) instead of a URL token —
+// just like IDM. Only meaningful for plain HTTP downloads (grabbers name videos
+// from their title). Sensitive headers (Cookie/Authorization) are deliberately
+// NOT sent on this throwaway request, so a cross-host redirect can't leak them.
+void DownloadEngine::resolveName(int id)
+{
+    auto *t = m_tasks.value(id);
+    if (!t) {
+        // Grabbers (HLS/yt-dlp) name from their title, not Content-Disposition —
+        // nothing to probe, so signal "done" immediately (no prompt-open delay).
+        emit nameResolved(id, QString());
+        return;
+    }
+    QNetworkRequest req(t->url());
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setRawHeader("Accept-Encoding", "identity");
+    req.setRawHeader("Range", "bytes=0-0");
+    for (const auto &h : t->headers()) {
+        const QByteArray l = h.first.toLower();
+        if (l == "cookie" || l == "authorization")
+            continue;
+        req.setRawHeader(h.first, h.second);
+    }
+    QNetworkReply *reply = m_nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, id, reply]() {
+        reply->deleteLater();
+        if (!m_held.contains(id))
+            return;   // user already started/cancelled it
+        QString name = DownloadTask::filenameFromContentDisposition(
+            reply->rawHeader("Content-Disposition"));
+        if (name.isEmpty()) {
+            const QString fn = QFileInfo(reply->url().path()).fileName();
+            if (fn.contains(QLatin1Char('.')))   // a real filename, not a bare token
+                name = fn;
+        }
+        if (!name.isEmpty()) {
+            m_resolvedNames.insert(id, name);   // remembered so the prompt opens with it
+            emit nameResolved(id, name);
+        } else {
+            emit nameResolved(id, QString());   // probe done, nothing better than the token
+        }
+    });
 }
 
 void DownloadEngine::reorderQueue(const QList<int> &idsInDisplayOrder)
@@ -618,7 +759,7 @@ void DownloadEngine::loadPersisted()
         t->setRateLimiter(m_limiter);
         t->setNameResolver([this](const QString &name) { return pathForName(name); });
         if (!rec.segments.isEmpty())
-            t->restore(rec.total, rec.segments);
+            t->restore(rec.total, rec.segments, rec.rangesSupported);
         m_tasks.insert(rec.id, t);
         wireTask(t);
         emit taskAdded(rec.id);
@@ -662,6 +803,18 @@ QStringList DownloadEngine::expandPattern(const QString &token)
     return out;
 }
 
+// Schemes accepted from UNTRUSTED, multi-token entry points (the LAN dashboard
+// and the AI command). Whole-string validation upstream is not enough: addBatch
+// splits on whitespace, so each expanded token must be re-checked here. Notably
+// NOT file:// — a remote client must never make Nexa read a local file. (The
+// trusted local UI may still hand addDownload() a local .torrent directly.)
+static bool isAllowedRemoteScheme(const QUrl &url)
+{
+    const QString s = url.scheme().toLower();
+    return s == QStringLiteral("http") || s == QStringLiteral("https")
+        || s == QStringLiteral("magnet");
+}
+
 QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &headers)
 {
     QList<int> ids;
@@ -670,6 +823,8 @@ QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &heade
     for (const QString &token : tokens) {
         for (const QString &expanded : expandPattern(token)) {
             const QUrl url = QUrl::fromUserInput(expanded);
+            if (!url.isValid() || !isAllowedRemoteScheme(url))
+                continue;   // drop file:// and any non-network token per-item
             const int id = addDownload(url, QString(), headers);
             if (id >= 0)
                 ids.append(id);
@@ -714,6 +869,8 @@ void DownloadEngine::runAiCommand(const QString &naturalLanguage)
             if (u.isEmpty())
                 continue;
             const QUrl url = QUrl::fromUserInput(u);
+            if (!url.isValid() || !isAllowedRemoteScheme(url))
+                continue;   // the model's output is untrusted — never file:// etc.
             if (when.isValid() && when > QDateTime::currentDateTime())
                 scheduleDownload(url, when);
             else

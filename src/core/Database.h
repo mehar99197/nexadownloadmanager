@@ -16,6 +16,7 @@ struct TaskRecord {
     QString              savePath;
     qint64               total = -1;
     DownloadState        state = DownloadState::Queued;
+    bool                 rangesSupported = false;
     QVector<SegmentInfo> segments;
 };
 

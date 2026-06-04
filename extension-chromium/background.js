@@ -198,6 +198,10 @@ async function listFormatsCached(url) {
 
 // ---- Messages from popup / content scripts -------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Only act on messages from THIS extension's own content scripts/pages. A
+  // different extension (or anything without our id) is ignored — these handlers
+  // drive downloads and export cookies, so the origin must be trusted.
+  if (!sender || sender.id !== chrome.runtime.id) return;
   (async () => {
     const tab = sender.tab || (await activeTab());
     if (msg.type === "nexa-download") {
@@ -264,9 +268,14 @@ async function buildQualities(tab) {
 // Fetch an HLS playlist and, if it's a master, return its variant streams.
 async function fetchHlsVariants(url) {
   try {
+    // Only http(s) playlist URLs (sniffed from the page's own requests); never
+    // let a planted file:/blob:/other URL through this privileged fetch.
+    const scheme = (new URL(url)).protocol;
+    if (scheme !== "http:" && scheme !== "https:") return null;
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) return null;   // a 403/redirect HTML body must not be parsed as a playlist
     const text = await res.text();
+    if (text.length > 4 * 1024 * 1024) return null;      // a real master playlist is tiny
     if (!/#EXTM3U/.test(text)) return null;              // not an HLS playlist at all
     if (!/#EXT-X-STREAM-INF/i.test(text)) return null;   // media playlist, not a master
     const lines = text.split("\n");

@@ -51,6 +51,7 @@ public:
     int           id()       const { return m_id; }
     QUrl          url()      const { return m_url; }
     QString       savePath() const { return m_savePath; }
+    void          setOutputDir(const QString &d) { m_dir = d; }   // before start only
     QString       fileName() const;
     DownloadState state()    const { return m_state; }
 

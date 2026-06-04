@@ -13,6 +13,9 @@
 #include <QHostInfo>
 #include <QNetworkInterface>
 #include <QUuid>
+#ifndef _WIN32
+#include <unistd.h>   // isatty: hide the dashboard token in non-interactive output
+#endif
 #include <QLocalSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -104,125 +107,134 @@ int main(int argc, char *argv[])
     // Modern dark theme — deep navy canvas with a soft glow, accent-tinted
     // controls, and color-coded rows. Mirrors the redesigned mockup.
     app.setStyleSheet(QStringLiteral(R"(
-        /* ===== Flat dark dashboard ===== */
-        QWidget { background: #1a1a1a; color: #cccccc; font-size: 13px; }
+        /* ===== NexaDL dark-slate theme (cyan -> purple, matches the logo) ===== */
+        QWidget { background: #14161b; color: #cfd6e0; font-size: 13px; }
         QLabel { background: transparent; }
-        #Root { background: #1a1a1a; }
+        #Root { background: #14161b; }
 
         /* ---- Header bar ---- */
-        #HeaderBar { background: #111111; border-bottom: 1px solid #2a2a2a; }
-        #BrandLogo { background: #ffffff; color: #000000; border-radius: 6px;
-                     font-size: 16px; font-weight: 700; }
-        #BrandTitle { color: #ffffff; font-size: 14px; font-weight: 500; }
-        #Breadcrumb { color: #666666; font-size: 13px; }
-        #IconBtn { background: transparent; color: #888888; border: 1px solid #2a2a2a;
-                   border-radius: 6px; padding: 6px 9px; font-size: 14px; min-width: 16px; }
-        #IconBtn:hover { background: #222222; color: #ffffff; border-color: #3a3a3a; }
-        #Primary { background: #0d6efd; color: #ffffff; border: 0; border-radius: 6px;
-                   padding: 7px 14px; font-size: 12px; font-weight: 500; }
-        #Primary:hover { background: #2b7dfd; }
-        #Primary:pressed { background: #0b5ed7; }
-        /* Header "New Download" — dark, outlined (matches the mock). */
-        #NewDl { background: #1f1f1f; color: #ffffff; border: 1px solid #333333;
-                 border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 500; }
-        #NewDl:hover { background: #2a2a2a; border-color: #3a3a3a; }
-        #NewDl:pressed { background: #161616; }
+        #HeaderBar { background: #0e1014; border-bottom: 1px solid #1f242c; }
+        #BrandLogo { background: transparent; }
+        #BrandTitle { color: #f0f4f9; font-size: 14px; font-weight: 600; }
+        #Breadcrumb { color: #5c6675; font-size: 13px; }
+        #IconBtn { background: transparent; color: #8a94a3; border: 1px solid #262b34;
+                   border-radius: 8px; padding: 6px 9px; font-size: 14px; min-width: 16px; }
+        #IconBtn:hover { background: #1b2029; color: #67e8f9; border-color: #2e3a44; }
+        #Primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                       stop:0 #22d3ee, stop:1 #8b5cf6);
+                   color: #08121a; border: 0; border-radius: 8px;
+                   padding: 7px 14px; font-size: 12px; font-weight: 700; }
+        #Primary:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                       stop:0 #4fe0f5, stop:1 #a78bfa); }
+        #Primary:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                       stop:0 #15b8d6, stop:1 #7c3aed); }
+        /* Header "New Download" — the hero action: cyan->purple gradient. */
+        #NewDl { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                       stop:0 #22d3ee, stop:1 #8b5cf6);
+                 color: #08121a; border: 0; border-radius: 8px;
+                 padding: 7px 15px; font-size: 12px; font-weight: 700; }
+        #NewDl:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                       stop:0 #4fe0f5, stop:1 #a78bfa); }
+        #NewDl:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                       stop:0 #15b8d6, stop:1 #7c3aed); }
 
         /* ---- Metrics bar ---- */
-        #MetricsBar { background: #161616; border-bottom: 1px solid #2a2a2a; }
-        #Metric { background: transparent; border-left: 1px solid #222222; }
+        #MetricsBar { background: #16191f; border-bottom: 1px solid #1f242c; }
+        #Metric { background: transparent; border-left: 1px solid #20252e; }
         #MetricFirst { background: transparent; }
-        #MetricLabel { color: #555555; font-size: 10px; font-weight: 500; }
-        #MetricValue { color: #ffffff; font-size: 22px; font-weight: 600; }
-        #MetricSub { color: #444444; font-size: 11px; }
-        #MetricSub[good="true"] { color: #22c55e; }
+        #MetricLabel { color: #5c6675; font-size: 10px; font-weight: 600; }
+        #MetricValue { color: #f0f4f9; font-size: 22px; font-weight: 600; }
+        #MetricSub { color: #46505e; font-size: 11px; }
+        #MetricSub[good="true"] { color: #34d399; }
 
         /* ---- Toolbar ---- */
-        #Toolbar { background: #111111; border-bottom: 1px solid #2a2a2a; }
-        #Ghost { background: transparent; color: #666666; border: 1px solid #2a2a2a;
-                 border-radius: 6px; padding: 6px 13px; font-size: 12px; font-weight: 500; }
-        #Ghost:hover { background: #222222; color: #ffffff; }
-        QLineEdit#Search { background: #262626; border: 1px solid #2f2f2f; border-radius: 6px;
-                    padding: 6px 10px 6px 28px; color: #ffffff;
-                    selection-background-color: #0d6efd; }
-        QLineEdit#Search:focus { border-color: #0d6efd; background: #1f1f1f; }
+        #Toolbar { background: #0e1014; border-bottom: 1px solid #1f242c; }
+        #Ghost { background: transparent; color: #8a94a3; border: 1px solid #262b34;
+                 border-radius: 8px; padding: 6px 13px; font-size: 12px; font-weight: 500; }
+        #Ghost:hover { background: #1b2029; color: #e8edf4; border-color: #2e3a44; }
+        QLineEdit#Search { background: #1b1f27; border: 1px solid #262b34; border-radius: 8px;
+                    padding: 6px 10px 6px 28px; color: #e8edf4;
+                    selection-background-color: #22d3ee; selection-color: #08121a; }
+        QLineEdit#Search:focus { border-color: #22d3ee; background: #161a21; }
 
         /* ---- Generic controls (dialogs) ---- */
-        QPushButton { background: #1f1f1f; color: #cccccc; border: 1px solid #2a2a2a;
-                      border-radius: 6px; padding: 7px 14px; font-weight: 500; }
-        QPushButton:hover { background: #2a2a2a; color: #ffffff; }
-        QPushButton:pressed { background: #161616; }
-        QPushButton#Primary { background: #0d6efd; color: #ffffff; border: 0; }
-        QPushButton#Primary:hover { background: #2b7dfd; }
-        QLineEdit { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
-                    padding: 7px 10px; color: #ffffff; selection-background-color: #0d6efd; }
-        QLineEdit:focus { border-color: #0d6efd; }
+        QPushButton { background: #1b1f27; color: #cfd6e0; border: 1px solid #262b34;
+                      border-radius: 8px; padding: 7px 14px; font-weight: 500; }
+        QPushButton:hover { background: #222732; color: #ffffff; border-color: #2e3a44; }
+        QPushButton:pressed { background: #161a21; }
+        QPushButton#Primary { color: #08121a; border: 0; }
+        QLineEdit { background: #161a21; border: 1px solid #262b34; border-radius: 8px;
+                    padding: 7px 10px; color: #e8edf4;
+                    selection-background-color: #22d3ee; selection-color: #08121a; }
+        QLineEdit:focus { border-color: #22d3ee; }
 
         /* ---- Per-row icon-action buttons ---- */
-        QPushButton[ActIcon="true"] { background: transparent; color: #555555;
-                      border: 1px solid #2a2a2a; border-radius: 4px; padding: 0; font-size: 11px; }
-        QPushButton[ActIcon="true"]:hover { background: #222222; color: #ffffff; border-color: #3a3a3a; }
+        QPushButton[ActIcon="true"] { background: transparent; color: #5c6675;
+                      border: 1px solid #262b34; border-radius: 6px; padding: 0; font-size: 11px; }
+        QPushButton[ActIcon="true"]:hover { background: #1b2029; color: #67e8f9; border-color: #2e3a44; }
 
         /* ---- Download list ---- */
-        QLabel#f_name { color: #ffffff; font-weight: 500; font-size: 13px; }
-        QLabel#f_host { color: #444444; font-size: 10px; }
-        QLabel#p_pct  { color: #555555; font-size: 11px; }
+        QLabel#f_name { color: #f0f4f9; font-weight: 500; font-size: 13px; }
+        QLabel#f_host { color: #46505e; font-size: 10px; }
+        QLabel#p_pct  { color: #5c6675; font-size: 11px; }
 
         QTableWidget { background: transparent; border: 0; outline: 0; }
-        QTableWidget::item { border: 0; border-bottom: 1px solid #1f1f1f; padding: 0; }
-        QTableWidget::item:hover { background: #1e1e1e; }
-        /* Active/selected row: blue-tinted band with a blue top+bottom rule. */
-        QTableWidget::item:selected { background: #141420; color: #ffffff;
-                    border-top: 1px solid #1e3a5f; border-bottom: 1px solid #1e3a5f; }
-        QHeaderView::section { background: #1a1a1a; color: #444444; padding: 8px 10px;
-                       border: 0; border-bottom: 1px solid #222222;
+        QTableWidget::item { border: 0; border-bottom: 1px solid #1b1f27; padding: 0; }
+        QTableWidget::item:hover { background: #172230; }
+        /* Active/selected row: cyan-tinted band with a cyan top+bottom rule. */
+        QTableWidget::item:selected { background: #122029; color: #ffffff;
+                    border-top: 1px solid #134b5a; border-bottom: 1px solid #134b5a; }
+        QHeaderView::section { background: #14161b; color: #46505e; padding: 8px 10px;
+                       border: 0; border-bottom: 1px solid #1f242c;
                        font-size: 10px; font-weight: 600; }
 
-        QProgressBar { background: #222222; border: 0; border-radius: 2px; }
-        QProgressBar::chunk { background: #0d6efd; border-radius: 2px; }
+        QProgressBar { background: #1b222c; border: 0; border-radius: 3px; }
+        QProgressBar::chunk { border-radius: 3px;
+                       background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                       stop:0 #22d3ee, stop:1 #8b5cf6); }
 
         /* ---- Status badges (colour via the "st" property) ---- */
-        QLabel#s_badge { font-size: 10px; font-weight: 700; border-radius: 4px;
+        QLabel#s_badge { font-size: 10px; font-weight: 700; border-radius: 5px;
                          padding: 3px 8px; }
-        QLabel#s_badge[st="active"] { background: #0d1a2e; color: #60a5fa; border: 1px solid #1e3a5f; }
-        QLabel#s_badge[st="paused"] { background: #1a1200; color: #fbbf24; border: 1px solid #3a2800; }
-        QLabel#s_badge[st="done"]   { background: #0a1a0a; color: #4ade80; border: 1px solid #1a3a1a; }
-        QLabel#s_badge[st="queued"] { background: #1a1a1a; color: #666666; border: 1px solid #2a2a2a; }
-        QLabel#s_badge[st="error"]  { background: #1a0a0a; color: #f87171; border: 1px solid #3a1a1a; }
+        QLabel#s_badge[st="active"] { background: #07232b; color: #22d3ee; border: 1px solid #0e4a57; }
+        QLabel#s_badge[st="paused"] { background: #221a05; color: #fbbf24; border: 1px solid #3a2c08; }
+        QLabel#s_badge[st="done"]   { background: #07241c; color: #34d399; border: 1px solid #0e4536; }
+        QLabel#s_badge[st="queued"] { background: #16191f; color: #6b7585; border: 1px solid #262b34; }
+        QLabel#s_badge[st="error"]  { background: #2a1116; color: #fb7185; border: 1px solid #4a1f27; }
 
         /* ---- Empty state ---- */
-        #EmptyTitle { color: #cccccc; font-size: 16px; font-weight: 600; }
-        #EmptyHint  { color: #555555; font-size: 12px; }
+        #EmptyTitle { color: #cfd6e0; font-size: 16px; font-weight: 600; }
+        #EmptyHint  { color: #5c6675; font-size: 12px; }
 
         /* ---- Footer ---- */
-        QStatusBar { background: #111111; border-top: 1px solid #1a1a1a; }
+        QStatusBar { background: #0e1014; border-top: 1px solid #1a1e25; }
         QStatusBar::item { border: 0; }
-        #FootStat { color: #555555; font-size: 11px; }
-        #FootVer  { color: #333333; font-size: 11px; }
+        #FootStat { color: #5c6675; font-size: 11px; }
+        #FootVer  { color: #3a4250; font-size: 11px; }
 
         /* ---- Scrollbars / menus / tooltips ---- */
         QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-        QScrollBar::handle:vertical { background: #2a2a2a; border-radius: 5px; min-height: 30px; }
-        QScrollBar::handle:vertical:hover { background: #3a3a3a; }
+        QScrollBar::handle:vertical { background: #262b34; border-radius: 5px; min-height: 30px; }
+        QScrollBar::handle:vertical:hover { background: #34506b; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a;
-                border-radius: 6px; padding: 5px; }
-        QMenu::item { padding: 6px 16px; border-radius: 4px; }
-        QMenu::item:selected { background: #222222; color: #ffffff; }
-        QMenu::separator { height: 1px; background: #2a2a2a; margin: 4px 8px; }
-        QToolTip { background: #161616; color: #cccccc; border: 1px solid #2a2a2a; padding: 4px 8px; }
+        QMenu { background: #16191f; color: #cfd6e0; border: 1px solid #262b34;
+                border-radius: 8px; padding: 5px; }
+        QMenu::item { padding: 6px 16px; border-radius: 6px; }
+        QMenu::item:selected { background: #1b2630; color: #67e8f9; }
+        QMenu::separator { height: 1px; background: #262b34; margin: 4px 8px; }
+        QToolTip { background: #16191f; color: #cfd6e0; border: 1px solid #262b34; padding: 4px 8px; }
 
         /* ---- Dialogs (details plate / settings) ---- */
-        QDialog { background: #1a1a1a; }
-        #Plate { background: #161616; border: 1px solid #2a2a2a; border-radius: 6px; }
-        #Dd_title { color: #ffffff; font-size: 15px; font-weight: 600; }
-        #Dd_host  { color: #666666; font-size: 11px; }
-        #Dd_seclabel { color: #666666; font-size: 11px; }
-        #Dd_barpct { color: #555555; font-size: 11px; }
-        QLabel[ddRole="label"] { color: #888888; font-size: 11px; }
-        QLabel[ddRole="value"] { color: #ffffff; font-size: 13px; }
-        #DdCancel { background: #1a0a0a; color: #f87171; border: 1px solid #3a1a1a; }
-        #DdCancel:hover { background: #2a1010; }
+        QDialog { background: #14161b; }
+        #Plate { background: #161922; border: 1px solid #242a33; border-radius: 10px; }
+        #Dd_title { color: #f0f4f9; font-size: 15px; font-weight: 600; }
+        #Dd_host  { color: #5c6675; font-size: 11px; }
+        #Dd_seclabel { color: #5c6675; font-size: 11px; }
+        #Dd_barpct { color: #5c6675; font-size: 11px; }
+        QLabel[ddRole="label"] { color: #8a94a3; font-size: 11px; }
+        QLabel[ddRole="value"] { color: #e8edf4; font-size: 13px; }
+        #DdCancel { background: #2a1116; color: #fb7185; border: 1px solid #4a1f27; }
+        #DdCancel:hover { background: #381620; }
     )"));
 
     qRegisterMetaType<nexa::DownloadState>("nexa::DownloadState");
@@ -280,6 +292,9 @@ int main(int argc, char *argv[])
     // subtitles, torrent limits, …) before anything runs. CLI flags below may
     // still override individual values for this session.
     nexa::SettingsDialog::loadInto(&engine);
+    // Scripted/batch CLI runs can't answer a confirmation prompt — never hold there.
+    if (batch)
+        engine.setConfirmBeforeStart(false);
     engine.loadPersisted();        // restore unfinished downloads from last run
 
     // Listen for downloads handed off by the browser extension via nexa-host.
@@ -336,6 +351,12 @@ int main(int argc, char *argv[])
             dashLan = true;
         } else if (arg.startsWith(QStringLiteral("--dashboard-token="))) {
             dashToken = arg.mid(18);
+            // A short operator-supplied token is brute-forceable on the LAN; refuse
+            // it and fall back to a strong random one rather than run weak.
+            if (!dashToken.isEmpty() && dashToken.size() < 16) {
+                qWarning() << "Nexa: --dashboard-token too short (<16 chars); using a random one";
+                dashToken.clear();
+            }
         } else if (arg == QStringLiteral("--ai-rename")) {
             engine.setAiRename(true);
         }
@@ -352,8 +373,21 @@ int main(int argc, char *argv[])
             const QString host = dashLan ? localIpv4() : QStringLiteral("127.0.0.1");
             const QString scheme = dashboard->isTls() ? QStringLiteral("https")
                                                        : QStringLiteral("http");
-            qInfo().noquote() << QStringLiteral("Nexa dashboard: %1://%2:%3/?token=%4")
-                                     .arg(scheme, host).arg(dashboard->port()).arg(dashToken);
+            const QString base = QStringLiteral("%1://%2:%3/").arg(scheme, host).arg(dashboard->port());
+            // Only print the secret token when stdout is an interactive terminal —
+            // not when redirected to a log file / journald, where anyone who can
+            // read the logs would gain full remote control.
+#ifdef _WIN32
+            const bool interactive = true;
+#else
+            const bool interactive = ::isatty(STDOUT_FILENO);
+#endif
+            if (interactive)
+                qInfo().noquote() << QStringLiteral("Nexa dashboard: ") + base
+                                     + QStringLiteral("?token=") + dashToken;
+            else
+                qInfo().noquote() << QStringLiteral("Nexa dashboard: ") + base
+                                     + QStringLiteral("  (token hidden in non-interactive output)");
             if (!dashLan)
                 qInfo().noquote() << "  (loopback only; pass --dashboard-lan to reach it from other devices)";
         } else {

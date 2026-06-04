@@ -38,6 +38,7 @@ public:
     int           id()        const { return m_id; }
     QUrl          url()       const { return m_url; }
     QString       savePath()  const { return m_savePath; }
+    void          setSavePath(const QString &p) { m_savePath = p; }   // before start only
     QString       fileName()  const;
     DownloadState state()     const { return m_state; }
 

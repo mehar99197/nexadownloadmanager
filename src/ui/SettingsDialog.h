@@ -32,6 +32,8 @@ private:
     QLineEdit      *m_dir = nullptr;
     QCheckBox      *m_categorize = nullptr;
     QCheckBox      *m_clipboard = nullptr;
+    QCheckBox      *m_confirmStart = nullptr;   // IDM-style ask-before-download
+    QCheckBox      *m_showComplete = nullptr;   // IDM-style completion prompt
     QSpinBox       *m_maxConc = nullptr;
     QSpinBox       *m_speedKB = nullptr;       // 0 = unlimited
     QSpinBox       *m_streamConc = nullptr;

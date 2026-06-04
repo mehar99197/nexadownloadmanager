@@ -11,6 +11,7 @@
 #include <QJsonValue>
 #include <QRegularExpression>
 #include <QUuid>
+#include <QCryptographicHash>
 #include <utility>
 
 namespace nexa {
@@ -43,9 +44,31 @@ bool AuthenticationManager::isExcludedHost(const QString &host)
            h.endsWith(QStringLiteral(".youtu.be"));
 }
 
+// The private 0700 directory where materialised cookie/bearer files live.
+static QString authDirPath()
+{
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (dir.isEmpty())
+        dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    if (dir.isEmpty())
+        return QString();
+    return dir + QStringLiteral("/nexa-auth");
+}
+
 AuthenticationManager::AuthenticationManager(QObject *parent)
     : QObject(parent)
 {
+    // Sweep cleartext cookie/bearer files a PREVIOUS session left behind after a
+    // crash or SIGKILL (a clean exit removes them in the destructor). They hold
+    // live session credentials and must not linger across runs.
+    const QString dir = authDirPath();
+    if (!dir.isEmpty()) {
+        QDir d(dir);
+        const auto stale = d.entryList({QStringLiteral("cookies-*.txt"),
+                                        QStringLiteral("ytauth-*.conf")}, QDir::Files);
+        for (const QString &f : stale)
+            QFile::remove(d.filePath(f));
+    }
 }
 
 AuthenticationManager::~AuthenticationManager()
@@ -110,10 +133,9 @@ AuthResult AuthenticationManager::registerCookieData(const QString &domain,
 
     // Private dir (0700) + file (0600), mirroring writeYtDlpAuthConfig, so a
     // session cookie is never briefly world-readable.
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    const QString dir = authDirPath();
     if (dir.isEmpty())
-        dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    dir += QStringLiteral("/nexa-auth");
+        return AuthResult::failure(AuthError::FileNotFound, QStringLiteral("no writable runtime dir"));
     QDir().mkpath(dir);
     QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
 
@@ -122,8 +144,9 @@ AuthResult AuthenticationManager::registerCookieData(const QString &domain,
     const QString path = dir + QStringLiteral("/cookies-")
                        + QUuid::createUuid().toString(QUuid::Id128)
                        + QStringLiteral(".txt");
+    QFile::remove(path);   // clear any pre-existing file/symlink at the path first
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::NewOnly))
         return AuthResult::failure(AuthError::FileNotFound, path);
     f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);   // lock before writing
     f.write(bytes);
@@ -394,19 +417,27 @@ HeaderList AuthenticationManager::headerAuthFor(const QUrl &url) const
 // registration, so embedding it in a quoted --add-header line is injection-safe.
 QString AuthenticationManager::writeYtDlpAuthConfig(const DomainAuth &a)
 {
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (dir.isEmpty())   // RuntimeLocation may be unset on some platforms
-        dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    dir += QStringLiteral("/nexa-auth");
+    const QString dir = authDirPath();
+    if (dir.isEmpty())
+        return QString();
     QDir().mkpath(dir);
     QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
 
     QString safeDomain = a.domain;
     safeDomain.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")), QStringLiteral("_"));
-    const QString path = dir + QStringLiteral("/ytauth-") + safeDomain + QStringLiteral(".conf");
+    // Append a short hash of the REAL domain so two distinct domains that sanitize
+    // to the same name (e.g. "a:b.com" and "a_b.com") never collide on one file.
+    const QString tag = QString::fromLatin1(
+        QCryptographicHash::hash(a.domain.toUtf8(), QCryptographicHash::Sha1).toHex().left(8));
+    const QString path = dir + QStringLiteral("/ytauth-") + safeDomain
+                       + QLatin1Char('-') + tag + QStringLiteral(".conf");
 
+    // The name is predictable; remove any pre-existing file/symlink and create
+    // fresh (NewOnly) so a planted symlink can't redirect this bearer-token write
+    // onto another file. The 0700 dir already blocks other users.
+    QFile::remove(path);
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::NewOnly))
         return QString();
     // Lock down BEFORE writing the secret so it is never briefly world-readable.
     f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);

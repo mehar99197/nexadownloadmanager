@@ -56,6 +56,8 @@ private slots:
     void setClipboardMonitoring(bool on);   // toggle IDM-style link capture (persisted)
     void onClipboardUrl(const QUrl &url);   // a download-able URL was copied; offer it
     void openDetails(int id);        // open or raise the per-download details plate
+    void showConfirmPrompt(int id);  // IDM-style "ask before download" for a held add
+    void showCompleteDialog(int id); // IDM-style "download complete" prompt
     void applyFilter(const QString &text);
     void showFilterMenu();           // toolbar "Filter" — limit the list by state
     void showSortMenu();             // toolbar "Sort" — reorder the visible rows
