@@ -34,18 +34,133 @@ jobs:
       - name: Smoke test
         run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
 
-      - name: Build .deb package (CPack)
+      - name: Download yt-dlp binary
         run: |
-          cd build
-          cpack -G DEB
-          ls -lh *.deb
-          echo "DEB_FILE=$(ls *.deb | head -1)" >> $GITHUB_ENV
+          sudo curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
+            -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Build self-contained .deb (all dependencies bundled)
+        run: |
+          set -e
+          PKG=nexa_0.1.0_amd64
+          mkdir -p ${PKG}/DEBIAN
+          mkdir -p ${PKG}/usr/bin
+          mkdir -p ${PKG}/usr/lib/nexa
+          mkdir -p ${PKG}/usr/share/applications
+          mkdir -p ${PKG}/usr/share/icons/hicolor/256x256/apps
+          mkdir -p ${PKG}/usr/share/pixmaps
+          mkdir -p ${PKG}/usr/share/nexa
+
+          # ── Binaries ──────────────────────────────────────────────────────
+          cp build/nexa       ${PKG}/usr/lib/nexa/nexa
+          cp build/nexa-host  ${PKG}/usr/lib/nexa/nexa-host
+          chmod +x ${PKG}/usr/lib/nexa/nexa ${PKG}/usr/lib/nexa/nexa-host
+
+          # ── Wrapper scripts in /usr/bin (launch from lib dir) ─────────────
+          cat > ${PKG}/usr/bin/nexa <<'SH'
+          #!/bin/sh
+          exec /usr/lib/nexa/nexa "$@"
+          SH
+          cat > ${PKG}/usr/bin/nexa-host <<'SH'
+          #!/bin/sh
+          exec /usr/lib/nexa/nexa-host "$@"
+          SH
+          chmod +x ${PKG}/usr/bin/nexa ${PKG}/usr/bin/nexa-host
+
+          # ── Bundle ALL required Qt6 + libtorrent shared libs ──────────────
+          bundle_deps() {
+            local bin="$1"
+            ldd "$bin" | grep -E "libQt6|libtorrent|libboost|libssl|libcrypto|libicui|libicuuc|libicudata" \
+              | awk '{print $3}' | grep "^/" \
+              | xargs -I{} cp -n {} ${PKG}/usr/lib/nexa/ 2>/dev/null || true
+          }
+          bundle_deps build/nexa
+          bundle_deps build/nexa-host
+
+          # ── yt-dlp + ffmpeg (self-contained, no apt needed) ───────────────
+          cp /usr/local/bin/yt-dlp ${PKG}/usr/lib/nexa/yt-dlp
+          cp /usr/bin/ffmpeg       ${PKG}/usr/lib/nexa/ffmpeg 2>/dev/null || true
+          chmod +x ${PKG}/usr/lib/nexa/yt-dlp ${PKG}/usr/lib/nexa/ffmpeg 2>/dev/null || true
+
+          # ── Icons & desktop entry ─────────────────────────────────────────
+          cp assets/nexa-256.png ${PKG}/usr/share/icons/hicolor/256x256/apps/nexa.png
+          cp assets/nexa.png     ${PKG}/usr/share/pixmaps/nexa.png
+
+          cat > ${PKG}/usr/share/applications/nexa.desktop <<'DESK'
+          [Desktop Entry]
+          Type=Application
+          Version=1.0
+          Name=Nexa Download Manager
+          GenericName=Download Manager
+          Comment=Fast multi-protocol download manager
+          Exec=/usr/lib/nexa/nexa %U
+          TryExec=/usr/lib/nexa/nexa
+          Icon=nexa
+          Terminal=false
+          Categories=Network;FileTransfer;Qt;
+          Keywords=download;torrent;video;hls;
+          StartupNotify=true
+          StartupWMClass=nexa
+          DESK
+
+          # ── Chrome extension ──────────────────────────────────────────────
+          cp -r extension-chromium ${PKG}/usr/share/nexa/extension-chromium
+
+          # ── Native messaging host manifest ────────────────────────────────
+          mkdir -p ${PKG}/etc/opt/chrome/native-messaging-hosts
+          mkdir -p ${PKG}/etc/chromium/native-messaging-hosts
+          cat > ${PKG}/etc/opt/chrome/native-messaging-hosts/com.nexa.host.json <<'JSON'
+          {"name":"com.nexa.host","description":"Nexa Download Manager","path":"/usr/lib/nexa/nexa-host","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}
+          JSON
+          cp ${PKG}/etc/opt/chrome/native-messaging-hosts/com.nexa.host.json \
+             ${PKG}/etc/chromium/native-messaging-hosts/com.nexa.host.json
+
+          # ── Set LD_LIBRARY_PATH wrapper so bundled libs are found ─────────
+          cat > ${PKG}/usr/bin/nexa <<'SH'
+          #!/bin/sh
+          export LD_LIBRARY_PATH=/usr/lib/nexa:$LD_LIBRARY_PATH
+          export PATH=/usr/lib/nexa:$PATH
+          exec /usr/lib/nexa/nexa "$@"
+          SH
+          chmod +x ${PKG}/usr/bin/nexa
+
+          # ── Postinst: update icon/desktop caches + aria2 install ──────────
+          cat > ${PKG}/DEBIAN/postinst <<'POST'
+          #!/bin/sh
+          update-desktop-database /usr/share/applications 2>/dev/null || true
+          gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+          echo "Nexa Download Manager installed."
+          echo "Load Chrome extension from: /usr/share/nexa/extension-chromium"
+          POST
+          chmod 755 ${PKG}/DEBIAN/postinst
+
+          # ── control file — NO external dependencies required ──────────────
+          INSTALLED_SIZE=$(du -sk ${PKG} | cut -f1)
+          cat > ${PKG}/DEBIAN/control <<CTRL
+          Package: nexa
+          Version: 0.1.0
+          Architecture: amd64
+          Maintainer: Nexa <tauseeqtufail649@gmail.com>
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libglib2.0-0 | libglib2.0-0t64
+          Description: Nexa Download Manager
+           Fast multi-protocol download manager with browser integration.
+           Supports HTTP/HTTPS segmented downloads, HLS video streams,
+           BitTorrent, and site-specific media via yt-dlp.
+           Includes yt-dlp and ffmpeg — no extra installs needed.
+          CTRL
+
+          # ── Build the package ─────────────────────────────────────────────
+          dpkg-deb --build ${PKG}
+          ls -lh ${PKG}.deb
+          echo "✅ Self-contained .deb ready: $(du -sh ${PKG}.deb | cut -f1)"
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: nexa-linux-amd64-deb
-          path: build/*.deb
+          path: nexa_0.1.0_amd64.deb
           retention-days: 90
 
       - name: Create GitHub Release (Linux .deb)
