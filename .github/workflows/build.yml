@@ -10,7 +10,7 @@ on:
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
-    name: Build (Ubuntu + torrent)
+    name: Build + .deb package (Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,15 +20,62 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build \
             qt6-base-dev libqt6sql6-sqlite \
-            libtorrent-rasterbar-dev ffmpeg
+            libtorrent-rasterbar-dev \
+            ffmpeg yt-dlp aria2 \
+            dpkg-dev
 
       - name: Configure & Build
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr
           cmake --build build
 
       - name: Smoke test
         run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+
+      - name: Build .deb package (CPack)
+        run: |
+          cd build
+          cpack -G DEB
+          ls -lh *.deb
+          echo "DEB_FILE=$(ls *.deb | head -1)" >> $GITHUB_ENV
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexa-linux-amd64-deb
+          path: build/*.deb
+          retention-days: 90
+
+      - name: Create GitHub Release (Linux .deb)
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Nexa Download Manager — Build ${{ github.run_number }}"
+          body: |
+            ## Nexa Download Manager
+
+            ### Linux (.deb — Ubuntu/Debian/Kali):
+            ```bash
+            sudo dpkg -i nexa_*.deb
+            sudo apt-get install -f   # fix any missing deps
+            ```
+
+            ### Windows (.exe installer):
+            - Run `NexaSetup.exe` as administrator
+            - Load Chrome extension from `C:\Program Files\Nexa Download Manager\extension-chromium`
+
+            Built from: ${{ github.sha }}
+          files: |
+            build/*.deb
+            NexaSetup.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Windows self-contained installer via MSYS2/MinGW ──────────────────────
   # MSYS2 has pre-built Qt6 + libtorrent + ffmpeg — no vcpkg compile needed.
