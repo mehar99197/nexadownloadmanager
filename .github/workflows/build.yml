@@ -73,46 +73,30 @@ jobs:
           echo "Build OK"
 
       - name: Bundle app + Qt DLLs
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist
+          set -e
+          mkdir -p dist
+
           # Copy binaries
-          Copy-Item build\nexa.exe      dist\
-          Copy-Item build\nexa-host.exe dist\
+          cp build/nexa.exe      dist/
+          cp build/nexa-host.exe dist/
 
-          # Copy all required MinGW DLLs
-          $mingw = "C:\msys64\mingw64\bin"
-          $dlls = @(
-            "libgcc_s_seh-1.dll","libstdc++-6.dll","libwinpthread-1.dll",
-            "Qt6Core.dll","Qt6Gui.dll","Qt6Widgets.dll","Qt6Network.dll","Qt6Sql.dll",
-            "libssl-3-x64.dll","libcrypto-3-x64.dll",
-            "libtorrent-rasterbar.dll",
-            "libboost_system-mt.dll",
-            "libpcre2-16-0.dll","libzstd.dll","libzlib1.dll","zlib1.dll",
-            "libdouble-conversion.dll","libicudt75.dll","libicuin75.dll","libicuuc75.dll",
-            "libharfbuzz-0.dll","libmd4c.dll","libfreetype-6.dll","libpng16-16.dll",
-            "libbrotlidec.dll","libbrotlicommon.dll","libglib-2.0-0.dll",
-            "libintl-8.dll","libiconv-2.dll"
-          )
-          foreach ($dll in $dlls) {
-            $src = Join-Path $mingw $dll
-            if (Test-Path $src) {
-              Copy-Item $src dist\
-              Write-Host "  copied $dll"
-            }
-          }
+          # Use ldd to find all required DLLs automatically (no hardcoded paths)
+          echo "=== Collecting DLLs via ldd ==="
+          ldd build/nexa.exe | grep -i mingw64 | awk '{print $3}' | xargs -I{} cp -n {} dist/ 2>/dev/null || true
+          ldd build/nexa-host.exe | grep -i mingw64 | awk '{print $3}' | xargs -I{} cp -n {} dist/ 2>/dev/null || true
 
-          # Qt plugins
-          $qtplugins = "C:\msys64\mingw64\share\qt6\plugins"
-          New-Item -ItemType Directory -Force -Path dist\platforms
-          New-Item -ItemType Directory -Force -Path dist\sqldrivers
-          New-Item -ItemType Directory -Force -Path dist\styles
-          Copy-Item "$qtplugins\platforms\qwindows.dll"     dist\platforms\
-          Copy-Item "$qtplugins\sqldrivers\qsqlite.dll"    dist\sqldrivers\
-          if (Test-Path "$qtplugins\styles\qwindowsvistastyle.dll") {
-            Copy-Item "$qtplugins\styles\qwindowsvistastyle.dll" dist\styles\
-          }
-          Write-Host "Bundling done"
+          # Qt plugins (use MSYS2 path, works regardless of install location)
+          QTPLUGINS=$(qmake6 -query QT_INSTALL_PLUGINS 2>/dev/null || echo "/mingw64/share/qt6/plugins")
+          mkdir -p dist/platforms dist/sqldrivers dist/styles
+          cp "${QTPLUGINS}/platforms/qwindows.dll"  dist/platforms/ 2>/dev/null || \
+          cp /mingw64/share/qt6/plugins/platforms/qwindows.dll dist/platforms/
+          cp "${QTPLUGINS}/sqldrivers/qsqlite.dll"  dist/sqldrivers/ 2>/dev/null || \
+          cp /mingw64/share/qt6/plugins/sqldrivers/qsqlite.dll dist/sqldrivers/
+          cp /mingw64/share/qt6/plugins/styles/qwindowsvistastyle.dll dist/styles/ 2>/dev/null || true
+
+          echo "dist contents: $(ls dist/ | wc -l) files"
+          ls dist/*.dll | head -20
 
       - name: Bundle yt-dlp
         shell: pwsh
@@ -123,29 +107,27 @@ jobs:
           Write-Host "yt-dlp bundled"
 
       - name: Bundle ffmpeg
-        shell: pwsh
         run: |
-          Copy-Item "C:\msys64\mingw64\bin\ffmpeg.exe" dist\ -ErrorAction SilentlyContinue
-          if (-not (Test-Path dist\ffmpeg.exe)) {
-            Invoke-WebRequest `
-              -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" `
-              -OutFile ffmpeg.zip
-            Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
-            $bin = Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg_tmp | Select-Object -First 1
-            Copy-Item $bin.FullName dist\ffmpeg.exe
-            Remove-Item -Recurse -Force ffmpeg_tmp, ffmpeg.zip
-          }
-          Write-Host "ffmpeg bundled: $((Get-Item dist\ffmpeg.exe).Length/1MB) MB"
+          # Try MSYS2 ffmpeg first (already installed), else download static build
+          if [ -f /mingw64/bin/ffmpeg.exe ]; then
+            cp /mingw64/bin/ffmpeg.exe dist/
+            echo "ffmpeg bundled from MSYS2"
+          else
+            curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
+              -o ffmpeg.zip
+            unzip -j ffmpeg.zip "*/ffmpeg.exe" -d dist/
+            rm ffmpeg.zip
+            echo "ffmpeg bundled from download"
+          fi
+          ls -lh dist/ffmpeg.exe
 
       - name: Bundle Chrome extension
-        shell: pwsh
-        run: Copy-Item -Recurse extension-chromium dist\extension-chromium
+        run: cp -r extension-chromium dist/extension-chromium
 
       - name: Write native host manifest
-        shell: pwsh
         run: |
-          $json = '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}'
-          $json | Out-File -Encoding UTF8 dist\manifest_template.json
+          echo '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}' \
+            > dist/manifest_template.json
 
       - name: Install NSIS
         shell: pwsh
