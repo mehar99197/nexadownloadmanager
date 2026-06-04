@@ -95,6 +95,33 @@ jobs:
           cp /mingw64/share/qt6/plugins/sqldrivers/qsqlite.dll dist/sqldrivers/
           cp /mingw64/share/qt6/plugins/styles/qwindowsvistastyle.dll dist/styles/ 2>/dev/null || true
 
+          # Qt TLS backends are loaded at RUNTIME via the plugin loader, so `ldd`
+          # on the exe never lists them. Without this folder Qt prints
+          # "No functional TLS backend was found" and every https request fails
+          # on a clean PC. Bundle the whole tls/ dir (schannel + openssl backends).
+          mkdir -p dist/tls
+          cp "${QTPLUGINS}/tls/"*.dll dist/tls/ 2>/dev/null || \
+          cp /mingw64/share/qt6/plugins/tls/*.dll dist/tls/
+          # The openssl backend depends on libssl/libcrypto, which are deps of the
+          # PLUGIN (not of nexa.exe), so the ldd-on-exe pass above missed them.
+          # Resolve the plugin's own deps, plus a direct glob as a fallback.
+          ldd dist/tls/qopensslbackend.dll 2>/dev/null | grep -i mingw64 | awk '{print $3}' | xargs -I{} cp -n {} dist/ 2>/dev/null || true
+          cp -n /mingw64/bin/libssl-*.dll    dist/ 2>/dev/null || true
+          cp -n /mingw64/bin/libcrypto-*.dll dist/ 2>/dev/null || true
+          echo "=== tls backends bundled ===" && ls dist/tls/
+
+          # Image-format plugins are ALSO runtime-loaded (ldd misses them). PNG is
+          # built into Qt6Gui, but SVG/JPEG/ICO are not — without these a clean PC
+          # shows broken icons/logo. Bundle the folder + pull each plugin's own deps
+          # (e.g. qsvg.dll needs Qt6Svg.dll, which nexa.exe may not link directly).
+          mkdir -p dist/imageformats
+          cp "${QTPLUGINS}/imageformats/"*.dll dist/imageformats/ 2>/dev/null || \
+          cp /mingw64/share/qt6/plugins/imageformats/*.dll dist/imageformats/ 2>/dev/null || true
+          for p in dist/imageformats/*.dll; do
+            ldd "$p" 2>/dev/null | grep -i mingw64 | awk '{print $3}' | xargs -I{} cp -n {} dist/ 2>/dev/null || true
+          done
+          echo "=== imageformats bundled ===" && ls dist/imageformats/
+
           echo "dist contents: $(ls dist/ | wc -l) files"
           ls dist/*.dll | head -20
 
@@ -126,7 +153,13 @@ jobs:
 
       - name: Write native host manifest
         run: |
-          echo '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}' \
+          # `path` is RELATIVE — Chrome/Chromium on Windows resolve a native-host
+          # manifest path relative to the manifest file's own directory, and
+          # com.nexa.host.json sits next to nexa-host.exe in $INSTDIR. This avoids
+          # baking an install path (and its JSON backslash-escaping) into NSIS.
+          # The old "INSTDIR\\nexa-host.exe" placeholder was never substituted, so
+          # Chrome reported "Specified native messaging host not found".
+          echo '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}' \
             > dist/manifest_template.json
 
       - name: Install NSIS
