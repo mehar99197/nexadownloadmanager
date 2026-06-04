@@ -1,6 +1,5 @@
 name: build
 
-# Compiles Nexa on every push / PR so we always know the tree builds clean.
 on:
   push:
     branches: [main]
@@ -9,8 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
-    name: Build (Ubuntu, Qt6)
+    name: Build (Ubuntu + torrent)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,20 +18,232 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            cmake ninja-build \
+          sudo apt-get install -y cmake ninja-build \
             qt6-base-dev libqt6sql6-sqlite \
-            libtorrent-rasterbar-dev \
-            ffmpeg
+            libtorrent-rasterbar-dev ffmpeg
+
+      - name: Configure & Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Smoke test
+        run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+
+  # ── Windows self-contained installer via MSYS2/MinGW ──────────────────────
+  # MSYS2 has pre-built Qt6 + libtorrent + ffmpeg — no vcpkg compile needed.
+  windows:
+    name: Windows installer (MSYS2 + full torrent)
+    runs-on: windows-latest
+    if: github.event_name != 'pull_request'
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 + MinGW64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
+            mingw-w64-x86_64-libtorrent-rasterbar
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-ffmpeg
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64
 
       - name: Build
         run: cmake --build build
 
-      - name: Smoke test (binaries exist)
+      - name: Verify binaries
         run: |
-          test -x build/nexa
-          test -x build/nexa-host
-          echo "Build OK: $(ls -la build/nexa build/nexa-host)"
+          ls -lh build/nexa.exe build/nexa-host.exe
+          echo "Build OK"
+
+      - name: Bundle app + Qt DLLs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          # Copy binaries
+          Copy-Item build\nexa.exe      dist\
+          Copy-Item build\nexa-host.exe dist\
+
+          # Copy all required MinGW DLLs
+          $mingw = "C:\msys64\mingw64\bin"
+          $dlls = @(
+            "libgcc_s_seh-1.dll","libstdc++-6.dll","libwinpthread-1.dll",
+            "Qt6Core.dll","Qt6Gui.dll","Qt6Widgets.dll","Qt6Network.dll","Qt6Sql.dll",
+            "libssl-3-x64.dll","libcrypto-3-x64.dll",
+            "libtorrent-rasterbar.dll",
+            "libboost_system-mt.dll",
+            "libpcre2-16-0.dll","libzstd.dll","libzlib1.dll","zlib1.dll",
+            "libdouble-conversion.dll","libicudt75.dll","libicuin75.dll","libicuuc75.dll",
+            "libharfbuzz-0.dll","libmd4c.dll","libfreetype-6.dll","libpng16-16.dll",
+            "libbrotlidec.dll","libbrotlicommon.dll","libglib-2.0-0.dll",
+            "libintl-8.dll","libiconv-2.dll"
+          )
+          foreach ($dll in $dlls) {
+            $src = Join-Path $mingw $dll
+            if (Test-Path $src) {
+              Copy-Item $src dist\
+              Write-Host "  copied $dll"
+            }
+          }
+
+          # Qt plugins
+          $qtplugins = "C:\msys64\mingw64\share\qt6\plugins"
+          New-Item -ItemType Directory -Force -Path dist\platforms
+          New-Item -ItemType Directory -Force -Path dist\sqldrivers
+          New-Item -ItemType Directory -Force -Path dist\styles
+          Copy-Item "$qtplugins\platforms\qwindows.dll"     dist\platforms\
+          Copy-Item "$qtplugins\sqldrivers\qsqlite.dll"    dist\sqldrivers\
+          if (Test-Path "$qtplugins\styles\qwindowsvistastyle.dll") {
+            Copy-Item "$qtplugins\styles\qwindowsvistastyle.dll" dist\styles\
+          }
+          Write-Host "Bundling done"
+
+      - name: Bundle yt-dlp
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -OutFile dist\yt-dlp.exe
+          Write-Host "yt-dlp bundled"
+
+      - name: Bundle ffmpeg
+        shell: pwsh
+        run: |
+          Copy-Item "C:\msys64\mingw64\bin\ffmpeg.exe" dist\ -ErrorAction SilentlyContinue
+          if (-not (Test-Path dist\ffmpeg.exe)) {
+            Invoke-WebRequest `
+              -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" `
+              -OutFile ffmpeg.zip
+            Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+            $bin = Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg_tmp | Select-Object -First 1
+            Copy-Item $bin.FullName dist\ffmpeg.exe
+            Remove-Item -Recurse -Force ffmpeg_tmp, ffmpeg.zip
+          }
+          Write-Host "ffmpeg bundled: $((Get-Item dist\ffmpeg.exe).Length/1MB) MB"
+
+      - name: Bundle Chrome extension
+        shell: pwsh
+        run: Copy-Item -Recurse extension-chromium dist\extension-chromium
+
+      - name: Write native host manifest
+        shell: pwsh
+        run: |
+          $json = '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}'
+          $json | Out-File -Encoding UTF8 dist\manifest_template.json
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress -y
+
+      - name: Generate NSIS installer script
+        shell: pwsh
+        run: |
+          $lines = @(
+            '!include "MUI2.nsh"',
+            'Name "Nexa Download Manager"',
+            'OutFile "NexaSetup.exe"',
+            'Unicode True',
+            'InstallDir "$PROGRAMFILES64\Nexa Download Manager"',
+            'RequestExecutionLevel admin',
+            '!define MUI_ABORTWARNING',
+            '!insertmacro MUI_PAGE_WELCOME',
+            '!insertmacro MUI_PAGE_DIRECTORY',
+            '!insertmacro MUI_PAGE_INSTFILES',
+            '!define MUI_FINISHPAGE_RUN "$INSTDIR\nexa.exe"',
+            '!define MUI_FINISHPAGE_RUN_TEXT "Launch Nexa Download Manager"',
+            '!insertmacro MUI_PAGE_FINISH',
+            '!insertmacro MUI_UNPAGE_CONFIRM',
+            '!insertmacro MUI_UNPAGE_INSTFILES',
+            '!insertmacro MUI_LANGUAGE "English"',
+            '',
+            'Section "Install"',
+            '  SetOutPath "$INSTDIR"',
+            '  File /r "dist\*"',
+            '  ; Write native messaging host manifest',
+            '  FileOpen $0 "$INSTDIR\manifest_template.json" r',
+            '  FileOpen $1 "$INSTDIR\com.nexa.host.json" w',
+            '  loop:',
+            '    FileRead $0 $2',
+            '    IfErrors done',
+            '    FileWrite $1 $2',
+            '    Goto loop',
+            '  done:',
+            '  FileClose $0',
+            '  FileClose $1',
+            '  Delete "$INSTDIR\manifest_template.json"',
+            '  WriteRegStr HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  WriteRegStr HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL" "$\"$INSTDIR\nexa.exe$\" --background"',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayName" "Nexa Download Manager"',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayIcon" "$INSTDIR\nexa.exe"',
+            '  WriteUninstaller "$INSTDIR\uninstall.exe"',
+            '  CreateDirectory "$SMPROGRAMS\Nexa Download Manager"',
+            '  CreateShortCut "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk" "$INSTDIR\nexa.exe"',
+            '  CreateShortCut "$DESKTOP\Nexa Download Manager.lnk" "$INSTDIR\nexa.exe"',
+            'SectionEnd',
+            '',
+            'Section "Uninstall"',
+            '  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL"',
+            '  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"',
+            '  RMDir /r "$INSTDIR"',
+            '  Delete "$DESKTOP\Nexa Download Manager.lnk"',
+            '  RMDir /r "$SMPROGRAMS\Nexa Download Manager"',
+            'SectionEnd'
+          )
+          $lines | Set-Content installer.nsi -Encoding UTF8
+          Write-Host "NSIS script written ($($lines.Count) lines)"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+          $mb = [math]::Round((Get-Item NexaSetup.exe).Length/1MB, 1)
+          Write-Host "NexaSetup.exe ready: $mb MB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaSetup-Windows-x64
+          path: NexaSetup.exe
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Nexa Download Manager — Build ${{ github.run_number }}"
+          body: |
+            ## Nexa Download Manager — Windows Installer
+
+            ### Install karna (sirf 2 steps):
+            1. `NexaSetup.exe` download karein → **Run as administrator** → Install
+            2. Chrome: `chrome://extensions/` → Developer mode ON → **Load unpacked**
+               → `C:\Program Files\Nexa Download Manager\extension-chromium`
+
+            **Included:** nexa.exe · yt-dlp · ffmpeg · libtorrent · Chrome extension · auto-registered native host
+
+            Built from: ${{ github.sha }}
+          files: NexaSetup.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
