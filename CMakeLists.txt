@@ -13,11 +13,15 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Sql)
 
-# BitTorrent support via libtorrent-rasterbar (pkg-config).
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBTORRENT REQUIRED IMPORTED_TARGET libtorrent-rasterbar)
+# BitTorrent support via libtorrent-rasterbar — optional so the Windows CI
+# build skips it (avoids a slow vcpkg compile; torrent still works on Linux).
+option(NEXA_TORRENT "Enable BitTorrent support via libtorrent-rasterbar" ON)
+if(NEXA_TORRENT)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBTORRENT REQUIRED IMPORTED_TARGET libtorrent-rasterbar)
+endif()
 
-add_executable(nexa
+set(NEXA_SOURCES
     resources.qrc
     src/main.cpp
     src/core/Database.cpp
@@ -27,7 +31,6 @@ add_executable(nexa
     src/core/DownloadTask.cpp
     src/core/DownloadEngine.cpp
     src/grabber/HlsGrabber.cpp
-    src/torrent/TorrentManager.cpp
     src/site/YtDlpGrabber.cpp
     src/auth/CookieFile.cpp
     src/auth/AuthUtils.cpp
@@ -42,15 +45,25 @@ add_executable(nexa
     src/ui/ClipboardMonitor.cpp
     src/ui/MainWindow.cpp
 )
+if(NEXA_TORRENT)
+    list(APPEND NEXA_SOURCES src/torrent/TorrentManager.cpp)
+endif()
+
+add_executable(nexa ${NEXA_SOURCES})
 
 target_include_directories(nexa PRIVATE src)
+target_compile_definitions(nexa PRIVATE
+    $<$<BOOL:${NEXA_TORRENT}>:NEXA_TORRENT_ENABLED>
+)
 target_link_libraries(nexa PRIVATE
     Qt6::Core
     Qt6::Network
     Qt6::Widgets
     Qt6::Sql
-    PkgConfig::LIBTORRENT
 )
+if(NEXA_TORRENT)
+    target_link_libraries(nexa PRIVATE PkgConfig::LIBTORRENT)
+endif()
 
 # Native messaging bridge — a tiny standalone exe the browsers launch.
 add_executable(nexa-host

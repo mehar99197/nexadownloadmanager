@@ -14,7 +14,9 @@ namespace nexa {
 
 class DownloadTask;
 class HlsGrabber;
+#ifdef NEXA_TORRENT_ENABLED
 class TorrentManager;
+#endif
 class YtDlpGrabber;
 class AiClient;
 class Database;
@@ -186,19 +188,23 @@ private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     QString pathForName(const QString &fileName) const;  // categorise + de-dup
     void    wireTask(DownloadTask *t);
-    // Fetch a remote .torrent file (async, following redirects), then hand the
-    // local copy to the libtorrent session. libtorrent can't load an http URL.
+#ifdef NEXA_TORRENT_ENABLED
     void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
                              const HeaderList &headers);
+    void    ensureTorrents();        // lazily create the libtorrent session
+#endif
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
-    void    ensureTorrents();        // lazily create the libtorrent session
 
     struct ProgressInfo { qint64 done = 0; qint64 total = -1; double speed = 0.0; };
 
     QNetworkAccessManager *m_nam = nullptr;
     Database              *m_db = nullptr;
+#ifdef NEXA_TORRENT_ENABLED
     TorrentManager        *m_torrents = nullptr;
+#else
+    void                  *m_torrents = nullptr;   // stub so engine code compiles
+#endif
     AiClient              *m_ai = nullptr;
     AuthenticationManager *m_auth = nullptr;
     RateLimiter           *m_limiter = nullptr;   // global HTTP speed cap

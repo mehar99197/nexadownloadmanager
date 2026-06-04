@@ -2,7 +2,9 @@
 #include "core/DownloadTask.h"
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
+#ifdef NEXA_TORRENT_ENABLED
 #include "torrent/TorrentManager.h"
+#endif
 #include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
@@ -246,6 +248,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         return id;
     }
 
+#ifdef NEXA_TORRENT_ENABLED
     // Torrents (magnet links / .torrent files) go to the libtorrent session.
     const QString asText = (url.scheme() == QLatin1String("magnet"))
                                ? url.toString()
@@ -258,25 +261,23 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         m_torrentIds.insert(id);
         emit taskAdded(id);
 
-        // libtorrent loads a magnet URI or a LOCAL .torrent file — never an
-        // http(s) URL (the in-engine .torrent fetch was dropped in libtorrent 2).
-        // So a remote .torrent is downloaded first, then its local copy is added.
         const bool isMagnet = asText.startsWith(QStringLiteral("magnet:"), Qt::CaseInsensitive);
         const bool isRemote = url.scheme() == QLatin1String("http") ||
                               url.scheme() == QLatin1String("https");
         if (!isMagnet && isRemote) {
             HeaderList merged = headers;
             merged += authHeaders;
-            fetchTorrentFile(id, url, dir, merged);   // async; drives state itself
+            fetchTorrentFile(id, url, dir, merged);
             return id;
         }
 
-        if (!m_torrents || !m_torrents->add(id, asText, dir)) {   // magnet or local .torrent
+        if (!m_torrents || !m_torrents->add(id, asText, dir)) {
             m_torrentIds.remove(id);
             return -1;
         }
         return id;
     }
+#endif
 
     // Adaptive streams (HLS/DASH) go to the grabber, which yields a single MP4.
     if (HlsGrabber::isStreamUrl(url)) {
@@ -432,15 +433,16 @@ void DownloadEngine::schedule()
 
 void DownloadEngine::ensureTorrents()
 {
+#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         return;
     m_torrents = new TorrentManager(this);
     connect(m_torrents, &TorrentManager::progress,     this, &DownloadEngine::taskProgress);
     connect(m_torrents, &TorrentManager::stateChanged, this, &DownloadEngine::taskStateChanged);
     connect(m_torrents, &TorrentManager::finished,     this, &DownloadEngine::taskFinished);
-    // Apply any caps the user set before the (lazily created) session existed.
     m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
     m_torrents->setSeedRatio(m_seedRatio);
+#endif
 }
 
 void DownloadEngine::setSpeedLimit(qint64 bytesPerSec)
@@ -458,17 +460,22 @@ void DownloadEngine::setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBy
 {
     m_torrentDlLimit = qMax(0, downloadBytesPerSec);
     m_torrentUlLimit = qMax(0, uploadBytesPerSec);
+#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         m_torrents->setSpeedLimits(m_torrentDlLimit, m_torrentUlLimit);
+#endif
 }
 
 void DownloadEngine::setSeedRatio(double ratio)
 {
     m_seedRatio = qMax(0.0, ratio);
+#ifdef NEXA_TORRENT_ENABLED
     if (m_torrents)
         m_torrents->setSeedRatio(m_seedRatio);
+#endif
 }
 
+#ifdef NEXA_TORRENT_ENABLED
 void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
                                       const HeaderList &headers)
 {
@@ -527,6 +534,7 @@ void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &sa
             m_torrentIds.remove(id);
     });
 }
+#endif // NEXA_TORRENT_ENABLED
 
 QString DownloadEngine::nameOf(int id) const
 {
