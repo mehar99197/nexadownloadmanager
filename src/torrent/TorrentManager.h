@@ -52,10 +52,11 @@ private:
 #else
 
 // ── Stub (no-torrent build: Windows CI, or -DNEXA_TORRENT=OFF) ─────────────
-// Provides the same API so DownloadEngine.cpp compiles completely unchanged.
-// m_torrents is always nullptr in this config so no stub method is ever called.
+// m_torrents is always nullptr when NEXA_TORRENT=OFF so connect() is never
+// called — the stub just needs to compile, not emit real signals. We inherit
+// QObject so DownloadEngine::connect(m_torrents, ...) compiles, but we DON'T
+// use Q_OBJECT (avoids needing MOC / TorrentManager.cpp in this build).
 class TorrentManager : public QObject {
-    Q_OBJECT
 public:
     explicit TorrentManager(QObject *parent = nullptr) : QObject(parent) {}
     bool  add(int, const QString &, const QString &) { return false; }
@@ -68,10 +69,10 @@ public:
     void  setSpeedLimits(int, int) {}
     void  setSeedRatio(double) {}
     static bool isTorrentUrl(const QString &) { return false; }
-signals:
-    void progress(int, qint64, qint64, double);
-    void stateChanged(int, DownloadState, const QString &);
-    void finished(int);
+    // Fake signal declarations so connect() calls compile (never actually wired)
+    void progress(int, qint64, qint64, double) {}
+    void stateChanged(int, DownloadState, const QString &) {}
+    void finished(int) {}
 };
 
 #endif // NEXA_TORRENT_ENABLED
