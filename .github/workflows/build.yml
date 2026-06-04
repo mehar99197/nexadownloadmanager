@@ -104,100 +104,69 @@ jobs:
       - name: Write NSIS script
         shell: pwsh
         run: |
-          $nsis = @'
-          !include "MUI2.nsh"
-          !include "EnvVarUpdate.nsh"
+          # Write the native host manifest template (PowerShell, not NSIS FileWrite)
+          $manifest = '{"name":"com.nexa.host","description":"Nexa Download Manager","path":"INSTDIR_PLACEHOLDER\\nexa-host.exe","type":"stdio","allowed_origins":["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]}'
+          $manifest | Out-File -Encoding UTF8 dist\com.nexa.host.json.template
 
-          Name "Nexa Download Manager"
-          OutFile "NexaSetup.exe"
-          Unicode True
-          InstallDir "$PROGRAMFILES64\Nexa Download Manager"
-          RequestExecutionLevel admin
-          BrandingText "Nexa Download Manager"
-          !define MUI_ABORTWARNING
-
-          !insertmacro MUI_PAGE_WELCOME
-          !insertmacro MUI_PAGE_DIRECTORY
-          !insertmacro MUI_PAGE_INSTFILES
-          !define MUI_FINISHPAGE_RUN "$INSTDIR\nexa.exe"
-          !define MUI_FINISHPAGE_RUN_TEXT "Launch Nexa Download Manager"
-          !insertmacro MUI_PAGE_FINISH
-
-          !insertmacro MUI_UNPAGE_CONFIRM
-          !insertmacro MUI_UNPAGE_INSTFILES
-          !insertmacro MUI_LANGUAGE "English"
-
-          Section "Install" SEC_MAIN
-            SetOutPath "$INSTDIR"
-            File /r "dist\*"
-
-            ; Add to PATH so yt-dlp/ffmpeg are usable from anywhere
-            ${EnvVarUpdate} $0 "PATH" "A" "HKLM" "$INSTDIR"
-
-            ; Native messaging host manifest
-            WriteRegStr HKCU \
-              "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host" \
-              "" "$INSTDIR\com.nexa.host.json"
-            WriteRegStr HKCU \
-              "Software\Chromium\NativeMessagingHosts\com.nexa.host" \
-              "" "$INSTDIR\com.nexa.host.json"
-
-            ; Write the manifest file
-            FileOpen  $0 "$INSTDIR\com.nexa.host.json" w
-            FileWrite $0 '{$\n'
-            FileWrite $0 '  "name": "com.nexa.host",$\n'
-            FileWrite $0 '  "description": "Nexa Download Manager native messaging host",$\n'
-            FileWrite $0 '  "path": "$INSTDIR\nexa-host.exe",$\n'
-            FileWrite $0 '  "type": "stdio",$\n'
-            FileWrite $0 '  "allowed_origins": ["chrome-extension://cbogjffoidaepbcbogbfibnldhkckhpb/"]$\n'
-            FileWrite $0 '}$\n'
-            FileClose $0
-
-            ; Autostart background engine on Windows login
-            WriteRegStr HKCU \
-              "Software\Microsoft\Windows\CurrentVersion\Run" \
-              "NexaDL" '"$INSTDIR\nexa.exe" --background'
-
-            ; Add/Remove Programs
-            WriteRegStr HKCU \
-              "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" \
-              "DisplayName" "Nexa Download Manager"
-            WriteRegStr HKCU \
-              "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" \
-              "UninstallString" '"$INSTDIR\uninstall.exe"'
-            WriteRegStr HKCU \
-              "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" \
-              "DisplayIcon" "$INSTDIR\nexa.exe"
-
-            WriteUninstaller "$INSTDIR\uninstall.exe"
-
-            ; Shortcuts
-            CreateDirectory "$SMPROGRAMS\Nexa Download Manager"
-            CreateShortCut "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk" "$INSTDIR\nexa.exe"
-            CreateShortCut "$DESKTOP\Nexa Download Manager.lnk" "$INSTDIR\nexa.exe"
-          SectionEnd
-
-          Section "Uninstall"
-            DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL"
-            DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"
-            DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host"
-            ${un.EnvVarUpdate} $0 "PATH" "R" "HKLM" "$INSTDIR"
-            RMDir /r "$INSTDIR"
-            Delete "$DESKTOP\Nexa Download Manager.lnk"
-            RMDir /r "$SMPROGRAMS\Nexa Download Manager"
-            DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"
-          SectionEnd
-          '@
-          $nsis | Out-File -Encoding UTF8 installer.nsi
-
-      - name: Download NSIS EnvVarUpdate plugin
-        run: |
-          Invoke-WebRequest `
-            -Uri "https://nsis.sourceforge.io/mediawiki/images/a/ad/EnvVarUpdate.7z" `
-            -OutFile EnvVarUpdate.7z
-          7z e EnvVarUpdate.7z -o"C:\Program Files (x86)\NSIS\Include" EnvVarUpdate.nsh -y
-          7z e EnvVarUpdate.7z -o"C:\Program Files (x86)\NSIS\Plugins\x86-unicode" EnvVarUpdate.dll -y
-        shell: pwsh
+          # Write NSIS script to a file directly (avoid heredoc quoting issues)
+          $lines = @(
+            '!include "MUI2.nsh"',
+            'Name "Nexa Download Manager"',
+            'OutFile "NexaSetup.exe"',
+            'Unicode True',
+            'InstallDir "$PROGRAMFILES64\Nexa Download Manager"',
+            'RequestExecutionLevel admin',
+            '!define MUI_ABORTWARNING',
+            '!insertmacro MUI_PAGE_WELCOME',
+            '!insertmacro MUI_PAGE_DIRECTORY',
+            '!insertmacro MUI_PAGE_INSTFILES',
+            '!define MUI_FINISHPAGE_RUN "$INSTDIR\nexa.exe"',
+            '!define MUI_FINISHPAGE_RUN_TEXT "Launch Nexa Download Manager"',
+            '!insertmacro MUI_PAGE_FINISH',
+            '!insertmacro MUI_UNPAGE_CONFIRM',
+            '!insertmacro MUI_UNPAGE_INSTFILES',
+            '!insertmacro MUI_LANGUAGE "English"',
+            'Section "Install"',
+            '  SetOutPath "$INSTDIR"',
+            '  File /r "dist\*"',
+            '  ; Fix the native host manifest path',
+            '  FileOpen $0 "$INSTDIR\com.nexa.host.json.template" r',
+            '  FileOpen $1 "$INSTDIR\com.nexa.host.json" w',
+            'loop:',
+            '  FileRead $0 $2',
+            '  IfErrors done',
+            '  FileWrite $1 $2',
+            '  Goto loop',
+            'done:',
+            '  FileClose $0',
+            '  FileClose $1',
+            '  Delete "$INSTDIR\com.nexa.host.json.template"',
+            '  ; Register native messaging host',
+            '  WriteRegStr HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  WriteRegStr HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  ; Autostart',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL" "$\"$INSTDIR\nexa.exe$\" --background"',
+            '  ; Add/Remove Programs',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayName" "Nexa Download Manager"',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""',
+            '  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayIcon" "$INSTDIR\nexa.exe"',
+            '  WriteUninstaller "$INSTDIR\uninstall.exe"',
+            '  CreateDirectory "$SMPROGRAMS\Nexa Download Manager"',
+            '  CreateShortCut "$SMPROGRAMS\Nexa Download Manager\Nexa.lnk" "$INSTDIR\nexa.exe"',
+            '  CreateShortCut "$DESKTOP\Nexa Download Manager.lnk" "$INSTDIR\nexa.exe"',
+            'SectionEnd',
+            'Section "Uninstall"',
+            '  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL"',
+            '  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"',
+            '  RMDir /r "$INSTDIR"',
+            '  Delete "$DESKTOP\Nexa Download Manager.lnk"',
+            '  RMDir /r "$SMPROGRAMS\Nexa Download Manager"',
+            'SectionEnd'
+          )
+          $lines | Out-File -Encoding UTF8 installer.nsi
+          Write-Host "installer.nsi written ($(($lines).Count) lines)"
 
       - name: Build installer
         run: |
