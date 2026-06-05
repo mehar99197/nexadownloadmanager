@@ -876,12 +876,22 @@ void MainWindow::showCompleteDialog(int id)
     v->addSpacing(4);
     v->addLayout(btnRow);
 
+    // QDesktopServices::openUrl with file:// can silently fail on Wayland or
+    // when no default handler is registered. Fall back to xdg-open (Linux) or
+    // the native shell on other platforms.
+    auto openPath = [](const QString &p) {
+#ifdef Q_OS_LINUX
+        QProcess::startDetached(QStringLiteral("xdg-open"), {p});
+#else
+        QDesktopServices::openUrl(QUrl::fromLocalFile(p));
+#endif
+    };
     connect(openBtn, &QPushButton::clicked, &dlg, [&]() {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        openPath(path);
         dlg.accept();
     });
     connect(folderBtn, &QPushButton::clicked, &dlg, [&]() {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+        openPath(QFileInfo(path).absolutePath());
         dlg.accept();
     });
     connect(closeBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
