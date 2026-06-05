@@ -118,8 +118,7 @@ bool DownloadTask::renameTo(const QString &newFileName)
     return true;
 }
 
-// Choose how many parallel connections to use, scaling with file size and
-// capping at 16 (more than that rarely helps and annoys servers).
+// Choose how many parallel connections to use, scaling with file size up to 32.
 int DownloadTask::preferredSegmentCount(qint64 totalBytes)
 {
     if (totalBytes <= 0)                  return 1;

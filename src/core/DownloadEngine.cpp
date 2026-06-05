@@ -102,6 +102,7 @@ QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
     ids.append(m_siteVideos.keys());     // yt-dlp video/playlist grabs
     ids.append(m_torrentIds.values());
     std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
 
     QVector<TaskSnapshot> out;
     out.reserve(ids.size());

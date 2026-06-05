@@ -15,7 +15,11 @@ namespace nexa {
 bool Database::open(const QString &path)
 {
     QDir().mkpath(QFileInfo(path).absolutePath());
-    m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("nexa-main"));
+    // Unique connection name per instance so unit tests (which create multiple
+    // Database objects) don't clash on the shared QSqlDatabase registry.
+    static int s_connId = 0;
+    const QString connName = QStringLiteral("nexa-%1").arg(s_connId++);
+    m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
     m_db.setDatabaseName(path);
     if (!m_db.open()) {
         qWarning() << "Nexa DB open failed:" << m_db.lastError().text();

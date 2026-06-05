@@ -64,10 +64,9 @@ Accent fileAccent(const QString &name)
         return { QColor(0x8b5cf6), badge };                       // video  - violet
     if (has({"mp3", "m4a", "aac", "opus", "wav", "flac", "ogg"}))
         return { QColor(0xec4899), badge };                       // audio  - pink
-    if (has({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic",
-             "tar", "gz", "tgz"}))
-        return { QColor(0x14b8a6), badge };                       // images/tar - teal
-    if (has({"zip", "rar", "7z", "bz2", "xz"}))
+    if (has({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic"}))
+        return { QColor(0x14b8a6), badge };                       // images - teal
+    if (has({"zip", "rar", "7z", "bz2", "xz", "tar", "gz", "tgz"}))
         return { QColor(0xf59e0b), badge };                       // archives - amber
     if (has({"pdf", "doc", "docx", "txt", "rtf", "md", "csv",
              "xls", "xlsx", "ppt", "pptx"}))

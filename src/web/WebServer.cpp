@@ -370,12 +370,14 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
             provided = auth.mid(7).trimmed();
         else
             provided = req.query.value(QStringLiteral("token"));
-        // Constant-time compare so a LAN attacker can't time-probe the token.
+        // Constant-time compare: always compares the full length of the LONGER
+        // string so neither the token length nor partial matches leak via timing.
         auto ctEquals = [](const QString &a, const QString &b) {
             const QByteArray x = a.toUtf8(), y = b.toUtf8();
-            if (x.size() != y.size()) return false;
-            quint8 d = 0;
-            for (int i = 0; i < x.size(); ++i) d |= quint8(x[i]) ^ quint8(y[i]);
+            const int len = qMax(x.size(), y.size());
+            quint8 d = (x.size() != y.size()) ? 1 : 0;   // length mismatch = fail
+            for (int i = 0; i < len; ++i)
+                d |= quint8(i < x.size() ? x[i] : 0) ^ quint8(i < y.size() ? y[i] : 0);
             return d == 0;
         };
         if (!ctEquals(provided, m_token)) {
