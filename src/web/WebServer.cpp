@@ -350,6 +350,12 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         const QString peer = sock->peerAddress().toString();
         // Per-IP failed-auth rate limit: throttle a client hammering 401s (matters
         // if an operator overrode the strong default with a weak --dashboard-token).
+        // Evict expired entries periodically so the map doesn't grow unbounded
+        // from distinct IPs probing the server over time.
+        if (m_authFails.size() > 1000) {
+            for (auto it = m_authFails.begin(); it != m_authFails.end(); )
+                it = (nowMs - it->second > kAuthWindowMs) ? m_authFails.erase(it) : ++it;
+        }
         auto &f = m_authFails[peer];
         if (nowMs - f.second > kAuthWindowMs)
             f = {0, nowMs};                       // window expired -> reset

@@ -135,8 +135,12 @@ void HlsGrabber::onPlaylistFetched()
     if (finalUrl.isValid())
         m_url = finalUrl;
 
-    // A real m3u8 is small; cap the body so a server returning a multi-GB blob
-    // for a .m3u8 can't be buffered whole into memory.
+    // A real m3u8 is small; reject oversized responses BEFORE reading the body.
+    const qint64 cl = r->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+    if (cl > 8 * 1024 * 1024) {
+        setState(DownloadState::Error, QStringLiteral("playlist too large"));
+        return;
+    }
     const QByteArray body = r->readAll();
     if (body.size() > 8 * 1024 * 1024) {
         setState(DownloadState::Error, QStringLiteral("playlist too large"));

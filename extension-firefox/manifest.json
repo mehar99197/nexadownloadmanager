@@ -14,7 +14,6 @@
     "cookies",
     "contextMenus",
     "webRequest",
-    "webRequestBlocking",
     "storage",
     "nativeMessaging",
     "tabs",
@@ -22,7 +21,7 @@
   ],
   "background": {
     "scripts": ["background.js"],
-    "persistent": false
+    "persistent": true
   },
   "browser_action": {
     "default_title": "Nexa Download Manager",

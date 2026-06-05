@@ -66,8 +66,8 @@ void SettingsDialog::loadInto(DownloadEngine *engine)
     engine->setPlaylistConcurrency(s.value(QLatin1String(kPlConc), 3).toInt());
     engine->setSubtitles(s.value(QLatin1String(kSubs), false).toBool(),
                          s.value(QLatin1String(kSubLangs), QStringLiteral("en")).toString());
-    engine->setTorrentSpeedLimits(s.value(QLatin1String(kTorrentDl), 0).toInt() * 1024,
-                                  s.value(QLatin1String(kTorrentUl), 0).toInt() * 1024);
+    engine->setTorrentSpeedLimits(qBound(0, s.value(QLatin1String(kTorrentDl), 0).toInt(), 1048576) * 1024,
+                                  qBound(0, s.value(QLatin1String(kTorrentUl), 0).toInt(), 1048576) * 1024);
     engine->setSeedRatio(s.value(QLatin1String(kSeedRatio), 0.0).toDouble());
     engine->setAiRename(s.value(QLatin1String(kAiRename), false).toBool());
     engine->setConfirmBeforeStart(s.value(QLatin1String(kConfirmStart), true).toBool());

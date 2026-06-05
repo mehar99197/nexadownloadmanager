@@ -39,7 +39,8 @@ bool AuthenticationManager::hostMatchesDomain(const QString &host, const QString
 bool AuthenticationManager::isExcludedHost(const QString &host)
 {
     const QString h = host.toLower();
-    return h.endsWith(QStringLiteral("youtube.com")) ||
+    return h == QStringLiteral("youtube.com") ||
+           h.endsWith(QStringLiteral(".youtube.com")) ||
            h == QStringLiteral("youtu.be") ||
            h.endsWith(QStringLiteral(".youtu.be"));
 }
@@ -146,7 +147,7 @@ AuthResult AuthenticationManager::registerCookieData(const QString &domain,
                        + QStringLiteral(".txt");
     QFile::remove(path);   // clear any pre-existing file/symlink at the path first
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::NewOnly))
+    if (!f.open(QIODevice::WriteOnly | QIODevice::NewOnly))
         return AuthResult::failure(AuthError::FileNotFound, path);
     f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);   // lock before writing
     f.write(bytes);
@@ -437,7 +438,7 @@ QString AuthenticationManager::writeYtDlpAuthConfig(const DomainAuth &a)
     // onto another file. The 0700 dir already blocks other users.
     QFile::remove(path);
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::NewOnly))
+    if (!f.open(QIODevice::WriteOnly | QIODevice::NewOnly))
         return QString();
     // Lock down BEFORE writing the secret so it is never briefly world-readable.
     f.setPermissions(QFile::ReadOwner | QFile::WriteOwner);

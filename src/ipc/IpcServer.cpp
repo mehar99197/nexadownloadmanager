@@ -262,15 +262,18 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
 void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
 {
     auto *proc = new QProcess(this);
-    auto *out = new QByteArray;
+    auto out = std::make_shared<QByteArray>();
     // The peer can disconnect during the multi-second `yt-dlp -J`; a raw sock would
     // dangle. A QPointer goes null on delete so the finished callback can bail.
     QPointer<QLocalSocket> safeSock(sock);
     connect(proc, &QProcess::readyReadStandardOutput, this,
-            [proc, out]() { out->append(proc->readAllStandardOutput()); });
+            [proc, out]() {
+        if (out->size() < 8 * 1024 * 1024)   // cap at 8 MB (M8 fix)
+            out->append(proc->readAllStandardOutput());
+    });
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this, safeSock, proc, out](int, QProcess::ExitStatus) {
-        if (!safeSock) { proc->deleteLater(); delete out; return; }
+        if (!safeSock) { proc->deleteLater(); return; }
         QLocalSocket *sock = safeSock;
         // Collect EVERY distinct video height yt-dlp reports (audio is muxed in
         // separately, so a video-only DASH format like 2160p still counts). For
@@ -312,17 +315,22 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
                                      {"title", info.value(QStringLiteral("title")).toString()},
                                      {"qualities", quals}});
         proc->deleteLater();
-        delete out;
     });
     // -J extraction is network-bound (a few seconds); the host waits for us.
     // `--` ends option parsing so a URL starting with '-' can't be read as a flag.
-    proc->start(QStringLiteral("yt-dlp"),
-                {QStringLiteral("-J"), QStringLiteral("--no-warnings"),
-                 QStringLiteral("--no-playlist"), QStringLiteral("--"), url.toString()});
+    QStringList args = {QStringLiteral("-J"), QStringLiteral("--no-warnings"),
+                        QStringLiteral("--no-playlist")};
+    // Forward domain-scoped auth so login-gated sites (Udemy, etc.) return real
+    // qualities instead of the fallback list. Without this the -J probe has no
+    // session and the server returns an error / empty formats.
+    if (AuthenticationManager *am = m_engine->auth())
+        args << am->ytDlpArgs(url);
+    args << QStringLiteral("--") << url.toString();
+    proc->start(QStringLiteral("yt-dlp"), args);
+    proc->closeWriteChannel();   // EOF stdin — prevents interactive-prompt hang
     if (!proc->waitForStarted(3000)) {
         sendFramed(sock, QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});
         proc->deleteLater();
-        delete out;
     }
 }
 

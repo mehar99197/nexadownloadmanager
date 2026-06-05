@@ -9,6 +9,7 @@
 #include "core/Types.h"
 
 class QNetworkAccessManager;
+class QTimer;
 
 namespace nexa {
 
@@ -208,6 +209,7 @@ private:
     QSet<int>              m_torrentIds;
     QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
     QSet<int>              m_held;          // created but awaiting the user's confirm prompt
+    QHash<int, QTimer*>    m_scheduledTimers;  // cancellable scheduled downloads
     QHash<int, QString>    m_resolvedNames; // real filename from the pre-prompt probe
     bool                   m_confirmBeforeStart = false;
     QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id

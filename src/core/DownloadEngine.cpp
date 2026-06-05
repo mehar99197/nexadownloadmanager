@@ -129,6 +129,11 @@ DownloadEngine::~DownloadEngine()
     qDeleteAll(m_grabbers);        m_grabbers.clear();
     qDeleteAll(m_siteVideos);     m_siteVideos.clear();
     delete m_torrents;             m_torrents = nullptr;
+    m_torrentIds.clear();          // prevent allTerminal()/stateOf() null-deref on queued signals
+    m_playlistIds.clear();
+    m_held.clear();
+    m_pending.clear();
+    qDeleteAll(m_scheduledTimers); m_scheduledTimers.clear();
     delete m_ai;                   m_ai = nullptr;
     if (m_db) {
         m_db->close();
@@ -840,11 +845,21 @@ int DownloadEngine::scheduleDownload(const QUrl &url, const QDateTime &when,
     if (ms <= 0)
         return addDownload(url, QString(), headers);   // time already passed
 
+    // Reserve an id NOW so the caller gets a real task id (not seconds-until-start)
+    // and the download can be tracked/cancelled before it fires.
+    const int id = m_db->nextId();
     const int delay = int(qMin<qint64>(ms, INT_MAX));
-    QTimer::singleShot(delay, this, [this, url, headers]() {
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    timer->setInterval(delay);
+    connect(timer, &QTimer::timeout, this, [this, id, url, headers, timer]() {
+        timer->deleteLater();
+        m_scheduledTimers.remove(id);
         addDownload(url, QString(), headers);
     });
-    return int(ms / 1000);   // seconds until it starts (for UI feedback)
+    m_scheduledTimers.insert(id, timer);
+    timer->start();
+    return id;
 }
 
 bool DownloadEngine::aiAvailable() const

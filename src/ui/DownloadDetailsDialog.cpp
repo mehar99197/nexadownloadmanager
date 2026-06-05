@@ -126,6 +126,7 @@ public:
     void setRange(int min, int max) { m_min = min; m_max = max; }
     void setValue(int v)            { m_val = v; }
     void setAccent(const QColor &c) { m_accent = c; }
+    void setAnimating(bool on)      { if (on) m_timer->start(); else m_timer->stop(); }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -223,6 +224,7 @@ public:
         m_animTimer->start();
     }
 
+    void setAnimating(bool on) { if (on) m_animTimer->start(); else m_animTimer->stop(); }
     void setSpeed(double bps)
     {
         m_bps = bps;
@@ -922,6 +924,12 @@ void DownloadDetailsDialog::refreshOverallBar()
 {
     m_bar->setAccent(statusColor(m_state));
     m_speedGraph->setAccent(statusColor(m_state));
+    // Stop the ~30+40 fps animation timers when the download isn't actively
+    // progressing — otherwise idle dialogs burn ~70 unnecessary repaints/sec.
+    const bool active = (m_state == DownloadState::Downloading ||
+                         m_state == DownloadState::Probing);
+    m_bar->setAnimating(active);
+    m_speedMeter->setAnimating(active);
     if (m_total > 0) {
         const int pct = (m_state == DownloadState::Completed) ? 100
                             : qBound(0, int(m_done * 100 / m_total), 100);

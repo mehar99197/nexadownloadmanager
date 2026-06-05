@@ -104,6 +104,7 @@ private:
     int m_completedThisSession = 0;
     QSet<int> m_countedDone;   // ids already counted, so a re-emit doesn't double-count
     QHash<int, int> m_idToRow;   // task id -> table row
+    QHash<int, QString> m_stateDetail;  // last state detail per id (survives sort/rebuild)
 
     QHash<int, QPointer<DownloadDetailsDialog>> m_openDialogs;  // one plate per id
     QSet<int>       m_autoOpened;   // ids that already auto-popped (dedupe, lifetime)

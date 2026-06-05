@@ -497,7 +497,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         onTaskAdded(s.id);
         if (s.done > 0 || s.total > 0)
             onTaskProgress(s.id, s.done, s.total, s.speed);
-        onTaskStateChanged(s.id, s.state, QString());
+        onTaskStateChanged(s.id, s.state, m_stateDetail.value(s.id));
     }
     m_restoring = false;
 
@@ -1124,7 +1124,7 @@ void MainWindow::rebuildInOrder(const QList<int> &order)
         onTaskAdded(id);
         if (s.done > 0 || s.total > 0)
             onTaskProgress(id, s.done, s.total, s.speed);
-        onTaskStateChanged(id, s.state, QString());
+        onTaskStateChanged(id, s.state, m_stateDetail.value(id));
     }
     m_restoring = false;
     applyFilter(m_search->text());
@@ -1589,6 +1589,8 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
 
 void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &detail)
 {
+    if (!detail.isEmpty())
+        m_stateDetail.insert(id, detail);   // cache for sort/rebuild replay
     const int row = rowForId(id);
     if (row < 0)
         return;
@@ -1668,6 +1670,7 @@ void MainWindow::onTaskRemoved(int id)
 {
     m_autoOpened.remove(id);
     m_openDialogs.remove(id);   // the dialog closes itself on taskRemoved; prune the hash
+    m_stateDetail.remove(id);
     const int row = rowForId(id);
     if (row < 0)
         return;
