@@ -161,6 +161,17 @@ AuthResult AuthenticationManager::registerCookieData(const QString &domain,
     if (!ar.ok) {
         QFile::remove(path);
         m_tempAuthFiles.removeAll(path);
+        // The temp path is an internal detail and only confuses the user. When the
+        // browser export carried no usable / no live cookies, surface an actionable
+        // message keyed to the domain instead of leaking ".../cookies-*.txt".
+        if (ar.code == AuthError::EmptyFile)
+            return AuthResult::failure(AuthError::EmptyFile,
+                QStringLiteral("no logged-in %1 cookies found — sign in to %1 in your browser, then retry")
+                    .arg(domain.toLower()));
+        if (ar.code == AuthError::AllExpired)
+            return AuthResult::failure(AuthError::AllExpired,
+                QStringLiteral("your %1 session has expired — sign in again in your browser, then retry")
+                    .arg(domain.toLower()));
     }
     return ar;
 }

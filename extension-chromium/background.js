@@ -33,9 +33,33 @@ function authDomainFor(url) {
 // TEXT, the exact 7-tab format Nexa's CookieFile parser requires. The extension
 // can't write a file (MV3 sandbox), so we send the text and the engine writes it.
 async function exportCookiesAsNetscape(authDomain) {
+  // Gather the site's cookies from SEVERAL angles and merge. A lone
+  // getAll({domain}) misses host-only and __Host-/__Secure- cookies in some
+  // cookie stores — and on Udemy/Coursera those host-only cookies ARE the
+  // session yt-dlp needs, so the export came back empty and the engine reported
+  // "cookie file is empty". Querying the apex + www URLs as well catches them;
+  // we de-dupe across all sources by (name, domain, path, store).
+  const queries = [
+    { domain: authDomain },
+    { url: "https://" + authDomain + "/" },
+    { url: "https://www." + authDomain + "/" },
+  ];
   let cookies = [];
-  try { cookies = await X.cookies.getAll({ domain: authDomain }); }
-  catch { return ""; }
+  const seenKey = new Set();
+  for (const q of queries) {
+    let part = [];
+    try { part = await X.cookies.getAll(q); } catch { part = []; }
+    for (const c of part) {
+      const k = `${c.name}\t${c.domain}\t${c.path}\t${c.storeId || ""}`;
+      if (seenKey.has(k)) continue;
+      seenKey.add(k);
+      cookies.push(c);
+    }
+  }
+  // No cookies at all => not logged in / no host access. Return "" so the caller
+  // skips the auth handoff entirely instead of sending a header-only file the
+  // engine would (correctly) reject as empty.
+  if (!cookies.length) return "";
   // De-dupe by cookie NAME. A jar from repeated logins carries several with the
   // same name (e.g. access_token at .udemy.com AND www.udemy.com); forwarding all
   // of them makes the server honour a STALE one and bounce to a login page. Keep
@@ -51,6 +75,7 @@ async function exportCookiesAsNetscape(authDomain) {
       best.set(c.name, c);
   }
   const lines = ["# Netscape HTTP Cookie File", "# Exported by Nexa"];
+  let kept = 0;
   for (const c of best.values()) {
     // The C++ parser rejects the WHOLE file on any control char, so skip a bad
     // cookie rather than poison the export.
@@ -63,7 +88,11 @@ async function exportCookiesAsNetscape(authDomain) {
     const expires = (c.session || !c.expirationDate) ? 0 : Math.floor(c.expirationDate);
     const prefix = c.httpOnly ? "#HttpOnly_" : "";
     lines.push(`${prefix}${dom}\t${includeSub}\t${path}\t${secure}\t${expires}\t${c.name}\t${c.value}`);
+    kept++;
   }
+  // Every cookie was filtered out (only the header would remain) — treat the
+  // same as "no cookies": return "" so we never hand the engine an empty file.
+  if (kept === 0) return "";
   return lines.join("\n") + "\n";
 }
 
