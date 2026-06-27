@@ -45,6 +45,19 @@ qint64 parseSize(const QString &s)
     return m.hasMatch() ? qint64(applyUnit(m.captured(1).toDouble(), m.captured(2))) : -1;
 }
 
+// Format a byte count as a compact "1.5 GB" / "640 MB" for status text (the UI's
+// humanSize lives in the ui layer; the grabber needs its own tiny formatter).
+QString humanBytes(qint64 b)
+{
+    if (b <= 0) return QString();
+    double v = double(b);
+    const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+    int u = 0;
+    while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
+    return QString::number(v, 'f', v < 10 && u > 0 ? 1 : 0) + QLatin1Char(' ')
+           + QLatin1String(units[u]);
+}
+
 // A readable course/playlist folder name pulled from the page URL slug, e.g.
 //   udemy.com/course/pythonforbeginnersintro/learn/lecture/123 -> "pythonforbeginnersintro"
 //   youtube.com/playlist?list=PL... (no /course/) -> "" (caller falls back).
@@ -758,6 +771,14 @@ int YtDlpGrabber::countPlaylistDone()
             qf.close();
         }
     }
+    // Sum the on-disk size of every finished file. yt-dlp can't know the whole
+    // playlist's byte total upfront, but the bytes already saved is a real,
+    // growing figure we CAN show (the per-video path is the post-merge output).
+    m_plDoneBytes = 0;
+    for (const QString &p : paths) {
+        const qint64 sz = QFileInfo(p).size();
+        if (sz > 0) m_plDoneBytes += sz;
+    }
     return paths.size();
 }
 
@@ -771,13 +792,18 @@ void YtDlpGrabber::emitPlaylistProgress()
     const int active = qMax(0, int(m_plProcs.size()) - m_plFinished);
     // done/total are VIDEO COUNTS for a playlist (the UI shows "N videos").
     emit progress(m_id, m_plDoneVideos, m_plTotal > 0 ? m_plTotal : -1, rate);
+    // Cumulative downloaded size — the whole-playlist total is unknowable upfront,
+    // but the bytes saved so far is real and worth showing alongside the count.
+    const QString sz = humanBytes(m_plDoneBytes);
+    const QString got = sz.isEmpty() ? QString() : QStringLiteral(" · %1").arg(sz);
     if (m_plTotal > 0)
         setState(DownloadState::Downloading,
-                 QStringLiteral("%1/%2 videos · %3 downloading")
-                     .arg(m_plDoneVideos).arg(m_plTotal).arg(active));
+                 QStringLiteral("%1/%2 videos%3 · %4 downloading")
+                     .arg(m_plDoneVideos).arg(m_plTotal).arg(got).arg(active));
     else
         setState(DownloadState::Downloading,
-                 QStringLiteral("%1 videos · %2 downloading").arg(m_plDoneVideos).arg(active));
+                 QStringLiteral("%1 videos%2 · %3 downloading")
+                     .arg(m_plDoneVideos).arg(got).arg(active));
 }
 
 void YtDlpGrabber::onPlOutput()

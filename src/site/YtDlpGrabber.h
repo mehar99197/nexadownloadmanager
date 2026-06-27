@@ -110,6 +110,7 @@ private:
     QHash<QProcess*, double> m_plRates;         // each worker's last reported speed
     int             m_plFinished = 0;           // workers that have exited
     int             m_plDoneVideos = 0;         // videos finished across all workers
+    qint64          m_plDoneBytes = 0;          // cumulative bytes of finished playlist files
     QString         m_plName;                   // real playlist title (parsed from yt-dlp)
     qint64          m_plLastEmitMs = 0;         // throttle aggregate progress emits
     QElapsedTimer   m_plClock;
