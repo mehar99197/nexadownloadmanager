@@ -7,6 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The release steps create GitHub Releases, which needs write access. The repo's
+# default workflow token is read-only — that caused 403 "Resource not accessible
+# by integration" and silently skipped publishing. Grant it explicitly here.
+permissions:
+  contents: write
+
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
@@ -21,6 +27,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build \
             qt6-base-dev libqt6sql6-sqlite \
             libtorrent-rasterbar-dev \
+            patchelf file \
             ffmpeg yt-dlp aria2 \
             dpkg-dev
 
@@ -33,6 +40,59 @@ jobs:
 
       - name: Smoke test
         run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+
+      - name: Gather FULL dependency closure (linuxdeploy + Qt plugins)
+        run: |
+          set -e
+          # linuxdeploy copies the COMPLETE recursive library closure of nexa +
+          # nexa-host (Qt6, libtorrent, boost, ssl, ICU, fontconfig, freetype,
+          # harfbuzz, xcb, libpng, …) and bundles the Qt platform / sqldrivers /
+          # tls / imageformats / iconengines plugins. AppImages need FUSE (absent
+          # on CI), so we --appimage-extract and run the inner AppRun directly.
+          dl() { curl -sSL "$1" -o "$2"; chmod +x "$2"; }
+          dl https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy
+          dl https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage linuxdeploy-plugin-qt
+          ./linuxdeploy            --appimage-extract >/dev/null && mv squashfs-root ld
+          ./linuxdeploy-plugin-qt  --appimage-extract >/dev/null && mv squashfs-root ldqt
+          # linuxdeploy discovers its qt plugin by name on PATH
+          ln -sf "$PWD/ldqt/AppRun" ld/usr/bin/linuxdeploy-plugin-qt
+          export PATH="$PWD/ld/usr/bin:$PATH"
+          export QMAKE="$(command -v qmake6)"
+          [ -n "$QMAKE" ] || { echo "ERROR: qmake6 not found (qt6-base-dev missing?)"; exit 1; }
+          command -v linuxdeploy-plugin-qt >/dev/null \
+            || { echo "ERROR: linuxdeploy-plugin-qt not discoverable on PATH"; exit 1; }
+          mkdir -p AppDir
+          # xcb is the only platform plugin we bundle: it serves X11 AND XWayland,
+          # which runs on essentially every desktop Wayland session — so a separate
+          # (and fiddly-to-bundle) wayland plugin set isn't worth the surface area.
+          ./ld/AppRun --appdir AppDir \
+            -e build/nexa -e build/nexa-host \
+            --plugin qt
+
+          # Strip the libraries that MUST be host-provided. glibc (libc/ld-linux/
+          # libm/pthread/dl/rt/resolv) is ABI-tied to the kernel and the GPU/GL
+          # stack is driver-specific — bundling either crashes on a mismatched
+          # host. libstdc++/libgcc are forward-compatible system libs, safer to
+          # take from the host. All five are declared as Depends below.
+          rm -f AppDir/usr/lib/libstdc++.so*   AppDir/usr/lib/libgcc_s.so*   \
+                AppDir/usr/lib/libGL.so*        AppDir/usr/lib/libEGL.so*     \
+                AppDir/usr/lib/libGLX.so*       AppDir/usr/lib/libGLdispatch.so* \
+                AppDir/usr/lib/libOpenGL.so*    AppDir/usr/lib/libdrm.so*     \
+                AppDir/usr/lib/libglapi.so*     AppDir/usr/lib/libgbm.so*     \
+                AppDir/usr/lib/libc.so*         AppDir/usr/lib/libm.so*       \
+                AppDir/usr/lib/libdl.so*        AppDir/usr/lib/libpthread.so* \
+                AppDir/usr/lib/librt.so*        AppDir/usr/lib/libresolv.so*  \
+                AppDir/usr/lib/ld-linux-x86-64.so* 2>/dev/null || true
+
+          echo "=== libs bundled: $(ls AppDir/usr/lib | wc -l) ===" && ls AppDir/usr/lib | sort
+          echo "=== plugins bundled ===" && find AppDir/usr/plugins -type f | sort
+          for d in platforms sqldrivers tls imageformats iconengines styles; do
+            echo "  $d: $(find AppDir/usr/plugins/$d -name '*.so' 2>/dev/null | wc -l) plugin(s)"
+          done
+          # Hard requirements: the xcb platform plugin (GUI can't start without it)
+          # and at least one TLS backend (every https download fails without it).
+          test -f AppDir/usr/plugins/platforms/libqxcb.so
+          test -n "$(find AppDir/usr/plugins/tls -name '*.so' 2>/dev/null)"
 
       - name: Download yt-dlp binary
         run: |
@@ -68,15 +128,33 @@ jobs:
           SH
           chmod +x ${PKG}/usr/bin/nexa ${PKG}/usr/bin/nexa-host
 
-          # ── Bundle ALL required Qt6 + libtorrent shared libs ──────────────
-          bundle_deps() {
-            local bin="$1"
-            ldd "$bin" | grep -E "libQt6|libtorrent|libboost|libssl|libcrypto|libicui|libicuuc|libicudata" \
-              | awk '{print $3}' | grep "^/" \
-              | xargs -I{} cp -n {} ${PKG}/usr/lib/nexa/ 2>/dev/null || true
-          }
-          bundle_deps build/nexa
-          bundle_deps build/nexa-host
+          # ── Bundle the FULL closure gathered by linuxdeploy (every lib + all
+          #    Qt plugins) so the app runs on a clean machine with NO Qt or
+          #    libtorrent installed. Only glibc + libstdc++/libgcc + the GL stack
+          #    stay host-provided (declared as Depends below). ─────────────────
+          cp -a AppDir/usr/lib/.   ${PKG}/usr/lib/nexa/
+          cp -a AppDir/usr/plugins ${PKG}/usr/lib/nexa/plugins
+
+          # A co-located qt.conf points Qt at the bundled plugins no matter how
+          # the binary is launched — GUI wrapper, .desktop entry, or nexa-host
+          # spawned directly by the browser (none of which set QT_PLUGIN_PATH).
+          cat > ${PKG}/usr/lib/nexa/qt.conf <<'QTCONF'
+          [Paths]
+          Plugins = plugins
+          QTCONF
+
+          # rpath $ORIGIN so BOTH binaries find the co-located .so files with no
+          # LD_LIBRARY_PATH — essential for nexa-host, which the browser launches
+          # straight from the native-host manifest (never through our wrapper).
+          patchelf --set-rpath '$ORIGIN' ${PKG}/usr/lib/nexa/nexa
+          patchelf --set-rpath '$ORIGIN' ${PKG}/usr/lib/nexa/nexa-host
+          # Qt plugins sit in plugins/<type>/ — two dirs below the bundled .so
+          # files. linuxdeploy set their rpath for an AppDir layout (../../lib);
+          # rewrite it for OUR layout so a dlopen'd plugin (xcb, openssl, sqlite)
+          # finds libxcb / libssl / libQt6* in ../.. . Without this the plugins
+          # load nothing on a clean machine — the verify-offline job asserts it.
+          find ${PKG}/usr/lib/nexa/plugins -name '*.so' -type f \
+            -exec patchelf --set-rpath '$ORIGIN/../..' {} +
 
           # ── yt-dlp + ffmpeg (self-contained, no apt needed) ───────────────
           cp /usr/local/bin/yt-dlp ${PKG}/usr/lib/nexa/yt-dlp
@@ -94,8 +172,8 @@ jobs:
           Name=Nexa Download Manager
           GenericName=Download Manager
           Comment=Fast multi-protocol download manager
-          Exec=/usr/lib/nexa/nexa %U
-          TryExec=/usr/lib/nexa/nexa
+          Exec=/usr/bin/nexa %U
+          TryExec=/usr/bin/nexa
           Icon=nexa
           Terminal=false
           Categories=Network;FileTransfer;Qt;
@@ -179,7 +257,7 @@ jobs:
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libglib2.0-0 | libglib2.0-0t64
+          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libegl1
           Description: Nexa Download Manager
            Fast multi-protocol download manager with browser integration.
            Supports HTTP/HTTPS segmented downloads, HLS video streams,
@@ -221,8 +299,7 @@ jobs:
 
             Built from: ${{ github.sha }}
           files: |
-            build/*.deb
-            NexaSetup.exe
+            nexa_0.1.0_amd64.deb
           draft: false
           prerelease: false
         env:
@@ -477,3 +554,64 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Prove the .deb is fully self-contained ────────────────────────────────
+  # Install it in a CLEAN ubuntu:24.04 container (same glibc as the builder, but
+  # NO Qt / libtorrent / fontconfig / xcb — nothing the app needs). Then assert
+  # every bundled binary AND every bundled Qt plugin resolves all its libraries.
+  # If the build weren't self-contained, ldd would print "not found" and we fail.
+  # glibc + libstdc++/libgcc + the GL stack come from the base image by design —
+  # those are the libraries you cannot relocate.
+  verify-offline:
+    name: Verify .deb is self-contained (clean container)
+    needs: linux
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download .deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nexa-linux-amd64-deb
+
+      - name: Install into a bare system
+        run: |
+          set -e
+          apt-get update
+          # Install ONLY the .deb and whatever it declares (libc6, libstdc++6,
+          # libgcc-s1, libgl1, libegl1). NO qt6 / libtorrent here — if the build
+          # weren't self-contained, the next step would find missing libraries.
+          apt-get install -y ./nexa_0.1.0_amd64.deb
+
+      - name: Assert nothing is missing
+        run: |
+          set -e
+          fail=0
+          check() {
+            local missing
+            missing=$(ldd "$1" 2>/dev/null | grep -i "not found" || true)
+            if [ -n "$missing" ]; then
+              echo "❌ $1"; echo "$missing"; fail=1
+            else
+              echo "✅ $1"
+            fi
+          }
+          check /usr/lib/nexa/nexa
+          check /usr/lib/nexa/nexa-host
+          for p in $(find /usr/lib/nexa/plugins -name '*.so'); do check "$p"; done
+          test -f /usr/lib/nexa/plugins/platforms/libqxcb.so \
+            && echo "✅ xcb platform plugin present" \
+            || { echo "❌ xcb platform plugin MISSING"; fail=1; }
+          test -f /usr/lib/nexa/plugins/sqldrivers/libqsqlite.so \
+            && echo "✅ sqlite driver present" \
+            || { echo "❌ sqlite driver MISSING"; fail=1; }
+          test -n "$(find /usr/lib/nexa/plugins/tls -name '*.so' 2>/dev/null)" \
+            && echo "✅ TLS backend present (https works)" \
+            || { echo "❌ TLS backend MISSING — every https download would fail"; fail=1; }
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::.deb is NOT self-contained — see missing libs above"
+            exit 1
+          fi
+          echo "🎉 .deb is fully self-contained"
