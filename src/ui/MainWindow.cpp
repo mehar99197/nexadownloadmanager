@@ -32,6 +32,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QApplication>
 #include <QClipboard>
 #include <QSystemTrayIcon>
@@ -265,7 +266,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     auto *settingsBtn = new QPushButton(QString::fromUtf8("⚙"), header);
     settingsBtn->setObjectName(QStringLiteral("IconBtn"));
     settingsBtn->setCursor(Qt::PointingHandCursor);
-    settingsBtn->setToolTip(QStringLiteral("Settings, Site logins, Smart Add & more"));
+    settingsBtn->setToolTip(QStringLiteral("Settings, Site logins & more"));
     auto *folderBtn = new QPushButton(QString::fromUtf8("🗀"), header);
     folderBtn->setObjectName(QStringLiteral("IconBtn"));
     folderBtn->setCursor(Qt::PointingHandCursor);
@@ -290,7 +291,6 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     connect(settingsBtn, &QPushButton::clicked, this, [this, settingsBtn]() {
         QMenu menu(this);
         menu.addAction(QStringLiteral("Settings…"),       this, &MainWindow::onSettings);
-        menu.addAction(QStringLiteral("Smart Add (AI)…"), this, &MainWindow::promptSmartAdd);
         menu.addAction(QStringLiteral("Site logins…"),    this, &MainWindow::onSiteLogins);
         QAction *clip = menu.addAction(QStringLiteral("Monitor clipboard for links"));
         clip->setCheckable(true);
@@ -298,9 +298,6 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         connect(clip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
         menu.addAction(QStringLiteral("Remove selected"), this, &MainWindow::removeSelected);
         menu.addSeparator();
-        menu.addAction(QStringLiteral("Open download folder"), this, &MainWindow::openDownloadFolder);
-        menu.addAction(QStringLiteral("Update video tools (yt-dlp)…"), this, &MainWindow::onUpdateTools);
-        menu.addAction(QStringLiteral("Export logs…"), this, &MainWindow::onExportLogs);
         menu.addAction(QStringLiteral("Check for updates…"), this, &MainWindow::onCheckUpdates);
         menu.exec(settingsBtn->mapToGlobal(QPoint(0, settingsBtn->height() + 4)));
     });
@@ -453,10 +450,19 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     // ---- Footer: live stats (left) + version (right) ----------------------
     m_footerLeft  = new QLabel(this);
     m_footerLeft->setObjectName(QStringLiteral("FootStat"));
+    m_footerClear = new QPushButton(QStringLiteral("Clear completed downloads"), this);
+    m_footerClear->setObjectName(QStringLiteral("Ghost"));
+    m_footerClear->setCursor(Qt::PointingHandCursor);
+    m_footerClear->setEnabled(false);          // greyed until finished downloads exist
+    connect(m_footerClear, &QPushButton::clicked, this, &MainWindow::clearCompleted);
     m_footerRight = new QLabel(QStringLiteral("v%1  ·  NexaDL").arg(QApplication::applicationVersion()), this);
     m_footerRight->setObjectName(QStringLiteral("FootVer"));
     statusBar()->addWidget(m_footerLeft);
+    // Permanent widgets sit at the bottom-right, laid left-to-right in call order.
+    // Version first, then the Clear button — so the button lands in the far
+    // bottom-right corner where it's most visible.
     statusBar()->addPermanentWidget(m_footerRight);
+    statusBar()->addPermanentWidget(m_footerClear);
     statusBar()->setSizeGripEnabled(false);   // window resizes from its edges anyway
 
     auto *del = new QShortcut(QKeySequence::Delete, this);
@@ -620,6 +626,11 @@ void MainWindow::updateStats()
     if (errors) parts << stat(QStringLiteral("Errors"), errors);
     m_footerLeft->setText(parts.join(QStringLiteral("&nbsp;&nbsp;&nbsp;&nbsp;")));
 
+    // Bottom-right "Clear completed downloads" — always visible, enabled only
+    // when there's something finished to clear.
+    if (m_footerClear)
+        m_footerClear->setEnabled(completed > 0);
+
     updateEmptyState();   // table <-> empty page follows the row count
 }
 
@@ -661,6 +672,36 @@ void MainWindow::promptAddUrl()
     plHint->setProperty("ddRole", "label");
     plHint->setWordWrap(true);
 
+    // Audio-format row — only relevant (and only shown) for audio-only sites like
+    // Apple Music, where the user can choose the output container/codec. The combo's
+    // user-data carries the yt-dlp token ("m4a"/"aac"/"flac"/"mp3"); M4A is the
+    // default because Apple serves AAC, so M4A copies it losslessly with no re-encode.
+    auto *afRow = new QWidget(plate);
+    auto *afLay = new QHBoxLayout(afRow);
+    afLay->setContentsMargins(0, 0, 0, 0);
+    auto *afLbl = new QLabel(QStringLiteral("Audio format"), afRow);
+    afLbl->setProperty("ddRole", "label");
+    auto *afCombo = new QComboBox(afRow);
+    afCombo->addItem(QStringLiteral("M4A · AAC (lossless copy, best)"), QStringLiteral("m4a"));
+    afCombo->addItem(QStringLiteral("AAC"),  QStringLiteral("aac"));
+    afCombo->addItem(QStringLiteral("FLAC (re-encode)"), QStringLiteral("flac"));
+    afCombo->addItem(QStringLiteral("MP3 (re-encode)"),  QStringLiteral("mp3"));
+    afLay->addWidget(afLbl);
+    afLay->addWidget(afCombo, 1);
+    afRow->setVisible(false);
+
+    // Show the audio-format row only when the typed URL is an Apple Music link.
+    auto isAppleMusic = [](const QString &text) {
+        const QString host = QUrl::fromUserInput(text.trimmed()).host().toLower();
+        return host == QStringLiteral("music.apple.com") ||
+               host.endsWith(QStringLiteral(".music.apple.com"));
+    };
+    auto syncAudioRow = [afRow, isAppleMusic](const QString &text) {
+        afRow->setVisible(isAppleMusic(text));
+    };
+    connect(edit, &QLineEdit::textChanged, plate, syncAudioRow);
+    syncAudioRow(edit->text());
+
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, plate);
     if (auto *okBtn = btns->button(QDialogButtonBox::Ok)) {
         okBtn->setObjectName(QStringLiteral("Primary"));
@@ -670,6 +711,7 @@ void MainWindow::promptAddUrl()
     v->addWidget(edit);
     v->addWidget(plCheck);
     v->addWidget(plHint);
+    v->addWidget(afRow);
     v->addStretch(1);
     v->addWidget(btns);
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -681,9 +723,12 @@ void MainWindow::promptAddUrl()
 
     // userInitiated=true: the user already confirmed here, so start directly
     // rather than firing the second "confirm before download" prompt.
+    // Pass the chosen audio format only when the row is showing (Apple Music); it's a
+    // no-op for every other site, so an empty string elsewhere keeps behaviour intact.
+    const QString audioFmt = afRow->isVisible() ? afCombo->currentData().toString() : QString();
     const int id = m_engine->addDownload(QUrl::fromUserInput(edit->text().trimmed()),
                                          QString(), {}, QString(), QString(),
-                                         plCheck->isChecked(), /*userInitiated=*/true);
+                                         plCheck->isChecked(), /*userInitiated=*/true, audioFmt);
     if (id < 0)
         QMessageBox::warning(this, QStringLiteral("Invalid URL"),
                              QStringLiteral("That URL could not be parsed."));
@@ -914,68 +959,6 @@ void MainWindow::onCheckUpdates()
     m_updates->check(QApplication::applicationVersion());
 }
 
-void MainWindow::onUpdateTools()
-{
-    // Site extractors rot as YouTube/Udemy/etc. change; let the user self-update
-    // the bundled yt-dlp in place (`yt-dlp -U`) without leaving the app. Works for
-    // the standalone binary; a pip/distro install just reports it can't self-update.
-    auto *proc = new QProcess(this);
-    proc->setProcessChannelMode(QProcess::MergedChannels);
-    // Shared buffer (not a raw new/delete): freed exactly once when the last
-    // capturing lambda is destroyed, so the started-vs-finished race below can't
-    // double-free it.
-    auto out = std::make_shared<QString>();
-    statusBar()->showMessage(QStringLiteral("Updating yt-dlp…"));
-    connect(proc, &QProcess::readyReadStandardOutput, this,
-            [proc, out]() { *out += QString::fromUtf8(proc->readAllStandardOutput()); });
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, proc, out](int code, QProcess::ExitStatus st) {
-        statusBar()->clearMessage();
-        const QString log = out->trimmed();
-        QMessageBox box(this);
-        box.setWindowTitle(QStringLiteral("Update video tools"));
-        const bool ok = (st == QProcess::NormalExit && code == 0);
-        box.setIcon(ok ? QMessageBox::Information : QMessageBox::Warning);
-        box.setText(ok ? QStringLiteral("yt-dlp update finished.")
-                       : QStringLiteral("yt-dlp update didn't complete."));
-        box.setDetailedText(log.isEmpty() ? QStringLiteral("(no output)") : log);
-        box.exec();
-        proc->deleteLater();
-    });
-    proc->start(QStringLiteral("yt-dlp"), {QStringLiteral("-U")});
-    if (!proc->waitForStarted(3000)) {
-        statusBar()->clearMessage();
-        QMessageBox::warning(this, QStringLiteral("Update video tools"),
-            QStringLiteral("Couldn't launch yt-dlp — make sure it's installed and on PATH."));
-        proc->disconnect(this);   // the finished lambda must not also run/clean up
-        proc->deleteLater();
-    }
-}
-
-void MainWindow::onExportLogs()
-{
-    const QString src = nexa::logFilePath();
-    if (!QFileInfo::exists(src) || QFileInfo(src).size() == 0) {
-        QMessageBox::information(this, QStringLiteral("Export logs"),
-            QStringLiteral("No logs yet.\n\nEnable “Save error logs to a file” in Settings, "
-                           "reproduce the problem, then export here."));
-        return;
-    }
-    const QString dst = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Export logs"),
-        QDir::homePath() + QStringLiteral("/nexa-log.txt"),
-        QStringLiteral("Text files (*.txt);;All files (*)"));
-    if (dst.isEmpty())
-        return;
-    QFile::remove(dst);                       // QFile::copy won't overwrite
-    if (QFile::copy(src, dst))
-        QMessageBox::information(this, QStringLiteral("Export logs"),
-            QStringLiteral("Saved to:\n%1").arg(dst));
-    else
-        QMessageBox::warning(this, QStringLiteral("Export logs"),
-            QStringLiteral("Couldn't write the file."));
-}
-
 void MainWindow::onSettings()
 {
     // Single instance: if it's already open, just surface it (restore if the
@@ -1054,25 +1037,6 @@ void MainWindow::onClipboardUrl(const QUrl &url)
         showAndRaise();        // surface the list so the user sees it land
     });
     toast->show();
-}
-
-void MainWindow::promptSmartAdd()
-{
-    if (!m_engine->aiAvailable()) {
-        QMessageBox::information(
-            this, QStringLiteral("Smart Add (AI)"),
-            QStringLiteral("AI features need an Anthropic API key.\n\n"
-                           "Set ANTHROPIC_API_KEY in your environment and restart Nexa, e.g.:\n"
-                           "    export ANTHROPIC_API_KEY=sk-ant-...\n    ./nexa"));
-        return;
-    }
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-        this, QStringLiteral("Smart Add (AI)"),
-        QStringLiteral("Describe what to download (URLs, and optionally when):"),
-        QLineEdit::Normal, QString(), &ok);
-    if (ok && !text.trimmed().isEmpty())
-        m_engine->runAiCommand(text.trimmed());
 }
 
 int MainWindow::rowForId(int id) const
@@ -1176,6 +1140,30 @@ void MainWindow::resumeAll()
     for (const auto &s : m_engine->snapshot())
         if (s.state == DownloadState::Paused)
             m_engine->resume(s.id);
+}
+
+void MainWindow::clearCompleted()
+{
+    // Collect finished ids first — removing inside the snapshot loop would
+    // invalidate the range being iterated.
+    QList<int> done;
+    for (const auto &s : m_engine->snapshot())
+        if (s.state == DownloadState::Completed)
+            done << s.id;
+    if (done.isEmpty())
+        return;
+
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("Clear Completed"),
+        QStringLiteral("Remove %1 completed download%2 from the list?\n"
+                       "(The downloaded files are kept.)")
+            .arg(done.size())
+            .arg(done.size() == 1 ? QString() : QStringLiteral("s")));
+    if (reply != QMessageBox::Yes)
+        return;
+
+    for (int id : done)
+        m_engine->remove(id, false);   // false = keep the file on disk
 }
 
 void MainWindow::removeSelected()

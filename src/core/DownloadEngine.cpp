@@ -189,16 +189,36 @@ QString DownloadEngine::pathForName(const QString &fileName) const
     return candidate;
 }
 
+// Apple Music CDN serves AAC audio in an MP4 container but names the files
+// .mp4 — rename them to .m4a so they land in the Audio folder and open in
+// audio players without confusion.
+static QString normalizeAppleMusicFilename(const QUrl &url, QString name)
+{
+    const QString host = url.host().toLower();
+    if (!host.endsWith(QLatin1String(".itunes.apple.com"))
+        && host != QLatin1String("itunes.apple.com"))
+        return name;
+    if (QFileInfo(name).suffix().toLower() != QLatin1String("mp4"))
+        return name;
+    if (!name.contains(QLatin1String("aac"), Qt::CaseInsensitive))
+        return name;
+    name.chop(3);   // remove "mp4"
+    name += QStringLiteral("m4a");
+    return name;
+}
+
 QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath) const
 {
     if (!savePath.isEmpty())
         return savePath;
-    return pathForName(QFileInfo(url.path()).fileName());
+    const QString raw = QFileInfo(url.path()).fileName();
+    return pathForName(normalizeAppleMusicFilename(url, raw));
 }
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 const HeaderList &headers, const QString &suggestedName,
-                                const QString &siteFormat, bool playlist, bool userInitiated)
+                                const QString &siteFormat, bool playlist, bool userInitiated,
+                                const QString &audioFormat)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
@@ -238,6 +258,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
                                    playlist, this);
         g->setSubtitles(m_embedSubs, m_subLangs);
+        g->setAudioFormat(audioFormat);   // no-op unless this is an audio-only site
         g->setPlaylistConcurrency(m_plConcurrency);
         m_siteVideos.insert(id, g);
         if (playlist)

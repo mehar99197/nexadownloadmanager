@@ -1015,6 +1015,11 @@ void DownloadDetailsDialog::updateButtons()
                          m_state == DownloadState::Queued);
     const bool paused = (m_state == DownloadState::Paused);
     const bool errored = (m_state == DownloadState::Error);
+    // Show exactly one of Pause/Resume: Pause while the job is running, Resume
+    // once it's paused or errored (so a resume can retry). Neither shows when the
+    // download is finished. Cancel is always available.
+    m_pause->setVisible(active);
+    m_resume->setVisible(paused || errored);
     m_pause->setEnabled(active);
     m_resume->setEnabled(paused || errored);
     m_cancel->setEnabled(true);

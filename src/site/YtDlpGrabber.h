@@ -42,6 +42,11 @@ public:
     // engine wires this to the user's Settings value. No-op for audio-only grabs.
     void setSubtitles(bool embed, const QString &langs);
 
+    // Preferred output container/codec for AUDIO-ONLY grabs (Apple Music): "m4a"
+    // (default, AAC copied losslessly), "aac", "flac", or "mp3". Ignored for video.
+    // flac/mp3 are transcodes of the source AAC (no quality gain, just a re-encode).
+    void setAudioFormat(const QString &fmt) { if (!fmt.trimmed().isEmpty()) m_audioFormat = fmt.trimmed().toLower(); }
+
     // For playlist jobs: how many videos to download in PARALLEL (default 3).
     // yt-dlp itself downloads a playlist one video at a time, which leaves most
     // of the bandwidth idle for small videos — so we run N yt-dlp workers, each
@@ -73,6 +78,7 @@ private slots:
 
 private:
     void setState(DownloadState s, const QString &detail = QString());
+    bool isAudioOnly() const;   // audio-only sites (Apple Music): grab/name as music
     void resolveOutputFile();
     QStringList commonArgs(const QString &outputTemplate) const;   // args shared by all workers
     void startPlaylistParallel(const QStringList &common, const QUrl &runUrl);
@@ -90,6 +96,7 @@ private:
     QStringList     m_authArgs;   // pre-built domain-scoped yt-dlp auth flags
     bool            m_playlist = false;   // download the whole playlist
     bool            m_embedSubs = false;  // fetch + embed subtitles
+    QString         m_audioFormat = QStringLiteral("m4a");  // audio-only output container/codec
     QString         m_subLangs = QStringLiteral("en");   // comma-separated languages
     int             m_plItem = 0;         // current playlist item (1-based)
     int             m_plTotal = 0;        // playlist item count

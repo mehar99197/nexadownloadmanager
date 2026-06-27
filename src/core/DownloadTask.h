@@ -130,6 +130,7 @@ private:
     QHash<int, int>           m_retries;        // per-segment retry attempts
     std::function<QString(const QString &)> m_nameResolver;
     static constexpr int      kMaxRetries = 5;
+    static constexpr int      kMaxShortReadRetries = 20;  // CDNs (e.g. Apple) cut connections aggressively
 
     // Speed measurement
     QTimer                   *m_speedTimer = nullptr;

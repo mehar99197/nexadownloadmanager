@@ -9,6 +9,7 @@ class QTableWidget;
 class QStackedWidget;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QSystemTrayIcon;
 class QCloseEvent;
 
@@ -43,16 +44,14 @@ protected:
 
 private slots:
     void promptAddUrl();
-    void promptSmartAdd();           // natural-language AI add
     void pauseAll();
     void resumeAll();
+    void clearCompleted();           // drop all finished downloads from the list
     void removeSelected();
     void openDownloadFolder();
     void onSiteLogins();             // register a cookies.txt for an auth-gated site
     void onSettings();               // open the Preferences dialog
     void onCheckUpdates();           // manual "Check for updates…"
-    void onUpdateTools();            // self-update the bundled yt-dlp (extractors rot)
-    void onExportLogs();             // save the opt-in troubleshooting log to a file
     void setClipboardMonitoring(bool on);   // toggle IDM-style link capture (persisted)
     void onClipboardUrl(const QUrl &url);   // a download-able URL was copied; offer it
     void openDetails(int id);        // open or raise the per-download details plate
@@ -90,6 +89,7 @@ private:
     QStackedWidget *m_content = nullptr;      // swaps table <-> empty-state page
     QLineEdit      *m_search = nullptr;
     QLabel         *m_footerLeft = nullptr;
+    QPushButton    *m_footerClear = nullptr;  // bottom-right "Clear completed downloads"
     QLabel         *m_footerRight = nullptr;
 
     // Dashboard metric tiles (updated live in updateStats()).

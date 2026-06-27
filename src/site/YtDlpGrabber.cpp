@@ -75,7 +75,24 @@ YtDlpGrabber::YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir
         m_savePath = QDir(m_dir).filePath(base);
     } else {
         const QString placeholder = m_fixedName.isEmpty() ? QStringLiteral("video") : m_fixedName;
-        m_savePath = QDir(m_dir).filePath(placeholder + QStringLiteral(".mp4"));
+        // Derive extension and quality suffix for the placeholder path shown while
+        // yt-dlp runs. Audio formats start with "bestaudio"; specific video qualities
+        // carry a [height<=N] filter. The real final path comes from --print-to-file.
+        QString ext = QStringLiteral("mp4");
+        QString suffix;
+        if (formatSelector.startsWith(QStringLiteral("bestaudio"))) {
+            static const QRegularExpression extRe(QStringLiteral(R"(\[ext=([a-z0-9]+)\])"));
+            const auto em = extRe.match(formatSelector);
+            ext = em.hasMatch() ? em.captured(1) : QStringLiteral("m4a");
+            suffix = QStringLiteral(" [audio]");
+        } else if (!formatSelector.isEmpty()
+                   && formatSelector != QStringLiteral("bestvideo*+bestaudio/best")) {
+            static const QRegularExpression hRe(QStringLiteral(R"(height<=(\d+))"));
+            const auto hm = hRe.match(formatSelector);
+            if (hm.hasMatch())
+                suffix = QStringLiteral(" [%1p]").arg(hm.captured(1));
+        }
+        m_savePath = QDir(m_dir).filePath(placeholder + suffix + QLatin1Char('.') + ext);
     }
     m_outFile = QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
                 QStringLiteral("/nexa-ytout-%1.txt").arg(m_id);
@@ -139,6 +156,7 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
         QStringLiteral("skillshare.com"),
         QStringLiteral("pluralsight.com"),
         QStringLiteral("linkedin.com"),   // LinkedIn Learning
+        QStringLiteral("music.apple.com"),// Apple Music (FairPlay DRM — see AuthUtils)
     };
     for (const QString &s : kAuthSites)
         if (host == s || host.endsWith(QLatin1Char('.') + s))
@@ -149,8 +167,27 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
 QString YtDlpGrabber::formatForQuality(const QString &quality)
 {
     QString q = quality.trimmed().toLower();
-    if (q == QStringLiteral("audio"))
+    if (q.startsWith(QStringLiteral("audio"))) {
+        // "audio"            → best audio, any format
+        // "audio:m4a"        → best audio, prefer m4a container
+        // "audio:m4a:128"    → best m4a audio at or near 128k
+        const QStringList parts = q.split(QLatin1Char(':'));
+        if (parts.size() >= 3) {
+            const QString ext = parts[1];
+            bool ok = false;
+            const int abr = parts[2].toInt(&ok);
+            if (ok && abr > 0) {
+                const int cap = abr + qMax(5, int(abr * 0.05));
+                return QStringLiteral("bestaudio[ext=%1][abr<=%2]/bestaudio[ext=%1]/bestaudio/best")
+                       .arg(ext).arg(cap);
+            }
+        }
+        if (parts.size() >= 2 && !parts[1].isEmpty()) {
+            const QString ext = parts[1];
+            return QStringLiteral("bestaudio[ext=%1]/bestaudio/best").arg(ext);
+        }
         return QStringLiteral("bestaudio/best");
+    }
     bool isNum = false;
     const int h = q.remove('p').toInt(&isNum);
     if (isNum && h > 0)
@@ -181,12 +218,23 @@ void YtDlpGrabber::setState(DownloadState s, const QString &detail)
     emit stateChanged(m_id, s, detail);
 }
 
+// Audio-only sites have no video track, so they need a music-shaped pipeline:
+// best-audio format, an m4a container, and a "Artist - Track" filename rather than
+// the video-oriented %(title)s (which on Apple Music is an odd internal string).
+bool YtDlpGrabber::isAudioOnly() const
+{
+    const QString host = m_url.host().toLower();
+    return host == QStringLiteral("music.apple.com") ||
+           host.endsWith(QStringLiteral(".music.apple.com"));
+}
+
 void YtDlpGrabber::start()
 {
     if (m_state == DownloadState::Downloading || m_state == DownloadState::Probing)
         return;
     m_cancelled = false;
     QDir().mkpath(m_dir);
+
 
     // Playlist/course: put every video inside a folder named after the course.
     // The caller-supplied name (e.g. the course title from the extension) wins;
@@ -208,11 +256,33 @@ void YtDlpGrabber::start()
         plFallback = QStringLiteral("Playlist");
     const QString plFolder = QStringLiteral("%(playlist_title|") + plFallback + QStringLiteral(")s");
 
+    // Audio-only (Apple Music): name the file after the song, not %(title)s — which
+    // on Apple Music is an odd internal string. Prefer the music metadata: artist +
+    // track, falling back to title, then id (yt-dlp's "field,field|default" chain).
+    // The caller-supplied m_fixedName is ignored here on purpose: for a music URL it's
+    // a page-derived junk name, and the song's own metadata is the right title.
+    const QString audioName =
+        QStringLiteral("%(artist,creator,uploader|Unknown Artist)s - %(track,title,id)s");
+
+    // Quality suffix embedded in the filename so different qualities of the same
+    // video produce distinct files and yt-dlp never skips them as "already exists".
+    // "bestaudio" → " [audio]", specific height → " [1080p]" via %(height)sp,
+    // best/unknown → no suffix (preserve original naming for the common case).
+    const bool userAudio = m_format.startsWith(QStringLiteral("bestaudio"));
+    const bool specificVideo = !m_format.isEmpty() && !userAudio
+                               && m_format != QStringLiteral("bestvideo*+bestaudio/best");
+    const QString qualSuffix = userAudio
+        ? QStringLiteral(" [audio]")
+        : specificVideo ? QStringLiteral(" [%(height)sp]") : QString();
+
     const QString tmpl = m_playlist
-        ? QDir(m_dir).filePath(plFolder + QStringLiteral("/%(playlist_index)03d - %(title)s.%(ext)s"))
-        : (m_fixedName.isEmpty()
-               ? QDir(m_dir).filePath(QStringLiteral("%(title)s.%(ext)s"))
-               : QDir(m_dir).filePath(m_fixedName + QStringLiteral(".%(ext)s")));
+        ? QDir(m_dir).filePath(plFolder + QStringLiteral("/%(playlist_index)03d - ")
+              + (isAudioOnly() ? audioName : QStringLiteral("%(title)s")) + QStringLiteral(".%(ext)s"))
+        : (isAudioOnly()
+               ? QDir(m_dir).filePath(audioName + QStringLiteral(".%(ext)s"))
+               : (m_fixedName.isEmpty()
+                      ? QDir(m_dir).filePath(QStringLiteral("%(title)s") + qualSuffix + QStringLiteral(".%(ext)s"))
+                      : QDir(m_dir).filePath(m_fixedName + qualSuffix + QStringLiteral(".%(ext)s"))));
 
     m_conns = 1;
     const QStringList common = commonArgs(tmpl);
@@ -265,20 +335,59 @@ void YtDlpGrabber::start()
 // the per-worker --print-to-file path, and the URL) are appended by the caller.
 QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
 {
+    // Audio-only sites (Apple Music and other music services) have no video track:
+    // the video-oriented "bestvideo*+bestaudio" selector and mp4 merge are wrong for
+    // them. Grab the highest-quality audio stream instead and keep it in a lossless
+    // m4a copy (Apple serves AAC, so --extract-audio m4a copies the stream without a
+    // quality-degrading re-encode).
+    const bool audioOnly = isAudioOnly();
+    // User explicitly selected an audio-only quality (format selector starts with "bestaudio")
+    const bool userAudio = !audioOnly && m_format.startsWith(QStringLiteral("bestaudio"));
+
     QStringList args;
     args << QStringLiteral("--newline") << QStringLiteral("--progress")
          << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
          // Give up on a stalled network read instead of hanging forever.
          << QStringLiteral("--socket-timeout") << QStringLiteral("30")
-         << QStringLiteral("--no-mtime") << QStringLiteral("--restrict-filenames")
-         << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
+         << QStringLiteral("--no-mtime")
+         // Keep song titles readable: --restrict-filenames transliterates/strips
+         // spaces and non-ASCII (e.g. turns a track name into an odd token), so for
+         // music we leave the real "Artist - Track" name intact (yt-dlp still sanitises
+         // path-illegal characters either way).
+         << (audioOnly ? QStringLiteral("--no-restrict-filenames")
+                       : QStringLiteral("--restrict-filenames"))
          // Machine-readable progress (byte counts, speed, fragment indices).
          << QStringLiteral("--progress-template")
          << QStringLiteral("download:[NEXA]|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
                            "%(progress.total_bytes_estimate)s|%(progress.speed)s|"
-                           "%(progress.fragment_index)s|%(progress.fragment_count)s")
-         << QStringLiteral("-f") << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format)
-         << QStringLiteral("-o") << tmpl;
+                           "%(progress.fragment_index)s|%(progress.fragment_count)s");
+
+    if (audioOnly) {
+        // Always grab the highest-quality audio rendition Apple exposes. For m4a we
+        // prefer the native AAC stream so --extract-audio copies it WITHOUT a
+        // re-encode (lossless); for aac/flac/mp3 we take any bestaudio and let the
+        // post-processor convert to the requested container. --audio-quality 0 = best.
+        const bool wantM4a = (m_audioFormat == QStringLiteral("m4a"));
+        args << QStringLiteral("--merge-output-format") << QStringLiteral("m4a")
+             << QStringLiteral("-f")
+             << (wantM4a ? QStringLiteral("bestaudio[ext=m4a]/bestaudio/best")
+                         : QStringLiteral("bestaudio/best"))
+             << QStringLiteral("--extract-audio")
+             << QStringLiteral("--audio-format") << m_audioFormat
+             << QStringLiteral("--audio-quality") << QStringLiteral("0")
+             // Tag the file with title/artist/album so players show the song name too.
+             << QStringLiteral("--embed-metadata");
+    } else if (userAudio) {
+        // Audio-only stream: yt-dlp needs no merging, so omit --merge-output-format
+        // (would force .mp4) and --extract-audio (rejects container names like "webm").
+        // %(ext)s in the output template resolves to the format's native extension.
+        args << QStringLiteral("-f") << m_format;
+    } else {
+        args << QStringLiteral("--merge-output-format") << QStringLiteral("mp4")
+             << QStringLiteral("-f")
+             << (m_format.isEmpty() ? QStringLiteral("bestvideo*+bestaudio/best") : m_format);
+    }
+    args << QStringLiteral("-o") << tmpl;
 
     if (m_embedSubs) {
         args << QStringLiteral("--write-subs") << QStringLiteral("--write-auto-subs")
@@ -286,17 +395,12 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
              << QStringLiteral("--embed-subs");
     }
 
-    // Per-stream acceleration (aria2c multi-connection, else native fragments).
-    const QString aria2 = QStandardPaths::findExecutable(QStringLiteral("aria2c"));
-    if (!aria2.isEmpty()) {
-        args << QStringLiteral("--downloader") << QStringLiteral("aria2c")
-             << QStringLiteral("--downloader-args")
-             << QStringLiteral("aria2c:-x16 -s16 -k1M --summary-interval=1 "
-                               "--console-log-level=warn --enable-color=false");
-    } else {
-        args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
-             << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
-    }
+    // Use yt-dlp's native concurrent-fragment downloader. aria2c is intentionally
+    // NOT used here: YouTube serves time-limited signed segment URLs that expire
+    // during multi-connection aria2c downloads, causing "aria2c exited with code 1"
+    // errors mid-download. yt-dlp's own downloader refreshes URLs automatically.
+    args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
+         << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
 
     // Domain-scoped auth flags only (never the browser UA/cookies — that breaks
     // yt-dlp's own extractor). Empty for YouTube.

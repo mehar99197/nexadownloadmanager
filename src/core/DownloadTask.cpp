@@ -18,6 +18,13 @@ namespace nexa {
 
 static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
+// Shown when a finished download turns out to be DRM-encrypted (e.g. Apple Music
+// full tracks). The bytes arrive fine but the samples are encrypted, so the file
+// would play as silence — we report that instead of a bogus "Completed".
+static const QString kDrmErrorDetail = QStringLiteral(
+    "DRM-protected media — the audio/video is encrypted (e.g. Apple Music) and "
+    "cannot be played. Only non-DRM previews are downloadable.");
+
 // Headers that carry the user's site credentials. These must NEVER be sent to a
 // host other than the one they were captured for (a cross-host redirect to a CDN
 // or third party would otherwise leak the session cookie / bearer token).
@@ -116,6 +123,15 @@ bool DownloadTask::renameTo(const QString &newFileName)
     m_savePath = target;
     persist();
     return true;
+}
+
+// Apple Music (and iTunes preview) CDN domains throttle or error on parallel
+// byte-range requests, so we must use exactly one connection for those hosts.
+static bool isAppleMusicCdn(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    return host.endsWith(QLatin1String(".itunes.apple.com"))
+        || host == QLatin1String("itunes.apple.com");
 }
 
 // Choose how many parallel connections to use, scaling with file size up to 32.
@@ -297,7 +313,10 @@ void DownloadTask::buildSegments(qint64 total, bool rangesSupported)
         return;
     }
 
-    const int n = preferredSegmentCount(total);
+    // Apple Music CDN: single connection only — parallel ranges cause errors.
+    if (isAppleMusicCdn(m_url))
+        m_dynamicResegment = false;
+    const int n = isAppleMusicCdn(m_url) ? 1 : preferredSegmentCount(total);
     const qint64 chunk = total / n;
     for (int i = 0; i < n; ++i) {
         SegmentInfo s;
@@ -491,9 +510,11 @@ void DownloadTask::onSegmentShortFinish(int index, qint64 received)
         return;
 
     // The server closed cleanly having sent fewer bytes than the range we
-    // requested. If there might be more (transient early close), retry a couple
-    // of times — the segment resumes from its current offset.
-    if (m_retries.value(index) < 2) {
+    // requested. If there might be more (transient early close), retry up to
+    // kMaxShortReadRetries times — the segment resumes from its current offset.
+    // Apple Music CDN in particular cuts connections repeatedly before the file
+    // is fully served; a higher cap lets us survive those interruptions.
+    if (m_retries.value(index) < kMaxShortReadRetries) {
         retrySegment(index, QStringLiteral("short read"));
         return;
     }
@@ -531,6 +552,74 @@ void DownloadTask::retrySegment(int index, const QString &reason)
     }
 }
 
+// A DRM-protected MP4 (Apple Music, and other EME/CENC web players) downloads
+// byte-for-byte perfectly, but every audio/video sample is AES-encrypted under a
+// key we never have — so the file plays as silence/garbage. Rather than mark such
+// a download "Completed" and hand the user a useless silent file, detect Common
+// Encryption and fail with a clear reason.
+//
+// The signalling lives in the `moov` (the encrypted sample entries enca/encv plus
+// the protection boxes sinf/schm/tenc) and in optional top-level `pssh` boxes. We
+// walk the top-level boxes to find `moov` wherever it sits, then scan its (small)
+// body for those markers — none of which appear in clean media. Returns an empty
+// string when the file is not encrypted (or isn't an MP4 we should check).
+static QString drmBlockReason(const QString &path)
+{
+    // Only the ISO-BMFF / MP4 family carries CENC; skip the cost for everything else.
+    static const QStringList kMp4Suffixes = {
+        QStringLiteral("mp4"), QStringLiteral("m4a"), QStringLiteral("m4v"),
+        QStringLiteral("m4b"), QStringLiteral("m4p"), QStringLiteral("mov")};
+    if (!kMp4Suffixes.contains(QFileInfo(path).suffix().toLower()))
+        return QString();
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QString();
+
+    auto be32 = [](const uchar *p) -> quint64 {
+        return (quint64(p[0]) << 24) | (quint64(p[1]) << 16)
+             | (quint64(p[2]) << 8)  |  quint64(p[3]);
+    };
+    const qint64 fileSize = f.size();
+    qint64 pos = 0;
+    // Walk only the top-level boxes (ftyp, moov, mdat, moof…): a handful of seeks,
+    // never a full read of a large media file.
+    while (pos + 8 <= fileSize) {
+        if (!f.seek(pos))
+            break;
+        const QByteArray hdr = f.read(16);
+        if (hdr.size() < 8)
+            break;
+        const uchar *h = reinterpret_cast<const uchar *>(hdr.constData());
+        quint64 boxSize = be32(h);
+        const QByteArray type = hdr.mid(4, 4);
+        qint64 headerLen = 8;
+        if (boxSize == 1) {                 // 64-bit largesize
+            if (hdr.size() < 16) break;
+            boxSize = (be32(h + 8) << 32) | be32(h + 12);
+            headerLen = 16;
+        } else if (boxSize == 0) {          // extends to EOF
+            boxSize = quint64(fileSize - pos);
+        }
+        if (boxSize < quint64(headerLen))   // malformed: stop, don't loop forever
+            break;
+        if (type == "pssh")                 // a DRM system header at top level
+            return QStringLiteral("DRM-protected");
+        if (type == "moov") {
+            // Cap the body read so a (pathologically) huge moov can't be slurped whole.
+            const qint64 bodyLen = qMin<qint64>(qint64(boxSize) - headerLen, 4 * 1024 * 1024);
+            const QByteArray body = f.read(bodyLen);
+            static const char *kMarkers[] = {"enca", "encv", "tenc", "pssh"};
+            for (const char *m : kMarkers)
+                if (body.contains(QByteArray::fromRawData(m, 4)))
+                    return QStringLiteral("DRM-protected");
+            return QString();               // moov scanned, no protection -> clean
+        }
+        pos += qint64(boxSize);
+    }
+    return QString();
+}
+
 void DownloadTask::finalizeShort(qint64 totalReceived)
 {
     m_speedTimer->stop();
@@ -554,6 +643,11 @@ void DownloadTask::finalizeShort(qint64 totalReceived)
         m_segments[0].done = totalReceived;
     }
     m_completedSegments = m_segments.size();
+    if (!drmBlockReason(m_savePath).isEmpty()) {
+        setState(DownloadState::Error, kDrmErrorDetail);
+        persist();
+        return;
+    }
     setState(DownloadState::Completed, QStringLiteral("done"));
     persist();
     emit progress(m_id, m_total, m_total, 0.0);
@@ -568,6 +662,11 @@ void DownloadTask::checkAllComplete()
     clearSegments();
     if (m_total <= 0)
         m_total = m_done;          // unknown-size stream: final size is what we got
+    if (!drmBlockReason(m_savePath).isEmpty()) {
+        setState(DownloadState::Error, kDrmErrorDetail);
+        persist();
+        return;
+    }
     setState(DownloadState::Completed, QStringLiteral("done"));
     persist();
     emit progress(m_id, m_done, m_total, 0.0);

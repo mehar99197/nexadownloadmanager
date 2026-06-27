@@ -230,10 +230,6 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
                                         "from the gear menu → “Export logs…”."));
     v->addWidget(m_errLog);
 
-    auto *clearBtn = new QPushButton(QStringLiteral("Clear completed downloads"), plate);
-    clearBtn->setCursor(Qt::PointingHandCursor);
-    v->addWidget(clearBtn, 0, Qt::AlignLeft);
-
     // ---- Buttons (outside the scroll area, so they're always visible) -----
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     if (auto *ok = btns->button(QDialogButtonBox::Ok)) {
@@ -247,11 +243,6 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
             this, QStringLiteral("Choose download folder"), m_dir->text());
         if (!d.isEmpty())
             m_dir->setText(d);
-    });
-    connect(clearBtn, &QPushButton::clicked, this, [this, clearBtn]() {
-        const int n = m_engine->clearCompleted();
-        clearBtn->setText(QStringLiteral("Cleared %1 completed").arg(n));
-        clearBtn->setEnabled(false);
     });
     connect(btns, &QDialogButtonBox::accepted, this, [this]() { apply(); accept(); });
     connect(btns, &QDialogButtonBox::rejected, this, &QDialog::reject);

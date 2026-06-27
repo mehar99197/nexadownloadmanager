@@ -75,6 +75,11 @@
   }
   function isPublicSite() { return hostIn(PUBLIC_VIDEO_HOSTS); }
   function isAuthSite()   { return hostIn(AUTH_VIDEO_HOSTS); }
+  // Coursera needs special handling: it's login-gated (so it lives in the auth
+  // list for cookies), but yt-dlp has NO Coursera extractor — handing it the page
+  // URL fails with "Unsupported URL". So instead we download the actual video the
+  // page is streaming, sniffed from its own network requests.
+  function isCoursera()   { return /(^|\.)coursera\.org$/.test(location.host.toLowerCase()); }
   function isYouTubeHost() {
     return /(^|\.)youtube\.com$/.test(location.host) || /(^|\.)youtu\.be$/.test(location.host);
   }
@@ -161,6 +166,68 @@
       .replace(/^\(\d+\)\s*/, "")            // leading "(7) " notification count
       .trim();
   }
+  // Apple Music plays preview clips from audio-ssl.itunes.apple.com, which the
+  // extension sniffs and downloads directly. Those URLs name the file after the CDN
+  // blob ("mzaf_…plus.aac.ep.m4a"), so derive the real "Artist - Song" name from the
+  // page instead. og:title is the song; the music-row/now-playing artist fills the
+  // prefix. Returns "" when nothing usable is found (caller keeps the old name then).
+  function isAppleMusicPage() { return /(^|\.)music\.apple\.com$/.test(location.host.toLowerCase()); }
+  function appleMusicName() {
+    const meta = (sel, attr) => { const e = document.querySelector(sel); return (e && (e.getAttribute(attr) || e.content) || "").trim(); };
+    let song = meta('meta[property="og:title"]', "content");
+    if (!song) { const h = document.querySelector("h1"); song = (h && h.textContent || "").trim(); }
+    song = song.replace(/\s+on Apple Music\s*$/i, "").replace(/\s*[|–-]\s*Apple Music\s*$/i, "").trim();
+    if (!song) return "";
+    let artist = meta('meta[name="apple:artist"]', "content") ||
+                 meta('meta[property="music:musician_description"]', "content");
+    if (!artist) {
+      // Subtitle under the title is usually the artist on a song/album page.
+      const sub = document.querySelector('.headings__subtitles, [data-testid="track-subtitle"], .song-subtitles');
+      artist = (sub && sub.textContent || "").trim();
+    }
+    const full = artist ? `${artist} - ${song}` : song;
+    // Strip path-illegal characters; the engine sanitises too, but keep it clean here.
+    return full.replace(/[\/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  // Spotify plays encrypted full tracks (DRM, unsniffable); only its 30-second
+  // preview clips are plain MP3 (p.scdn.co/mp3-preview), which the sniffer now
+  // catches. Name the file after the track instead of the preview-hash URL.
+  function isSpotifyPage() { return /(^|\.)spotify\.com$/.test(location.host.toLowerCase()); }
+  function spotifyName() {
+    const meta = (sel, attr) => { const e = document.querySelector(sel); return (e && (e.getAttribute(attr) || e.content) || "").trim(); };
+    let song = meta('meta[property="og:title"]', "content");
+    if (!song) { const h = document.querySelector("h1"); song = (h && h.textContent || "").trim(); }
+    song = song.replace(/\s*[|–-]\s*Spotify\s*$/i, "").trim();
+    if (!song) return "";
+    // og:description on a track page reads like "Artist · Song · Year"; take the artist.
+    let artist = meta('meta[name="music:musician_description"]', "content");
+    if (!artist) {
+      const m = /^([^·•]+?)\s*[·•]/.exec(meta('meta[property="og:description"]', "content"));
+      if (m) artist = m[1].trim();
+    }
+    const full = artist ? `${artist} - ${song}` : song;
+    return full.replace(/[\/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  // Coursera streams its lecture video from a CDN, which the extension sniffs and
+  // downloads directly — so the file would be named after the CDN blob. Derive the
+  // lecture's real title instead: prefer the on-page heading, else the URL slug
+  // (…/lecture/<id>/<this-slug>), e.g. "overview-of-the-job-interview" -> "Overview
+  // Of The Job Interview". Returns "" when nothing usable is found.
+  function courseraLectureName() {
+    let t = "";
+    const h = document.querySelector('h1, [data-e2e="item-title"], [data-testid="item-page-title"], .video-name');
+    if (h) t = (h.textContent || "").trim();
+    if (!t) {
+      const m = /\/lecture\/[^/]+\/([^/?#]+)/.exec(location.pathname);
+      if (m) t = decodeURIComponent(m[1]).replace(/[-_]+/g, " ").trim()
+                   .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    t = t.replace(/\s*[|–-]\s*Coursera\s*$/i, "").trim();
+    return t.replace(/[\/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   // The course's name, used as the download FOLDER for "Entire course". Prefer a
   // course-title element, else clean the page title (Udemy: "Course: <name>").
   function courseTitle() {
@@ -232,7 +299,7 @@
     { label: "720p", quality: "720", meta: "video + audio" },
     { label: "480p", quality: "480", meta: "video + audio" },
     { label: "360p", quality: "360", meta: "video + audio" },
-    { label: "Audio only (m4a)", quality: "audio", meta: "" }
+    { label: "Audio only (m4a)", quality: "audio:m4a", meta: "" }
   ];
 
   // ---- styling (injected once) -----------------------------------------
@@ -386,8 +453,22 @@
       const withPlaylist = (videoGroup) =>
         hasPlaylist ? [videoGroup, playlistGroup()] : [videoGroup];
 
-      // Auth sites (Udemy/Coursera/…): the -J probe can't see login-gated
-      // formats, so offer Best/Audio directly — the handoff carries the cookies.
+      // Coursera: yt-dlp can't extract its pages, so don't hand off the page URL
+      // (that's the "Unsupported URL" error). Instead offer the real video the page
+      // is streaming — the MP4/HLS sniffed from its own requests — which downloads
+      // via Nexa's normal HTTP/HLS engine. The user grabs lectures one by one.
+      if (isCoursera()) {
+        renderPanel([{ title: siteTitle(),
+                       qualities: [{ label: "Detecting video…" }] }]);
+        sendMessageSafe({ type: "nexa-get-qualities" }, (groups) => {
+          if (chrome.runtime.lastError) { renderPanel([]); return; }
+          renderPanel(groups && groups.length ? groups : []);
+        });
+        return;
+      }
+
+      // Auth sites (Udemy/…): the -J probe can't see login-gated formats, so offer
+      // Best/Audio directly — the handoff carries the cookies.
       if (isAuthSite()) {
         // "Entire course" sends the current lecture page URL with the playlist
         // flag; the engine normalises it to udemy.com/course/<slug>/learn/lecture/
@@ -401,7 +482,7 @@
                        meta: "every video", course: true, name: courseTitle() });
         quals.push({ label: onLecture ? "This lecture only" : "Best available",
                      quality: "best", meta: "video + audio" });
-        quals.push({ label: "Audio only (m4a)", quality: "audio", meta: "" });
+        quals.push({ label: "Audio only (m4a)", quality: "audio:m4a", meta: "" });
         renderPanel(withPlaylist({ title: siteTitle(), name: dlName, site: true,
                                    url: vurl, qualities: quals }));
         return;
@@ -421,7 +502,13 @@
               quality: String(q.height),
               meta: "video + audio"
             });
-          quals.push({ label: "Audio only (m4a)", quality: "audio", meta: "" });
+          // Audio formats: use real per-format list when available, else fallbacks
+          if (Array.isArray(r.audioFormats) && r.audioFormats.length) {
+            for (const af of r.audioFormats)
+              quals.push({ label: af.label, quality: af.quality, meta: "m4a" });
+          } else {
+            quals.push({ label: "Audio only (m4a)", quality: "audio:m4a", meta: "" });
+          }
         } else {
           quals = YT_QUALITIES.map((q) => ({ label: q.label, quality: q.quality, meta: q.meta }));
         }
@@ -509,6 +596,17 @@
             } else {                         // sniffed direct media URL
               msg.url = row.dataset.url;
               msg.filename = row.dataset.name || document.title;
+              // Replace the CDN blob name with a real title (song / lecture). Keep the
+              // file's own extension when it has one; Spotify previews are
+              // extensionless MP3s, so fall back to a per-site default.
+              let nice = "", defExt = "";
+              if (isAppleMusicPage())   { nice = appleMusicName();      defExt = "m4a"; }
+              else if (isSpotifyPage()) { nice = spotifyName();         defExt = "mp3"; }
+              else if (isCoursera())    { nice = courseraLectureName(); defExt = "";    }
+              if (nice) {
+                const ext = (/\.([a-z0-9]{1,5})(?:\?|#|$)/i.exec(row.dataset.url || "") || [])[1] || defExt;
+                msg.filename = ext ? `${nice}.${ext}` : nice;
+              }
             }
             panel.style.display = "none";
             toast("Sending to Nexa…");

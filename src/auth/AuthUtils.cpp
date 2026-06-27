@@ -39,6 +39,17 @@ QString authReasonFromYtDlpLine(const QString &line)
     if (udemyRe.match(line).hasMatch())
         return QStringLiteral("Udemy course download is not supported (yt-dlp can't read "
                               "Udemy's DRM-protected course content)");
+    // Apple Music: every track/album/playlist is FairPlay-DRM encrypted, so no
+    // downloader (yt-dlp included) can fetch the audio — yt-dlp reports it as an
+    // "Unsupported URL" rather than a DRM error, so match the host explicitly and
+    // give the real reason instead of the misleading generic message.
+    static const QRegularExpression appleMusicRe(
+        QStringLiteral("music\\.apple\\.com|apple music"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (appleMusicRe.match(line).hasMatch())
+        return QStringLiteral("Apple Music tracks are FairPlay-DRM protected and "
+                              "cannot be downloaded");
+
     // DRM is a hard blocker for any site: yt-dlp cannot decrypt protected media.
     static const QRegularExpression drmRe(
         QStringLiteral("DRM|widevine|fairplay|protected.*content|this video is drm"),

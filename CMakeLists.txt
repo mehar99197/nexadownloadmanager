@@ -44,6 +44,7 @@ add_executable(nexa
     src/auth/AuthenticationManager.cpp
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
+    src/ipc/NativeHostRegistrar.cpp
     src/web/WebServer.cpp
     src/ui/UiHelpers.cpp
     src/ui/DownloadDetailsDialog.cpp

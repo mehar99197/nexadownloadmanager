@@ -7,6 +7,10 @@
 
 const HOST = "com.nexa.host";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|mkv|webm|flv|ts|mp3|m4a|aac|zip|rar|7z|iso|exe|dmg|pkg|deb|apk|pdf)(\?|$)/i;
+// Spotify's 30-second preview clips are plain MP3s but have NO file extension
+// (https://p.scdn.co/mp3-preview/<hash>?cid=…), so MEDIA_RE misses them — match the
+// host+path instead. (Full tracks are encrypted/DRM and can't be sniffed.)
+const SPOTIFY_PREVIEW_RE = /\/\/p\.scdn\.co\/mp3-preview\//i;
 
 // Firefox exposes the promise-based `browser.*`; Chrome only `chrome.*`. Use this
 // for the NEW auth-cookie calls so existing (working) chrome.* lines are untouched.
@@ -109,6 +113,19 @@ function dropTabMedia(tabId) {
   tabMedia.delete(tabId);
   try { chrome.storage.session.remove(sessKey(tabId)); } catch (_) {}
 }
+// Record one detected media URL for a tab (deduped, capped). Shared by the
+// URL-extension sniffer and the Content-Type sniffer below.
+const MAX_MEDIA_PER_TAB = 40;   // keep the list bounded (MSE streams can be chatty)
+function addMedia(tabId, url, type) {
+  if (tabId < 0) return;
+  const list = tabMedia.get(tabId) || [];
+  if (list.some((m) => m.url === url)) return;
+  if (list.length >= MAX_MEDIA_PER_TAB) return;
+  list.push({ url, type });
+  tabMedia.set(tabId, list);
+  persistTabMedia(tabId, list);
+}
+
 // Read a tab's media list, re-hydrating from session storage if the worker was
 // restarted and the in-memory Map is cold.
 async function getTabMedia(tabId) {
@@ -174,16 +191,42 @@ chrome.downloads.onCreated.addListener(async (item) => {
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
-    if (!MEDIA_RE.test(details.url)) return;
-    const list = tabMedia.get(details.tabId) || [];
-    if (!list.some((m) => m.url === details.url)) {
-      list.push({ url: details.url, type: mediaType(details.url) });
-      tabMedia.set(details.tabId, list);
-      persistTabMedia(details.tabId, list);   // survive a worker restart
-      // (No icon badge — the user asked not to show a count on the extension icon.)
-    }
+    if (!MEDIA_RE.test(details.url) && !SPOTIFY_PREVIEW_RE.test(details.url)) return;
+    addMedia(details.tabId, details.url, mediaType(details.url));
   },
   { urls: ["<all_urls>"] }
+);
+
+// Content-Type sniffer: catch media that the URL-extension test misses — any
+// response served as audio/* , video/* , or an HLS/DASH manifest, regardless of
+// its URL (e.g. extensionless streaming audio). MSE segments are skipped because
+// they flood the list and aren't independently downloadable; whole files and
+// manifests are kept. NOTE: this detects PLAIN media only — DRM-encrypted streams
+// (Spotify full tracks, Netflix) are delivered as encrypted segments that, even if
+// detected, can't be decrypted or played, so they're intentionally not surfaced.
+const SEGMENT_RE = /\.(m4s|ts)(\?|$)|[?&](range|bytes)=|\/(seg(ment)?|chunk|frag(ment)?)[-_/0-9]/i;
+function ctOf(headers) {
+  for (const h of (headers || []))
+    if (h.name.toLowerCase() === "content-type") return (h.value || "").toLowerCase();
+  return "";
+}
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (details.tabId < 0) return;
+    const ct = ctOf(details.responseHeaders);
+    if (!ct) return;
+    let type = "";
+    if (/(application|audio|video)\/(x-mpegurl|vnd\.apple\.mpegurl|mpegurl)/.test(ct)) type = "HLS";
+    else if (/application\/dash\+xml/.test(ct)) type = "DASH";
+    else if (/^audio\//.test(ct)) type = "audio";
+    else if (/^video\//.test(ct)) type = "video";
+    else return;
+    // Don't capture the myriad segments of an MSE stream — only whole files/manifests.
+    if ((type === "audio" || type === "video") && SEGMENT_RE.test(details.url)) return;
+    addMedia(details.tabId, details.url, type);
+  },
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"]
 );
 
 chrome.tabs.onRemoved.addListener((tabId) => dropTabMedia(tabId));
@@ -408,6 +451,7 @@ async function activeTab() {
 }
 
 function mediaType(url) {
+  if (SPOTIFY_PREVIEW_RE.test(url)) return "audio";   // extensionless Spotify preview
   if (/\.m3u8(\?|$)/i.test(url)) return "HLS";
   if (/\.mpd(\?|$)/i.test(url)) return "DASH";
   if (/\.(mp4|mkv|webm|flv|ts|m4v|mov|avi)(\?|$)/i.test(url)) return "video";

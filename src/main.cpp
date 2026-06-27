@@ -4,6 +4,7 @@
 #include "core/DownloadTask.h"
 #include "core/Types.h"
 #include "ipc/IpcServer.h"
+#include "ipc/NativeHostRegistrar.h"
 #include "web/WebServer.h"
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
@@ -152,6 +153,7 @@ int main(int argc, char *argv[])
         #Ghost { background: transparent; color: #8a94a3; border: 1px solid #262b34;
                  border-radius: 8px; padding: 6px 13px; font-size: 12px; font-weight: 500; }
         #Ghost:hover { background: #1b2029; color: #e8edf4; border-color: #2e3a44; }
+        #Ghost:disabled { background: transparent; color: #3a4250; border-color: #1a1e25; }
         QLineEdit#Search { background: #1b1f27; border: 1px solid #262b34; border-radius: 8px;
                     padding: 6px 10px 6px 28px; color: #e8edf4;
                     selection-background-color: #22d3ee; selection-color: #08121a; }
@@ -225,8 +227,8 @@ int main(int argc, char *argv[])
         QToolTip { background: #16191f; color: #cfd6e0; border: 1px solid #262b34; padding: 4px 8px; }
 
         /* ---- Dialogs (details plate / settings) ---- */
-        QDialog { background: #14161b; }
-        #Plate { background: #161922; border: 1px solid #242a33; border-radius: 10px; }
+        QDialog { background: #161922; }
+        #Plate { background: #161922; border: none; border-radius: 10px; }
         #Dd_title { color: #f0f4f9; font-size: 15px; font-weight: 600; }
         #Dd_host  { color: #5c6675; font-size: 11px; }
         #Dd_seclabel { color: #5c6675; font-size: 11px; }
@@ -304,6 +306,13 @@ int main(int argc, char *argv[])
         // rather than running a windowless, socket-less duplicate.
         return 0;
     }
+
+    // Self-register the native-messaging host with every installed browser so the
+    // extension can always reach us — no manual install step, on any machine. The
+    // manifest points at OUR nexa-host (resolved from this exe's location) and the
+    // extension ids are pinned, so "Specified native messaging host not found"
+    // can't recur on a fresh install. Idempotent; cheap (only rewrites on change).
+    nexa::registerNativeHost();
 
     nexa::MainWindow window(&engine);
     // A peer asking to "show" (second launch / popup) surfaces this window.

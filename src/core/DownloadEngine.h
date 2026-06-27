@@ -42,7 +42,8 @@ public:
                      const QString &suggestedName = QString(),
                      const QString &siteFormat = QString(),
                      bool playlist = false,
-                     bool userInitiated = false);   // true = user already confirmed; start now
+                     bool userInitiated = false,    // true = user already confirmed; start now
+                     const QString &audioFormat = QString());  // audio-only sites: m4a/aac/flac/mp3
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);

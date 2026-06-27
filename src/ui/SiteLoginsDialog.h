@@ -1,7 +1,6 @@
 #pragma once
 #include <QDialog>
 
-class QLineEdit;
 class QComboBox;
 class QLabel;
 
@@ -18,8 +17,6 @@ public:
     explicit SiteLoginsDialog(DownloadEngine *engine, QWidget *parent = nullptr);
 
 private slots:
-    void onBrowse();
-    void onRegister();
     void onUseBrowser();             // "use my logged-in browser" (no export)
 
 private:
@@ -28,7 +25,6 @@ private:
     DownloadEngine *m_engine;
     QComboBox *m_domain  = nullptr;   // editable, pre-seeded with the auth sites
     QComboBox *m_browser = nullptr;   // chrome / firefox / … for the live browser login
-    QLineEdit *m_path    = nullptr;   // read-only, filled by Browse
     QLabel    *m_status  = nullptr;   // green ok / red AuthResult.detail
 };
 

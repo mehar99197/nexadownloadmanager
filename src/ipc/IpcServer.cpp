@@ -283,6 +283,8 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
         const QJsonArray formats = info.value(QStringLiteral("formats")).toArray();
         QHash<int, int> heightFps;     // video height -> max fps
         bool hasAudio = false;
+        // audio-only formats: key = "ext:abr", value = abr (keep highest per key)
+        QMap<QString, int> audioMap;
         for (const QJsonValue &fv : formats) {
             const QJsonObject f = fv.toObject();
             const QString vcodec = f.value(QStringLiteral("vcodec")).toString();
@@ -291,8 +293,17 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
             const int fps = int(f.value(QStringLiteral("fps")).toDouble() + 0.5);
             if (acodec != QLatin1String("none") && !acodec.isEmpty())
                 hasAudio = true;
-            if (vcodec != QLatin1String("none") && !vcodec.isEmpty() && h > 0)
+            if (vcodec != QLatin1String("none") && !vcodec.isEmpty() && h > 0) {
                 heightFps[h] = qMax(heightFps.value(h, 0), fps);
+            } else if (acodec != QLatin1String("none") && !acodec.isEmpty()) {
+                // audio-only format
+                const QString ext = f.value(QStringLiteral("ext")).toString();
+                const int abr = int(f.value(QStringLiteral("abr")).toDouble() + 0.5);
+                if (!ext.isEmpty() && abr > 0) {
+                    const QString key = ext + QLatin1Char(':') + QString::number(abr);
+                    audioMap[key] = abr;
+                }
+            }
         }
         QList<int> sorted = heightFps.keys();
         std::sort(sorted.begin(), sorted.end(), std::greater<int>());
@@ -310,10 +321,34 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
                                      {"label", label}, {"note", note}});
         }
 
+        // Build audio format list — m4a only (webm/opus excluded: less compatible,
+        // confusing to users, and yt-dlp selects best m4a automatically).
+        struct AudioEntry { QString ext; int abr; };
+        QList<AudioEntry> audioList;
+        for (auto it = audioMap.cbegin(); it != audioMap.cend(); ++it) {
+            const QStringList parts = it.key().split(QLatin1Char(':'));
+            if (parts.size() == 2 && parts[0] == QStringLiteral("m4a"))
+                audioList.append({parts[0], parts[1].toInt()});
+        }
+        std::sort(audioList.begin(), audioList.end(),
+                  [](const AudioEntry &a, const AudioEntry &b) {
+            return a.abr != b.abr ? a.abr > b.abr : a.ext < b.ext;
+        });
+        QJsonArray audioQuals;
+        for (const AudioEntry &ae : audioList) {
+            audioQuals.append(QJsonObject{
+                {"ext",     ae.ext},
+                {"abr",     ae.abr},
+                {"label",   QStringLiteral("Audio only (m4a) · %1k").arg(ae.abr)},
+                {"quality", QStringLiteral("audio:%1:%2").arg(ae.ext).arg(ae.abr)}
+            });
+        }
+
         sendFramed(sock, QJsonObject{{"ok", true},
                                      {"hasAudio", hasAudio},
                                      {"title", info.value(QStringLiteral("title")).toString()},
-                                     {"qualities", quals}});
+                                     {"qualities", quals},
+                                     {"audioFormats", audioQuals}});
         proc->deleteLater();
     });
     // -J extraction is network-bound (a few seconds); the host waits for us.
