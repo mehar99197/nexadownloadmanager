@@ -105,7 +105,7 @@ private:
     void checkAllComplete();
     void retrySegment(int index, const QString &reason);  // resume a failed segment
     void finalizeShort(qint64 totalReceived);             // accept actual size, truncate
-    void onSizeDiscovered(qint64 total);   // adopt a size the live GET revealed but the probe missed
+    void onSizeDiscovered(qint64 total, bool rangesSupported);   // adopt size/Range the live GET revealed
 
     int                       m_id;
     QUrl                      m_url;

@@ -478,11 +478,15 @@ void DownloadTask::onSegmentProgressed(int index, qint64 delta)
 // size probe couldn't get (chunked / redirected / auth-gated GitHub, Drive, AI
 // links). Adopt it so "File size" stops reading "Unknown" and an ETA becomes
 // possible — all mid-download, without restarting anything.
-void DownloadTask::onSizeDiscovered(qint64 total)
+void DownloadTask::onSizeDiscovered(qint64 total, bool rangesSupported)
 {
     if (m_total > 0 || total <= 0)
         return;                       // already known, or nothing useful learned
     m_total = total;
+    // A 206 on the live transfer proves Range support the probe missed — so the
+    // download is resumable. Reflects as "Resume capability: Yes" in the UI.
+    if (rangesSupported)
+        m_rangesSupported = true;
     // An unknown-size download is always a single open-ended segment. Clamp it to
     // the real last byte so it finishes cleanly at EOF instead of leaning on the
     // server to close the connection.

@@ -128,7 +128,9 @@ void SegmentDownloader::onMetaData() {
     }
     if (total > 0) {
         m_announcedSize = true;
-        emit sizeDiscovered(total);
+        // A 206 proves the server honours Range — i.e. the download is resumable,
+        // even if the bytes=0-0 probe couldn't establish it.
+        emit sizeDiscovered(total, status == 206);
     }
 }
 

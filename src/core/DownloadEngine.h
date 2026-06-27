@@ -138,6 +138,11 @@ public:
     QString       hostOf(int id) const;   // source host, for the UI row subtitle
     QString       urlOf(int id) const;    // full source URL (empty for torrents)
 
+    // Resume capability for ANY job type — a definitive Yes/No, never "unknown".
+    // HTTP downloads depend on the server honouring Range; torrents and yt-dlp/
+    // HLS grabs always resume in Nexa.
+    bool          isResumable(int id) const;
+
     // Reorder the waiting queue to match the given display order: any ids in
     // `idsInDisplayOrder` that are still queued are moved to that relative order
     // (others are left untouched), then the scheduler re-evaluates. Lets the UI

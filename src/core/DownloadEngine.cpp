@@ -601,6 +601,17 @@ QString DownloadEngine::urlOf(int id) const
     return QString();   // torrents have no single source URL
 }
 
+bool DownloadEngine::isResumable(int id) const
+{
+    // HTTP downloads resume only if the server honours Range (learned on probe,
+    // or from a 206 seen on the live transfer).
+    if (auto *t = m_tasks.value(id)) return t->rangesSupported();
+    // Every other job type supports pause/resume: torrents (libtorrent keeps the
+    // piece bitfield), yt-dlp grabs (--continue / re-fetch fragments) and HLS
+    // grabs (re-fetch missing segments). Definitively resumable — never unknown.
+    return true;
+}
+
 // Lightweight pre-download probe so the confirm prompt can show the REAL filename
 // (from Content-Disposition or the final redirected URL) instead of a URL token —
 // just like IDM. Only meaningful for plain HTTP downloads (grabbers name videos

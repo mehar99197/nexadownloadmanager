@@ -908,16 +908,13 @@ void DownloadDetailsDialog::refreshFields()
         ? humanTime(qint64((m_total - m_done) / m_avgBps))
         : QStringLiteral("—"));
 
-    // Resume capability: known only for HTTP DownloadTasks (after probe).
-    if (auto *t = m_engine->task(m_id)) {
-        const bool yes = t->rangesSupported();
-        m_vResume->setText(yes ? QStringLiteral("Yes") : QStringLiteral("No"));
-        m_vResume->setStyleSheet(yes ? QStringLiteral("color:#34d399;")
-                                     : QStringLiteral("color:#fb7185;"));
-    } else {
-        m_vResume->setText(QStringLiteral("Unknown"));
-        m_vResume->setStyleSheet(QStringLiteral("color:#8a94a3;"));
-    }
+    // Resume capability — a definitive Yes/No for every job type (never "Unknown"):
+    // HTTP depends on the server honouring Range; torrents and yt-dlp/HLS grabs
+    // always resume in Nexa.
+    const bool yes = m_engine->isResumable(m_id);
+    m_vResume->setText(yes ? QStringLiteral("Yes") : QStringLiteral("No"));
+    m_vResume->setStyleSheet(yes ? QStringLiteral("color:#34d399;")
+                                 : QStringLiteral("color:#fb7185;"));
 }
 
 void DownloadDetailsDialog::refreshOverallBar()

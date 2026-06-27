@@ -46,7 +46,7 @@ signals:
     void completed(int index);
     void failed(int index, const QString &error);    // real (retryable) error
     void shortFinish(int index, qint64 received);     // clean close, fewer bytes than asked
-    void sizeDiscovered(qint64 total);                // real file size, read from live response headers
+    void sizeDiscovered(qint64 total, bool rangesSupported);  // real size (+ Range support) from live headers
 
 private slots:
     void onReadyRead();
