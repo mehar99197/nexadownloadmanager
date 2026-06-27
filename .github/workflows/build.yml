@@ -69,20 +69,35 @@ jobs:
             -e build/nexa -e build/nexa-host \
             --plugin qt
 
-          # Strip the libraries that MUST be host-provided. glibc (libc/ld-linux/
-          # libm/pthread/dl/rt/resolv) is ABI-tied to the kernel and the GPU/GL
-          # stack is driver-specific — bundling either crashes on a mismatched
-          # host. libstdc++/libgcc are forward-compatible system libs, safer to
-          # take from the host. All five are declared as Depends below.
-          rm -f AppDir/usr/lib/libstdc++.so*   AppDir/usr/lib/libgcc_s.so*   \
-                AppDir/usr/lib/libGL.so*        AppDir/usr/lib/libEGL.so*     \
-                AppDir/usr/lib/libGLX.so*       AppDir/usr/lib/libGLdispatch.so* \
-                AppDir/usr/lib/libOpenGL.so*    AppDir/usr/lib/libdrm.so*     \
-                AppDir/usr/lib/libglapi.so*     AppDir/usr/lib/libgbm.so*     \
-                AppDir/usr/lib/libc.so*         AppDir/usr/lib/libm.so*       \
-                AppDir/usr/lib/libdl.so*        AppDir/usr/lib/libpthread.so* \
-                AppDir/usr/lib/librt.so*        AppDir/usr/lib/libresolv.so*  \
-                AppDir/usr/lib/ld-linux-x86-64.so* 2>/dev/null || true
+          # DENY = the only libraries we DON'T bundle, because they must come from
+          # the host: glibc (ABI-tied to the kernel), libstdc++/libgcc (forward-
+          # compatible, safer from the host) and the GPU/GL driver stack (bundling
+          # a driver lib black-screens/crashes on a different GPU). Everything else
+          # gets bundled. These are declared as Depends below.
+          DENY='^(ld-linux.*|libc|libm|libdl|libpthread|librt|libresolv|libnss_[a-z]+|libstdc\+\+|libgcc_s|libGL|libGLX|libGLdispatch|libOpenGL|libEGL|libdrm|libgbm|libglapi)\.so'
+
+          # linuxdeploy honours the AppImage excludelist, which deliberately does
+          # NOT bundle libfontconfig / libfreetype / libharfbuzz / libSM / libICE
+          # (and the GL stack). For a TRUE offline bundle we resolve the full
+          # recursive closure of both binaries AND every bundled plugin ourselves,
+          # copying any non-DENY lib linuxdeploy left behind. Several passes let
+          # newly-copied libs pull in their own deps until it converges.
+          for pass in 1 2 3 4 5 6; do
+            { find AppDir/usr/lib AppDir/usr/plugins -name '*.so*' -type f
+              echo build/nexa; echo build/nexa-host; } | while IFS= read -r obj; do
+              ldd "$obj" 2>/dev/null | awk '/=> \//{print $3}'
+            done | sort -u | while IFS= read -r lib; do
+              base="$(basename "$lib")"
+              echo "$base" | grep -qE "$DENY" && continue
+              [ -e "AppDir/usr/lib/$base" ] && continue
+              cp -Ln "$lib" AppDir/usr/lib/ 2>/dev/null && echo "  + bundled $base"
+            done
+          done
+
+          # Drop any DENY lib linuxdeploy may have bundled (so it stays host-side).
+          for f in $(ls AppDir/usr/lib); do
+            echo "$f" | grep -qE "$DENY" && rm -f "AppDir/usr/lib/$f"
+          done || true
 
           echo "=== libs bundled: $(ls AppDir/usr/lib | wc -l) ===" && ls AppDir/usr/lib | sort
           echo "=== plugins bundled ===" && find AppDir/usr/plugins -type f | sort
@@ -155,6 +170,12 @@ jobs:
           # load nothing on a clean machine — the verify-offline job asserts it.
           find ${PKG}/usr/lib/nexa/plugins -name '*.so' -type f \
             -exec patchelf --set-rpath '$ORIGIN/../..' {} +
+          # Every bundled top-level lib also gets $ORIGIN so a lib's OWN deps (e.g.
+          # libfontconfig -> libfreetype, libharfbuzz) resolve to co-located libs.
+          # DT_RUNPATH isn't transitive, so each object must carry its own rpath.
+          for so in ${PKG}/usr/lib/nexa/*.so*; do
+            [ -f "$so" ] && patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
+          done
 
           # ── yt-dlp + ffmpeg (self-contained, no apt needed) ───────────────
           cp /usr/local/bin/yt-dlp ${PKG}/usr/lib/nexa/yt-dlp
@@ -257,7 +278,7 @@ jobs:
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libegl1
+          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libglx0, libopengl0, libegl1
           Description: Nexa Download Manager
            Fast multi-protocol download manager with browser integration.
            Supports HTTP/HTTPS segmented downloads, HLS video streams,
