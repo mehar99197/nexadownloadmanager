@@ -382,6 +382,7 @@ SegmentDownloader *DownloadTask::makeWorker(const SegmentInfo &seg)
     connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
     connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
     connect(w, &SegmentDownloader::shortFinish, this, &DownloadTask::onSegmentShortFinish);
+    connect(w, &SegmentDownloader::sizeDiscovered, this, &DownloadTask::onSizeDiscovered);
     m_workers.append(w);
     return w;
 }
@@ -471,6 +472,31 @@ void DownloadTask::onSegmentProgressed(int index, qint64 delta)
     // m_retries, from starving each other.)
     if (delta > 0 && m_retries.contains(index))
         m_retries.remove(index);
+}
+
+// A worker learned the real file size from the live response headers that the
+// size probe couldn't get (chunked / redirected / auth-gated GitHub, Drive, AI
+// links). Adopt it so "File size" stops reading "Unknown" and an ETA becomes
+// possible — all mid-download, without restarting anything.
+void DownloadTask::onSizeDiscovered(qint64 total)
+{
+    if (m_total > 0 || total <= 0)
+        return;                       // already known, or nothing useful learned
+    m_total = total;
+    // An unknown-size download is always a single open-ended segment. Clamp it to
+    // the real last byte so it finishes cleanly at EOF instead of leaning on the
+    // server to close the connection.
+    if (m_segments.size() == 1) {
+        m_segments[0].end = total - 1;
+        if (!m_workers.isEmpty() && m_workers.first())
+            m_workers.first()->setEnd(total - 1);
+    }
+    // Grow the pre-allocated file to the real length (best-effort: the write path
+    // still appends correctly even if this fails, e.g. on a non-seekable FS).
+    QFile f(m_savePath);
+    if (f.open(QIODevice::ReadWrite)) { f.resize(total); f.close(); }
+    persist();
+    emit progress(m_id, m_done, m_total, 0.0);   // UI now shows size + time-left
 }
 
 void DownloadTask::onSegmentCompleted(int index)

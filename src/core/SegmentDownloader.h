@@ -46,10 +46,12 @@ signals:
     void completed(int index);
     void failed(int index, const QString &error);    // real (retryable) error
     void shortFinish(int index, qint64 received);     // clean close, fewer bytes than asked
+    void sizeDiscovered(qint64 total);                // real file size, read from live response headers
 
 private slots:
     void onReadyRead();
     void onFinished();
+    void onMetaData();   // parse Content-Range/Content-Length once the headers land
 
 private:
     void pump();   // read what the rate limiter allows, write it, repeat
@@ -63,6 +65,7 @@ private:
     QNetworkReply          *m_reply = nullptr;
     QFile                   m_file;
     bool                    m_stopped = false;
+    bool                    m_announcedSize = false;   // sizeDiscovered() emitted once
 };
 
 } // namespace nexa

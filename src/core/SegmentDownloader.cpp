@@ -93,8 +93,43 @@ void SegmentDownloader::start() {
     // instead of letting unread data pile up in memory at full line speed.
     // Unlimited downloads keep an unbounded buffer for maximum throughput.
     m_reply->setReadBufferSize(m_limiter && m_limiter->isLimited() ? (2 * 1024 * 1024) : 0);
+    connect(m_reply, &QNetworkReply::metaDataChanged, this, &SegmentDownloader::onMetaData);
     connect(m_reply, &QNetworkReply::readyRead, this, &SegmentDownloader::onReadyRead);
     connect(m_reply, &QNetworkReply::finished, this, &SegmentDownloader::onFinished);
+}
+
+// The size probe (a bytes=0-0 request) often can't learn the total — Drive,
+// GitHub artifacts and many AI-export endpoints answer it with a chunked or
+// redirected response that carries no length. The LIVE download response usually
+// DOES carry a Content-Range/Content-Length the probe never saw; surface it once
+// so the task can show a real file size + ETA mid-flight. Status-gated so a 3xx
+// redirect body's length is never mistaken for the file size.
+void SegmentDownloader::onMetaData() {
+    if (m_announcedSize || !m_reply)
+        return;
+    const int status = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    qint64 total = -1;
+    if (status == 206) {
+        // 206 Partial Content -> "Content-Range: bytes from-to/TOTAL".
+        const QByteArray cr = m_reply->rawHeader("Content-Range");
+        const int slash = cr.indexOf('/');
+        if (slash >= 0) {
+            const QByteArray t = cr.mid(slash + 1).trimmed();
+            if (t != "*")
+                total = t.toLongLong();
+        }
+    } else if (status == 200 && m_seg.start + m_seg.done == 0) {
+        // 200 = whole file in one stream; Content-Length is the full size, but
+        // only trustworthy when we asked from byte 0 (a 200 to a ranged request
+        // means the server restarted at 0 and is sending everything).
+        const QVariant len = m_reply->header(QNetworkRequest::ContentLengthHeader);
+        if (len.isValid())
+            total = len.toLongLong();
+    }
+    if (total > 0) {
+        m_announcedSize = true;
+        emit sizeDiscovered(total);
+    }
 }
 
 void SegmentDownloader::stop() {
