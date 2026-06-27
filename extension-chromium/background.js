@@ -33,6 +33,29 @@ function authDomainFor(url) {
   return "";
 }
 
+// Hosts the extension must NOT auto-intercept. These gate downloads behind a
+// session login (and sometimes a "confirm"/signed-URL step) that the desktop app
+// can't reliably reproduce from outside the browser — so we leave them to the
+// browser, which already holds the session and just downloads them normally.
+// (Manual paste into Nexa, or right-click "Download with Nexa", still routes to
+// the app on purpose; this only affects the silent auto-takeover of a click.)
+const BROWSER_ONLY_HOSTS = [
+  // Google Drive / Docs — Google login + large-file virus-scan confirm page.
+  "drive.google.com",
+  "drive.usercontent.google.com",
+  "docs.google.com",
+  "googleusercontent.com",        // the CDN Drive redirects large files to
+  // GitHub — release assets & private-repo files use signed/login-gated URLs.
+  "github.com",                   // also codeload.github.com, gist.github.com, …
+  "githubusercontent.com",        // raw./objects./release-assets.githubusercontent.com
+];
+
+function letBrowserHandle(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  return BROWSER_ONLY_HOSTS.some((d) => host === d || host.endsWith("." + d));
+}
+
 // Export all cookies of `authDomain` (incl. subdomains) as Netscape cookies.txt
 // TEXT, the exact 7-tab format Nexa's CookieFile parser requires. The extension
 // can't write a file (MV3 sandbox), so we send the text and the engine writes it.
@@ -174,6 +197,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 chrome.downloads.onCreated.addListener(async (item) => {
   if (!integrationEnabled) return;
   if (!item.url || item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+  // Drive/Docs & co.: don't take over — let the browser download it natively with
+  // its own Google login (the app can't reliably auth these from outside).
+  if (letBrowserHandle(item.url)) return;
 
   try {
     await chrome.downloads.cancel(item.id);

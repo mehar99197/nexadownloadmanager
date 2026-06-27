@@ -6,6 +6,7 @@
 #include "site/YtDlpGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
+#include "auth/BrowserLogin.h"
 #include "core/RateLimiter.h"
 
 #include <QNetworkAccessManager>
@@ -47,7 +48,8 @@ DownloadEngine::DownloadEngine(QObject *parent)
     // owned here; addDownload() resolves auth per URL and hands the APPLIED result
     // (yt-dlp flags / HeaderList) to the download classes. Config is optional.
     m_auth = new AuthenticationManager(this);
-    m_auth->loadFromJson();   // ~/.config/nexa/auth.json — ignore failure
+    autoEnableBrowserLogins();   // default the auth sites to "use my browser login"
+    m_auth->loadFromJson();      // ~/.config/nexa/auth.json overrides the auto defaults
 
     // Cache live progress so the dashboard/API can report it on demand.
     connect(this, &DownloadEngine::taskProgress, this, &DownloadEngine::cacheProgress);
@@ -80,6 +82,24 @@ DownloadEngine::DownloadEngine(QObject *parent)
                         it->speed = 0.0;
                 }
             });
+}
+
+// Default every known auth site to "use my logged-in browser" so the user never
+// has to open Site Logins. yt-dlp reads the cookies LIVE from the browser on each
+// download (--cookies-from-browser), so they're always current — old cookies are
+// never cached or reused; each run re-reads whatever the browser holds now. We
+// also pick the browser PROFILE actually logged into each site (e.g. a "School"
+// profile), so a non-default profile's session is used. Runs BEFORE loadFromJson,
+// so an explicit auth.json/Site-Logins credential still wins for that domain.
+void DownloadEngine::autoEnableBrowserLogins()
+{
+    const QString browser = browserlogin::detectBrowser();
+    if (browser.isEmpty())
+        return;   // no supported browser on disk — leave auth to manual config
+    const QStringList sites = browserlogin::authSites();
+    const QHash<QString, QString> profiles = browserlogin::bestProfiles(browser, sites);
+    for (const QString &domain : sites)
+        m_auth->registerBrowserCookies(domain, browser, profiles.value(domain));
 }
 
 void DownloadEngine::cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec)
@@ -243,6 +263,30 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     if (!av.ok) {
         emit taskAdded(id);   // create the id so the UI shows the failed job
         emit taskStateChanged(id, DownloadState::Error, av.detail);
+        return id;
+    }
+
+    // Google Drive / Docs file links: route through yt-dlp's GoogleDrive
+    // extractor, which handles the large-file "confirm" page, redirects, and
+    // Content-Disposition naming — and loads the user's login straight from the
+    // browser (--cookies-from-browser), so their OWN private files download
+    // without a manual cookie export. Any file type (apk/zip/pdf/video). Falls
+    // through to the native HTTP path (which has its own Drive handling) when
+    // yt-dlp isn't installed.
+    if (YtDlpGrabber::isDirectFileUrl(url) && YtDlpGrabber::available()) {
+        const QString fixedName = suggestedName.isEmpty()
+            ? QString() : QFileInfo(suggestedName).completeBaseName();
+        auto *g = new YtDlpGrabber(id, url, m_downloadDir, fixedName, QString(),
+                                   headers, authArgs, /*playlist=*/false, this);
+        g->setDirectFile(YtDlpGrabber::detectCookieBrowser());
+        m_siteVideos.insert(id, g);
+        connect(g, &YtDlpGrabber::progress,     this, &DownloadEngine::taskProgress);
+        connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
+        connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
+        connect(g, &YtDlpGrabber::renamed,      this, &DownloadEngine::taskRenamed);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
+        emit taskAdded(id);
+        g->start();
         return id;
     }
 

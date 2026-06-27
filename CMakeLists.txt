@@ -42,6 +42,7 @@ add_executable(nexa
     src/auth/CookieFile.cpp
     src/auth/AuthUtils.cpp
     src/auth/AuthenticationManager.cpp
+    src/auth/BrowserLogin.cpp
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/ipc/NativeHostRegistrar.cpp

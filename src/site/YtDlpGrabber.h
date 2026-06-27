@@ -61,8 +61,21 @@ public:
     DownloadState state()    const { return m_state; }
 
     static bool   isSiteVideoUrl(const QUrl &url);          // youtube.com / youtu.be / ...
+    static bool   isDirectFileUrl(const QUrl &url);         // Google Drive / Docs file links
     static bool   available();                              // is yt-dlp on PATH?
     static QString formatForQuality(const QString &quality); // "1080" -> yt-dlp -f string
+
+    // yt-dlp browser name whose cookie store is most likely the active login
+    // (most-recently-used Chrome/Brave/Chromium/Edge/Firefox), or empty if none.
+    // Used to pass --cookies-from-browser for Drive so the user's own (private)
+    // files download without a manual cookie export.
+    static QString detectCookieBrowser();
+
+    // Switch this grabber to "direct file" mode: download whatever single file the
+    // URL resolves to (apk/zip/pdf/… via yt-dlp's GoogleDrive "source" format),
+    // naming it from the server's Content-Disposition, and load auth straight from
+    // the browser. `browser` is a yt-dlp --cookies-from-browser name (may be empty).
+    void setDirectFile(const QString &browser) { m_directFile = true; m_cookieBrowser = browser; }
 
 signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
@@ -95,6 +108,8 @@ private:
     HeaderList      m_headers;
     QStringList     m_authArgs;   // pre-built domain-scoped yt-dlp auth flags
     bool            m_playlist = false;   // download the whole playlist
+    bool            m_directFile = false; // generic single-file mode (Drive etc.)
+    QString         m_cookieBrowser;      // --cookies-from-browser name for direct files
     bool            m_embedSubs = false;  // fetch + embed subtitles
     QString         m_audioFormat = QStringLiteral("m4a");  // audio-only output container/codec
     QString         m_subLangs = QStringLiteral("en");   // comma-separated languages

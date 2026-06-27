@@ -12,6 +12,8 @@
 #include <QDir>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QUrlQuery>
+#include <QSet>
 #include <algorithm>
 
 namespace nexa {
@@ -34,14 +36,46 @@ static bool isSensitiveHeader(const QByteArray &name)
     return l == "cookie" || l == "authorization";
 }
 
+// Best-effort registrable domain (eTLD+1) WITHOUT a public-suffix list: take the
+// last two labels, or the last three when the second-to-last is a well-known
+// second-level domain (co.uk, com.au, …) so siblings under those don't collapse
+// together. Good enough to decide whether two hosts are the same first party.
+static QString registrableDomain(const QString &host)
+{
+    const QStringList parts = host.toLower().split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    if (parts.size() <= 2)
+        return parts.join(QLatin1Char('.'));
+    static const QSet<QString> kSld = {
+        QStringLiteral("co"),  QStringLiteral("com"), QStringLiteral("net"),
+        QStringLiteral("org"), QStringLiteral("gov"), QStringLiteral("edu"),
+        QStringLiteral("ac"),  QStringLiteral("ne"),  QStringLiteral("or"),
+    };
+    const int n = parts.size();
+    if (parts[n - 2].size() <= 3 && kSld.contains(parts[n - 2]))
+        return QStringList(parts.mid(n - 3)).join(QLatin1Char('.'));
+    return QStringList(parts.mid(n - 2)).join(QLatin1Char('.'));
+}
+
+// Two hosts share a credential scope when they're the same host OR the same
+// first party (registrable domain). This lets a session cookie follow a redirect
+// from drive.google.com to drive.usercontent.google.com, or from site.com to its
+// own cdn.site.com — exactly as a browser's domain cookie would — while still
+// stripping it on a hop to an unrelated third party.
+static bool sameCredentialScope(const QString &host, const QString &credHost)
+{
+    if (credHost.isEmpty() || host.compare(credHost, Qt::CaseInsensitive) == 0)
+        return true;
+    return registrableDomain(host) == registrableDomain(credHost);
+}
+
 // Apply the captured headers to `req`, dropping the sensitive ones unless the
-// request targets the credential host (so cookies/tokens stay scoped to it).
+// request targets the credential's first party (so cookies/tokens stay scoped).
 static void applyScopedHeaders(QNetworkRequest &req, const HeaderList &headers,
                                const QString &credHost)
 {
-    const bool sameHost = credHost.isEmpty() || req.url().host() == credHost;
+    const bool inScope = sameCredentialScope(req.url().host(), credHost);
     for (const auto &h : headers) {
-        if (!sameHost && isSensitiveHeader(h.first))
+        if (!inScope && isSensitiveHeader(h.first))
             continue;
         req.setRawHeader(h.first, h.second);
     }
@@ -134,6 +168,114 @@ static bool isAppleMusicCdn(const QUrl &url)
         || host == QLatin1String("itunes.apple.com");
 }
 
+// ---- Google Drive direct-download handling --------------------------------
+// Drive doesn't serve files at a plain URL: share/preview links must be turned
+// into the /download endpoint, large files sit behind a "Can't scan this file
+// for viruses" HTML confirm page (re-request with its confirm token), and
+// signed-out users get bounced to the Google login page. Without this, Nexa
+// would just save the web page as the user's file.
+
+static bool isGoogleDriveHost(const QUrl &u)
+{
+    const QString h = u.host().toLower();
+    return h == QLatin1String("drive.google.com")
+        || h == QLatin1String("drive.usercontent.google.com")
+        || h == QLatin1String("docs.google.com");
+}
+
+// Pull the Drive file id out of any of Drive's URL shapes:
+//   /file/d/{ID}/view   /uc?id={ID}   /open?id={ID}   /download?id={ID}
+static QString googleDriveId(const QUrl &u)
+{
+    static const QRegularExpression pathRe(QStringLiteral("/file/d/([A-Za-z0-9_-]+)"));
+    const auto m = pathRe.match(u.path());
+    if (m.hasMatch())
+        return m.captured(1);
+    return QUrlQuery(u).queryItemValue(QStringLiteral("id"));
+}
+
+// Normalise a Drive share/preview link to the direct download endpoint. A URL
+// that is already on drive.usercontent.google.com is left untouched (it may
+// carry confirm/uuid/at tokens the extension captured). Non-Drive URLs and Docs
+// editor URLs with no file id pass through unchanged.
+static QUrl normalizedGoogleDrive(const QUrl &u)
+{
+    if (!isGoogleDriveHost(u)
+        || u.host().compare(QLatin1String("drive.usercontent.google.com"),
+                            Qt::CaseInsensitive) == 0)
+        return u;
+    const QString id = googleDriveId(u);
+    if (id.isEmpty())
+        return u;
+    QUrl out(QStringLiteral("https://drive.usercontent.google.com/download"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("id"), id);
+    q.addQueryItem(QStringLiteral("export"), QStringLiteral("download"));
+    out.setQuery(q);
+    return out;
+}
+
+// Parse Drive's "Can't scan for viruses" interstitial into the real download
+// URL. Two page shapes exist: the modern <form> with hidden inputs, and the
+// older inline `&confirm=TOKEN` link. `base` is the URL we requested, used to
+// rebuild from a bare token. Returns an empty URL when the page is neither
+// (e.g. the login page), so the caller can report "sign-in required".
+static QUrl parseDriveConfirm(const QByteArray &body, const QUrl &base)
+{
+    const QString s = QString::fromUtf8(body);
+
+    // Modern form: action + hidden inputs (id/export/confirm/uuid).
+    static const QRegularExpression formRe(
+        QStringLiteral("<form[^>]*action=\"([^\"]+)\""),
+        QRegularExpression::CaseInsensitiveOption);
+    if (const auto fm = formRe.match(s); fm.hasMatch()) {
+        QString action = fm.captured(1);
+        action.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+        QUrl out(action);
+        QUrlQuery q(out);                  // the action may already carry id/export
+        static const QRegularExpression inputRe(
+            QStringLiteral("<input[^>]*type=\"hidden\"[^>]*>"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression nameRe(QStringLiteral("name=\"([^\"]+)\""));
+        static const QRegularExpression valRe(QStringLiteral("value=\"([^\"]*)\""));
+        auto it = inputRe.globalMatch(s);
+        bool sawConfirm = false;
+        while (it.hasNext()) {
+            const QString tag = it.next().captured(0);
+            const auto nm = nameRe.match(tag);
+            if (!nm.hasMatch())
+                continue;
+            const auto vm = valRe.match(tag);
+            const QString name = nm.captured(1);
+            q.removeQueryItem(name);
+            q.addQueryItem(name, vm.hasMatch() ? vm.captured(1) : QString());
+            if (name == QLatin1String("confirm"))
+                sawConfirm = true;
+        }
+        if (sawConfirm) {
+            out.setQuery(q);
+            return out;
+        }
+    }
+
+    // Older inline shape: a bare `confirm=TOKEN` (and maybe `uuid=`) in the body.
+    static const QRegularExpression confirmRe(QStringLiteral("confirm=([0-9A-Za-z_-]+)"));
+    if (const auto cm = confirmRe.match(s); cm.hasMatch()) {
+        QUrl out(base);
+        QUrlQuery q(out);
+        q.removeQueryItem(QStringLiteral("confirm"));
+        q.addQueryItem(QStringLiteral("confirm"), cm.captured(1));
+        static const QRegularExpression uuidRe(QStringLiteral("uuid=([0-9A-Za-z_-]+)"));
+        if (const auto um = uuidRe.match(s); um.hasMatch()) {
+            q.removeQueryItem(QStringLiteral("uuid"));
+            q.addQueryItem(QStringLiteral("uuid"), um.captured(1));
+        }
+        out.setQuery(q);
+        return out;
+    }
+    return QUrl();
+}
+
 // Choose how many parallel connections to use, scaling with file size up to 32.
 int DownloadTask::preferredSegmentCount(qint64 totalBytes)
 {
@@ -151,21 +293,30 @@ void DownloadTask::start()
 
     setState(DownloadState::Probing, QStringLiteral("contacting server"));
 
+    // Turn a Drive share/preview link into its direct /download endpoint up front
+    // so cookies are scoped to (and sent to) the host that actually serves bytes.
+    m_url = normalizedGoogleDrive(m_url);
+
     // The captured cookies/tokens belong to THIS host; we follow redirects
     // manually (onProbeFinished) so they can be stripped before a cross-host hop.
     m_credHost = m_url.host();
     m_probeRedirects = 0;
+    sendProbe();
+}
 
+// Issue the ranged size/Range probe against the current m_url. A ranged
+// HEAD-style GET (first byte) reveals whether the server honours Range, plus
+// Content-Length / the final redirected URL. Shared by start(), the redirect
+// loop, and the Google Drive confirm re-probe.
+void DownloadTask::sendProbe()
+{
     QNetworkRequest req(m_url);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::ManualRedirectPolicy);
     req.setRawHeader("Accept-Encoding", "identity");
     applyScopedHeaders(req, m_headers, m_credHost);
-    // A ranged HEAD-style probe: ask for the first byte to learn whether the
-    // server honours Range, plus Content-Length / final redirected URL.
     req.setRawHeader("Range", "bytes=0-0");
-
     m_probe = m_nam->get(req);
     connect(m_probe, &QNetworkReply::finished, this, &DownloadTask::onProbeFinished);
 }
@@ -196,15 +347,7 @@ void DownloadTask::onProbeFinished()
         if (target.isValid() && m_probeRedirects < 8) {
             ++m_probeRedirects;
             m_url = target;                       // the download follows the chain
-            QNetworkRequest req(m_url);
-            req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
-            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                             QNetworkRequest::ManualRedirectPolicy);
-            req.setRawHeader("Accept-Encoding", "identity");
-            applyScopedHeaders(req, m_headers, m_credHost);   // strips creds if cross-host
-            req.setRawHeader("Range", "bytes=0-0");
-            m_probe = m_nam->get(req);
-            connect(m_probe, &QNetworkReply::finished, this, &DownloadTask::onProbeFinished);
+            sendProbe();                          // applyScopedHeaders strips creds if cross-party
             return;
         }
         setState(DownloadState::Error, QStringLiteral("too many redirects"));
@@ -227,6 +370,41 @@ void DownloadTask::onProbeFinished()
                  QStringLiteral("server returned HTTP %1").arg(status));
         return;
     }
+
+    // A 200/206 whose body is an HTML page is almost never the file the user
+    // asked for — it's a login wall, a Drive virus-scan interstitial, or an
+    // error page. Saving it would silently corrupt the download (the classic
+    // "downloaded 4 MB of HTML"). Detect that here, before writing anything.
+    const QByteArray ctype =
+        r->header(QNetworkRequest::ContentTypeHeader).toByteArray().toLower();
+    const bool servedHtml = ctype.startsWith("text/html")
+                         || ctype.startsWith("application/xhtml");
+    if (servedHtml && r->rawHeader("Content-Disposition").isEmpty()) {
+        // Google Drive: large files sit behind a confirm page. Fetch it in full,
+        // pull out the confirm token, and re-issue against the real file URL.
+        if (isGoogleDriveHost(m_url) && !m_driveConfirmed) {
+            fetchGoogleDriveConfirm();
+            return;
+        }
+        // Otherwise: only treat it as an error when the target isn't itself an
+        // HTML file (so a deliberate .html download still works).
+        const QString ext = QFileInfo(m_savePath).suffix().toLower();
+        if (ext != QLatin1String("html") && ext != QLatin1String("htm")) {
+            const QString host = m_url.host().toLower();
+            const bool login = host.contains(QLatin1String("accounts.google"))
+                            || host.contains(QLatin1String("login"))
+                            || host.contains(QLatin1String("signin"))
+                            || host.contains(QLatin1String("auth"));
+            setState(DownloadState::Error, login
+                ? QStringLiteral("Sign-in required — the site returned its login page "
+                                 "instead of the file. Start the download from the Nexa "
+                                 "browser extension so your session cookies are sent.")
+                : QStringLiteral("The server returned a web page, not a file — the link "
+                                 "may have expired or need you to be signed in."));
+            return;
+        }
+    }
+
     bool ranges = false;
     qint64 total = -1;
 
@@ -279,6 +457,72 @@ void DownloadTask::onProbeFinished()
     m_lastTickMs = 0;
     m_speedTimer->start();
     launchSegments();
+}
+
+// Fetch Google Drive's confirm interstitial IN FULL (the ranged probe only saw
+// its first byte), parse the confirm token, and re-probe the resolved file URL.
+void DownloadTask::fetchGoogleDriveConfirm()
+{
+    setState(DownloadState::Probing, QStringLiteral("resolving Google Drive link"));
+    QNetworkRequest req(m_url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::ManualRedirectPolicy);
+    req.setRawHeader("Accept-Encoding", "identity");
+    applyScopedHeaders(req, m_headers, m_credHost);   // full GET, no Range
+    m_probe = m_nam->get(req);
+    connect(m_probe, &QNetworkReply::finished, this, &DownloadTask::onDriveConfirmFinished);
+}
+
+void DownloadTask::onDriveConfirmFinished()
+{
+    QNetworkReply *r = m_probe;
+    m_probe = nullptr;
+    if (!r)
+        return;
+    r->deleteLater();
+
+    if (r->error() != QNetworkReply::NoError &&
+        r->error() != QNetworkReply::OperationCanceledError) {
+        setState(DownloadState::Error, r->errorString());
+        return;
+    }
+
+    const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    // A redirect off this page usually means the file isn't public: Drive bounces
+    // a signed-out request to the Google login host.
+    if (status >= 300 && status < 400) {
+        const QByteArray loc = r->rawHeader("Location");
+        const QUrl target = loc.isEmpty() ? QUrl()
+                                          : r->url().resolved(QUrl::fromEncoded(loc));
+        if (target.host().contains(QLatin1String("accounts.google"))) {
+            setState(DownloadState::Error,
+                     QStringLiteral("This Google Drive file needs you to be signed in. "
+                                    "Use the Nexa browser extension's download button so "
+                                    "your Google session is included."));
+            return;
+        }
+        if (target.isValid()) {            // redirect points straight at the file
+            m_url = target;
+            m_driveConfirmed = true;
+            m_probeRedirects = 0;
+            sendProbe();
+            return;
+        }
+    }
+
+    const QUrl confirmed = parseDriveConfirm(r->readAll(), m_url);
+    if (confirmed.isEmpty()) {
+        setState(DownloadState::Error,
+                 QStringLiteral("Google Drive didn't return a downloadable file. The link "
+                                "may be private (sign in via the Nexa extension) or expired."));
+        return;
+    }
+    m_url = confirmed;
+    m_credHost = m_url.host();             // re-scope cookies to the resolved host
+    m_driveConfirmed = true;
+    m_probeRedirects = 0;
+    sendProbe();
 }
 
 bool DownloadTask::preallocateFile()

@@ -1,5 +1,6 @@
 #include "site/YtDlpGrabber.h"
 #include "auth/AuthUtils.h"
+#include "auth/BrowserLogin.h"
 
 #include <QProcess>
 #include <QFile>
@@ -8,6 +9,8 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QRegularExpression>
+#include <QUrlQuery>
+#include <QDateTime>
 #include <QDebug>
 
 namespace nexa {
@@ -177,6 +180,34 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
     return false;
 }
 
+// Google Drive / Docs file links. These aren't "video sites", but yt-dlp's
+// GoogleDrive extractor resolves them to the real file (any type) — handling the
+// large-file confirm page, redirects, and Content-Disposition naming that a plain
+// HTTP GET can't. Routed here only when yt-dlp is available; otherwise the native
+// HTTP path (with its own Drive handling) takes over.
+bool YtDlpGrabber::isDirectFileUrl(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    const bool driveHost = host == QStringLiteral("drive.google.com")
+                        || host == QStringLiteral("drive.usercontent.google.com")
+                        || host == QStringLiteral("docs.google.com");
+    if (!driveHost)
+        return false;
+    // Must carry a file id (path /file/d/ID or ?id=ID) — skip Docs editor URLs
+    // and folder roots that have no single downloadable file.
+    static const QRegularExpression idRe(QStringLiteral("/file/d/[A-Za-z0-9_-]+"));
+    return idRe.match(url.path()).hasMatch()
+        || QUrlQuery(url).hasQueryItem(QStringLiteral("id"));
+}
+
+// Pick the browser whose cookie store is most likely the one the user is logged
+// into (most-recently-used). Delegates to the shared browser-login helper so the
+// Drive path and the engine's auth auto-login agree on one detection.
+QString YtDlpGrabber::detectCookieBrowser()
+{
+    return browserlogin::detectBrowser();
+}
+
 QString YtDlpGrabber::formatForQuality(const QString &quality)
 {
     QString q = quality.trimmed().toLower();
@@ -288,14 +319,19 @@ void YtDlpGrabber::start()
         ? QStringLiteral(" [audio]")
         : specificVideo ? QStringLiteral(" [%(height)sp]") : QString();
 
-    const QString tmpl = m_playlist
+    // Direct file (Google Drive etc.): yt-dlp's "source" format sets the title to
+    // the server's full filename INCLUDING the extension (e.g. "App.apk"), so the
+    // template is %(title)s alone — appending .%(ext)s would double it ("App.apk.apk").
+    const QString tmpl = m_directFile
+        ? QDir(m_dir).filePath(QStringLiteral("%(title)s"))
+        : (m_playlist
         ? QDir(m_dir).filePath(plFolder + QStringLiteral("/%(playlist_index)03d - ")
               + (isAudioOnly() ? audioName : QStringLiteral("%(title)s")) + QStringLiteral(".%(ext)s"))
         : (isAudioOnly()
                ? QDir(m_dir).filePath(audioName + QStringLiteral(".%(ext)s"))
                : (m_fixedName.isEmpty()
                       ? QDir(m_dir).filePath(QStringLiteral("%(title)s") + qualSuffix + QStringLiteral(".%(ext)s"))
-                      : QDir(m_dir).filePath(m_fixedName + qualSuffix + QStringLiteral(".%(ext)s"))));
+                      : QDir(m_dir).filePath(m_fixedName + qualSuffix + QStringLiteral(".%(ext)s")))));
 
     m_conns = 1;
     const QStringList common = commonArgs(tmpl);
@@ -367,15 +403,24 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
          // spaces and non-ASCII (e.g. turns a track name into an odd token), so for
          // music we leave the real "Artist - Track" name intact (yt-dlp still sanitises
          // path-illegal characters either way).
-         << (audioOnly ? QStringLiteral("--no-restrict-filenames")
-                       : QStringLiteral("--restrict-filenames"))
+         << ((audioOnly || m_directFile) ? QStringLiteral("--no-restrict-filenames")
+                                          : QStringLiteral("--restrict-filenames"))
          // Machine-readable progress (byte counts, speed, fragment indices).
          << QStringLiteral("--progress-template")
          << QStringLiteral("download:[NEXA]|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
                            "%(progress.total_bytes_estimate)s|%(progress.speed)s|"
                            "%(progress.fragment_index)s|%(progress.fragment_count)s");
 
-    if (audioOnly) {
+    if (m_directFile) {
+        // Generic file (Drive/Docs): take yt-dlp's "source" rendition — the real
+        // uploaded file (apk/zip/pdf/…) — falling back to "best" for the rare case
+        // the link is actually a video. No container merge (it's not video), no
+        // restricted filenames (keep the real name). Load auth straight from the
+        // browser so the user's OWN private files download without a manual export.
+        args << QStringLiteral("-f") << QStringLiteral("source/best");
+        if (!m_cookieBrowser.isEmpty())
+            args << QStringLiteral("--cookies-from-browser") << m_cookieBrowser;
+    } else if (audioOnly) {
         // Always grab the highest-quality audio rendition Apple exposes. For m4a we
         // prefer the native AAC stream so --extract-audio copies it WITHOUT a
         // re-encode (lossless); for aac/flac/mp3 we take any bestaudio and let the

@@ -87,6 +87,7 @@ signals:
 
 private slots:
     void onProbeFinished();
+    void onDriveConfirmFinished();   // Google Drive interstitial -> real file URL
     void onSegmentProgressed(int index, qint64 delta);
     void onSegmentCompleted(int index);
     void onSegmentFailed(int index, const QString &error);
@@ -95,6 +96,8 @@ private slots:
 
 private:
     void setState(DownloadState s, const QString &detail = QString());
+    void sendProbe();                 // issue the ranged size/Range probe for m_url
+    void fetchGoogleDriveConfirm();   // GET the Drive confirm page, parse, re-probe
     bool preallocateFile();
     void buildSegments(qint64 total, bool rangesSupported);
     void launchSegments();
@@ -117,6 +120,7 @@ private:
     HeaderList                m_headers;
     QString                   m_credHost;       // host the sensitive headers are scoped to
     int                       m_probeRedirects = 0;
+    bool                      m_driveConfirmed = false;  // Drive confirm token already applied
     qint64                    m_total = -1;     // -1 = unknown
     qint64                    m_done = 0;
     DownloadState             m_state = DownloadState::Queued;

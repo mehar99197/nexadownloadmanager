@@ -1,6 +1,7 @@
 #include "ui/SiteLoginsDialog.h"
 #include "core/DownloadEngine.h"
 #include "auth/AuthenticationManager.h"
+#include "auth/BrowserLogin.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -12,142 +13,8 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QFile>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QSqlDatabase>
-#include <QSqlQuery>
-#include <QVariant>
-#include <QUuid>
 
 namespace nexa {
-
-namespace {
-
-// The ~/.config sub-directory each Chromium-family browser stores its profiles
-// in. Firefox/Safari use a different layout, so they're absent here (we fall
-// back to "default profile only" for those).
-QString chromiumConfigDir(const QString &browser)
-{
-    const QString cfg = QDir::homePath() + QStringLiteral("/.config/");
-    if (browser == QStringLiteral("chrome"))   return cfg + QStringLiteral("google-chrome");
-    if (browser == QStringLiteral("chromium")) return cfg + QStringLiteral("chromium");
-    if (browser == QStringLiteral("brave"))    return cfg + QStringLiteral("BraveSoftware/Brave-Browser");
-    if (browser == QStringLiteral("edge"))     return cfg + QStringLiteral("microsoft-edge");
-    if (browser == QStringLiteral("vivaldi"))  return cfg + QStringLiteral("vivaldi");
-    if (browser == QStringLiteral("opera"))    return cfg + QStringLiteral("opera");
-    return QString();
-}
-
-// Discover a Chromium-family browser's profiles from its "Local State" JSON
-// (profile.info_cache maps the profile DIR -> {name: "<display>"}). Returns
-// {dirName, displayName} pairs, "Default" first. Empty if nothing is found.
-QVector<QPair<QString, QString>> detectChromiumProfiles(const QString &browser)
-{
-    QVector<QPair<QString, QString>> out;
-    const QString base = chromiumConfigDir(browser);
-    if (base.isEmpty())
-        return out;
-    QFile f(base + QStringLiteral("/Local State"));
-    if (!f.open(QIODevice::ReadOnly))
-        return out;
-    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
-    const QJsonObject cache = root.value(QStringLiteral("profile"))
-                                  .toObject().value(QStringLiteral("info_cache")).toObject();
-    for (auto it = cache.begin(); it != cache.end(); ++it) {
-        const QString dir  = it.key();                        // "Default", "Profile 2", …
-        const QString name = it.value().toObject()
-                                 .value(QStringLiteral("name")).toString();
-        // Only offer profiles whose directory actually exists on disk.
-        if (!QDir(base + QLatin1Char('/') + dir).exists())
-            continue;
-        QPair<QString, QString> p{dir, name.isEmpty() ? dir : name};
-        if (dir == QStringLiteral("Default")) out.prepend(p);
-        else                                  out.append(p);
-    }
-    return out;
-}
-
-// A profile's Cookies SQLite DB. Newer Chrome keeps it under Network/, older
-// keeps it at the profile root. Returns the first that exists, or empty.
-QString cookiesDbPath(const QString &base, const QString &profileDir)
-{
-    const QString root = base + QLatin1Char('/') + profileDir + QLatin1Char('/');
-    for (const QString &rel : {QStringLiteral("Network/Cookies"), QStringLiteral("Cookies")}) {
-        const QString p = root + rel;
-        if (QFile::exists(p))
-            return p;
-    }
-    return QString();
-}
-
-// Read-only probe of a profile's cookie DB for `domain`. The cookie VALUES are
-// OS-keyring-encrypted, but host_key (the domain) and last_access_utc are
-// PLAINTEXT — enough to tell which profile is logged into the site and how
-// recently it was used, WITHOUT decrypting anything. Returns {count, maxLastAccess}.
-// The DB may be locked by a running Chrome, so we read a temp copy (+WAL/+SHM).
-QPair<int, qint64> probeDomainCookies(const QString &dbPath, const QString &domain)
-{
-    QPair<int, qint64> result{0, 0};
-    if (dbPath.isEmpty())
-        return result;
-
-    const QString stamp = QUuid::createUuid().toString(QUuid::Id128);
-    const QString tmp = QDir::tempPath() + QStringLiteral("/nexa-ck-") + stamp;
-    // Copy the main DB plus any WAL/SHM sidecars so recent writes are visible.
-    if (!QFile::copy(dbPath, tmp))
-        return result;
-    QFile::copy(dbPath + QStringLiteral("-wal"), tmp + QStringLiteral("-wal"));
-    QFile::copy(dbPath + QStringLiteral("-shm"), tmp + QStringLiteral("-shm"));
-
-    const QString conn = QStringLiteral("nexa_ck_") + stamp;
-    {
-        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
-        db.setDatabaseName(tmp);
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-        if (db.open()) {
-            QSqlQuery q(db);
-            q.prepare(QStringLiteral(
-                "SELECT COUNT(*), COALESCE(MAX(last_access_utc),0) FROM cookies "
-                "WHERE host_key = :d OR host_key LIKE :dotd"));
-            q.bindValue(QStringLiteral(":d"), domain);
-            q.bindValue(QStringLiteral(":dotd"), QStringLiteral("%.") + domain);
-            if (q.exec() && q.next()) {
-                result.first  = q.value(0).toInt();
-                result.second = q.value(1).toLongLong();
-            }
-            db.close();
-        }
-    }
-    QSqlDatabase::removeDatabase(conn);
-    QFile::remove(tmp);
-    QFile::remove(tmp + QStringLiteral("-wal"));
-    QFile::remove(tmp + QStringLiteral("-shm"));
-    return result;
-}
-
-// Auto-pick the browser profile to use for `domain`: among profiles that hold
-// cookies for the site, the one used MOST RECENTLY (max last_access) — i.e. the
-// profile the user actually has the site open/logged-in on. Returns the profile
-// DIR ("Profile 5"), or empty if none qualify (caller falls back to default).
-QString bestProfileForDomain(const QString &browser, const QString &domain)
-{
-    const QString base = chromiumConfigDir(browser);
-    if (base.isEmpty() || domain.isEmpty())
-        return QString();
-    QString bestDir;
-    qint64  bestAccess = -1;
-    const auto profiles = detectChromiumProfiles(browser);
-    for (const auto &p : profiles) {
-        const auto probe = probeDomainCookies(cookiesDbPath(base, p.first), domain);
-        if (probe.first > 0 && probe.second > bestAccess) {
-            bestAccess = probe.second;
-            bestDir = p.first;
-        }
-    }
-    return bestDir;
-}
-
-} // namespace
 
 SiteLoginsDialog::SiteLoginsDialog(DownloadEngine *engine, QWidget *parent)
     : QDialog(parent), m_engine(engine)
@@ -242,7 +109,7 @@ void SiteLoginsDialog::onUseBrowser()
     }
     // Silently pick the browser profile most recently logged into the site (no UI
     // list — the user just clicks one button). Empty -> the browser's default.
-    const QString profile = bestProfileForDomain(browser, domain);
+    const QString profile = browserlogin::bestProfileForDomain(browser, domain);
     // Registering REPLACES any prior credential for this domain (old cookies gone).
     const AuthResult ar = am->registerBrowserCookies(domain, browser, profile);
     if (ar.ok) {

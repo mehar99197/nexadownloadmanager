@@ -193,6 +193,9 @@ private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     QString pathForName(const QString &fileName) const;  // categorise + de-dup
     void    wireTask(DownloadTask *t);
+    // Default the known auth sites to "use my logged-in browser" at startup, so
+    // yt-dlp reads live cookies and the user never needs to open Site Logins.
+    void    autoEnableBrowserLogins();
     // Fetch a remote .torrent file (async, following redirects), then hand the
     // local copy to the libtorrent session. libtorrent can't load an http URL.
     void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
