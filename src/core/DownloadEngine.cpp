@@ -606,9 +606,11 @@ bool DownloadEngine::isResumable(int id) const
     // HTTP downloads resume only if the server honours Range (learned on probe,
     // or from a 206 seen on the live transfer).
     if (auto *t = m_tasks.value(id)) return t->rangesSupported();
-    // Every other job type supports pause/resume: torrents (libtorrent keeps the
-    // piece bitfield), yt-dlp grabs (--continue / re-fetch fragments) and HLS
-    // grabs (re-fetch missing segments). Definitively resumable — never unknown.
+    // HLS grabs have NO partial resume — a (re)start re-downloads from scratch
+    // (see HlsGrabber). Be honest: No.
+    if (m_grabbers.contains(id)) return false;
+    // Torrents (libtorrent keeps the piece bitfield) and yt-dlp grabs (--continue
+    // partial files / skip already-saved playlist items) resume. Yes.
     return true;
 }
 
