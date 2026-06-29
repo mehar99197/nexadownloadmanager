@@ -437,20 +437,32 @@ jobs:
             -OutFile dist\yt-dlp.exe
           Write-Host "yt-dlp bundled"
 
-      - name: Bundle ffmpeg
+      - name: Bundle ffmpeg (static, self-contained)
         run: |
-          # Try MSYS2 ffmpeg first (already installed), else download static build
-          if [ -f /mingw64/bin/ffmpeg.exe ]; then
-            cp /mingw64/bin/ffmpeg.exe dist/
-            echo "ffmpeg bundled from MSYS2"
-          else
-            curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
-              -o ffmpeg.zip
-            unzip -j ffmpeg.zip "*/ffmpeg.exe" -d dist/
-            rm ffmpeg.zip
-            echo "ffmpeg bundled from download"
+          # IMPORTANT: do NOT bundle MSYS2's /mingw64/bin/ffmpeg.exe. It is
+          # DYNAMICALLY linked against dozens of mingw64 libav*/codec DLLs
+          # (libavcodec, libavformat, libswresable, libx264, libvpx, libopus, …)
+          # that we do NOT ship — the DLL-collection pass above only runs `ldd` on
+          # nexa.exe / nexa-host.exe, never on ffmpeg.exe. On a clean PC the bundled
+          # ffmpeg then fails to start (missing DLLs), so yt-dlp cannot merge the
+          # separate video+audio streams and leaves two unmerged files on disk
+          # (and HLS muxing / Apple-Music audio extraction break the same way).
+          #
+          # The BtbN "win64-gpl" build is a STATIC, self-contained ffmpeg.exe with
+          # no external DLL dependencies — the correct thing to bundle. Grab ffprobe
+          # too (yt-dlp uses it for format/duration probing).
+          curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
+            -o ffmpeg.zip
+          unzip -j ffmpeg.zip "*/ffmpeg.exe" "*/ffprobe.exe" -d dist/
+          rm ffmpeg.zip
+          ls -lh dist/ffmpeg.exe dist/ffprobe.exe
+          # Sanity-gate: a static build must have ZERO mingw64 DLL deps. If `ldd`
+          # ever lists one, the bundle would be broken on a clean PC — fail loudly
+          # so this regression can never ship silently again.
+          if ldd dist/ffmpeg.exe 2>/dev/null | grep -iq mingw64; then
+            echo "ERROR: bundled ffmpeg.exe has mingw64 DLL deps — not self-contained"; exit 1
           fi
-          ls -lh dist/ffmpeg.exe
+          echo "ffmpeg.exe is static / self-contained"
 
       - name: Bundle extensions (Chrome/Edge/Brave + Firefox)
         run: |

@@ -22,6 +22,20 @@ QString authReasonFromYtDlpLine(const QString &line)
     if (botRe.match(line).hasMatch())
         return QStringLiteral("sign-in required — re-export cookies");
 
+    // Windows-specific: yt-dlp can't read cookies straight from Chrome/Edge/Brave
+    // because Chromium's App-Bound Encryption (Chrome 127+) blocks DPAPI decryption
+    // from an external process. This only bites the --cookies-from-browser fallback
+    // (manual paste); the extension's "Download with Nexa" button reads cookies via
+    // the in-browser API and is unaffected — so point the user there.
+    static const QRegularExpression cookieDecryptRe(
+        QStringLiteral("failed to decrypt.*(dpapi|cookie)|could not (copy|decrypt).*(chrome|cookie)|"
+                       "unable to (read|decrypt).*cookies?|cookies?.*could not be decrypted|"
+                       "app[- ]bound encryption"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (cookieDecryptRe.match(line).hasMatch())
+        return QStringLiteral("Windows blocked reading the browser's cookies — use the "
+                              "“Download with Nexa” button in the extension (it reads your login)");
+
     static const QRegularExpression loginRe(
         QStringLiteral("login required|you must be logged in|requires? (a )?(subscription|login|account)|"
                        "this course requires|members[- ]only|private video|account.*(required|cookies)"),
