@@ -99,6 +99,20 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+
+#ifdef Q_OS_WIN
+    // Windows: the NSIS installer drops yt-dlp.exe / ffmpeg.exe into the install
+    // dir alongside nexa.exe, but that dir is NOT on PATH. Prepend it so bundled
+    // tools resolve and the yt-dlp child finds ffmpeg via the inherited PATH.
+    // resolveTool() also handles this per-launch; this keeps the whole child-process
+    // environment consistent. Set before anything launches a child process (a
+    // download starts much later, so doing it after QApplication is fine).
+    {
+        const QByteArray exeDir = QCoreApplication::applicationDirPath().toLocal8Bit();
+        if (!exeDir.isEmpty())
+            qputenv("PATH", exeDir + ";" + qgetenv("PATH"));
+    }
+#endif
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
 
     // Install the opt-in troubleshooting log sink (after org/app name so QSettings

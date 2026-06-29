@@ -1,4 +1,5 @@
 #include "grabber/HlsGrabber.h"
+#include "core/ExternalTools.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -413,7 +414,7 @@ void HlsGrabber::startMux()
     };
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
-    m_ffmpeg->start(QStringLiteral("ffmpeg"), args);
+    m_ffmpeg->start(resolveTool(QStringLiteral("ffmpeg")), args);   // bundled exe isn't on PATH on Windows
     m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 
@@ -445,7 +446,7 @@ void HlsGrabber::muxViaFfmpegDirect()
     m_ffmpeg = new QProcess(this);
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
-    m_ffmpeg->start(QStringLiteral("ffmpeg"), args);
+    m_ffmpeg->start(resolveTool(QStringLiteral("ffmpeg")), args);   // bundled exe isn't on PATH on Windows
     m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 

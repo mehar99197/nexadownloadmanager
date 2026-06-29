@@ -1,5 +1,6 @@
 #include "ipc/IpcServer.h"
 #include "core/DownloadEngine.h"
+#include "core/ExternalTools.h"
 #include "auth/AuthenticationManager.h"
 
 #include <QLocalServer>
@@ -361,7 +362,9 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
     if (AuthenticationManager *am = m_engine->auth())
         args << am->ytDlpArgs(url);
     args << QStringLiteral("--") << url.toString();
-    proc->start(QStringLiteral("yt-dlp"), args);
+    // Bundled yt-dlp sits beside the app, which isn't on PATH on Windows — resolve
+    // the absolute path so the qualities probe works there too.
+    proc->start(resolveTool(QStringLiteral("yt-dlp")), args);
     proc->closeWriteChannel();   // EOF stdin — prevents interactive-prompt hang
     if (!proc->waitForStarted(3000)) {
         sendFramed(sock, QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});

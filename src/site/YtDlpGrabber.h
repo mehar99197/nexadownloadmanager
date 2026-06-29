@@ -62,7 +62,8 @@ public:
 
     static bool   isSiteVideoUrl(const QUrl &url);          // youtube.com / youtu.be / ...
     static bool   isDirectFileUrl(const QUrl &url);         // Google Drive / Docs file links
-    static bool   available();                              // is yt-dlp on PATH?
+    static QString exePath();                               // abs path to yt-dlp (app dir, then PATH)
+    static bool   available();                              // is yt-dlp resolvable?
     static QString formatForQuality(const QString &quality); // "1080" -> yt-dlp -f string
 
     // yt-dlp browser name whose cookie store is most likely the active login

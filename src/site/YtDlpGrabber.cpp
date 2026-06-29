@@ -1,6 +1,7 @@
 #include "site/YtDlpGrabber.h"
 #include "auth/AuthUtils.h"
 #include "auth/BrowserLogin.h"
+#include "core/ExternalTools.h"
 
 #include <QProcess>
 #include <QFile>
@@ -129,9 +130,16 @@ YtDlpGrabber::~YtDlpGrabber()
     }
 }
 
+// Absolute path to the yt-dlp executable: bundled beside nexa.exe first (the
+// Windows install dir is not on PATH), then PATH. Empty if nowhere to be found.
+QString YtDlpGrabber::exePath()
+{
+    return resolveTool(QStringLiteral("yt-dlp"));
+}
+
 bool YtDlpGrabber::available()
 {
-    return !QStandardPaths::findExecutable(QStringLiteral("yt-dlp")).isEmpty();
+    return !exePath().isEmpty();
 }
 
 bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
@@ -375,7 +383,7 @@ void YtDlpGrabber::start()
             this, [this](int code, QProcess::ExitStatus) { onProcessFinished(code); });
 
     setState(DownloadState::Downloading, QStringLiteral("starting yt-dlp"));
-    m_proc->start(QStringLiteral("yt-dlp"), args);
+    m_proc->start(exePath(), args);   // absolute path: the bundled exe isn't on PATH on Windows
     m_proc->closeWriteChannel();   // EOF on stdin: an interactive prompt aborts, never hangs
 }
 
@@ -460,6 +468,14 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
     args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
          << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
 
+    // Point yt-dlp at the bundled ffmpeg for the video+audio merge / audio
+    // extract. On Windows the install dir isn't on PATH, so yt-dlp's own ffmpeg
+    // auto-detect (PATH, then its own dir) can't be relied on — pass it the
+    // resolved location explicitly. Harmless (and skipped) when ffmpeg is absent.
+    const QString ffmpeg = resolveTool(QStringLiteral("ffmpeg"));
+    if (!ffmpeg.isEmpty())
+        args << QStringLiteral("--ffmpeg-location") << ffmpeg;
+
     // Domain-scoped auth flags only (never the browser UA/cookies — that breaks
     // yt-dlp's own extractor). Empty for YouTube.
     args << m_authArgs;
@@ -510,7 +526,7 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
                 this, [this](int, QProcess::ExitStatus) { onPlProcFinished(); });
         m_plProcs << p;
         m_plRates.insert(p, 0.0);
-        p->start(QStringLiteral("yt-dlp"), a);
+        p->start(exePath(), a);   // absolute path: the bundled exe isn't on PATH on Windows
         p->closeWriteChannel();   // EOF on stdin: a prompt aborts, never hangs
     }
 }
