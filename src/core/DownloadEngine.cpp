@@ -979,6 +979,10 @@ void DownloadEngine::loadPersisted()
         if (!rec.segments.isEmpty())
             t->restore(rec.total, rec.segments, rec.rangesSupported, rec.etag, rec.lastModified);
         m_tasks.insert(rec.id, t);
+        // Restore the byte counts into the same cache used by live progress
+        // signals, so the UI can render sizes for completed/paused rows on the
+        // first startup snapshot as well.
+        m_progress.insert(rec.id, ProgressInfo{t->doneBytes(), t->totalBytes(), 0.0});
         wireTask(t);
         emit taskAdded(rec.id);
     }
