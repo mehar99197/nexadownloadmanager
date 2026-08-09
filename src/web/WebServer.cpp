@@ -30,6 +30,7 @@ const char *reasonPhrase(int code)
         case 204: return "No Content";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";
+        case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
         case 413: return "Payload Too Large";
@@ -81,6 +82,7 @@ QByteArray dashboardPage()
 </div>
 <script>
 const token = new URLSearchParams(location.search).get('token') || '';
+if (token) history.replaceState({}, '', location.pathname);
 // Send the token as a Bearer header, not in the URL, so it stays out of
 // access logs / history / Referer on every API call.
 const authHeaders = token ? { 'Authorization': 'Bearer ' + token } : {};
@@ -145,7 +147,7 @@ static QSslServer *makeTlsServer(QObject *parent)
 
     QFile cf(certPath), kf(keyPath);
     if (!cf.open(QIODevice::ReadOnly) || !kf.open(QIODevice::ReadOnly)) {
-        qWarning() << "Nexa TLS: cannot read cert/key; serving plain HTTP";
+        qWarning() << "Nexa TLS: cannot read cert/key";
         return nullptr;
     }
     const QSslCertificate cert(&cf, QSsl::Pem);
@@ -155,7 +157,7 @@ static QSslServer *makeTlsServer(QObject *parent)
     if (key.isNull()) key = QSslKey(keyPem, QSsl::Ec,  QSsl::Pem);
     if (key.isNull()) key = QSslKey(keyPem, QSsl::Dsa, QSsl::Pem);
     if (cert.isNull() || key.isNull()) {
-        qWarning() << "Nexa TLS: invalid cert/key; serving plain HTTP";
+        qWarning() << "Nexa TLS: invalid cert/key";
         return nullptr;
     }
 
@@ -179,7 +181,12 @@ static QSslServer *makeTlsServer(QObject *parent)
 bool WebServer::start(quint16 port, bool lanAccessible, const QString &token)
 {
     m_token = token;
-    if (QSslServer *ssl = makeTlsServer(this)) {
+    QSslServer *ssl = makeTlsServer(this);
+    if (lanAccessible && !ssl) {
+        qWarning() << "Nexa dashboard LAN mode requires NEXA_TLS_CERT and NEXA_TLS_KEY";
+        return false;
+    }
+    if (ssl) {
         m_server = ssl;
         m_tls = true;
     } else {
@@ -422,7 +429,11 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
             sendJson(sock, 400, R"({"ok":false,"error":"unsupported url scheme"})");
             return;
         }
-        const QList<int> ids = m_engine->addBatch(url);
+        const QList<int> ids = m_engine->addRemoteBatch(url);
+        if (ids.isEmpty()) {
+            sendJson(sock, 403, R"({"ok":false,"error":"only public HTTP(S) targets are allowed"})");
+            return;
+        }
         sendJson(sock, 200, QStringLiteral("{\"ok\":true,\"added\":%1}").arg(ids.size()).toUtf8());
         return;
     }
@@ -503,13 +514,6 @@ void WebServer::sendResponse(QTcpSocket *sock, int code, const QString &contentT
     resp += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
     resp += "Cache-Control: no-store\r\n";
     resp += "Referrer-Policy: no-referrer\r\n";   // keep ?token= out of Referer
-    // CORS: the API is gated by a Bearer token (not cookies), so allowing any
-    // origin is safe — a cross-origin page still can't call it without the token.
-    // This lets custom dashboards / scripts on other origins use the REST API.
-    resp += "Access-Control-Allow-Origin: *\r\n";
-    resp += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
-    resp += "Access-Control-Allow-Headers: Authorization, Content-Type\r\n";
-    resp += "Access-Control-Max-Age: 600\r\n";
     resp += "Connection: close\r\n";
     resp += "\r\n";
     resp += body;

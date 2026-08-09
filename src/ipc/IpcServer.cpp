@@ -1,4 +1,5 @@
 #include "ipc/IpcServer.h"
+#include "ipc/IpcProtocol.h"
 #include "core/DownloadEngine.h"
 #include "core/ExternalTools.h"
 #include "auth/AuthenticationManager.h"
@@ -96,14 +97,13 @@ void IpcServer::onReadyRead()
     // buffered (peers may coalesce several), and reject an absurd length up front
     // so a bogus/hostile prefix can't trigger a multi-gigabyte read (the old
     // `4 + len` check also overflowed for len near UINT32_MAX).
-    static constexpr quint32 kMaxFrame = 8u * 1024 * 1024;   // 8 MB ceiling
     for (;;) {
         const QByteArray buf = sock->peek(sock->bytesAvailable());
         if (buf.size() < 4)
             return;
         const quint32 len = quint32((quint8)buf[0]) | (quint32((quint8)buf[1]) << 8) |
                             (quint32((quint8)buf[2]) << 16) | (quint32((quint8)buf[3]) << 24);
-        if (len > kMaxFrame) {               // refuse and drop the peer
+        if (len == 0 || len > kMaxIpcFrameBytes) { // refuse and drop the peer
             sock->abort();
             return;
         }
@@ -253,7 +253,12 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
     const QString quality = obj.value(QStringLiteral("quality")).toString();   // YouTube etc.
     const bool playlist = obj.value(QStringLiteral("playlist")).toBool(false);  // whole playlist?
-    const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality, playlist);
+    // A browser handoff can opt out of Nexa's second confirmation dialog when
+    // the user has already clicked the browser's download action. Keep the
+    // protocol default false so older/local callers retain the normal setting.
+    const bool userInitiated = obj.value(QStringLiteral("userInitiated")).toBool(false);
+    const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality,
+                                         playlist, userInitiated);
     if (id < 0)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else
@@ -354,8 +359,19 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
     });
     // -J extraction is network-bound (a few seconds); the host waits for us.
     // `--` ends option parsing so a URL starting with '-' can't be read as a flag.
+    // yt-dlp needs a JS runtime for YouTube n-sig/po-token challenges; without it
+    // the -J probe returns no (or stale) formats for modern YouTube. Pass every
+    // common runtime and let yt-dlp pick the first available.
     QStringList args = {QStringLiteral("-J"), QStringLiteral("--no-warnings"),
-                        QStringLiteral("--no-playlist")};
+                        QStringLiteral("--no-playlist"),
+                        QStringLiteral("--js-runtimes"),
+                        QStringLiteral("node"),
+                        QStringLiteral("--js-runtimes"),
+                        QStringLiteral("deno"),
+                        QStringLiteral("--js-runtimes"),
+                        QStringLiteral("bun"),
+                        QStringLiteral("--remote-components"),
+                        QStringLiteral("ejs:github")};
     // Forward domain-scoped auth so login-gated sites (Udemy, etc.) return real
     // qualities instead of the fallback list. Without this the -J probe has no
     // session and the server returns an error / empty formats.

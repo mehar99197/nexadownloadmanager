@@ -30,6 +30,8 @@ public:
 
     void start();              // begins / resumes from seg.done
     void stop();               // aborts the in-flight request (keeps bytes done)
+    void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
+    void setIfRangeValidator(const QString &validator) { m_ifRangeValidator = validator; }
 
     // Shrink this segment's end (dynamic re-segmentation): the worker then stops
     // at the new boundary so a freed connection can take the tail. Only ever
@@ -66,6 +68,9 @@ private:
     QFile                   m_file;
     bool                    m_stopped = false;
     bool                    m_announcedSize = false;   // sizeDiscovered() emitted once
+    bool                    m_publicNetworkOnly = false;
+    QString                 m_ifRangeValidator;
+    bool                    m_validatorMismatch = false;
 };
 
 } // namespace nexa

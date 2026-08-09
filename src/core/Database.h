@@ -17,6 +17,8 @@ struct TaskRecord {
     qint64               total = -1;
     DownloadState        state = DownloadState::Queued;
     bool                 rangesSupported = false;
+    QString              etag;
+    QString              lastModified;
     QVector<SegmentInfo> segments;
 };
 

@@ -1,5 +1,6 @@
 <RCC>
   <qresource prefix="/">
     <file alias="nexa.png">assets/nexa.png</file>
+    <file alias="cloud_providers.json">resources/cloud_providers.json</file>
   </qresource>
 </RCC>

@@ -1,10 +1,10 @@
-# NexaDownloadManager — Website Plan
+/# NexaDownloadManager — Website Plan
 
 ## Overview
 
 Full-stack website for NDM with public landing page, user subscription portal, and separate admin panel.
 
-**Stack:** React (frontend) + Node.js/Express (backend) + MongoDB (database)  
+**Stack:** React (frontend) + Node.js/Express (backend) + MySQL2/raw SQL (database)
 **Domain:** Single domain, Nginx reverse proxy  
 **Auth:** JWT (users) + separate JWT secret (admin)
 
@@ -97,12 +97,12 @@ nexadownloadmanager.com
 
 ---
 
-## Database Schema (MongoDB)
+## Database Schema (MySQL)
 
-### Collection: users
+### Table: users
 ```json
 {
-  "_id": "ObjectId",
+  "id": "INT UNSIGNED AUTO_INCREMENT",
   "name": "string",
   "email": "string (unique)",
   "passwordHash": "string (bcrypt)",
@@ -112,15 +112,15 @@ nexadownloadmanager.com
 }
 ```
 
-### Collection: subscriptions
+### Table: subscriptions
 ```json
 {
-  "_id": "ObjectId",
-  "userId": "ObjectId (ref: users)",
+  "id": "INT UNSIGNED AUTO_INCREMENT",
+  "userId": "INT UNSIGNED (FK users.id)",
   "plan": "free | pro | team",
   "status": "active | expired | cancelled",
   "licenseKey": "string (unique, NDM-XXXX-XXXX-XXXX)",
-  "deviceFingerprint": "string (set on first NDM activation)",
+  "deviceFingerprint": "legacy compatibility field; activations live in license_activations",
   "seats": "number (1 for pro, 5 for team)",
   "startDate": "Date",
   "expiryDate": "Date",
@@ -128,11 +128,11 @@ nexadownloadmanager.com
 }
 ```
 
-### Collection: payments
+### Table: payments
 ```json
 {
-  "_id": "ObjectId",
-  "userId": "ObjectId",
+  "id": "INT UNSIGNED AUTO_INCREMENT",
+  "userId": "INT UNSIGNED",
   "amount": "number",
   "currency": "usd",
   "plan": "pro | team",
@@ -143,11 +143,11 @@ nexadownloadmanager.com
 }
 ```
 
-### Collection: reviews
+### Table: reviews
 ```json
 {
-  "_id": "ObjectId",
-  "userId": "ObjectId",
+  "id": "INT UNSIGNED AUTO_INCREMENT",
+  "userId": "INT UNSIGNED",
   "userName": "string",
   "rating": "number (1-5)",
   "comment": "string",
@@ -156,10 +156,10 @@ nexadownloadmanager.com
 }
 ```
 
-### Collection: releases
+### Table: releases
 ```json
 {
-  "_id": "ObjectId",
+  "id": "INT UNSIGNED AUTO_INCREMENT",
   "version": "string (e.g. 2.1.0)",
   "windowsUrl": "string",
   "linuxUrl": "string",
@@ -247,11 +247,13 @@ POST https://nexadownloadmanager.com/api/license/validate
 Server response:
   valid=true  → unlock premium features, cache token 24hr
   valid=false → show "Enter license key" dialog
-  unreachable → grace period 72hr (offline mode)
+  unreachable → Free plan until the next successful HTTPS validation
 ```
 
 Device fingerprint = SHA-256 of (MAC address + CPU model string)  
-Token cached locally, re-validated every 24 hours.
+The license key is stored in the OS credential store when available and is
+re-validated over HTTPS at startup; paid entitlements are not trusted offline
+without an independently verifiable public-key signature.
 
 ---
 
@@ -270,8 +272,8 @@ Token cached locally, re-validated every 24 hours.
 - Admin accounts only creatable via CLI script (no public register)
 
 ### License API (called by NDM)
-- Rate limited: 10 requests per device per hour
-- Device fingerprint binding (first activation locks key to device)
+- Rate limited: 10 requests per source IP per hour
+- Device fingerprint binding uses a transactionally seat-capped `license_activations` table
 - Token expires every 24 hours (prevents sharing)
 
 ### General
@@ -279,7 +281,7 @@ Token cached locally, re-validated every 24 hours.
 - Helmet.js (security headers)
 - CORS: whitelist only your domain
 - Input validation: express-validator on all endpoints
-- MongoDB injection prevention: mongoose strict schemas
+- MySQL injection prevention: parameterized mysql2 queries and strict Zod schemas
 
 ---
 
@@ -349,7 +351,11 @@ PORT=3001
 NODE_ENV=production
 
 # Database
-MONGO_URI=mongodb+srv://...
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=ndm
+MYSQL_PASS=change_me
+MYSQL_DB=ndm_prod
 
 # JWT
 JWT_SECRET=long_random_string_user
@@ -375,7 +381,7 @@ LICENSE_JWT_SECRET=another_random_string
 
 ## Build & Deploy Order
 
-1. MongoDB Atlas setup (free tier to start)
+1. MySQL database and least-privilege application user setup
 2. Backend Express app → test all API endpoints
 3. Stripe integration → test with test keys
 4. NDM C++ license validation code
@@ -392,7 +398,7 @@ LICENSE_JWT_SECRET=another_random_string
 
 | Phase | What | Timeline |
 |-------|------|----------|
-| 1 | Backend API + MongoDB + Auth | Week 1 |
+| 1 | Backend API + MySQL + Auth | Week 1 |
 | 2 | License validation + NDM C++ integration | Week 1-2 |
 | 3 | Frontend public pages (Landing, Download, Pricing) | Week 2 |
 | 4 | User portal (Dashboard, Billing) | Week 2-3 |

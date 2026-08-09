@@ -31,8 +31,7 @@ class WebServer : public QObject {
 public:
     explicit WebServer(DownloadEngine *engine, QObject *parent = nullptr);
 
-    // Bind to 0.0.0.0 when lanAccessible, else loopback only. Returns false if
-    // the port can't be bound.
+    // LAN binding requires a valid NEXA_TLS_CERT / NEXA_TLS_KEY pair.
     bool start(quint16 port, bool lanAccessible, const QString &token = QString());
     quint16 port() const { return m_port; }
     // True when serving HTTPS (a cert/key pair was supplied via NEXA_TLS_CERT /

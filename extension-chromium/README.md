@@ -41,8 +41,16 @@ store for convenience).
 ## What it does
 
 - **Download interception** — `chrome.downloads.onCreated` → cancel → hand to Nexa.
-- **Header capture** — `chrome.cookies` + User-Agent + referrer so authenticated
-  / CDN links don't 403 (the detail most IDM clones get wrong).
+- **Header capture** — `chrome.cookies` plus the short-lived headers from the
+  browser's real ChatGPT/AI attachment request (including `Authorization` when
+  present), so authenticated / CDN links don't 403.
+- **Verified file sources** — browser downloads from **ChatGPT**, **Google
+  Gemini**, **Google Drive**, and **Google Photos** have been tested end to end,
+  including signed/CDN-backed attachments and browser-provided filenames.
+- **AI provider registry** — request-context capture is configured for **Claude**,
+  **Grok**, **Perplexity**, **Mistral Le Chat**, **DeepSeek**, **Poe**,
+  **Character.AI**, **Pi**, and **You.com**. Their browser-owned attachment
+  hosts are mapped to the correct credential scope before Nexa replays requests.
 - **Video grabber (IDM-style)** — when a page is playing video, a floating
   **"Download Video"** pill appears. Click it to see the available
   **qualities** (parsed from the HLS master playlist — 1080p / 720p / …); pick

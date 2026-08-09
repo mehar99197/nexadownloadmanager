@@ -1,0 +1,821 @@
+{
+  "version": 2,
+  "description": "Cloud provider registry — single source of truth for all host/sibling/routing data.",
+  "providers": [
+    {
+      "id": "google",
+      "label": "Google (Drive/Photos/YouTube)",
+      "authDomain": "google.com",
+      "cookieDomain": "google.com",
+      "isAuthSite": true,
+      "hosts": [
+        "google.com",
+        "drive.google.com",
+        "drive.usercontent.google.com",
+        "docs.google.com",
+        "photos.google.com",
+        "video.google.com",
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com",
+        "youtube.com",
+        "youtu.be"
+      ],
+      "credentialSiblings": [
+        "google.com",
+        "googleapis.com",
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com",
+        "youtube.com",
+        "youtu.be"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": true,
+      "driveDownloadHosts": [
+        "drive.google.com",
+        "drive.usercontent.google.com",
+        "docs.google.com",
+        "photos.google.com",
+        "video.google.com"
+      ],
+      "driveCDNHosts": [
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com"
+      ]
+    },
+    {
+      "id": "google_drive",
+      "label": "Google Drive",
+      "authDomain": "google.com",
+      "cookieDomain": "google.com",
+      "hosts": [
+        "drive.google.com",
+        "drive.usercontent.google.com",
+        "docs.google.com",
+        "googleusercontent.com"
+      ],
+      "credentialSiblings": [
+        "google.com",
+        "googleapis.com",
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com",
+        "youtube.com",
+        "youtu.be"
+      ],
+      "normalizeUrl": true,
+      "hasConfirmPage": true,
+      "confirmParser": "drive",
+      "usesYtDlp": true,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": true
+    },
+    {
+      "id": "google_photos",
+      "label": "Google Photos",
+      "authDomain": "google.com",
+      "cookieDomain": "google.com",
+      "hosts": [
+        "photos.google.com",
+        "video.google.com",
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com"
+      ],
+      "credentialSiblings": [
+        "google.com",
+        "googleapis.com",
+        "googleusercontent.com",
+        "googlevideo.com",
+        "ggpht.com"
+      ],
+      "normalizeUrl": true,
+      "hasConfirmPage": true,
+      "confirmParser": "drive",
+      "usesYtDlp": true,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": true
+    },
+    {
+      "id": "youtube",
+      "label": "YouTube",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "youtube.com",
+        "www.youtube.com",
+        "youtu.be",
+        "www.youtu.be",
+        "m.youtube.com",
+        "music.youtube.com"
+      ],
+      "credentialSiblings": [
+        "google.com",
+        "googleapis.com",
+        "googlevideo.com",
+        "youtube.com",
+        "youtu.be"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "microsoft",
+      "label": "Microsoft (OneDrive/SharePoint)",
+      "authDomain": "live.com",
+      "cookieDomain": "live.com",
+      "hosts": [
+        "onedrive.live.com",
+        "1drv.ms",
+        "sharepoint.com",
+        "microsoft.com",
+        "microsoftonline.com",
+        "live.com",
+        "live.net",
+        "svc.ms"
+      ],
+      "credentialSiblings": [
+        "live.com",
+        "sharepoint.com",
+        "1drv.ms",
+        "microsoft.com",
+        "microsoftonline.com",
+        "live.net",
+        "svc.ms"
+      ],
+      "normalizeUrl": true,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": true
+    },
+    {
+      "id": "dropbox",
+      "label": "Dropbox",
+      "authDomain": "dropbox.com",
+      "cookieDomain": "dropbox.com",
+      "hosts": [
+        "dropbox.com",
+        "www.dropbox.com",
+        "dropboxusercontent.com",
+        "dl.dropboxusercontent.com"
+      ],
+      "credentialSiblings": [
+        "dropbox.com",
+        "dropboxusercontent.com"
+      ],
+      "normalizeUrl": true,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": true
+    },
+    {
+      "id": "mediafire",
+      "label": "MediaFire",
+      "authDomain": "mediafire.com",
+      "cookieDomain": "mediafire.com",
+      "hosts": [
+        "mediafire.com",
+        "www.mediafire.com",
+        "download.mediafire.com"
+      ],
+      "credentialSiblings": [
+        "mediafire.com",
+        "download.mediafire.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": true,
+      "confirmParser": "generic",
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "box",
+      "label": "Box",
+      "authDomain": "box.com",
+      "cookieDomain": "box.com",
+      "hosts": [
+        "box.com",
+        "www.box.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": true,
+      "confirmParser": "generic",
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "pcloud",
+      "label": "pCloud",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "pcloud.com",
+        "www.pcloud.com",
+        "pcloud.link"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": true,
+      "confirmParser": "generic",
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "terabox",
+      "label": "TeraBox",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "terabox.com",
+        "www.terabox.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": true,
+      "confirmParser": "generic",
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "mega",
+      "label": "MEGA",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "mega.nz",
+        "mega.co.nz"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "meta",
+      "label": "Meta (Facebook/Instagram/Threads)",
+      "authDomain": "facebook.com",
+      "cookieDomain": "facebook.com",
+      "hosts": [
+        "facebook.com",
+        "www.facebook.com",
+        "web.facebook.com",
+        "instagram.com",
+        "www.instagram.com",
+        "threads.net",
+        "www.threads.net",
+        "fb.watch",
+        "www.fb.watch",
+        "fbcdn.net",
+        "cdninstagram.com"
+      ],
+      "credentialSiblings": [
+        "facebook.com",
+        "fbcdn.net",
+        "instagram.com",
+        "cdninstagram.com",
+        "threads.net"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI (ChatGPT)",
+      "authDomain": "chatgpt.com",
+      "cookieDomain": "chatgpt.com",
+      "hosts": [
+        "chatgpt.com",
+        "chat.openai.com",
+        "openai.com",
+        "platform.openai.com",
+        "oaiusercontent.com",
+        "files.oaiusercontent.com",
+        "cdn.oaiusercontent.com"
+      ],
+      "credentialSiblings": [
+        "chatgpt.com",
+        "openai.com",
+        "oaiusercontent.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face",
+      "authDomain": "huggingface.co",
+      "cookieDomain": "huggingface.co",
+      "hosts": [
+        "huggingface.co",
+        "www.huggingface.co",
+        "cdn-lfs.huggingface.co"
+      ],
+      "credentialSiblings": [
+        "huggingface.co",
+        "cdn-lfs.huggingface.co"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "claude",
+      "label": "Claude (Anthropic)",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "claude.ai",
+        "www.claude.ai",
+        "claudeusercontent.com"
+      ],
+      "credentialSiblings": [
+        "claude.ai",
+        "claudeusercontent.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "grok",
+      "label": "Grok (xAI)",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "grok.com",
+        "x.ai"
+      ],
+      "credentialSiblings": [
+        "grok.com",
+        "x.ai"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "perplexity",
+      "label": "Perplexity",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "perplexity.ai",
+        "pplx.ai",
+        "pplx-res.cloudinary.com"
+      ],
+      "credentialSiblings": [
+        "perplexity.ai",
+        "pplx.ai",
+        "pplx-res.cloudinary.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "mistral",
+      "label": "Mistral Le Chat",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "mistral.ai"
+      ],
+      "credentialSiblings": [
+        "mistral.ai"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "deepseek.com"
+      ],
+      "credentialSiblings": [
+        "deepseek.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "poe",
+      "label": "Poe",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "poe.com",
+        "poecdn.net"
+      ],
+      "credentialSiblings": [
+        "poe.com",
+        "poecdn.net"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "character_ai",
+      "label": "Character.AI",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "character.ai",
+        "characterai.io"
+      ],
+      "credentialSiblings": [
+        "character.ai",
+        "characterai.io"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "pi",
+      "label": "Pi",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "pi.ai"
+      ],
+      "credentialSiblings": [
+        "pi.ai"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "you",
+      "label": "You.com / You AI",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "you.com",
+        "you.ai"
+      ],
+      "credentialSiblings": [
+        "you.com",
+        "you.ai"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "udemy",
+      "label": "Udemy",
+      "authDomain": "udemy.com",
+      "cookieDomain": "udemy.com",
+      "hosts": [
+        "udemy.com",
+        "www.udemy.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "vimeo",
+      "label": "Vimeo",
+      "authDomain": "vimeo.com",
+      "cookieDomain": "vimeo.com",
+      "hosts": [
+        "vimeo.com",
+        "www.vimeo.com",
+        "player.vimeo.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "coursera",
+      "label": "Coursera",
+      "authDomain": "coursera.org",
+      "cookieDomain": "coursera.org",
+      "hosts": [
+        "coursera.org",
+        "www.coursera.org"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "skillshare",
+      "label": "Skillshare",
+      "authDomain": "skillshare.com",
+      "cookieDomain": "skillshare.com",
+      "hosts": [
+        "skillshare.com",
+        "www.skillshare.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "pluralsight",
+      "label": "Pluralsight",
+      "authDomain": "pluralsight.com",
+      "cookieDomain": "pluralsight.com",
+      "hosts": [
+        "pluralsight.com",
+        "www.pluralsight.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "linkedin",
+      "label": "LinkedIn Learning",
+      "authDomain": "linkedin.com",
+      "cookieDomain": "linkedin.com",
+      "hosts": [
+        "linkedin.com",
+        "www.linkedin.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "apple_music",
+      "label": "Apple Music",
+      "authDomain": "music.apple.com",
+      "cookieDomain": "music.apple.com",
+      "hosts": [
+        "music.apple.com",
+        "itunes.apple.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": true,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "tiktok",
+      "label": "TikTok",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "tiktok.com",
+        "www.tiktok.com",
+        "vm.tiktok.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "twitter",
+      "label": "Twitter / X",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "twitter.com",
+        "www.twitter.com",
+        "x.com",
+        "www.x.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "reddit",
+      "label": "Reddit",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "reddit.com",
+        "www.reddit.com",
+        "v.redd.it"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "dailymotion",
+      "label": "Dailymotion",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "dailymotion.com",
+        "www.dailymotion.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "twitch",
+      "label": "Twitch",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "twitch.tv",
+        "www.twitch.tv"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    },
+    {
+      "id": "bilibili",
+      "label": "Bilibili",
+      "authDomain": "",
+      "cookieDomain": "",
+      "hosts": [
+        "bilibili.com",
+        "www.bilibili.com"
+      ],
+      "credentialSiblings": [],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": true,
+      "routesThroughYtDlp": true,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
+    }
+  ],
+  "extensionCookieForwarding": {
+    "google": {
+      "forwardCookieUrl": "https://drive.google.com/",
+      "exportDomain": "google.com",
+      "hostMatchers": ["drive.google.com", "drive.usercontent.google.com", "docs.google.com", "photos.google.com", "video.google.com", "googleusercontent.com"]
+    },
+    "microsoft": {
+      "forwardCookieUrl": "https://onedrive.live.com/",
+      "exportDomain": "live.com",
+      "hostMatchers": ["onedrive.live.com", "1drv.ms", "sharepoint.com", "microsoft.com", "microsoftonline.com", "live.net", "svc.ms"]
+    },
+    "dropbox": {
+      "forwardCookieUrl": "https://www.dropbox.com/",
+      "exportDomain": "dropbox.com",
+      "hostMatchers": ["dropbox.com", "dropboxusercontent.com"]
+    },
+    "mediafire": {
+      "forwardCookieUrl": "https://www.mediafire.com/",
+      "exportDomain": "mediafire.com",
+      "hostMatchers": ["mediafire.com", "download.mediafire.com"]
+    },
+    "meta": {
+      "forwardCookieUrl": "https://www.facebook.com/",
+      "exportDomain": "facebook.com",
+      "hostMatchers": ["facebook.com", "instagram.com", "fbcdn.net", "cdninstagram.com", "threads.net"]
+    },
+    "ai": {
+      "forwardCookieUrl": "",
+      "exportDomain": "",
+      "hostMatchers": [
+        "chatgpt.com", "openai.com", "oaiusercontent.com",
+        "huggingface.co", "cdn-lfs.huggingface.co",
+        "claude.ai", "claudeusercontent.com",
+        "grok.com", "x.ai",
+        "perplexity.ai", "pplx.ai", "pplx-res.cloudinary.com",
+        "gemini.google.com", "chat.mistral.ai", "mistral.ai",
+        "chat.deepseek.com", "deepseek.com", "poe.com", "poecdn.net",
+        "character.ai", "characterai.io", "pi.ai", "you.com", "you.ai"
+      ],
+      "resolverMap": {
+        "openai.com":    "chatgpt.com",
+        "chatgpt.com":   "chatgpt.com",
+        "oaiusercontent.com": "chatgpt.com",
+        "huggingface.co": "huggingface.co",
+        "cdn-lfs.huggingface.co": "huggingface.co",
+        "claude.ai": "claude.ai",
+        "claudeusercontent.com": "claude.ai",
+        "grok.com": "grok.com",
+        "x.ai": "grok.com",
+        "perplexity.ai": "perplexity.ai",
+        "pplx.ai": "perplexity.ai",
+        "pplx-res.cloudinary.com": "perplexity.ai",
+        "gemini.google.com": "google.com",
+        "mistral.ai": "mistral.ai",
+        "deepseek.com": "deepseek.com",
+        "poe.com": "poe.com",
+        "poecdn.net": "poe.com",
+        "character.ai": "character.ai",
+        "characterai.io": "character.ai",
+        "pi.ai": "pi.ai",
+        "you.com": "you.com",
+        "you.ai": "you.com"
+      }
+    }
+  }
+}

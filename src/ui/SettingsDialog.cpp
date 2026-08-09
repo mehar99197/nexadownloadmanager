@@ -19,6 +19,7 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QSettings>
+#include "license/LicenseManager.h"
 
 namespace nexa {
 
@@ -213,6 +214,44 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_seedRatio->setValue(m_engine->seedRatio());
     tor->addRow(QStringLiteral("Seed to ratio"), m_seedRatio);
     v->addLayout(tor);
+
+    // ---- License -----------------------------------------------------------
+    v->addWidget(sectionHeader(QStringLiteral("License"), plate));
+    auto *licenseForm = new QFormLayout;
+    licenseForm->setLabelAlignment(Qt::AlignRight);
+    m_licenseKey = new QLineEdit(plate);
+    m_licenseKey->setPlaceholderText(QStringLiteral("NDM-XXXX-XXXX-XXXX"));
+    m_licenseKey->setEchoMode(QLineEdit::Password);
+    m_licenseKey->setText(QString());
+    auto *licenseRow = new QHBoxLayout;
+    licenseRow->addWidget(m_licenseKey, 1);
+    auto *activate = new QPushButton(QStringLiteral("Activate"), plate);
+    auto *remove = new QPushButton(QStringLiteral("Remove"), plate);
+    licenseRow->addWidget(activate);
+    licenseRow->addWidget(remove);
+    licenseForm->addRow(QStringLiteral("License key"), licenseRow);
+    m_licenseStatus = new QLabel(m_engine->license()->status(), plate);
+    m_licenseStatus->setWordWrap(true);
+    m_licenseStatus->setStyleSheet(QStringLiteral("color:#94a3b8;"));
+    licenseForm->addRow(QStringLiteral("Status"), m_licenseStatus);
+    v->addLayout(licenseForm);
+    connect(activate, &QPushButton::clicked, this, [this]() {
+        m_engine->license()->activate(m_licenseKey->text());
+    });
+    connect(remove, &QPushButton::clicked, this, [this]() {
+        m_engine->license()->deactivate();
+        m_licenseKey->clear();
+    });
+    connect(m_engine->license(), &LicenseManager::statusChanged,
+            this, [this](const QString &status) {
+        if (m_licenseStatus)
+            m_licenseStatus->setText(status);
+    });
+    connect(m_engine->license(), &LicenseManager::activationFinished,
+            this, [this](bool, const QString &message) {
+        if (m_licenseStatus)
+            m_licenseStatus->setText(message);
+    });
 
     // ---- AI + history -----------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("AI & history"), plate));

@@ -666,3 +666,40 @@ jobs:
             exit 1
           fi
           echo "🎉 .deb is fully self-contained"
+
+  quality:
+    name: Tests, audits, and extension packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install C++ dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build qt6-base-dev libqt6sql6-sqlite \
+            libtorrent-rasterbar-dev nodejs npm zip
+      - name: Build and test C++
+        run: |
+          cmake -B build-quality -G Ninja -DCMAKE_BUILD_TYPE=Debug -DNEXA_BUILD_TESTS=ON
+          cmake --build build-quality
+          ctest --test-dir build-quality --output-on-failure
+      - name: Backend tests, syntax, and production dependency audit
+        working-directory: ndm-website/backend
+        run: |
+          npm ci
+          npm test
+          find src test -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+          npm audit --omit=dev --audit-level=high
+      - name: Frontend and admin builds and audits
+        run: |
+          npm --prefix ndm-website/frontend ci
+          npm --prefix ndm-website/frontend run build
+          npm --prefix ndm-website/frontend audit --omit=dev --audit-level=high
+          npm --prefix ndm-website/admin ci
+          npm --prefix ndm-website/admin run build
+          npm --prefix ndm-website/admin audit --omit=dev --audit-level=high
+      - name: Package and validate extensions
+        run: |
+          ./extension-chromium/package.sh
+          ./extension-firefox/build.sh
+          unzip -t dist/nexa-chrome.zip
+          unzip -t dist/nexa-firefox.zip

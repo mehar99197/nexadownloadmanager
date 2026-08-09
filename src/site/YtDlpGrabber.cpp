@@ -1,6 +1,7 @@
 #include "site/YtDlpGrabber.h"
 #include "auth/AuthUtils.h"
 #include "auth/BrowserLogin.h"
+#include "auth/CloudProviders.h"
 #include "core/ExternalTools.h"
 
 #include <QProcess>
@@ -15,6 +16,8 @@
 #include <QDebug>
 
 namespace nexa {
+
+const CloudProviders *YtDlpGrabber::s_providers = nullptr;
 
 static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
 
@@ -144,43 +147,41 @@ bool YtDlpGrabber::available()
 
 bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
 {
+    if (s_providers)
+        return s_providers->isSiteVideoUrl(url);
+
+    // Fallback: hardcoded list when CloudProviders is unavailable.
     const QString host = url.host().toLower();
     if (host.endsWith(QStringLiteral("youtube.com")) ||
         host == QStringLiteral("youtu.be") ||
         host.endsWith(QStringLiteral(".youtu.be")))
-        return !url.path().contains(QStringLiteral("/videoplayback"));  // not a raw media URL
+        return !url.path().contains(QStringLiteral("/videoplayback"));
 
-    // Public video sites whose real stream the browser can't grab (blob/MSE or
-    // signed CDN) but yt-dlp can. Routing the PAGE url through yt-dlp gives the
-    // actual video instead of a sniffed static asset. No login needed.
     static const QStringList kVideoSites = {
         QStringLiteral("tiktok.com"),
-        QStringLiteral("instagram.com"),
         QStringLiteral("twitter.com"),
         QStringLiteral("x.com"),
-        QStringLiteral("facebook.com"),
-        QStringLiteral("fb.watch"),
         QStringLiteral("reddit.com"),
         QStringLiteral("dailymotion.com"),
         QStringLiteral("twitch.tv"),
         QStringLiteral("bilibili.com"),
+        QStringLiteral("threads.net"),
     };
     for (const QString &s : kVideoSites)
         if (host == s || host.endsWith(QLatin1Char('.') + s))
             return true;
 
-    // Other yt-dlp-extracted sites we route through yt-dlp so its extractor (and
-    // our domain-scoped cookie/bearer auth) handle login-gated video. yt-dlp
-    // supports 1000+ sites; this is the curated set Nexa routes by default —
-    // extend as needed. AuthenticationManager applies cookies/Bearer for these.
     static const QStringList kAuthSites = {
         QStringLiteral("udemy.com"),
         QStringLiteral("vimeo.com"),
         QStringLiteral("coursera.org"),
         QStringLiteral("skillshare.com"),
         QStringLiteral("pluralsight.com"),
-        QStringLiteral("linkedin.com"),   // LinkedIn Learning
-        QStringLiteral("music.apple.com"),// Apple Music (FairPlay DRM — see AuthUtils)
+        QStringLiteral("linkedin.com"),
+        QStringLiteral("music.apple.com"),
+        QStringLiteral("facebook.com"),
+        QStringLiteral("fb.watch"),
+        QStringLiteral("instagram.com"),
     };
     for (const QString &s : kAuthSites)
         if (host == s || host.endsWith(QLatin1Char('.') + s))
@@ -193,19 +194,34 @@ bool YtDlpGrabber::isSiteVideoUrl(const QUrl &url)
 // large-file confirm page, redirects, and Content-Disposition naming that a plain
 // HTTP GET can't. Routed here only when yt-dlp is available; otherwise the native
 // HTTP path (with its own Drive handling) takes over.
+//
+// Google Photos: yt-dlp has a GooglePhotos extractor that resolves photo/video
+// album/item URLs to direct CDN downloads with proper auth.
 bool YtDlpGrabber::isDirectFileUrl(const QUrl &url)
 {
+    if (s_providers)
+        return s_providers->isDirectFileUrl(url);
+
+    // Fallback: hardcoded logic when CloudProviders is unavailable.
     const QString host = url.host().toLower();
     const bool driveHost = host == QStringLiteral("drive.google.com")
                         || host == QStringLiteral("drive.usercontent.google.com")
                         || host == QStringLiteral("docs.google.com");
-    if (!driveHost)
-        return false;
-    // Must carry a file id (path /file/d/ID or ?id=ID) — skip Docs editor URLs
-    // and folder roots that have no single downloadable file.
-    static const QRegularExpression idRe(QStringLiteral("/file/d/[A-Za-z0-9_-]+"));
-    return idRe.match(url.path()).hasMatch()
-        || QUrlQuery(url).hasQueryItem(QStringLiteral("id"));
+    if (driveHost) {
+        static const QRegularExpression idRe(QStringLiteral("/file/d/[A-Za-z0-9_-]+"));
+        return idRe.match(url.path()).hasMatch()
+            || QUrlQuery(url).hasQueryItem(QStringLiteral("id"));
+    }
+
+    const bool photosHost = host == QStringLiteral("photos.google.com")
+                         || host == QStringLiteral("video.google.com");
+    if (photosHost) {
+        const QString path = url.path();
+        return path.contains(QStringLiteral("/photo/"))
+            || path.contains(QStringLiteral("/share/"))
+            || path.contains(QStringLiteral("/album/"));
+    }
+    return false;
 }
 
 // Pick the browser whose cookie store is most likely the one the user is logged
@@ -250,6 +266,19 @@ QString YtDlpGrabber::formatForQuality(const QString &quality)
 QString YtDlpGrabber::fileName() const
 {
     return QFileInfo(m_savePath).fileName();
+}
+
+void YtDlpGrabber::setDirectFile(const QString &browser)
+{
+    m_directFile = true;
+    m_cookieBrowser = browser;
+
+    // The constructor must create a placeholder before the caller can select
+    // direct-file mode. Do not expose the video-oriented "video.mp4" placeholder
+    // for a Drive fallback; the actual server filename is resolved after yt-dlp
+    // receives the HTTP response.
+    if (m_fixedName.isEmpty() && QFileInfo(m_savePath).fileName() == QStringLiteral("video.mp4"))
+        m_savePath = QDir(m_dir).filePath(QStringLiteral("download"));
 }
 
 void YtDlpGrabber::setSubtitles(bool embed, const QString &langs)
@@ -406,8 +435,21 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
          << QStringLiteral("--no-color") << QStringLiteral("--no-warnings")
          // Give up on a stalled network read instead of hanging forever.
          << QStringLiteral("--socket-timeout") << QStringLiteral("30")
-         << QStringLiteral("--no-mtime")
-         // Keep song titles readable: --restrict-filenames transliterates/strips
+          << QStringLiteral("--no-mtime")
+          // YouTube requires a JavaScript runtime to solve n-sig / po-token
+          // challenges. Pass every runtime that a user may have installed and let
+          // yt-dlp pick the first one it finds. Without this flag the extractor
+          // skips JS challenge solving entirely, so many formats (especially 1080p+
+          // and age-restricted content) come back empty and downloads fail.
+          << QStringLiteral("--js-runtimes") << QStringLiteral("node")
+          << QStringLiteral("--js-runtimes") << QStringLiteral("deno")
+          << QStringLiteral("--js-runtimes") << QStringLiteral("bun")
+          // Download the GitHub-hosted challenge solver scripts that yt-dlp needs
+          // to solve modern YouTube JS challenges. The bundled local scripts may be
+          // months behind YouTube's player changes; the remote distribution stays
+          // current and is cached on first use. Costs ~100 kB on the first run.
+          << QStringLiteral("--remote-components") << QStringLiteral("ejs:github")
+          // Keep song titles readable: --restrict-filenames transliterates/strips
          // spaces and non-ASCII (e.g. turns a track name into an odd token), so for
          // music we leave the real "Artist - Track" name intact (yt-dlp still sanitises
          // path-illegal characters either way).
@@ -425,8 +467,18 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
         // the link is actually a video. No container merge (it's not video), no
         // restricted filenames (keep the real name). Load auth straight from the
         // browser so the user's OWN private files download without a manual export.
-        args << QStringLiteral("-f") << QStringLiteral("source/best");
-        if (!m_cookieBrowser.isEmpty())
+        // drive.usercontent.google.com also matches yt-dlp's GoogleDrive video
+        // extractor. That extractor calls the Drive playback API and returns 403
+        // for ordinary uploaded files such as ZIP/PDF/APK. Force the generic
+        // direct-HTTP extractor so the already-authorized download URL is used.
+        args << QStringLiteral("--use-extractors") << QStringLiteral("generic")
+             << QStringLiteral("-f") << QStringLiteral("source/best");
+        // The extension supplies a fresh, profile-correct cookies.txt through
+        // AuthenticationManager. Prefer it over --cookies-from-browser: the
+        // latter may target the wrong Chrome profile or lack the desktop keyring
+        // integration, while the extension already obtained the live session
+        // cookies from the active Drive tab.
+        if (m_authArgs.isEmpty() && !m_cookieBrowser.isEmpty())
             args << QStringLiteral("--cookies-from-browser") << m_cookieBrowser;
     } else if (audioOnly) {
         // Always grab the highest-quality audio rendition Apple exposes. For m4a we
@@ -461,12 +513,20 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
              << QStringLiteral("--embed-subs");
     }
 
-    // Use yt-dlp's native concurrent-fragment downloader. aria2c is intentionally
-    // NOT used here: YouTube serves time-limited signed segment URLs that expire
-    // during multi-connection aria2c downloads, causing "aria2c exited with code 1"
-    // errors mid-download. yt-dlp's own downloader refreshes URLs automatically.
+    // Use yt-dlp's native concurrent-fragment downloader with 16-way parallelism.
+    // This downloads DASH segments in parallel — the correct multi-connection
+    // approach for YouTube. aria2c is NOT used here: YouTube serves time-limited
+    // signed segment URLs that expire during multi-connection aria2c downloads,
+    // causing "aria2c exited with code 1" errors mid-download. yt-dlp's own
+    // downloader refreshes URLs automatically, achieving the same parallelism.
     args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
          << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
+
+    // Keep yt-dlp's native downloader for direct files as well. External aria2c
+    // progress is not exposed through yt-dlp's structured progress template, so
+    // using it made Drive rows appear frozen even while bytes were arriving.
+    // The normal Google Drive path is handled by DownloadTask and gets true
+    // segmented IDM-style transfers; this fallback prioritises correct telemetry.
 
     // Point yt-dlp at the bundled ffmpeg for the video+audio merge / audio
     // extract. On Windows the install dir isn't on PATH, so yt-dlp's own ffmpeg

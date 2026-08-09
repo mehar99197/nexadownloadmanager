@@ -17,6 +17,7 @@ namespace nexa {
 class SegmentDownloader;
 class Database;
 class RateLimiter;
+class CloudProviders;
 
 // Represents one download: probes the server, splits the file into byte-range
 // segments, runs them concurrently, tracks progress/speed, and supports
@@ -43,6 +44,11 @@ public:
     // connection idles near the end. On by default (the IDM-style speed-up).
     void setDynamicResegment(bool on) { m_dynamicResegment = on; }
 
+    // Data-driven cloud provider registry (shared, owned by the engine).
+    // When set, all host credential-scoping and confirm-page decisions use it.
+    void setCloudProviders(const CloudProviders *p) { m_providers = p; }
+    void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
+
     // Given a server-provided filename, returns the full path to save to
     // (categorised + de-duplicated). Set by the engine; used when a
     // Content-Disposition header reveals the real filename.
@@ -59,7 +65,8 @@ public:
 
     // Restore an interrupted task's segment layout from the database.
     void restore(qint64 totalBytes, const QVector<SegmentInfo> &segments,
-                 bool rangesSupported);
+                 bool rangesSupported, const QString &etag = QString(),
+                 const QString &lastModified = QString());
 
     int            id()         const { return m_id; }
     QUrl           url()        const { return m_url; }
@@ -76,6 +83,8 @@ public:
     // event loop (no worker threads); snapshot if that ever changes.
     const QVector<SegmentInfo>& segments() const { return m_segments; }
     bool           rangesSupported() const { return m_rangesSupported; }
+    QString        etag() const { return m_etag; }
+    QString        lastModified() const { return m_lastModified; }
 
     static int preferredSegmentCount(qint64 totalBytes);
 
@@ -88,6 +97,7 @@ signals:
 private slots:
     void onProbeFinished();
     void onDriveConfirmFinished();   // Google Drive interstitial -> real file URL
+    void onConfirmPageFinished();    // Generic confirm page -> real file URL
     void onSegmentProgressed(int index, qint64 delta);
     void onSegmentCompleted(int index);
     void onSegmentFailed(int index, const QString &error);
@@ -96,8 +106,10 @@ private slots:
 
 private:
     void setState(DownloadState s, const QString &detail = QString());
+    QNetworkAccessManager *probeManager();
     void sendProbe();                 // issue the ranged size/Range probe for m_url
     void fetchGoogleDriveConfirm();   // GET the Drive confirm page, parse, re-probe
+    void fetchConfirmPage();          // GET a generic confirm page, parse, re-probe
     bool preallocateFile();
     void buildSegments(qint64 total, bool rangesSupported);
     void launchSegments();
@@ -109,6 +121,7 @@ private:
     void retrySegment(int index, const QString &reason);  // resume a failed segment
     void finalizeShort(qint64 totalReceived);             // accept actual size, truncate
     void onSizeDiscovered(qint64 total, bool rangesSupported);   // adopt size/Range the live GET revealed
+    QString resumeValidator() const;
 
     int                       m_id;
     QUrl                      m_url;
@@ -116,18 +129,25 @@ private:
     QNetworkAccessManager    *m_nam = nullptr;
     Database                 *m_db = nullptr;
     RateLimiter              *m_limiter = nullptr;
+    const CloudProviders     *m_providers = nullptr;
 
     HeaderList                m_headers;
     QString                   m_credHost;       // host the sensitive headers are scoped to
     int                       m_probeRedirects = 0;
     bool                      m_driveConfirmed = false;  // Drive confirm token already applied
+    bool                      m_confirmPageFetched = false; // generic confirm page already fetched
     qint64                    m_total = -1;     // -1 = unknown
     qint64                    m_done = 0;
     DownloadState             m_state = DownloadState::Queued;
     bool                      m_rangesSupported = false;
     bool                      m_dynamicResegment = true;   // work-stealing on by default
+    bool                      m_publicNetworkOnly = false;
+    QString                   m_etag;
+    QString                   m_lastModified;
 
     QNetworkReply            *m_probe = nullptr;
+    QNetworkAccessManager    *m_driveProbeNam = nullptr;
+    bool                       m_probeWasHead = false;
     QVector<SegmentInfo>      m_segments;
     QVector<SegmentDownloader*> m_workers;
     int                       m_completedSegments = 0;

@@ -65,10 +65,10 @@
   // -J can't see login-gated formats (no cookies), so offer Best/Audio and let
   // the handoff carry the site cookies. Both download via yt-dlp in the engine.
   // Keep these in sync with kVideoSites/kAuthSites in src/site/YtDlpGrabber.cpp.
-  const PUBLIC_VIDEO_HOSTS = ["tiktok.com", "instagram.com", "twitter.com", "x.com",
-    "facebook.com", "fb.watch", "reddit.com", "dailymotion.com", "twitch.tv", "bilibili.com"];
+  const PUBLIC_VIDEO_HOSTS = ["tiktok.com", "twitter.com", "x.com",
+    "reddit.com", "dailymotion.com", "twitch.tv", "bilibili.com", "threads.net"];
   const AUTH_VIDEO_HOSTS = ["udemy.com", "coursera.org", "vimeo.com", "skillshare.com",
-    "pluralsight.com", "linkedin.com"];
+    "pluralsight.com", "linkedin.com", "facebook.com", "fb.watch", "instagram.com"];
   function hostIn(list) {
     const h = location.host.toLowerCase();
     return list.some((d) => h === d || h.endsWith("." + d));
@@ -165,6 +165,12 @@
       .replace(/\s*-\s*YouTube\s*$/i, "")   // trailing " - YouTube"
       .replace(/^\(\d+\)\s*/, "")            // leading "(7) " notification count
       .trim();
+  }
+
+  function sanitizeName(s) {
+    let raw = String(s || "").split(/[\\/]/).pop();
+    try { raw = decodeURIComponent(raw); } catch (_) {}
+    return raw.replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 120);
   }
   // Apple Music plays preview clips from audio-ssl.itunes.apple.com, which the
   // extension sniffs and downloads directly. Those URLs name the file after the CDN
@@ -714,14 +720,44 @@
   }
 
   // Collect every link on the page (used by the "download all links" menu).
-  chrome.runtime.onMessage.addListener((msg, sender) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Only honour messages from our own extension (the background worker).
     if (!sender || sender.id !== chrome.runtime.id) return;
     if (msg.type === "nexa-collect-links") {
       const urls = Array.from(document.querySelectorAll("a[href]"))
         .map((a) => a.href).filter((h) => /^https?:/i.test(h));
       sendMessageSafe({ type: "nexa-download-list", urls: [...new Set(urls)] });
+    } else if (msg.type === "nexa-browser-download") {
+      const requested = String(msg.url || "");
+      const sameUrl = (a) => {
+        const raw = a.getAttribute("href") || "";
+        return raw === requested || a.href === requested;
+      };
+      let anchor = Array.from(document.querySelectorAll("a[href]"))
+        .find((a) => sameUrl(a));
+
+      // blob:/data: objects are scoped to this renderer. If the context-menu
+      // target is not wrapped in an anchor, create one here so Chrome/Firefox
+      // still perform the download in the browser rather than sending the
+      // unsupported scheme to the desktop process.
+      if (!anchor && /^(?:blob|data):/i.test(requested)) {
+        anchor = document.createElement("a");
+        anchor.href = requested;
+        anchor.download = sanitizeName(msg.filename) || "download";
+        anchor.style.display = "none";
+        document.documentElement.appendChild(anchor);
+      }
+      if (!anchor) {
+        if (sendResponse)
+          sendResponse({ ok: false, message: "the browser-owned file link is no longer on this page" });
+        return;
+      }
+      if (sendResponse) sendResponse({ ok: true, browser: true });
+      anchor.click();
+      if (anchor.parentNode && /^(?:blob|data):/i.test(requested))
+        setTimeout(() => anchor.remove(), 1000);
     }
+    return true;
   });
 
   pollTimer = setInterval(() => { if (nexaStopped) return; onNav(); poll(); }, 2000);

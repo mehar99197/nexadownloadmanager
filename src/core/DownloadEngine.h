@@ -17,10 +17,13 @@ class DownloadTask;
 class HlsGrabber;
 class TorrentManager;
 class YtDlpGrabber;
+class MegaGrabber;
 class AiClient;
 class Database;
 class AuthenticationManager;
 class RateLimiter;
+class CloudProviders;
+class LicenseManager;
 
 // Top-level controller: owns the network stack + database and manages the set
 // of DownloadTasks. The UI talks only to this class.
@@ -72,6 +75,7 @@ public:
     // Batch add: accepts whitespace/newline-separated URLs and expands numeric
     // ranges like "http://x/file[1-20].jpg" into individual downloads.
     QList<int> addBatch(const QString &text, const HeaderList &headers = {});
+    QList<int> addRemoteBatch(const QString &text);
     static QStringList expandPattern(const QString &token);
 
     // Schedule a download to start at a future time (IDM-style scheduler).
@@ -82,7 +86,7 @@ public:
     QString downloadDir() const { return m_downloadDir; }
 
     // Max simultaneously-active file downloads; the rest wait Queued.
-    void setMaxConcurrent(int n) { m_maxConcurrent = qMax(1, n); schedule(); }
+    void setMaxConcurrent(int n);
     int  maxConcurrent() const { return m_maxConcurrent; }
 
     // Global HTTP download speed cap in bytes/sec (0 = unlimited), shared across
@@ -120,7 +124,7 @@ public:
 
     // AI helpers (require $ANTHROPIC_API_KEY). aiAvailable() reflects key presence.
     bool aiAvailable() const;
-    void setAiRename(bool on) { m_aiRename = on; }   // AI-rename files on completion
+    void setAiRename(bool on);
     bool aiRename() const { return m_aiRename; }
     void runAiCommand(const QString &naturalLanguage);  // NL -> add/schedule downloads
 
@@ -130,6 +134,11 @@ public:
     // Domain-scoped authentication (cookies.txt / bearer tokens). Lets IpcServer
     // and the UI register credentials; the engine applies them in addDownload().
     AuthenticationManager *auth() const { return m_auth; }
+    LicenseManager *license() const { return m_license; }
+    QString licensePlan() const { return m_licensePlan; }
+
+    // Data-driven cloud provider registry (loaded from JSON at startup).
+    CloudProviders *providers() const { return m_providers; }
 
     // Unified accessors that work for both file downloads and stream grabs.
     QString       nameOf(int id) const;
@@ -203,6 +212,8 @@ private:
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
     void    ensureTorrents();        // lazily create the libtorrent session
+    int     addRemoteDownload(const QUrl &url);
+    void    applyLicensePlan(const QString &plan);
 
     struct ProgressInfo { qint64 done = 0; qint64 total = -1; double speed = 0.0; };
 
@@ -212,9 +223,12 @@ private:
     AiClient              *m_ai = nullptr;
     AuthenticationManager *m_auth = nullptr;
     RateLimiter           *m_limiter = nullptr;   // global HTTP speed cap
+    CloudProviders        *m_providers = nullptr; // data-driven cloud provider registry
+    LicenseManager        *m_license = nullptr;
     QHash<int, DownloadTask*> m_tasks;
     QHash<int, HlsGrabber*>   m_grabbers;
     QHash<int, YtDlpGrabber*> m_siteVideos;
+    QHash<int, MegaGrabber*>  m_megaGrabbers;
     QSet<int>              m_torrentIds;
     QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
     QSet<int>              m_held;          // created but awaiting the user's confirm prompt
@@ -224,7 +238,8 @@ private:
     QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id
     QList<int>             m_pending;        // FIFO of ids waiting for a slot
     QString                m_downloadDir;
-    int                    m_maxConcurrent = 4;
+    int                    m_maxConcurrent = 3;
+    int                    m_requestedMaxConcurrent = 4;
     int                    m_streamConcurrency = 16;   // HLS parallel segment fetches
     bool                   m_embedSubs = false;        // yt-dlp: fetch + embed subtitles
     QString                m_subLangs = QStringLiteral("en");
@@ -234,6 +249,8 @@ private:
     double                 m_seedRatio = 0.0;          // 0 = don't seed past completion
     bool                   m_autoCategorize = true;
     bool                   m_aiRename = false;
+    bool                   m_aiRenameRequested = false;
+    QString                m_licensePlan = QStringLiteral("free");
     bool                   m_inSchedule = false;
 };
 

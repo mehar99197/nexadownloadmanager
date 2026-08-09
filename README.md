@@ -23,6 +23,15 @@ media-stream grabbing, and more. C++ / Qt 6.
 - **Native messaging bridge** (`nexa-host`) + **IPC server** in the engine.
 - **Browser extensions** (Chrome + Chromium MV3 + Firefox) — intercept downloads,
   capture cookies/UA/referrer, sniff HLS/DASH/media, right-click handoff.
+- **Verified browser file downloads** — tested successfully with authenticated or
+  signed attachments from **ChatGPT**, **Google Gemini**, **Google Drive**, and
+  **Google Photos**. The extension forwards the browser's request context so
+  private files and CDN-backed attachments can be downloaded by Nexa.
+- **AI attachment provider registry** — the same browser-context handoff is now
+  configured for **Claude**, **Grok**, **Perplexity**, **Mistral Le Chat**,
+  **DeepSeek**, **Poe**, **Character.AI**, **Pi**, and **You.com**, including
+  provider-owned asset/CDN hosts. Live validation of each provider still
+  requires a signed-in browser session and a representative attachment URL.
 - **HLS/DASH stream grabber** — parses `.m3u8` master + media playlists,
   picks the highest-bitrate variant, downloads all segments in parallel,
   passes through `#EXT-X-KEY` decryption, and muxes to MP4 with FFmpeg
@@ -144,7 +153,7 @@ nexa [--max=N] [--no-categorize] [--batch] [--resume-all]
   --batch            exit once all downloads/streams finish (for scripts)
   --resume-all       resume downloads interrupted in the previous run
   --dashboard[=PORT] start the remote web dashboard (default port 8088, loopback)
-  --dashboard-lan    bind the dashboard to 0.0.0.0 so other devices can reach it
+  --dashboard-lan    bind to 0.0.0.0 (requires NEXA_TLS_CERT and NEXA_TLS_KEY)
   --dashboard-token  set the dashboard access token (otherwise auto-generated)
   --ai-rename        AI-rename files to clean names on completion (needs API key)
   --ai "<text>"      natural-language add/schedule, e.g. --ai "get these tonight"
@@ -167,10 +176,14 @@ AI buttons/flags are inert and everything else works unchanged.
 ### Remote dashboard
 
 ```bash
+export NEXA_TLS_CERT=/path/to/lan-cert.pem
+export NEXA_TLS_KEY=/path/to/lan-key.pem
 ./build/nexa --dashboard --dashboard-lan
-# prints: Nexa dashboard: http://<lan-ip>:8088/?token=<128-bit token>
+# prints: Nexa dashboard: https://<lan-ip>:8088/?token=<128-bit token>
 ```
 
 Open that URL on your phone (same Wi-Fi) to add and control downloads. Without
 `--dashboard-lan` the server is reachable only from `127.0.0.1`. The token is
 required on every request.
+LAN dashboard submissions accept public HTTP(S) targets only; loopback, private,
+link-local, metadata, and local-name destinations are blocked, including redirects.

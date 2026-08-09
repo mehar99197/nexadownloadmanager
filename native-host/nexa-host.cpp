@@ -14,6 +14,9 @@
 #include <QThread>
 #include <QFileInfo>
 #include <QDir>
+#include <QElapsedTimer>
+
+#include "ipc/IpcProtocol.h"
 
 #include <cstdio>
 #ifndef _WIN32
@@ -51,7 +54,7 @@ bool readMessage(QByteArray &out)
         return false;
     const uint32_t len = uint32_t(lenBuf[0]) | (uint32_t(lenBuf[1]) << 8) |
                          (uint32_t(lenBuf[2]) << 16) | (uint32_t(lenBuf[3]) << 24);
-    if (len == 0 || len > (64u * 1024u * 1024u))   // sanity cap: 64 MB
+    if (len == 0 || len > nexa::kMaxIpcFrameBytes)
         return false;
     out.resize(int(len));
     return readExact(out.data(), len);
@@ -79,9 +82,46 @@ void reply(bool ok, const QString &message, int id = -1)
     writeMessage(QJsonDocument(o).toJson(QJsonDocument::Compact));
 }
 
-// Try to send the payload to a running engine; returns the reply bytes or empty.
-QByteArray relayToEngine(const QByteArray &payload, bool *connected)
+bool socketReadExact(QLocalSocket &socket, QByteArray &out, qsizetype size, int timeoutMs)
 {
+    QElapsedTimer timer;
+    timer.start();
+    out.clear();
+    out.reserve(size);
+    while (out.size() < size) {
+        if (socket.bytesAvailable() <= 0) {
+            const int remaining = qMax(0, timeoutMs - int(timer.elapsed()));
+            if (remaining == 0 || !socket.waitForReadyRead(remaining))
+                return false;
+        }
+        const QByteArray chunk = socket.read(size - out.size());
+        if (chunk.isEmpty())
+            return false;
+        out.append(chunk);
+    }
+    return true;
+}
+
+bool readEngineFrame(QLocalSocket &socket, QByteArray &body, int timeoutMs)
+{
+    QElapsedTimer timer;
+    timer.start();
+    QByteArray header;
+    if (!socketReadExact(socket, header, 4, timeoutMs))
+        return false;
+    const auto *bytes = reinterpret_cast<const unsigned char *>(header.constData());
+    const quint32 length = quint32(bytes[0]) | (quint32(bytes[1]) << 8) |
+                           (quint32(bytes[2]) << 16) | (quint32(bytes[3]) << 24);
+    if (length == 0 || length > nexa::kMaxIpcFrameBytes)
+        return false;
+    const int remaining = qMax(0, timeoutMs - int(timer.elapsed()));
+    return remaining > 0 && socketReadExact(socket, body, length, remaining);
+}
+
+// Try to send the payload to a running engine and collect one complete frame.
+QByteArray relayToEngine(const QByteArray &payload, bool *connected, bool *validReply)
+{
+    *validReply = false;
     QLocalSocket sock;
     sock.connectToServer(QString::fromLatin1(kIpcName));
     // Tolerate a busy/just-binding engine: the old 300ms budget made the host
@@ -105,9 +145,13 @@ QByteArray relayToEngine(const QByteArray &payload, bool *connected)
 
     // Most replies are instant, but a "list-formats" request runs yt-dlp -J,
     // which is network-bound and can take several seconds.
-    if (!sock.waitForReadyRead(25000))
+    QByteArray body;
+    if (!readEngineFrame(sock, body, 25000))
         return {};
-    return sock.readAll();
+    if (!QJsonDocument::fromJson(body).isObject())
+        return {};
+    *validReply = true;
+    return body;
 }
 
 // Best-effort: launch the engine binary (assumed to sit next to this host).
@@ -123,16 +167,20 @@ void launchEngine()
     if (!fi.exists())
         return;
 #ifndef _WIN32
-    // Don't launch an engine binary that isn't ours or is WORLD-writable — that
-    // would let another user plant/modify the binary the browser-launched host
-    // executes. (Group-writable is allowed: build outputs are commonly 0775 under
-    // a umask of 002, and on a personal machine the group is the user's own.)
-    if (fi.ownerId() != ::geteuid())
+    // Packaged Linux binaries are normally root-owned, so rejecting every owner
+    // other than the browser user made native-host autostart fail on a normal
+    // .deb installation. Trust only the current user or root, and require a
+    // non-writable executable so an untrusted user cannot replace what the host
+    // launches. Symlinks are rejected to avoid a simple link-swap attack.
+    if (!fi.isFile() || fi.isSymLink() || !fi.isExecutable())
         return;
-    if (fi.permissions() & QFileDevice::WriteOther)
+    if (fi.ownerId() != ::geteuid() && fi.ownerId() != 0)
+        return;
+    if (fi.permissions() & (QFileDevice::WriteGroup | QFileDevice::WriteOther))
         return;
 #endif
-    QProcess::startDetached(exe, {QStringLiteral("--background")});
+    if (!QProcess::startDetached(exe, {QStringLiteral("--background")}))
+        std::fprintf(stderr, "nexa-host: could not start the Nexa engine\n");
 }
 
 } // namespace
@@ -158,7 +206,8 @@ int main(int argc, char *argv[])
     }
 
     bool connected = false;
-    QByteArray engineReply = relayToEngine(msg, &connected);
+    bool validReply = false;
+    QByteArray engineReply = relayToEngine(msg, &connected, &validReply);
 
     if (!connected) {
         launchEngine();
@@ -167,7 +216,7 @@ int main(int argc, char *argv[])
         // here exits harmlessly, but the longer wait avoids it in the first place.
         for (int i = 0; i < 40 && !connected; ++i) {
             QThread::msleep(150);
-            engineReply = relayToEngine(msg, &connected);
+            engineReply = relayToEngine(msg, &connected, &validReply);
         }
     }
 
@@ -176,12 +225,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // The engine already replies in framed JSON; strip the 4-byte length and
-    // forward the JSON body to the browser.
-    if (engineReply.size() > 4)
-        writeMessage(engineReply.mid(4));
-    else
-        reply(true, QStringLiteral("queued"));
+    if (!validReply) {
+        reply(false, QStringLiteral("invalid or incomplete engine reply"));
+        return 1;
+    }
+    writeMessage(engineReply);
 
     return 0;
 }

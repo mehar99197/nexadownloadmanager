@@ -1,0 +1,157 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-admin-bg: #06080e;
+  --color-admin-surface: #0b0f18;
+  --color-admin-surface-2: #111827;
+  --color-admin-border: #263454;
+  --color-admin-sidebar: #080c15;
+  --color-admin-text: #eef2ff;
+  --color-admin-muted: #9ba9c3;
+  --color-admin-faint: #63728e;
+  --color-admin-accent: #7e6cff;
+  --color-admin-accent-hover: #9b75ff;
+  --color-admin-cyan: #35c9ff;
+  --color-accent-400: #b77aff;
+  --color-accent-500: #965cf4;
+  --color-admin-success: #45dfc1;
+  --color-admin-warning: #f6c76b;
+  --color-admin-danger: #ff718c;
+  --color-admin-info: #65b9ff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% -10%, rgba(150, 92, 244, 0.15), transparent 34rem),
+    radial-gradient(circle at 100% 15%, rgba(53, 201, 255, 0.07), transparent 28rem),
+    var(--color-admin-bg);
+  color: var(--color-admin-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: '';
+  opacity: 0.24;
+  background-image: linear-gradient(rgba(126, 108, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(126, 108, 255, 0.04) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, black, transparent 75%);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #33446b transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #33446b;
+  border-radius: 999px;
+}
+
+@layer components {
+  .admin-card,
+  .stat-card {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(93, 117, 170, 0.34);
+    border-radius: 1.1rem;
+    background: linear-gradient(145deg, rgba(20, 28, 47, 0.92), rgba(9, 13, 23, 0.92));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 24px 55px -34px rgba(0, 0, 0, 0.95);
+  }
+
+  .admin-card::before,
+  .stat-card::before {
+    position: absolute;
+    inset: 0 0 auto;
+    height: 1px;
+    content: '';
+    background: linear-gradient(90deg, transparent, rgba(185, 137, 255, 0.55), rgba(55, 199, 255, 0.4), transparent);
+  }
+
+  .admin-card {
+    @apply p-5;
+  }
+
+  .stat-card {
+    @apply p-5;
+  }
+
+  .admin-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .admin-table thead th {
+    @apply border-b border-admin-border px-4 py-3 text-xs font-semibold uppercase tracking-wide text-admin-muted;
+  }
+
+  .admin-table tbody td {
+    @apply border-b border-admin-border px-4 py-3 align-middle text-admin-text;
+  }
+
+  .admin-table tbody tr:hover {
+    @apply bg-admin-surface-2;
+  }
+
+  .nav-link {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-admin-muted transition-colors;
+  }
+
+  .nav-link:hover {
+    @apply bg-admin-surface-2 text-admin-text;
+  }
+
+  .nav-link-active {
+    color: #fff;
+    background: linear-gradient(100deg, rgba(150, 92, 244, 0.24), rgba(53, 201, 255, 0.1));
+    box-shadow: inset 3px 0 0 #9b75ff, inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .admin-input {
+    @apply w-full rounded-xl border border-admin-border bg-admin-surface-2 px-3 py-2.5 text-sm text-admin-text placeholder:text-admin-faint outline-none transition;
+  }
+
+  .admin-input:focus {
+    border-color: var(--color-admin-accent);
+    box-shadow: 0 0 0 3px rgba(126, 108, 255, 0.18);
+  }
+
+  .admin-label {
+    @apply mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-admin-muted;
+  }
+
+  .btn-admin-primary,
+  .btn-admin-secondary {
+    @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition;
+  }
+
+  .btn-admin-primary {
+    @apply bg-gradient-to-r from-accent-500 to-admin-cyan text-white shadow-[0_12px_26px_-14px_rgba(53,201,255,0.8)];
+  }
+
+  .btn-admin-primary:hover,
+  .btn-admin-secondary:hover {
+    filter: brightness(1.1);
+  }
+
+  .btn-admin-secondary {
+    @apply border border-admin-border bg-admin-surface-2 text-admin-text;
+  }
+}

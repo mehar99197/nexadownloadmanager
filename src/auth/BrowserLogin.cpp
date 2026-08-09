@@ -1,4 +1,5 @@
 #include "auth/BrowserLogin.h"
+#include "auth/CloudProviders.h"
 
 #include <QDir>
 #include <QFile>
@@ -14,8 +15,16 @@
 
 namespace nexa::browserlogin {
 
+static const CloudProviders *s_providers = nullptr;
+
+void setCloudProviders(const CloudProviders *p) { s_providers = p; }
+
 QStringList authSites()
 {
+    if (s_providers)
+        return s_providers->authSites();
+
+    // Fallback: hardcoded list when CloudProviders is unavailable.
     return {
         QStringLiteral("udemy.com"),
         QStringLiteral("coursera.org"),
@@ -23,6 +32,22 @@ QStringList authSites()
         QStringLiteral("skillshare.com"),
         QStringLiteral("pluralsight.com"),
         QStringLiteral("linkedin.com"),
+        // Google session cookies are shared by Drive and its usercontent CDN.
+        QStringLiteral("google.com"),
+        QStringLiteral("drive.google.com"),
+        QStringLiteral("photos.google.com"),
+        // OneDrive / SharePoint — cookies needed for CDN redirect chain
+        QStringLiteral("live.com"),
+        QStringLiteral("sharepoint.com"),
+        QStringLiteral("1drv.ms"),
+        // Dropbox — cookies needed for share pages and dl.dropboxusercontent.com
+        QStringLiteral("dropbox.com"),
+        // Meta — private video/photo/story downloads
+        QStringLiteral("facebook.com"),
+        QStringLiteral("instagram.com"),
+        // AI services — file exports and gated model downloads
+        QStringLiteral("chatgpt.com"),
+        QStringLiteral("huggingface.co"),
     };
 }
 

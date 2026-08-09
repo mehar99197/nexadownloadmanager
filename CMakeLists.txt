@@ -36,17 +36,22 @@ add_executable(nexa
     src/core/SegmentDownloader.cpp
     src/core/DownloadTask.cpp
     src/core/DownloadEngine.cpp
+    src/license/CredentialStore.cpp
+    src/license/LicenseManager.cpp
     src/grabber/HlsGrabber.cpp
     src/torrent/TorrentManager.cpp
     src/site/YtDlpGrabber.cpp
+    src/site/MegaGrabber.cpp
     src/auth/CookieFile.cpp
     src/auth/AuthUtils.cpp
     src/auth/AuthenticationManager.cpp
     src/auth/BrowserLogin.cpp
+    src/auth/CloudProviders.cpp
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/ipc/NativeHostRegistrar.cpp
     src/web/WebServer.cpp
+    src/web/PublicUrlPolicy.cpp
     src/ui/UiHelpers.cpp
     src/ui/DownloadDetailsDialog.cpp
     src/ui/SiteLoginsDialog.cpp
@@ -71,6 +76,7 @@ target_link_libraries(nexa PRIVATE
 # browser's stdio protocol over its console stdin/stdout streams.
 if(WIN32)
     set_target_properties(nexa PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(nexa PRIVATE Advapi32)
 endif()
 
 # Native messaging bridge — a tiny standalone exe the browsers launch.
@@ -81,6 +87,7 @@ target_link_libraries(nexa-host PRIVATE
     Qt6::Core
     Qt6::Network
 )
+target_include_directories(nexa-host PRIVATE src)
 
 install(TARGETS nexa nexa-host RUNTIME DESTINATION bin)
 
@@ -122,9 +129,26 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_format_test PRIVATE src)
     target_link_libraries(nexa_format_test PRIVATE Qt6::Core Qt6::Widgets)
 
+    add_executable(nexa_public_url_test
+        tests/PublicUrlPolicyTest.cpp
+        src/web/PublicUrlPolicy.cpp
+    )
+    target_include_directories(nexa_public_url_test PRIVATE src)
+    target_link_libraries(nexa_public_url_test PRIVATE Qt6::Core Qt6::Network)
+
+    add_executable(nexa_cloud_providers_test
+        tests/CloudProvidersTest.cpp
+        src/auth/CloudProviders.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_cloud_providers_test PRIVATE src)
+    target_link_libraries(nexa_cloud_providers_test PRIVATE Qt6::Core Qt6::Network)
+
     enable_testing()
     add_test(NAME auth   COMMAND nexa_auth_test)
     add_test(NAME format COMMAND nexa_format_test)
+    add_test(NAME public_url COMMAND nexa_public_url_test)
+    add_test(NAME cloud_providers COMMAND nexa_cloud_providers_test)
 endif()
 
 # ===========================================================================
@@ -183,10 +207,11 @@ libqt6network6 (>= 6.4.0), \
 libqt6widgets6 (>= 6.4.0), \
 libqt6sql6 (>= 6.4.0), \
 libqt6sql6-sqlite (>= 6.4.0), \
-libtorrent-rasterbar2.0t64 (>= 2.0) | libtorrent-rasterbar2.0, \
-ffmpeg, \
-yt-dlp, \
-aria2")
+ libtorrent-rasterbar2.0t64 (>= 2.0) | libtorrent-rasterbar2.0, \
+ ffmpeg, \
+ yt-dlp, \
+ python3-secretstorage, \
+ aria2")
     # Maintainer scripts to refresh the desktop/icon caches.
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/postinst;\

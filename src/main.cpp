@@ -8,6 +8,7 @@
 #include "web/WebServer.h"
 #include "ui/MainWindow.h"
 #include "ui/SettingsDialog.h"
+#include "license/LicenseManager.h"
 
 #include "core/Logging.h"
 
@@ -308,6 +309,7 @@ int main(int argc, char *argv[])
     // subtitles, torrent limits, …) before anything runs. CLI flags below may
     // still override individual values for this session.
     nexa::SettingsDialog::loadInto(&engine);
+    engine.license()->start();
     // Scripted/batch CLI runs can't answer a confirmation prompt — never hold there.
     if (batch)
         engine.setConfirmBeforeStart(false);

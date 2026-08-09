@@ -1,72 +1,214 @@
 // Nexa integration — service worker.
 // Responsibilities:
 //   1. Intercept browser downloads and hand them to the Nexa desktop app.
-//   2. Capture cookies + User-Agent + referrer so authed/CDN links don't 403.
+//   2. Capture cookies + the browser's request context so authed/CDN links don't 403.
 //   3. Sniff HLS/DASH/media URLs and offer them for download.
 //   4. Provide right-click "Download with Nexa" menu items.
+//
+// PROVIDER_CONFIG is the SINGLE source of truth for all host matching and
+// cookie-forwarding rules. Everything below is derived from it.
 
 const HOST = "com.nexa.host";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|mkv|webm|flv|ts|mp3|m4a|aac|zip|rar|7z|iso|exe|dmg|pkg|deb|apk|pdf)(\?|$)/i;
-// Spotify's 30-second preview clips are plain MP3s but have NO file extension
-// (https://p.scdn.co/mp3-preview/<hash>?cid=…), so MEDIA_RE misses them — match the
-// host+path instead. (Full tracks are encrypted/DRM and can't be sniffed.)
 const SPOTIFY_PREVIEW_RE = /\/\/p\.scdn\.co\/mp3-preview\//i;
 
-// Firefox exposes the promise-based `browser.*`; Chrome only `chrome.*`. Use this
-// for the NEW auth-cookie calls so existing (working) chrome.* lines are untouched.
 const X = (typeof browser !== "undefined") ? browser : chrome;
 
-// Auth-gated sites Nexa routes through yt-dlp with cookies. MUST stay in sync with
-// kAuthSites in src/site/YtDlpGrabber.cpp so the engine actually uses the cookies.
-const NEXA_AUTH_SITES = [
-  "udemy.com", "vimeo.com", "coursera.org",
-  "skillshare.com", "pluralsight.com", "linkedin.com"
+// =====================================================================
+// PROVIDER CONFIG — single source of truth for all host lists.
+// To add a new provider, add one entry here; everything else auto-derives.
+// =====================================================================
+const PROVIDER_CONFIG = [
+  {
+    id: "google",
+    authDomain: "google.com",
+    cookieUrl: "https://drive.google.com/",
+    isAuthSite: true,
+    hosts: [
+      "drive.google.com", "drive.usercontent.google.com",
+      "docs.google.com", "photos.google.com", "video.google.com",
+      "googleusercontent.com", "googlevideo.com", "ggpht.com"
+    ]
+  },
+  {
+    id: "microsoft",
+    authDomain: "live.com",
+    cookieUrl: "https://onedrive.live.com/",
+    isAuthSite: false,
+    hosts: [
+      "onedrive.live.com", "1drv.ms", "sharepoint.com",
+      "microsoft.com", "microsoftonline.com", "live.net", "svc.ms"
+    ]
+  },
+  {
+    id: "dropbox",
+    authDomain: "dropbox.com",
+    cookieUrl: "https://www.dropbox.com/",
+    isAuthSite: false,
+    hosts: [
+      "dropbox.com", "www.dropbox.com", "dropboxusercontent.com"
+    ]
+  },
+  {
+    id: "mediafire",
+    authDomain: "mediafire.com",
+    cookieUrl: "https://www.mediafire.com/",
+    isAuthSite: false,
+    hosts: [
+      "mediafire.com", "www.mediafire.com", "download.mediafire.com"
+    ]
+  },
+  {
+    id: "meta",
+    authDomain: "facebook.com",
+    cookieUrl: "https://www.facebook.com/",
+    isAuthSite: true,
+    hosts: [
+      "facebook.com", "instagram.com", "fbcdn.net",
+      "cdninstagram.com", "threads.net"
+    ]
+  },
+  {
+    id: "ai",
+    authDomain: "", // resolved per-host
+    cookieUrl: "",  // resolved per-host
+    isAuthSite: false,
+    // AI attachment URLs can require a short-lived Authorization header which is
+    // not available through chrome.cookies. Capture the real browser request
+    // context immediately before it is sent.
+    captureRequestHeaders: true,
+    hosts: [
+      "chatgpt.com", "openai.com", "oaiusercontent.com",
+      "huggingface.co", "cdn-lfs.huggingface.co",
+      "claude.ai", "claudeusercontent.com",
+      "grok.com", "x.ai",
+      "perplexity.ai", "pplx.ai", "pplx-res.cloudinary.com",
+      // Keep the registry extensible for other browser-based AI assistants.
+      "gemini.google.com", "chat.mistral.ai", "mistral.ai",
+      "chat.deepseek.com", "deepseek.com", "poe.com", "poecdn.net",
+      "character.ai", "characterai.io", "pi.ai", "you.com", "you.ai"
+    ],
+    authResolver(host) {
+      if (host.includes("openai") || host.includes("chatgpt") || host.includes("oaiusercontent"))
+        return { domain: "chatgpt.com", url: "https://chatgpt.com/" };
+      if (host.includes("huggingface"))
+        return { domain: "huggingface.co", url: "https://huggingface.co/" };
+      if (host.includes("claude"))
+        return { domain: "claude.ai", url: "https://claude.ai/" };
+      if (host === "grok.com" || host.endsWith(".grok.com") ||
+          host === "x.ai" || host.endsWith(".x.ai"))
+        return { domain: "grok.com", url: "https://grok.com/" };
+      if (host.includes("perplexity") || host.includes("pplx"))
+        return { domain: "perplexity.ai", url: "https://www.perplexity.ai/" };
+      if (host === "gemini.google.com" || host.endsWith(".gemini.google.com"))
+        return { domain: "google.com", url: "https://gemini.google.com/" };
+      if (host.includes("mistral"))
+        return { domain: "mistral.ai", url: "https://chat.mistral.ai/" };
+      if (host.includes("deepseek"))
+        return { domain: "deepseek.com", url: "https://chat.deepseek.com/" };
+      if (host.includes("poe"))
+        return { domain: "poe.com", url: "https://poe.com/" };
+      if (host.includes("character"))
+        return { domain: "character.ai", url: "https://character.ai/" };
+      if (host === "pi.ai" || host.endsWith(".pi.ai"))
+        return { domain: "pi.ai", url: "https://pi.ai/" };
+      if (host === "you.com" || host.endsWith(".you.com") ||
+          host === "you.ai" || host.endsWith(".you.ai"))
+        return { domain: "you.com", url: "https://you.com/" };
+      return null;
+    }
+  },
+  {
+    id: "auth_only",
+    authDomain: "", // has no download hosts, only cookie export
+    cookieUrl: "",
+    isAuthSite: true,
+    authDomains: ["udemy.com", "vimeo.com", "coursera.org",
+                  "skillshare.com", "pluralsight.com", "linkedin.com"]
+  }
 ];
 
-// The registrable auth domain for a URL (host-suffix match), e.g.
-// "www.udemy.com" -> "udemy.com". Empty string if it's not an auth site.
-function authDomainFor(url) {
-  let host;
-  try { host = new URL(url).hostname.toLowerCase(); } catch { return ""; }
-  for (const d of NEXA_AUTH_SITES)
-    if (host === d || host.endsWith("." + d)) return d;
-  return "";
+// Derived list: auth domains for NEXA_AUTH_SITES (yt-dlp cookies.txt export).
+const NEXA_AUTH_SITES = (() => {
+  const sites = [];
+  for (const p of PROVIDER_CONFIG) {
+    if (p.authDomains) {
+      sites.push(...p.authDomains);
+    } else if (p.isAuthSite && p.authDomain) {
+      sites.push(p.authDomain);
+    }
+  }
+  return [...new Set(sites)];
+})();
+
+// Derived: host -> provider lookup (lazy-built).
+let _hostProvider = null;
+function providerFor(host) {
+  if (!_hostProvider) {
+    _hostProvider = {};
+    for (const p of PROVIDER_CONFIG) {
+      for (const h of (p.hosts || [])) {
+        _hostProvider[h] = p;
+      }
+    }
+  }
+  host = host.toLowerCase();
+  if (_hostProvider[host]) return _hostProvider[host];
+  for (const [h, p] of Object.entries(_hostProvider)) {
+    if (host === h || host.endsWith("." + h)) return p;
+  }
+  return null;
 }
 
-// Hosts the extension must NOT auto-intercept. These gate downloads behind a
-// session login (and sometimes a "confirm"/signed-URL step) that the desktop app
-// can't reliably reproduce from outside the browser — so we leave them to the
-// browser, which already holds the session and just downloads them normally.
-// (Manual paste into Nexa, or right-click "Download with Nexa", still routes to
-// the app on purpose; this only affects the silent auto-takeover of a click.)
-const BROWSER_ONLY_HOSTS = [
-  // Google Drive / Docs — Google login + large-file virus-scan confirm page.
-  "drive.google.com",
-  "drive.usercontent.google.com",
-  "docs.google.com",
-  "googleusercontent.com",        // the CDN Drive redirects large files to
-  // GitHub — release assets & private-repo files use signed/login-gated URLs.
-  "github.com",                   // also codeload.github.com, gist.github.com, …
-  "githubusercontent.com",        // raw./objects./release-assets.githubusercontent.com
-];
+// Derived: BROWSER_ONLY_HOSTS (currently none).
+const BROWSER_ONLY_HOSTS = [];
 
 function letBrowserHandle(url) {
+  if (!BROWSER_ONLY_HOSTS.length) return false;
   let host;
   try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
   return BROWSER_ONLY_HOSTS.some((d) => host === d || host.endsWith("." + d));
 }
 
-// Export all cookies of `authDomain` (incl. subdomains) as Netscape cookies.txt
-// TEXT, the exact 7-tab format Nexa's CookieFile parser requires. The extension
-// can't write a file (MV3 sandbox), so we send the text and the engine writes it.
-async function exportCookiesAsNetscape(authDomain) {
-  // Gather the site's cookies from SEVERAL angles and merge. A lone
-  // getAll({domain}) misses host-only and __Host-/__Secure- cookies in some
-  // cookie stores — and on Udemy/Coursera those host-only cookies ARE the
-  // session yt-dlp needs, so the export came back empty and the engine reported
-  // "cookie file is empty". Querying the apex + www URLs as well catches them;
-  // we de-dupe across all sources by (name, domain, path, store).
+// These URLs belong to the renderer or to an AI assistant's virtual file layer, not to
+// an HTTP server that the Qt engine can access. Leaving them in Nexa would make
+// the browser download disappear and then produce "unsupported url scheme".
+// Let the page/browser perform these downloads instead.
+function isBrowserOwnedDownloadUrl(url) {
+  return /^(?:blob|data|sandbox):/i.test(String(url || ""));
+}
+
+const authOnlyDomains = (() => {
+  const d = [];
+  for (const p of PROVIDER_CONFIG) {
+    if (p.authDomains) d.push(...p.authDomains);
+  }
+  return d;
+})();
+
+function authDomainFor(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return ""; }
+  for (const d of NEXA_AUTH_SITES)
+    if (host === d || host.endsWith("." + d)) return d;
+  for (const d of authOnlyDomains)
+    if (host === d || host.endsWith("." + d)) return d;
+  return "";
+}
+
+function getProviderCookieInfo(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return null; }
+  const p = providerFor(host);
+  if (!p) return null;
+  if (p.authResolver) return p.authResolver(host);
+  return { domain: p.authDomain, url: p.cookieUrl };
+}
+
+// ---- Cookie export --------------------------------------------------------
+async function exportCookiesAsNetscape(authDomain, targetUrl) {
   const queries = [
+    ...(targetUrl ? [{ url: targetUrl }] : []),
     { domain: authDomain },
     { url: "https://" + authDomain + "/" },
     { url: "https://www." + authDomain + "/" },
@@ -83,15 +225,7 @@ async function exportCookiesAsNetscape(authDomain) {
       cookies.push(c);
     }
   }
-  // No cookies at all => not logged in / no host access. Return "" so the caller
-  // skips the auth handoff entirely instead of sending a header-only file the
-  // engine would (correctly) reject as empty.
   if (!cookies.length) return "";
-  // De-dupe by cookie NAME. A jar from repeated logins carries several with the
-  // same name (e.g. access_token at .udemy.com AND www.udemy.com); forwarding all
-  // of them makes the server honour a STALE one and bounce to a login page. Keep
-  // the most host-specific domain, tie-break by latest expiry. (The engine also
-  // de-dupes, but cleaning at the source keeps the handoff small and correct.)
   const spec = (d) => (d.startsWith(".") ? 0 : 1) + d.replace(/^\./, "").length * 2;
   const expOf = (c) => (c.session || !c.expirationDate) ? Number.MAX_SAFE_INTEGER : c.expirationDate;
   const best = new Map();
@@ -104,29 +238,128 @@ async function exportCookiesAsNetscape(authDomain) {
   const lines = ["# Netscape HTTP Cookie File", "# Exported by Nexa"];
   let kept = 0;
   for (const c of best.values()) {
-    // The C++ parser rejects the WHOLE file on any control char, so skip a bad
-    // cookie rather than poison the export.
     if (/[\x00-\x1f\x7f]/.test(c.name) || /[\x00-\x1f\x7f]/.test(c.value)) continue;
     const dom = c.domain;
     const includeSub = dom.startsWith(".") ? "TRUE" : "FALSE";
     const path = c.path || "/";
     const secure = c.secure ? "TRUE" : "FALSE";
-    // WebExtensions expirationDate is epoch SECONDS (float); session cookies omit it.
     const expires = (c.session || !c.expirationDate) ? 0 : Math.floor(c.expirationDate);
     const prefix = c.httpOnly ? "#HttpOnly_" : "";
     lines.push(`${prefix}${dom}\t${includeSub}\t${path}\t${secure}\t${expires}\t${c.name}\t${c.value}`);
     kept++;
   }
-  // Every cookie was filtered out (only the header would remain) — treat the
-  // same as "no cookies": return "" so we never hand the engine an empty file.
   if (kept === 0) return "";
   return lines.join("\n") + "\n";
 }
 
-// Per-tab detected media stream URLs (for the floating download button).
-// NOTE: an MV3 service worker is terminated when idle and loses module globals,
-// so this Map is mirrored into chrome.storage.session (survives worker restarts,
-// cleared when the browser closes) and re-warmed on demand.
+// ---- Request-context capture ------------------------------------------------
+// Some AI attachment endpoints authenticate a download with
+// transient browser request headers such as Authorization. chrome.cookies cannot
+// see those values, so retain the headers from the real request briefly and only
+// replay them when Nexa is handed the exact URL. The cache deliberately stays in
+// memory: service-worker shutdown clears it rather than persisting credentials.
+const CAPTURED_HEADER_TTL_MS = 2 * 60 * 1000;
+const MAX_CAPTURED_REQUESTS = 64;
+const MAX_CAPTURED_HEADER_VALUE_BYTES = 16 * 1024;
+const MAX_CAPTURED_HEADER_BYTES = 64 * 1024;
+const CAPTURED_HEADER_DENYLIST = new Set([
+  "host", "content-length", "transfer-encoding", "connection", "proxy-authorization"
+]);
+const capturedRequests = new Map();
+
+function requestUrlKey(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = ""; // fragments are never sent over HTTP
+    return parsed.href;
+  } catch (_) { return ""; }
+}
+
+function shouldCaptureRequestHeaders(url) {
+  try {
+    return !!providerFor(new URL(url).hostname)?.captureRequestHeaders;
+  } catch (_) { return false; }
+}
+
+function captureKey(tabId, urlKey) {
+  return `${tabId}\n${urlKey}`;
+}
+
+function evictExpiredCapturedRequests(now = Date.now()) {
+  for (const [key, entry] of capturedRequests) {
+    if (now - entry.capturedAt > CAPTURED_HEADER_TTL_MS)
+      capturedRequests.delete(key);
+  }
+  while (capturedRequests.size > MAX_CAPTURED_REQUESTS)
+    capturedRequests.delete(capturedRequests.keys().next().value);
+}
+
+function cacheRequestHeaders(details) {
+  // Do not transfer an Incognito session to the desktop app. Requests without a
+  // tab still get an exact-URL entry: downloads.onCreated has no tab ID and
+  // An AI assistant can issue attachment requests from a renderer-owned path.
+  if (details.incognito || !shouldCaptureRequestHeaders(details.url)) return;
+  const urlKey = requestUrlKey(details.url);
+  if (!urlKey) return;
+
+  const headers = Object.create(null);
+  let totalBytes = 0;
+  for (const header of (details.requestHeaders || [])) {
+    const name = String(header.name || "").trim();
+    const value = typeof header.value === "string" ? header.value : "";
+    const lowerName = name.toLowerCase();
+    // The native side repeats its own sanitisation and framing-header rejection.
+    // Applying the same basic guard here keeps the ephemeral cache bounded and
+    // avoids retaining headers that can never be replayed.
+    if (!name || !value || CAPTURED_HEADER_DENYLIST.has(lowerName)
+        || /[\x00-\x1f\x7f]/.test(name) || /[\r\n\x00]/.test(value)
+        || value.length > MAX_CAPTURED_HEADER_VALUE_BYTES) continue;
+    const bytes = name.length + value.length;
+    if (totalBytes + bytes > MAX_CAPTURED_HEADER_BYTES) continue;
+    headers[name] = value;
+    totalBytes += bytes;
+  }
+  if (!Object.keys(headers).length) return;
+
+  const now = Date.now();
+  const tabId = Number.isInteger(details.tabId) ? details.tabId : -1;
+  const key = captureKey(tabId, urlKey);
+  // Refresh Map insertion order so capacity eviction always removes the oldest
+  // observation when a browser retries the same attachment request.
+  capturedRequests.delete(key);
+  capturedRequests.set(key, { tabId, urlKey, headers, capturedAt: now });
+  evictExpiredCapturedRequests(now);
+}
+
+function capturedHeadersFor(url, tabId) {
+  const urlKey = requestUrlKey(url);
+  if (!urlKey) return {};
+  const now = Date.now();
+  evictExpiredCapturedRequests(now);
+
+  let match = Number.isInteger(tabId)
+    ? capturedRequests.get(captureKey(tabId, urlKey))
+    : null;
+  // downloads.onCreated does not give us a tab ID. In that flow the most recent
+  // matching request is still safe: it has the same full URL and browser profile.
+  if (!match) {
+    for (const entry of capturedRequests.values()) {
+      if (entry.urlKey === urlKey
+          && (!match || entry.capturedAt > match.capturedAt)) match = entry;
+    }
+  }
+  return match ? { ...match.headers } : {};
+}
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  cacheRequestHeaders,
+  { urls: ["<all_urls>"] },
+  // extraHeaders exposes Cookie and Authorization in Chromium. We observe only;
+  // no blocking permission or request mutation is needed.
+  ["requestHeaders", "extraHeaders"]
+);
+
+// ---- Tab media tracking ---------------------------------------------------
 const tabMedia = new Map();
 const sessKey = (tabId) => "media_" + tabId;
 function persistTabMedia(tabId, list) {
@@ -136,9 +369,7 @@ function dropTabMedia(tabId) {
   tabMedia.delete(tabId);
   try { chrome.storage.session.remove(sessKey(tabId)); } catch (_) {}
 }
-// Record one detected media URL for a tab (deduped, capped). Shared by the
-// URL-extension sniffer and the Content-Type sniffer below.
-const MAX_MEDIA_PER_TAB = 40;   // keep the list bounded (MSE streams can be chatty)
+const MAX_MEDIA_PER_TAB = 40;
 function addMedia(tabId, url, type) {
   if (tabId < 0) return;
   const list = tabMedia.get(tabId) || [];
@@ -148,16 +379,13 @@ function addMedia(tabId, url, type) {
   tabMedia.set(tabId, list);
   persistTabMedia(tabId, list);
 }
-
-// Read a tab's media list, re-hydrating from session storage if the worker was
-// restarted and the in-memory Map is cold.
 async function getTabMedia(tabId) {
   if (tabId == null) return [];
   if (tabMedia.has(tabId)) return tabMedia.get(tabId);
   try {
     const v = await chrome.storage.session.get(sessKey(tabId));
     const list = v[sessKey(tabId)] || [];
-    if (list.length) tabMedia.set(tabId, list);   // re-warm memory
+    if (list.length) tabMedia.set(tabId, list);
     return list;
   } catch (_) { return []; }
 }
@@ -168,52 +396,52 @@ chrome.storage.onChanged.addListener((c, area) => {
   if (area === "local" && c.enabled) integrationEnabled = c.enabled.newValue;
 });
 
-// ---- Context menus -------------------------------------------------------
+// ---- Context menus ---------------------------------------------------------
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "nexa-link",  title: "Download with Nexa",        contexts: ["link"] });
   chrome.contextMenus.create({ id: "nexa-media", title: "Download video/audio with Nexa", contexts: ["video", "audio", "image"] });
   chrome.contextMenus.create({ id: "nexa-page",  title: "Download all links on page",  contexts: ["page"] });
-  // On a course page (Udemy/Coursera/…) this grabs every lecture via yt-dlp
-  // --yes-playlist, carrying your site cookies. Use it on the course URL.
   chrome.contextMenus.create({ id: "nexa-course", title: "Download whole course with Nexa", contexts: ["page", "link"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "nexa-link" && info.linkUrl) {
-    await handoff(info.linkUrl, tab);
+    if (isBrowserOwnedDownloadUrl(info.linkUrl))
+      await requestBrowserDownload(tab, info.linkUrl, "");
+    else
+      await handoff(info.linkUrl, tab, "", "", "", false, true);
   } else if (info.menuItemId === "nexa-media" && info.srcUrl) {
-    await handoff(info.srcUrl, tab);
+    if (isBrowserOwnedDownloadUrl(info.srcUrl))
+      await requestBrowserDownload(tab, info.srcUrl, "");
+    else
+      await handoff(info.srcUrl, tab, "", "", "", false, true);
   } else if (info.menuItemId === "nexa-page" && tab?.id) {
     chrome.tabs.sendMessage(tab.id, { type: "nexa-collect-links" });
   } else if (info.menuItemId === "nexa-course") {
-    // Course/playlist URL (the link, or the current page) -> playlist download.
     const target = info.linkUrl || tab?.url;
-    if (target) await handoff(target, tab, tab?.url, "", "", /*playlist=*/true);
+    if (target) await handoff(target, tab, tab?.url, "", "", true, true);
   }
 });
 
-// ---- Download interception ----------------------------------------------
-// When the browser starts a download, cancel it and let Nexa take over.
+// ---- Download interception -------------------------------------------------
 chrome.downloads.onCreated.addListener(async (item) => {
   if (!integrationEnabled) return;
-  if (!item.url || item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
-  // Drive/Docs & co.: don't take over — let the browser download it natively with
-  // its own Google login (the app can't reliably auth these from outside).
-  if (letBrowserHandle(item.url)) return;
-
+  const originalUrl = item.url || "";
+  const targetUrl = item.finalUrl || originalUrl;
+  if (!targetUrl || isBrowserOwnedDownloadUrl(originalUrl)
+      || isBrowserOwnedDownloadUrl(targetUrl)) return;
+  if (letBrowserHandle(targetUrl)) return;
   try {
     await chrome.downloads.cancel(item.id);
     await chrome.downloads.erase({ id: item.id });
-  } catch (_) { /* already gone */ }
-
-  // Don't assume the ACTIVE tab started this — a background tab may have. Use the
-  // download item's OWN referrer; cookies come from the URL (cookieHeader), so the
-  // tab isn't needed. Falling back to an unrelated active tab's URL would attach a
-  // wrong/misleading Referer.
-  await handoff(item.url, null, item.referrer, item.filename);
+  } catch (_) {}
+  // The browser has already accepted this as a download action. Starting it
+  // immediately avoids a second hidden confirmation when the native host
+  // auto-starts Nexa in the background.
+  await handoff(targetUrl, null, item.referrer, item.filename, "", false, true, originalUrl);
 });
 
-// ---- Media sniffing ------------------------------------------------------
+// ---- Media sniffing --------------------------------------------------------
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -223,13 +451,6 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ["<all_urls>"] }
 );
 
-// Content-Type sniffer: catch media that the URL-extension test misses — any
-// response served as audio/* , video/* , or an HLS/DASH manifest, regardless of
-// its URL (e.g. extensionless streaming audio). MSE segments are skipped because
-// they flood the list and aren't independently downloadable; whole files and
-// manifests are kept. NOTE: this detects PLAIN media only — DRM-encrypted streams
-// (Spotify full tracks, Netflix) are delivered as encrypted segments that, even if
-// detected, can't be decrypted or played, so they're intentionally not surfaced.
 const SEGMENT_RE = /\.(m4s|ts)(\?|$)|[?&](range|bytes)=|\/(seg(ment)?|chunk|frag(ment)?)[-_/0-9]/i;
 function ctOf(headers) {
   for (const h of (headers || []))
@@ -247,7 +468,6 @@ chrome.webRequest.onHeadersReceived.addListener(
     else if (/^audio\//.test(ct)) type = "audio";
     else if (/^video\//.test(ct)) type = "video";
     else return;
-    // Don't capture the myriad segments of an MSE stream — only whole files/manifests.
     if ((type === "audio" || type === "video") && SEGMENT_RE.test(details.url)) return;
     addMedia(details.tabId, details.url, type);
   },
@@ -257,35 +477,27 @@ chrome.webRequest.onHeadersReceived.addListener(
 
 chrome.tabs.onRemoved.addListener((tabId) => dropTabMedia(tabId));
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading")
-    dropTabMedia(tabId);
+  if (info.status === "loading") dropTabMedia(tabId);
 });
 
 const VIDEO_TYPES = new Set(["HLS", "DASH", "video", "audio"]);
 
-// ---- quality-probe cache -------------------------------------------------
-// yt-dlp -J (real video qualities) is network + subprocess bound — a few
-// seconds. We cache it per video URL so that, after a page-load prefetch,
-// opening the panel is an O(1) cache hit (instant) instead of a fresh probe.
-// In-flight requests are de-duplicated so a prefetch racing a click never runs
-// yt-dlp twice. Bounded size + TTL keep it small and reasonably fresh.
-const FMT_CACHE_TTL = 5 * 60 * 1000;   // 5 minutes
-const FMT_CACHE_MAX = 32;              // evict oldest beyond this
-const fmtCache = new Map();            // url -> { result, ts }
-const fmtInflight = new Map();         // url -> Promise<result>
+// ---- quality-probe cache ---------------------------------------------------
+const FMT_CACHE_TTL = 5 * 60 * 1000;
+const FMT_CACHE_MAX = 32;
+const fmtCache = new Map();
+const fmtInflight = new Map();
 
 async function listFormatsCached(url) {
   const hit = fmtCache.get(url);
-  if (hit && (Date.now() - hit.ts) < FMT_CACHE_TTL)
-    return hit.result;                 // best case: O(1), no probe
-  if (fmtInflight.has(url))
-    return fmtInflight.get(url);        // coalesce a concurrent prefetch + click
+  if (hit && (Date.now() - hit.ts) < FMT_CACHE_TTL) return hit.result;
+  if (fmtInflight.has(url)) return fmtInflight.get(url);
   const p = (async () => {
     const r = await sendNative({ type: "list-formats", url });
-    if (r && r.ok) {                   // only cache successes; let failures retry
+    if (r && r.ok) {
       fmtCache.set(url, { result: r, ts: Date.now() });
       if (fmtCache.size > FMT_CACHE_MAX)
-        fmtCache.delete(fmtCache.keys().next().value);   // evict oldest (insertion order)
+        fmtCache.delete(fmtCache.keys().next().value);
     }
     fmtInflight.delete(url);
     return r;
@@ -294,43 +506,42 @@ async function listFormatsCached(url) {
   return p;
 }
 
-// ---- Messages from popup / content scripts -------------------------------
+// ---- Messages ---------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Only act on messages from THIS extension's own content scripts/pages. A
-  // different extension (or anything without our id) is ignored — these handlers
-  // drive downloads and export cookies, so the origin must be trusted.
   if (!sender || sender.id !== chrome.runtime.id) return;
   (async () => {
     const tab = sender.tab || (await activeTab());
     if (msg.type === "nexa-download") {
-      const r = await handoff(msg.url, tab, tab?.url, msg.filename, msg.quality, msg.playlist);
+      const r = isBrowserOwnedDownloadUrl(msg.url)
+        ? await requestBrowserDownload(tab, msg.url, msg.filename)
+        : await handoff(msg.url, tab, tab?.url, msg.filename, msg.quality,
+                        msg.playlist, true);
       sendResponse(r);
     } else if (msg.type === "nexa-media-count") {
-      // Count only video/stream media for the floating pill.
       const list = (await getTabMedia(tab?.id)).filter((m) => VIDEO_TYPES.has(m.type));
       sendResponse({ count: list.length, signature: list.map((m) => m.url).join("|") });
     } else if (msg.type === "nexa-list-formats") {
-      // A site video's real qualities (yt-dlp -J), served from cache when warm.
       sendResponse(await listFormatsCached(msg.url));
     } else if (msg.type === "nexa-prefetch-formats") {
-      // Page-load prefetch: warm the cache in the background, reply immediately
-      // (the content script doesn't wait on this).
-      listFormatsCached(msg.url);      // fire-and-forget
+      listFormatsCached(msg.url);
       sendResponse({ ok: true, prefetching: true });
     } else if (msg.type === "nexa-get-qualities") {
       sendResponse(await buildQualities(tab));
     } else if (msg.type === "nexa-get-media") {
-      sendResponse(await getTabMedia(tab?.id));   // legacy (popup.js)
+      sendResponse(await getTabMedia(tab?.id));
     } else if (msg.type === "nexa-download-list") {
       const results = [];
-      for (const u of msg.urls) results.push(await handoff(u, tab));
+      for (const u of msg.urls) {
+        results.push(isBrowserOwnedDownloadUrl(u)
+          ? await requestBrowserDownload(tab, u, "")
+          : await handoff(u, tab, "", "", "", false, true));
+      }
       sendResponse(results);
     }
   })();
-  return true; // keep the channel open for the async response
+  return true;
 });
 
-// Build the per-video quality groups shown in the floating panel.
 async function buildQualities(tab) {
   const list = (await getTabMedia(tab?.id)).filter((m) => VIDEO_TYPES.has(m.type));
   const title = tab?.title || "Video";
@@ -363,19 +574,16 @@ async function buildQualities(tab) {
   return groups;
 }
 
-// Fetch an HLS playlist and, if it's a master, return its variant streams.
 async function fetchHlsVariants(url) {
   try {
-    // Only http(s) playlist URLs (sniffed from the page's own requests); never
-    // let a planted file:/blob:/other URL through this privileged fetch.
     const scheme = (new URL(url)).protocol;
     if (scheme !== "http:" && scheme !== "https:") return null;
     const res = await fetch(url, { credentials: "include" });
-    if (!res.ok) return null;   // a 403/redirect HTML body must not be parsed as a playlist
+    if (!res.ok) return null;
     const text = await res.text();
-    if (text.length > 4 * 1024 * 1024) return null;      // a real master playlist is tiny
-    if (!/#EXTM3U/.test(text)) return null;              // not an HLS playlist at all
-    if (!/#EXT-X-STREAM-INF/i.test(text)) return null;   // media playlist, not a master
+    if (text.length > 4 * 1024 * 1024) return null;
+    if (!/#EXTM3U/.test(text)) return null;
+    if (!/#EXT-X-STREAM-INF/i.test(text)) return null;
     const lines = text.split("\n");
     const out = [];
     for (let i = 0; i < lines.length; i++) {
@@ -403,9 +611,7 @@ async function fetchHlsVariants(url) {
       seen.add(k);
       return true;
     });
-  } catch (_) {
-    return null;
-  }
+  } catch (_) { return null; }
 }
 
 function shortName(url) {
@@ -413,13 +619,45 @@ function shortName(url) {
   catch { return url.slice(0, 50); }
 }
 function sanitizeName(s) {
-  return (s || "").replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 120);
+  let raw = String(s || "").split(/[\\/]/).pop();
+  // Chrome reports some attachment names exactly as they appeared in the
+  // signed download URL (some providers return C%2B%2B_...). Decode only
+  // the filename token; malformed percent sequences remain unchanged.
+  try { raw = decodeURIComponent(raw); } catch (_) {}
+  return raw.replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 120);
 }
 
-// ---- Core handoff --------------------------------------------------------
-async function handoff(url, tab, referrer, filename, quality, playlist) {
+// Prefer cookies that actually match the download URL. Provider-page cookies
+// are only a fallback for shared parent-domain sessions (Google Drive's file
+// CDN is a different host from drive.google.com). Duplicate cookie names are
+// intentionally resolved in favour of the first header, which is the URL-scoped
+// value returned by chrome.cookies for the active tab.
+function mergeCookieHeaders(preferred, fallback) {
+  const out = [];
+  const seen = new Set();
+  for (const header of [preferred || "", fallback || ""]) {
+    for (const part of header.split(";")) {
+      const item = part.trim();
+      const eq = item.indexOf("=");
+      if (eq <= 0) continue;
+      const name = item.slice(0, eq).trim();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push(item);
+    }
+  }
+  return out.join("; ");
+}
+
+// ---- Core handoff (data-driven provider lookup) ----------------------------
+async function handoff(url, tab, referrer, filename, quality, playlist,
+                       userInitiated = false, captureUrl = "") {
   try {
     const cookies = await cookieHeader(url);
+    const captured = captureUrl && captureUrl !== url
+      ? { ...capturedHeadersFor(captureUrl, tab?.id),
+          ...capturedHeadersFor(url, tab?.id) }
+      : capturedHeadersFor(url, tab?.id);
     const payload = {
       type: "download",
       url,
@@ -427,18 +665,31 @@ async function handoff(url, tab, referrer, filename, quality, playlist) {
       userAgent: navigator.userAgent,
       cookies,
       filename: sanitizeName(filename) || "",
-      quality: quality || "",        // YouTube etc.: chosen yt-dlp quality
-      playlist: !!playlist,          // download the whole playlist (yt-dlp --yes-playlist)
-      headers: {}
+      quality: quality || "",
+      playlist: !!playlist,
+      userInitiated: !!userInitiated,
+      // For a recent AI attachment request this includes its transient
+      // Authorization and browser metadata. IpcServer sanitises this map before
+      // it reaches the network layer; normal handoffs simply send an empty map.
+      headers: captured
     };
-    // For auth-gated sites (Udemy/Coursera/…), attach this site's cookies as a
-    // Netscape cookies.txt so yt-dlp can fetch courses you're enrolled in. (The
-    // plain Cookie header above is ignored by yt-dlp for these sites.)
+
     const authDomain = authDomainFor(url);
     if (authDomain) {
-      const txt = await exportCookiesAsNetscape(authDomain);
+      const txt = await exportCookiesAsNetscape(authDomain, url);
       if (txt) { payload.authDomain = authDomain; payload.authCookiesText = txt; }
     }
+
+    const ci = getProviderCookieInfo(url);
+    if (ci && ci.url && ci.domain) {
+      const providerCookies = await cookieHeader(ci.url);
+      if (providerCookies) payload.cookies = mergeCookieHeaders(payload.cookies, providerCookies);
+      if (!authDomain) {
+        const txt = await exportCookiesAsNetscape(ci.domain, url);
+        if (txt) { payload.authDomain = ci.domain; payload.authCookiesText = txt; }
+      }
+    }
+
     const reply = await sendNative(payload);
     if (reply?.ok) notify("Sent to Nexa", filenameOf(url));
     else notify("Nexa error", reply?.message || "could not reach the app");
@@ -446,6 +697,23 @@ async function handoff(url, tab, referrer, filename, quality, playlist) {
   } catch (e) {
     notify("Nexa error", String(e));
     return { ok: false, message: String(e) };
+  }
+}
+
+// Ask the page to download a renderer-owned URL. The desktop process cannot
+// resolve a blob:/data:/sandbox: object because it lives in the browser's
+// renderer, and binary/base64 forwarding through native messaging is bounded
+// and unsafe for real attachments.
+async function requestBrowserDownload(tab, url, filename) {
+  if (!tab?.id)
+    return { ok: false, message: "The AI assistant keeps this file in the browser; open the attachment there" };
+  try {
+    const reply = await X.tabs.sendMessage(tab.id, {
+      type: "nexa-browser-download", url, filename: sanitizeName(filename)
+    });
+    return reply || { ok: true, browser: true };
+  } catch (_) {
+    return { ok: false, message: "open the AI attachment in the browser first" };
   }
 }
 
@@ -461,14 +729,11 @@ function sendNative(payload) {
   });
 }
 
-// Build a "name=value; ..." Cookie header for the target URL.
 async function cookieHeader(url) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
     return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-  } catch (_) {
-    return "";
-  }
+  } catch (_) { return ""; }
 }
 
 async function activeTab() {
@@ -477,7 +742,7 @@ async function activeTab() {
 }
 
 function mediaType(url) {
-  if (SPOTIFY_PREVIEW_RE.test(url)) return "audio";   // extensionless Spotify preview
+  if (SPOTIFY_PREVIEW_RE.test(url)) return "audio";
   if (/\.m3u8(\?|$)/i.test(url)) return "HLS";
   if (/\.mpd(\?|$)/i.test(url)) return "DASH";
   if (/\.(mp4|mkv|webm|flv|ts|m4v|mov|avi)(\?|$)/i.test(url)) return "video";
@@ -491,6 +756,5 @@ function filenameOf(url) {
 }
 
 function notify(title, message) {
-  // Badge-only feedback keeps things quiet; swap for chrome.notifications if desired.
   console.log(`[Nexa] ${title}: ${message}`);
 }

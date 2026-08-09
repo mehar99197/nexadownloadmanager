@@ -1,13 +1,17 @@
 #include "core/DownloadEngine.h"
+#include "web/PublicUrlPolicy.h"
 #include "core/DownloadTask.h"
 #include "core/Database.h"
 #include "grabber/HlsGrabber.h"
 #include "torrent/TorrentManager.h"
 #include "site/YtDlpGrabber.h"
+#include "site/MegaGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
 #include "auth/BrowserLogin.h"
+#include "auth/CloudProviders.h"
 #include "core/RateLimiter.h"
+#include "license/LicenseManager.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -43,11 +47,28 @@ DownloadEngine::DownloadEngine(QObject *parent)
         m_downloadDir = QDir::homePath() + QStringLiteral("/Downloads");
 
     m_ai = new AiClient(this);
+    m_license = new LicenseManager(this);
+    connect(m_license, &LicenseManager::entitlementChanged,
+            this, &DownloadEngine::applyLicensePlan);
 
     // Domain-scoped authentication (cookies.txt / bearer tokens). One instance
     // owned here; addDownload() resolves auth per URL and hands the APPLIED result
     // (yt-dlp flags / HeaderList) to the download classes. Config is optional.
     m_auth = new AuthenticationManager(this);
+
+    // Data-driven cloud provider registry — single source of truth for all
+    // host/sibling/routing decisions. Loaded from the embedded JSON resource.
+    m_providers = new CloudProviders();
+    if (m_providers->load()) {
+        YtDlpGrabber::setCloudProviders(m_providers);
+        browserlogin::setCloudProviders(m_providers);
+    } else {
+        qWarning() << "CloudProviders failed to load — falling back to hardcoded lists";
+    }
+
+    // The provider registry must be installed BEFORE autoEnableBrowserLogins():
+    // Google Drive's CDN is drive.usercontent.google.com, so the correct shared
+    // credential domain is google.com rather than only drive.google.com.
     autoEnableBrowserLogins();   // default the auth sites to "use my browser login"
     m_auth->loadFromJson();      // ~/.config/nexa/auth.json overrides the auto defaults
 
@@ -82,6 +103,30 @@ DownloadEngine::DownloadEngine(QObject *parent)
                         it->speed = 0.0;
                 }
             });
+}
+
+void DownloadEngine::setMaxConcurrent(int n)
+{
+    m_requestedMaxConcurrent = qMax(1, n);
+    m_maxConcurrent = m_licensePlan == QLatin1String("free")
+        ? qMin(3, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
+    schedule();
+}
+
+void DownloadEngine::setAiRename(bool on)
+{
+    m_aiRenameRequested = on;
+    m_aiRename = on && m_licensePlan != QLatin1String("free");
+}
+
+void DownloadEngine::applyLicensePlan(const QString &plan)
+{
+    m_licensePlan = (plan == QLatin1String("pro") || plan == QLatin1String("team"))
+        ? plan : QStringLiteral("free");
+    m_maxConcurrent = m_licensePlan == QLatin1String("free")
+        ? qMin(3, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
+    m_aiRename = m_aiRenameRequested && m_licensePlan != QLatin1String("free");
+    schedule();
 }
 
 // Default every known auth site to "use my logged-in browser" so the user never
@@ -119,6 +164,7 @@ QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
 {
     QList<int> ids = m_tasks.keys();
     ids.append(m_grabbers.keys());
+    ids.append(m_megaGrabbers.keys());
     ids.append(m_siteVideos.keys());     // yt-dlp video/playlist grabs
     ids.append(m_torrentIds.values());
     std::sort(ids.begin(), ids.end());
@@ -148,6 +194,7 @@ DownloadEngine::~DownloadEngine()
     // emitting a final state or running a pending callback would hit a freed DB.
     qDeleteAll(m_tasks);            m_tasks.clear();
     qDeleteAll(m_grabbers);        m_grabbers.clear();
+    qDeleteAll(m_megaGrabbers);    m_megaGrabbers.clear();
     qDeleteAll(m_siteVideos);     m_siteVideos.clear();
     delete m_torrents;             m_torrents = nullptr;
     m_torrentIds.clear();          // prevent allTerminal()/stateOf() null-deref on queued signals
@@ -156,6 +203,7 @@ DownloadEngine::~DownloadEngine()
     m_pending.clear();
     qDeleteAll(m_scheduledTimers); m_scheduledTimers.clear();
     delete m_ai;                   m_ai = nullptr;
+    delete m_providers;            m_providers = nullptr;
     if (m_db) {
         m_db->close();
         delete m_db;
@@ -227,6 +275,27 @@ static QString normalizeAppleMusicFilename(const QUrl &url, QString name)
     return name;
 }
 
+// The browser extension sends a request-specific Cookie header. Prefer it over
+// a domain credential file when both are present: QNetworkRequest replaces an
+// earlier header with the later one, and the credential file may contain a
+// reduced/stale view of the browser's cookie jar (especially for Google, where
+// several cookies share names across sibling hosts).
+static HeaderList mergeAuthHeaders(const HeaderList &captured,
+                                   const HeaderList &auth)
+{
+    HeaderList merged = captured;
+    for (const auto &candidate : auth) {
+        const QByteArray name = candidate.first.toLower();
+        const bool alreadyCaptured = std::any_of(
+            captured.cbegin(), captured.cend(), [&name](const auto &h) {
+                return h.first.toLower() == name;
+            });
+        if (!alreadyCaptured)
+            merged.append(candidate);
+    }
+    return merged;
+}
+
 QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath) const
 {
     if (!savePath.isEmpty())
@@ -266,14 +335,24 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         return id;
     }
 
-    // Google Drive / Docs file links: route through yt-dlp's GoogleDrive
-    // extractor, which handles the large-file "confirm" page, redirects, and
-    // Content-Disposition naming — and loads the user's login straight from the
-    // browser (--cookies-from-browser), so their OWN private files download
-    // without a manual cookie export. Any file type (apk/zip/pdf/video). Falls
-    // through to the native HTTP path (which has its own Drive handling) when
-    // yt-dlp isn't installed.
-    if (YtDlpGrabber::isDirectFileUrl(url) && YtDlpGrabber::available()) {
+    // Google Drive file links use the native HTTP task when the extension (or a
+    // cookies.txt credential) supplied request cookies. That path understands
+    // Drive's confirm page, adopts Content-Disposition's real filename, and
+    // emits byte-level progress just like every other segmented HTTP download.
+    // Keep the yt-dlp fallback for a GUI-only/private link where the only
+    // available credential is --cookies-from-browser; QNetworkAccessManager
+    // cannot read Chrome's encrypted cookie store itself.
+    const bool directFile = YtDlpGrabber::isDirectFileUrl(url);
+    const bool driveHttp = m_providers && m_providers->isGoogleDriveFileUrl(url);
+    const bool browserCookieFallback = authArgs.contains(QStringLiteral("--cookies-from-browser"))
+                                    && authHeaders.isEmpty()
+                                    && !std::any_of(headers.cbegin(), headers.cend(),
+                                        [](const auto &h) {
+                                            const QByteArray name = h.first.toLower();
+                                            return name == QByteArrayLiteral("cookie")
+                                                || name == QByteArrayLiteral("authorization");
+                                        });
+    if (directFile && YtDlpGrabber::available() && (!driveHttp || browserCookieFallback)) {
         const QString fixedName = suggestedName.isEmpty()
             ? QString() : QFileInfo(suggestedName).completeBaseName();
         auto *g = new YtDlpGrabber(id, url, m_downloadDir, fixedName, QString(),
@@ -311,6 +390,23 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
         connect(g, &YtDlpGrabber::renamed,      this, &DownloadEngine::taskRenamed);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
+        emit taskAdded(id);
+        g->start();
+        return id;
+    }
+
+    // MEGA.nz encrypted cloud storage: route through MegaGrabber, which handles
+    // the MEGA API protocol + AES-128-CBC decryption.
+    if (MegaGrabber::isMegaUrl(url)) {
+        QString out = savePath;
+        if (out.isEmpty())
+            out = pathForName(QStringLiteral("mega-download.bin"));
+        auto *g = new MegaGrabber(id, url, QFileInfo(out).absolutePath(), m_nam, this);
+        m_megaGrabbers.insert(id, g);
+        connect(g, &MegaGrabber::progress,     this, &DownloadEngine::taskProgress);
+        connect(g, &MegaGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
+        connect(g, &MegaGrabber::finished,     this, &DownloadEngine::taskFinished);
         if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
         emit taskAdded(id);
         g->start();
@@ -379,16 +475,26 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     }
 
     QString path = resolveSavePath(url, savePath);
-    if (savePath.isEmpty() && !suggestedName.isEmpty() &&
-        QFileInfo(url.path()).fileName().isEmpty())
-        path = pathForName(suggestedName);   // URL has no filename; use the hint
+    if (savePath.isEmpty() && !suggestedName.isEmpty()) {
+        const QString urlName = QFileInfo(url.path()).fileName();
+        const QString lowerName = urlName.toLower();
+        // Attachment endpoints commonly end in a generic token such as
+        // /download (ChatGPT uses this shape). Prefer the browser's filename
+        // in that case; otherwise a successful handoff is saved under a
+        // useless name and looks like a failed download to the user.
+        const bool opaqueUrlName = urlName.isEmpty() || !urlName.contains(QLatin1Char('.'))
+                                || lowerName == QLatin1String("download")
+                                || lowerName == QLatin1String("file");
+        if (opaqueUrlName)
+            path = pathForName(suggestedName);
+    }
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
     t->setRateLimiter(m_limiter);
+    t->setCloudProviders(m_providers);
     // Merge domain-scoped auth into the browser headers; SegmentDownloader replays
     // them via its existing setRawHeader loop, with no coupling to the manager.
-    HeaderList merged = headers;
-    merged += authHeaders;
+    HeaderList merged = mergeAuthHeaders(headers, authHeaders);
     t->setHeaders(merged);
     // Lets the task adopt the real Content-Disposition filename, categorised.
     t->setNameResolver([this](const QString &name) { return pathForName(name); });
@@ -415,6 +521,8 @@ void DownloadEngine::startHeld(int id)
         schedule();
     } else if (auto *g = m_grabbers.value(id)) {     // HLS
         g->start();
+    } else if (auto *m = m_megaGrabbers.value(id)) { // MEGA
+        m->start();
     } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp site video
         y->start();
     }
@@ -437,6 +545,7 @@ void DownloadEngine::cancelHeld(int id)
     // Destroy the created-but-never-started object; no row was ever emitted.
     if (auto *t = m_tasks.take(id))       t->deleteLater();
     if (auto *g = m_grabbers.take(id))    g->deleteLater();
+    if (auto *m = m_megaGrabbers.take(id)) m->deleteLater();
     if (auto *y = m_siteVideos.take(id))  y->deleteLater();
     m_playlistIds.remove(id);
 }
@@ -455,6 +564,8 @@ void DownloadEngine::setSaveLocation(int id, const QString &folder, const QStrin
         const QString name = fileName.trimmed().isEmpty()
             ? QFileInfo(g->savePath()).fileName() : fileName.trimmed();
         g->setSavePath(QDir(f).filePath(name));
+    } else if (auto *m = m_megaGrabbers.value(id)) { // MEGA: just the dir (files are named internally)
+        Q_UNUSED(m);  // MegaGrabber names its own output; ignore folder override for now
     } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp: redirect the output dir
         y->setOutputDir(f);
     }
@@ -603,6 +714,7 @@ QString DownloadEngine::nameOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->fileName();
     if (auto *g = m_grabbers.value(id)) return g->fileName();
+    if (auto *m = m_megaGrabbers.value(id)) return m->fileName();
     if (auto *y = m_siteVideos.value(id)) return y->fileName();
     if (m_torrents && m_torrents->has(id)) return m_torrents->nameOf(id);
     return QStringLiteral("download");
@@ -613,6 +725,7 @@ DownloadState DownloadEngine::stateOf(int id) const
     if (m_held.contains(id)) return DownloadState::Paused;   // awaiting confirm prompt
     if (auto *t = m_tasks.value(id)) return t->state();
     if (auto *g = m_grabbers.value(id)) return g->state();
+    if (auto *m = m_megaGrabbers.value(id)) return m->state();
     if (auto *y = m_siteVideos.value(id)) return y->state();
     if (m_torrents && m_torrents->has(id)) return m_torrents->stateOf(id);
     return DownloadState::Queued;
@@ -623,6 +736,7 @@ QString DownloadEngine::hostOf(int id) const
     QUrl u;
     if (auto *t = m_tasks.value(id)) u = t->url();
     else if (auto *g = m_grabbers.value(id)) u = g->url();
+    else if (auto *m = m_megaGrabbers.value(id)) u = m->url();
     else if (auto *y = m_siteVideos.value(id)) u = y->url();
     else if (m_torrents && m_torrents->has(id)) return QStringLiteral("peer swarm");
     const QString h = u.host();
@@ -633,6 +747,7 @@ QString DownloadEngine::savePathOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->savePath();
     if (auto *g = m_grabbers.value(id)) return g->savePath();
+    if (auto *m = m_megaGrabbers.value(id)) return m->savePath();
     if (auto *y = m_siteVideos.value(id)) return y->savePath();
     return QString();
 }
@@ -641,6 +756,7 @@ QString DownloadEngine::urlOf(int id) const
 {
     if (auto *t = m_tasks.value(id)) return t->url().toString();
     if (auto *g = m_grabbers.value(id)) return g->url().toString();
+    if (auto *m = m_megaGrabbers.value(id)) return m->url().toString();
     if (auto *y = m_siteVideos.value(id)) return y->url().toString();
     return QString();   // torrents have no single source URL
 }
@@ -650,9 +766,10 @@ bool DownloadEngine::isResumable(int id) const
     // HTTP downloads resume only if the server honours Range (learned on probe,
     // or from a 206 seen on the live transfer).
     if (auto *t = m_tasks.value(id)) return t->rangesSupported();
-    // HLS grabs have NO partial resume — a (re)start re-downloads from scratch
-    // (see HlsGrabber). Be honest: No.
+    // HLS and MEGA grabs have NO partial resume — a (re)start re-downloads from
+    // scratch (see HlsGrabber / MegaGrabber). Be honest: No.
     if (m_grabbers.contains(id)) return false;
+    if (m_megaGrabbers.contains(id)) return false;
     // Torrents (libtorrent keeps the piece bitfield) and yt-dlp grabs (--continue
     // partial files / skip already-saved playlist items) resume. Yes.
     return true;
@@ -666,7 +783,7 @@ bool DownloadEngine::isResumable(int id) const
 void DownloadEngine::resolveName(int id)
 {
     auto *t = m_tasks.value(id);
-    if (!t) {
+    if (!t || m_megaGrabbers.contains(id)) {
         // Grabbers (HLS/yt-dlp) name from their title, not Content-Disposition —
         // nothing to probe, so signal "done" immediately (no prompt-open delay).
         emit nameResolved(id, QString());
@@ -723,8 +840,8 @@ void DownloadEngine::reorderQueue(const QList<int> &idsInDisplayOrder)
 
 bool DownloadEngine::allTerminal() const
 {
-    if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_siteVideos.isEmpty() &&
-        m_torrentIds.isEmpty())
+    if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_megaGrabbers.isEmpty() &&
+        m_siteVideos.isEmpty() && m_torrentIds.isEmpty())
         return false;
     auto terminal = [](DownloadState s) {
         return s == DownloadState::Completed || s == DownloadState::Error;
@@ -733,6 +850,8 @@ bool DownloadEngine::allTerminal() const
         if (!terminal(t->state())) return false;
     for (auto *g : m_grabbers)
         if (!terminal(g->state())) return false;
+    for (auto *m : m_megaGrabbers)
+        if (!terminal(m->state())) return false;
     for (auto *y : m_siteVideos)
         if (!terminal(y->state())) return false;
     for (int id : m_torrentIds)
@@ -748,6 +867,8 @@ void DownloadEngine::pause(int id)
         schedule();        // a slot just freed up
     } else if (auto *g = m_grabbers.value(id)) {
         g->cancel();
+    } else if (auto *m = m_megaGrabbers.value(id)) {
+        m->cancel();
     } else if (auto *y = m_siteVideos.value(id)) {
         y->cancel();
     } else if (m_torrents && m_torrentIds.contains(id)) {
@@ -763,6 +884,8 @@ void DownloadEngine::resume(int id)
         schedule();
     } else if (auto *g = m_grabbers.value(id)) {
         g->start();        // streams restart from scratch (no partial resume)
+    } else if (auto *m = m_megaGrabbers.value(id)) {
+        m->start();        // mega downloads restart from scratch too
     } else if (auto *y = m_siteVideos.value(id)) {
         y->start();        // yt-dlp resumes its .part files
     } else if (m_torrents && m_torrentIds.contains(id)) {
@@ -794,6 +917,16 @@ void DownloadEngine::remove(int id, bool deleteFile)
         const QString path = g->savePath();
         g->cancel();
         g->deleteLater();
+        if (deleteFile && !path.isEmpty())
+            QFile::remove(path);
+        emit taskRemoved(id);
+        return;
+    }
+
+    if (auto *m = m_megaGrabbers.take(id)) {
+        const QString path = m->savePath();
+        m->cancel();
+        m->deleteLater();
         if (deleteFile && !path.isEmpty())
             QFile::remove(path);
         emit taskRemoved(id);
@@ -841,9 +974,10 @@ void DownloadEngine::loadPersisted()
             continue;
         auto *t = new DownloadTask(rec.id, QUrl(rec.url), rec.savePath, m_nam, m_db, this);
         t->setRateLimiter(m_limiter);
+        t->setCloudProviders(m_providers);
         t->setNameResolver([this](const QString &name) { return pathForName(name); });
         if (!rec.segments.isEmpty())
-            t->restore(rec.total, rec.segments, rec.rangesSupported);
+            t->restore(rec.total, rec.segments, rec.rangesSupported, rec.etag, rec.lastModified);
         m_tasks.insert(rec.id, t);
         wireTask(t);
         emit taskAdded(rec.id);
@@ -917,6 +1051,40 @@ QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &heade
     return ids;
 }
 
+int DownloadEngine::addRemoteDownload(const QUrl &url)
+{
+    if (!isPublicHttpUrl(url))
+        return -1;
+
+    const int id = m_db->nextId();
+    auto *task = new DownloadTask(id, url, resolveSavePath(url, QString()), m_nam, m_db, this);
+    task->setRateLimiter(m_limiter);
+    task->setCloudProviders(m_providers);
+    task->setPublicNetworkOnly(true);
+    task->setNameResolver([this](const QString &name) { return pathForName(name); });
+    m_tasks.insert(id, task);
+    wireTask(task);
+    emit taskAdded(id);
+    m_pending.append(id);
+    schedule();
+    return id;
+}
+
+QList<int> DownloadEngine::addRemoteBatch(const QString &text)
+{
+    QList<int> ids;
+    static const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    const QStringList tokens = text.split(whitespace, Qt::SkipEmptyParts);
+    for (const QString &token : tokens) {
+        for (const QString &expanded : expandPattern(token)) {
+            const int id = addRemoteDownload(QUrl::fromUserInput(expanded));
+            if (id >= 0)
+                ids.append(id);
+        }
+    }
+    return ids;
+}
+
 int DownloadEngine::scheduleDownload(const QUrl &url, const QDateTime &when,
                                      const HeaderList &headers)
 {
@@ -948,7 +1116,7 @@ bool DownloadEngine::aiAvailable() const
 
 void DownloadEngine::runAiCommand(const QString &naturalLanguage)
 {
-    if (!aiAvailable())
+    if (!aiAvailable() || m_licensePlan == QLatin1String("free"))
         return;
     m_ai->interpretCommand(naturalLanguage, [this](const QJsonObject &obj) {
         const QJsonArray downloads = obj.value(QStringLiteral("downloads")).toArray();

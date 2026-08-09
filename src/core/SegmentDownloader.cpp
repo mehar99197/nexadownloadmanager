@@ -1,6 +1,7 @@
 #include "core/SegmentDownloader.h"
 #include "core/RateLimiter.h"
 #include "auth/AuthUtils.h"
+#include "web/PublicUrlPolicy.h"
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QByteArray>
@@ -68,19 +69,42 @@ void SegmentDownloader::start() {
         return;
     }
 
+    if (m_publicNetworkOnly && !isPublicHttpUrl(m_url)) {
+        emit failed(m_seg.index, QStringLiteral("remote dashboard target is not a public HTTP(S) address"));
+        return;
+    }
+
     QNetworkRequest req(m_url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
+                     m_publicNetworkOnly ? QNetworkRequest::ManualRedirectPolicy
+                                         : QNetworkRequest::NoLessSafeRedirectPolicy);
+    if (m_url.host().endsWith(QStringLiteral("google.com"), Qt::CaseInsensitive))
+        req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     // Ask for raw, uncompressed bytes so the data we receive matches the byte
     // ranges/sizes exactly. Without this a server may gzip the response and we'd
     // see fewer bytes than the advertised length ("clean but short" finish).
     req.setRawHeader("Accept-Encoding", "identity");
+    if (!m_ifRangeValidator.isEmpty())
+        req.setRawHeader("If-Range", m_ifRangeValidator.toUtf8());
 
     // Replay the browser-captured headers (cookies, UA, referrer, auth) so that
     // authenticated / CDN links are served instead of 403'd.
-    for (const auto &h : m_headers)
-        req.setRawHeader(h.first, h.second);
+    // Match the probe's deterministic header order: browser metadata first,
+    // then the request-scoped credentials.
+    for (const auto &h : m_headers) {
+        const QByteArray name = h.first.toLower();
+        if (name != QByteArrayLiteral("cookie") &&
+            name != QByteArrayLiteral("authorization"))
+            req.setRawHeader(h.first, h.second);
+    }
+    for (const auto &h : m_headers) {
+        const QByteArray name = h.first.toLower();
+        if (name == QByteArrayLiteral("cookie") ||
+            name == QByteArrayLiteral("authorization"))
+            req.setRawHeader(h.first, h.second);
+    }
+    if (req.rawHeader("User-Agent").isEmpty())
+        req.setRawHeader("User-Agent", "Nexa/0.1");
 
     // Request only the remaining bytes of this segment: start+done .. end (inclusive).
     const qint64 from = m_seg.start + m_seg.done;
@@ -105,9 +129,22 @@ void SegmentDownloader::start() {
 // so the task can show a real file size + ETA mid-flight. Status-gated so a 3xx
 // redirect body's length is never mistaken for the file size.
 void SegmentDownloader::onMetaData() {
-    if (m_announcedSize || !m_reply)
+    if (!m_reply)
         return;
     const int status = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (!m_ifRangeValidator.isEmpty()) {
+        const bool etagValidator = m_ifRangeValidator.startsWith(QLatin1Char('"'));
+        const QString responseValidator = QString::fromUtf8(
+            m_reply->rawHeader(etagValidator ? "ETag" : "Last-Modified")).trimmed();
+        if ((m_seg.start + m_seg.done > 0 && status == 200) ||
+            responseValidator.isEmpty() || responseValidator != m_ifRangeValidator) {
+            m_validatorMismatch = true;
+            m_reply->abort();
+            return;
+        }
+    }
+    if (m_announcedSize)
+        return;
     qint64 total = -1;
     if (status == 206) {
         // 206 Partial Content -> "Content-Range: bytes from-to/TOTAL".
@@ -154,7 +191,7 @@ void SegmentDownloader::onReadyRead() {
 }
 
 void SegmentDownloader::pump() {
-    if (!m_reply)
+    if (!m_reply || m_validatorMismatch)
         return;
     // Drain as much as the rate limiter currently allows. Reading only the
     // granted amount (not readAll) leaves the rest buffered; replenished() calls
@@ -205,6 +242,12 @@ void SegmentDownloader::pump() {
 void SegmentDownloader::onFinished() {
     if (!m_reply)
         return;
+    if (m_validatorMismatch) {
+        m_reply->deleteLater();
+        m_reply = nullptr;
+        emit failed(m_seg.index, QStringLiteral("remote object changed during resume"));
+        return;
+    }
     // Final drain: write any bytes still buffered (left unread under the rate
     // limit when the token budget ran out). They're already downloaded, so
     // writing them now doesn't violate the cap — and it prevents a throttled
@@ -233,6 +276,10 @@ void SegmentDownloader::onFinished() {
 
     if (m_seg.complete()) {
         emit completed(m_seg.index);
+        return;
+    }
+    if (m_publicNetworkOnly && httpStatus >= 300 && httpStatus < 400) {
+        emit failed(m_seg.index, QStringLiteral("late redirect blocked for remote dashboard download"));
         return;
     }
     if (m_stopped || err == QNetworkReply::OperationCanceledError) {

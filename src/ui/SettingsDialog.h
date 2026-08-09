@@ -5,6 +5,7 @@ class QLineEdit;
 class QSpinBox;
 class QDoubleSpinBox;
 class QCheckBox;
+class QLabel;
 
 namespace nexa {
 
@@ -45,6 +46,8 @@ private:
     QDoubleSpinBox *m_seedRatio = nullptr;
     QCheckBox      *m_aiRename = nullptr;
     QCheckBox      *m_errLog = nullptr;     // opt-in troubleshooting log to a file
+    QLineEdit      *m_licenseKey = nullptr;
+    QLabel         *m_licenseStatus = nullptr;
 };
 
 } // namespace nexa

@@ -13,6 +13,8 @@ class QProcess;
 
 namespace nexa {
 
+class CloudProviders;
+
 // Downloads a video from YouTube (and any other yt-dlp-supported site) by
 // driving the `yt-dlp` CLI, which handles signature ciphers, SABR, format
 // selection and video+audio muxing (via FFmpeg) — the robust, maintained way
@@ -66,6 +68,8 @@ public:
     static bool   available();                              // is yt-dlp resolvable?
     static QString formatForQuality(const QString &quality); // "1080" -> yt-dlp -f string
 
+    static void   setCloudProviders(const CloudProviders *p) { s_providers = p; }
+
     // yt-dlp browser name whose cookie store is most likely the active login
     // (most-recently-used Chrome/Brave/Chromium/Edge/Firefox), or empty if none.
     // Used to pass --cookies-from-browser for Drive so the user's own (private)
@@ -76,7 +80,7 @@ public:
     // URL resolves to (apk/zip/pdf/… via yt-dlp's GoogleDrive "source" format),
     // naming it from the server's Content-Disposition, and load auth straight from
     // the browser. `browser` is a yt-dlp --cookies-from-browser name (may be empty).
-    void setDirectFile(const QString &browser) { m_directFile = true; m_cookieBrowser = browser; }
+    void setDirectFile(const QString &browser);
 
 signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
@@ -140,6 +144,8 @@ private:
                                           // (Widevine — undownloadable); surfaced in the
                                           // completion message so a mostly-DRM course doesn't
                                           // look like it "stopped early".
+
+    static const CloudProviders *s_providers;
 };
 
 } // namespace nexa
