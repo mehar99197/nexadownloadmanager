@@ -1620,6 +1620,30 @@ void MainWindow::onTaskFinished(int id)
         m_countedDone.insert(id);
         ++m_completedThisSession;
     }
+    // The final progress signal can be missed by a restored/short download, so
+    // use the finished file itself as the authoritative per-row byte count.
+    // Playlists intentionally keep their "N videos" label instead of showing
+    // the playlist directory's filesystem metadata as a byte size.
+    if (!m_engine->isPlaylist(id)) {
+        qint64 finalSize = -1;
+        const QFileInfo file(m_engine->savePathOf(id));
+        if (file.isFile())
+            finalSize = file.size();
+        if (finalSize < 0) {
+            for (const auto &s : m_engine->snapshot()) {
+                if (s.id != id)
+                    continue;
+                finalSize = s.total >= 0 ? s.total : s.done;
+                break;
+            }
+        }
+        if (finalSize >= 0) {
+            if (auto *sizeItem = m_table->item(row, ColSize)) {
+                sizeItem->setText(humanSize(finalSize));
+                sizeItem->setForeground(QColor(0xc7cedb));
+            }
+        }
+    }
     if (auto *pc = m_table->cellWidget(row, ColProgress)) {
         if (auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar"))) {
             bar->setRange(0, 100);
