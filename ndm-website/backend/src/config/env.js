@@ -7,6 +7,11 @@ function csv(value, fallback = []) {
   return value.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+function intOrDefault(raw, fallback) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function bool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   return String(value).toLowerCase() === 'true';
@@ -71,8 +76,10 @@ const config = {
   // Home-page statistics floor: a figure below this is omitted from
   // GET /api/stats (the tile is hidden) rather than shown while it still reads
   // as "nobody uses this". Never rounds up — see utils/stats.js.
-  STATS_MIN_USERS: parseInt(process.env.STATS_MIN_USERS, 10) || 50,
-  STATS_MIN_DOWNLOADS: parseInt(process.env.STATS_MIN_DOWNLOADS, 10) || 100,
+  // An explicit 0 disables a floor; only an absent/invalid value gets the
+  // default (`|| 50` would silently turn 0 back into 50).
+  STATS_MIN_USERS: intOrDefault(process.env.STATS_MIN_USERS, 50),
+  STATS_MIN_DOWNLOADS: intOrDefault(process.env.STATS_MIN_DOWNLOADS, 100),
 
   // Key for the admin/root TOTP secrets at rest (AES-256-GCM). Falls back to
   // JWT_ADMIN_SECRET so an existing deployment gains 2FA without new config;

@@ -157,7 +157,7 @@ test('backend API', async (t) => {
       });
       assert.equal(res.status, 200);
       assert.equal(res.body.valid, false);
-      assert.equal(res.body.reason, 'device_mismatch');
+      assert.equal(res.body.reason, 'seat_limit');
     });
 
     await t2.test('an expired subscription reports expired', async () => {

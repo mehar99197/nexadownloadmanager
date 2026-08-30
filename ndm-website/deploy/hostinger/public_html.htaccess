@@ -1,0 +1,206 @@
+# =============================================================================
+# nexadownloadmanager.com - public_html/.htaccess
+# Hostinger shared hosting: LiteSpeed Enterprise reading Apache-compat config.
+# Mirrors ndm-website/deploy/nginx.conf (the reference behavior) without
+# mod_proxy: shared LiteSpeed has no [P] flag, so /api is streamed through
+# api-proxy.php to the Node backend on 127.0.0.1:3001.
+#
+# Layout this file expects (deploy contract):
+#   public_html/index.html            frontend dist root (vite build + prerender)
+#   public_html/<route>/index.html    prerendered shells, nested (docs/install/)
+#   public_html/assets/               hashed frontend bundles
+#   public_html/admin/                admin dist (vite base /admin/)
+#   public_html/admin/assets/         hashed admin bundles
+#   public_html/api-proxy.php         PHP shim streaming to 127.0.0.1:3001
+#
+# DEPLOYER: syncing the frontend dist into public_html MUST NOT delete
+# .htaccess, api-proxy.php or admin/ (rsync needs --exclude for all three).
+#
+# Post-deploy verification (run once, mandatory):
+#   curl -sI https://nexadownloadmanager.com/          -> no X-Robots-Tag
+#   curl -sI https://nexadownloadmanager.com/admin     -> X-Robots-Tag: noindex
+#   curl -sI https://nexadownloadmanager.com/root      -> X-Robots-Tag: noindex
+#   curl -sI https://nexadownloadmanager.com/pricing   -> 200, no 301, no-cache
+#   curl -sI https://nexadownloadmanager.com/api/health twice
+#                                            -> never x-litespeed-cache: hit
+#   Log in on the site and load /dashboard   -> confirms the Authorization
+#                                               header survives the PHP shim
+# =============================================================================
+
+# LiteSpeed never does MultiViews; the guard keeps a real Apache from content-
+# negotiating extensionless SPA routes onto files. No directory listings.
+<IfModule mod_negotiation.c>
+    Options -MultiViews
+</IfModule>
+Options -Indexes
+
+DirectoryIndex index.html index.php
+
+# -----------------------------------------------------------------------------
+# LiteSpeed page cache (Hostinger "automatic cache"): never let the server
+# cache responses publicly - it would happily cache /api JSON or an auth-aware
+# HTML shell across users. Browser caching is controlled with the headers
+# below; static files are cheap to serve either way.
+# -----------------------------------------------------------------------------
+<IfModule LiteSpeed>
+    CacheDisable public /
+</IfModule>
+
+# -----------------------------------------------------------------------------
+# Security headers - parity with deploy/nginx.conf. LiteSpeed implements
+# mod_headers including the "always" condition and env= guards.
+# -----------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Frame-Options "SAMEORIGIN"
+
+    # nginx parity: the /admin and /root mounts are never indexed. NDM_NOINDEX
+    # is set by the rewrite rules below; after an internal rewrite the engine
+    # renames it REDIRECT_NDM_NOINDEX, so both spellings are tested. If the
+    # post-deploy curl check shows the header leaking onto public pages or
+    # missing from /admin, remove these two lines and instead ship a one-line
+    # mod_headers .htaccess inside public_html/admin/ (it also covers /root,
+    # whose navigations are served from admin/index.html).
+    Header always set X-Robots-Tag "noindex, nofollow" env=NDM_NOINDEX
+    Header always set X-Robots-Tag "noindex, nofollow" env=REDIRECT_NDM_NOINDEX
+
+    # Unhashed statics (logos, favicon, robots.txt, sitemap.xml, any future
+    # public/ image): short cache. Images stay here on purpose - a filename
+    # like nexa-logo-final.svg or btn-download.png is indistinguishable from a
+    # hash pattern by regex, and an unhashed file must never be immutable.
+    <FilesMatch "\.(svg|ico|png|jpe?g|gif|webp|avif|txt|xml|webmanifest)$">
+        Header always set Cache-Control "public, max-age=3600"
+    </FilesMatch>
+
+    # Vite-hashed bundles under /assets and /admin/assets: immutable for a
+    # year. Both apps emit exactly 8 base64url hash chars (index-Cc96-xHZ.css,
+    # index-8DWEgaDG.js) and neither ships an unhashed js/css/font anywhere in
+    # public/, so exact-8 + these extensions matches every bundle and nothing
+    # else. Deliberately NOT "{8,}": that also matches -logo-final.svg and
+    # would freeze the site logo for a year.
+    <FilesMatch "-[0-9A-Za-z_-]{8}\.(js|css|woff2?|ttf|otf)$">
+        Header always set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+
+    # Every HTML response (SPA shells and prerendered route shells) must
+    # revalidate so a deploy is visible immediately.
+    <FilesMatch "\.html$">
+        Header always set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
+
+# Never serve development/manifest files even if a sync drags them in.
+# (Dot-paths like .env and .git are blocked by the rewrite rules below, which
+# also catch files inside dot-directories that FilesMatch cannot see.)
+<FilesMatch "^(composer\.(json|lock)|package(-lock)?\.json|.*\.(sql|bak|log))$">
+    Require all denied
+</FilesMatch>
+
+# -----------------------------------------------------------------------------
+# Compression: Hostinger's LiteSpeed gzips/brotlis text types at the server
+# level and ignores per-directory mod_deflate config. This block is a harmless
+# hint kept only for portability to a real Apache.
+# -----------------------------------------------------------------------------
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css application/javascript application/json application/xml image/svg+xml
+</IfModule>
+
+# =============================================================================
+# Routing. Rules run top-down per request; an internal rewrite restarts the
+# pass with the new URL, so every [L] target below resolves to a real file on
+# the second pass and falls straight through. Internal rewrites preserve the
+# query string automatically, and api-proxy.php rebuilds the upstream URL from
+# $_SERVER['REQUEST_URI'], which rewriting never touches - so /api suffers no
+# trailing-slash or query-string loss.
+# =============================================================================
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # The whole API authenticates with "Authorization: Bearer <jwt>"
+    # (backend/src/middleware/auth.js), and PHP under CGI/FastCGI/LSAPI often
+    # never receives that header in $_SERVER. Re-export it as an env var so
+    # api-proxy.php can always read $_SERVER['HTTP_AUTHORIZATION'] (or its
+    # REDIRECT_-prefixed spelling) and forward it upstream. This rule has no
+    # [L], costs nothing when lsphp passes the header natively, and re-fires
+    # on the post-rewrite pass so the value is fresh when PHP runs.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # ACME / host verification must stay reachable, over plain HTTP too.
+    RewriteRule ^\.well-known/ - [L]
+
+    # nginx parity: plain HTTP exists only to redirect. TLS terminates at this
+    # same LiteSpeed, so %{HTTPS} is authoritative - no forwarded-proto games.
+    RewriteCond %{HTTPS} !=on
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+    # ---- TEMPORARY: Stripe is in MOCK mode (no live keys yet) ----------------
+    # Blocker mitigation from the deploy audit: with STRIPE_SECRET_KEY empty,
+    # unsigned webhook events and the dev mock-complete route could grant free
+    # pro/team upgrades. Deny both at the edge until live Stripe keys land in
+    # nexa-api/.env (then REMOVE the webhook rule so Stripe can deliver).
+    RewriteRule ^api/webhooks/stripe/?$ - [F,NC,L]
+    RewriteRule ^api/subscription/mock-complete/?$ - [F,NC,L]
+
+    # No dot-paths, ever (.git, .env, editor droppings; .htaccess itself is
+    # already refused by the server). Catches dot-directories' contents too.
+    RewriteRule (^|/)\. - [F]
+
+    # The proxy shim is an implementation detail: refuse direct requests so
+    # only the internal /api rewrite can execute it. THE_REQUEST is the raw
+    # client request line, which an internal rewrite never changes, so
+    # legitimate rewritten /api traffic is unaffected.
+    RewriteCond %{THE_REQUEST} \s/+api-proxy\.php [NC]
+    RewriteRule ^ - [F]
+
+    # ---- /api and /api/* -> PHP shim -> http://127.0.0.1:3001 ---------------
+    # Collapses nginx's `location /api/` and its Stripe raw-body location: the
+    # shim streams request and response bodies verbatim for every method, so
+    # the webhook's signed raw body passes through untouched. Bare /api (no
+    # slash) is included - nginx's prefix location would actually have missed
+    # it. Query strings ride along untouched.
+    RewriteRule ^api(?:/|$) api-proxy.php [L]
+
+    # Tag the staff mounts for the noindex header above. `-` rewrites nothing
+    # and processing continues. The rule re-fires on the post-rewrite pass
+    # (every staff target lives under admin/), so the env var is present on
+    # the pass that actually sends the response.
+    RewriteRule ^(admin|root)(/|$) - [E=NDM_NOINDEX:1]
+
+    # ---- /admin: staff SPA ----------------------------------------------------
+    # Serve the shell for /admin and /admin/ directly instead of letting
+    # mod_dir 301 between them; real files (hashed assets) pass through.
+    RewriteRule ^admin/?$ admin/index.html [L]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^admin/ admin/index.html [L]
+
+    # ---- /root: creator mount of the same bundle ------------------------------
+    # nginx aliased /root/ onto the admin dist, so a real file under it is
+    # honored first (rare: assets resolve absolutely under /admin/ because
+    # that is the Vite base); every navigation gets the same shell, and the
+    # app reads the URL to decide which panel to render.
+    RewriteCond %{DOCUMENT_ROOT}/admin/$1 -f
+    RewriteRule ^root/(.+)$ admin/$1 [L]
+    RewriteRule ^root(?:/.*)?$ admin/index.html [L]
+
+    # ---- Prerendered route shells ---------------------------------------------
+    # scripts/prerender.mjs writes dist/<route>/index.html per public route,
+    # nested included (/docs/install -> docs/install/index.html). Map
+    # extensionless URLs straight onto that file so /pricing serves its own
+    # <title>/OG tags at the canonical slashless URL - deliberately bypassing
+    # mod_dir, whose trailing-slash 301 would contradict the slashless
+    # canonical links baked into every shell.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f
+    RewriteRule ^(.+?)/?$ $1/index.html [L]
+
+    # ---- Everything else --------------------------------------------------------
+    # Real files were already served above; any other path is a client-side
+    # route (dashboard, billing, verify-email, ...) and gets the SPA shell.
+    # This is nginx's `try_files $uri $uri/ /index.html`.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.html [L]
+</IfModule>

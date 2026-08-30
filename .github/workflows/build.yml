@@ -118,7 +118,7 @@ jobs:
       - name: Build self-contained .deb (all dependencies bundled)
         run: |
           set -e
-          PKG=nexa_0.1.0_amd64
+          PKG=nexa_0.2.0_amd64
           mkdir -p ${PKG}/DEBIAN
           mkdir -p ${PKG}/usr/bin
           mkdir -p ${PKG}/usr/lib/nexa
@@ -274,7 +274,7 @@ jobs:
           INSTALLED_SIZE=$(du -sk ${PKG} | cut -f1)
           cat > ${PKG}/DEBIAN/control <<CTRL
           Package: nexa
-          Version: 0.1.0
+          Version: 0.2.0
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
@@ -295,7 +295,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nexa-linux-amd64-deb
-          path: nexa_0.1.0_amd64.deb
+          path: nexa_0.2.0_amd64.deb
           retention-days: 90
 
       - name: Create GitHub Release (Linux .deb)
@@ -320,7 +320,7 @@ jobs:
 
             Built from: ${{ github.sha }}
           files: |
-            nexa_0.1.0_amd64.deb
+            nexa_0.2.0_amd64.deb
           draft: false
           prerelease: false
         env:
@@ -740,7 +740,7 @@ jobs:
           # Install ONLY the .deb and whatever it declares (libc6, libstdc++6,
           # libgcc-s1, libgl1, libegl1). NO qt6 / libtorrent here — if the build
           # weren't self-contained, the next step would find missing libraries.
-          apt-get install -y ./nexa_0.1.0_amd64.deb
+          apt-get install -y ./nexa_0.2.0_amd64.deb
 
       - name: Assert nothing is missing
         run: |

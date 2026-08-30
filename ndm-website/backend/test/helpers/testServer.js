@@ -24,6 +24,10 @@ process.env.JWT_ADMIN_SECRET = process.env.JWT_ADMIN_SECRET || 'test_admin_secre
 process.env.LICENSE_JWT_SECRET = process.env.LICENSE_JWT_SECRET || 'test_license_secret_value_long_enough_x3';
 process.env.FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 process.env.EMAIL_VERIFICATION_REQUIRED = process.env.EMAIL_VERIFICATION_REQUIRED || 'false';
+// The public-stats floors (default 50 users / 100 downloads) would hide the
+// tiny counts these tests create; disable them so assertions see real numbers.
+process.env.STATS_MIN_USERS = process.env.STATS_MIN_USERS || '0';
+process.env.STATS_MIN_DOWNLOADS = process.env.STATS_MIN_DOWNLOADS || '0';
 // Loopback so the admin IP allowlist lets the tests through.
 process.env.ADMIN_ALLOWED_IPS = process.env.ADMIN_ALLOWED_IPS || '127.0.0.1,::1,::ffff:127.0.0.1';
 

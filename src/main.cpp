@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     // Portable mode (a `portable.txt` beside the executable) must be resolved
     // BEFORE the first QSettings read, or settings would come from the profile.
     nexa::portable::initialise();
