@@ -1,15 +1,19 @@
 {
   "name": "ndm-website-backend",
   "version": "1.0.0",
-  "description": "NexaDownloadManager website backend — Express + MySQL2 API",
+  "description": "NexaDownloadManager website backend \u2014 Express + MySQL2 API",
   "private": true,
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "create-admin": "node src/scripts/createAdmin.js",
-    "seed": "node src/scripts/seed.js"
+    "create-root": "node src/scripts/createRoot.js",
+    "trial-reminders": "node src/scripts/sendTrialReminders.js",
+    "migrate": "node src/scripts/migrate.js",
+    "backup": "bash src/scripts/backup.sh",
+    "test:unit": "node --test test/ads.test.js test/config.test.js test/entitlements.test.js test/jwt.test.js test/license.test.js test/releaseFeed.test.js test/rootTier.test.js test/schemas.test.js test/totp.test.js test/stats.test.js test/turnstile.test.js"
   },
   "engines": {
     "node": ">=18"

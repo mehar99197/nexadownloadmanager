@@ -35,3 +35,6 @@ ui_*.h
 # Extension packaging output
 /dist/
 extension-chromium/.key.pem
+ndm-website/frontend/test-results/
+ndm-website/frontend/playwright-report/
+ndm-website/frontend/.vitest/

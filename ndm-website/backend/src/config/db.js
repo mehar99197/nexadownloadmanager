@@ -19,6 +19,16 @@ async function getPool() {
       timezone: '+00:00',
       dateStrings: false,
     });
+
+    // The driver is told to read every DATETIME as UTC (timezone above), but the
+    // SERVER still evaluates NOW()/CURRENT_TIMESTAMP in its own zone. On a box
+    // that is not on UTC the two disagree, and every timestamp we write with
+    // NOW() reads back offset by that amount — which silently breaks anything
+    // comparing a stored date against JS time (trial expiry, licence expiry,
+    // token windows). Pinning each connection to UTC makes both sides agree.
+    pool.on('connection', (connection) => {
+      connection.query("SET time_zone = '+00:00'");
+    });
   }
   return pool;
 }

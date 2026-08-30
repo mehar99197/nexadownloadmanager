@@ -67,6 +67,10 @@ body::before {
 }
 
 @layer components {
+  .admin-brand-logo {
+    filter: drop-shadow(0 0 16px rgba(139, 92, 246, 0.34));
+  }
+
   .admin-card,
   .stat-card {
     position: relative;

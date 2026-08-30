@@ -1,10 +1,11 @@
+import { forwardRef } from 'react';
 import { Link } from 'react-router-dom';
 
 /**
  * Button — renders a <button>, or an <a>/<Link> when `href`/`to` is provided.
- * variant: 'primary' | 'ghost'
+ * variant: 'primary' | 'ghost'. Forwards its ref so dialogs can focus it.
  */
-export default function Button({
+const Button = forwardRef(function Button({
   variant = 'primary',
   to,
   href,
@@ -12,26 +13,28 @@ export default function Button({
   children,
   type = 'button',
   ...rest
-}) {
+}, ref) {
   const cls = `btn ${variant === 'ghost' ? 'btn-ghost' : 'btn-primary'} ${className}`.trim();
 
   if (to) {
     return (
-      <Link to={to} className={cls} {...rest}>
+      <Link ref={ref} to={to} className={cls} {...rest}>
         {children}
       </Link>
     );
   }
   if (href) {
     return (
-      <a href={href} className={cls} {...rest}>
+      <a ref={ref} href={href} className={cls} {...rest}>
         {children}
       </a>
     );
   }
   return (
-    <button type={type} className={cls} {...rest}>
+    <button ref={ref} type={type} className={cls} {...rest}>
       {children}
     </button>
   );
-}
+});
+
+export default Button;

@@ -8,6 +8,7 @@ const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
 const Review = require('../models/Review');
 const Release = require('../models/Release');
+const Ad = require('../models/Ad');
 const AuditLog = require('../models/AuditLog');
 const config = require('../config/env');
 const { getPool } = require('../config/db');
@@ -15,17 +16,46 @@ const { getPool } = require('../config/db');
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireAdmin, ipWhitelist } = require('../middleware/adminAuth');
-const { adminLoginLimiter } = require('../middleware/rateLimiter');
+const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
-const { signAdminToken } = require('../utils/jwt');
+const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
+const { mountTwoFactor, signChallenge } = require('./twoFactor');
+const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
+const { ctr } = require('../utils/ads');
+
+// Admin SPA session: opaque token in an httpOnly cookie scoped to /api/admin;
+// only its SHA-256 hash is stored (users.admin_refresh_token_hash). Lifetime
+// matches the 8h admin JWT so a page refresh can mint a new bearer token.
+const ADMIN_REFRESH_COOKIE = 'ndm_admin_refresh';
+const ADMIN_REFRESH_PATH = '/api/admin';
+
+function adminRefreshCookieOptions() {
+  return {
+    httpOnly: true, sameSite: 'lax', secure: config.isProd,
+    maxAge: 8 * 60 * 60 * 1000, path: ADMIN_REFRESH_PATH,
+  };
+}
+
+async function issueAdminSession(res, user) {
+  const { token: refreshToken, hash } = generateRefreshToken();
+  await User.update(user.id, { adminRefreshTokenHash: hash });
+  res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, adminRefreshCookieOptions());
+}
+
+function adminIdentity(user) {
+  return { id: String(user.id), name: user.name, email: user.email, role: user.role };
+}
 
 const {
   adminLoginSchema, createAdminUserSchema, resetUserPasswordSchema,
   updateUserSchema, updateReviewSchema, updateSubscriptionSchema,
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
-  createReleaseSchema, updateReleaseSchema, listQuerySchema,
+  createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
 } = require('../schemas/admin.schema');
+const {
+  createAdSchema, updateAdSchema, adIdParamSchema,
+} = require('../schemas/ad.schema');
 
 function monthlyPrice(plan) {
   if (plan === 'pro') return 5;
@@ -35,8 +65,20 @@ function monthlyPrice(plan) {
 
 function safeUser(user) {
   if (!user) return null;
-  const { password_hash, refresh_token_hash, ...safe } = user;
+  const { password_hash, refresh_token_hash, admin_refresh_token_hash, ...safe } = user;
   return safe;
+}
+
+/**
+ * A staff admin may only act on ordinary customer accounts. Banning, resetting
+ * or revoking a fellow admin — and above all the creator — is reserved for the
+ * root panel (/api/root/admins). A root token passing through here keeps its
+ * reach, since req.isRoot is only ever set by the root token family.
+ */
+function blockedStaffTarget(req, res, user) {
+  if (req.isRoot || user.role === 'user') return false;
+  fail(res, 'FORBIDDEN', 'Only the creator can modify a control-panel account', 403);
+  return true;
 }
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
@@ -59,21 +101,83 @@ router.post(
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
-    return ok(res, {
-      token: signAdminToken(user),
-      admin: { id: String(user.id), name: user.name, email: user.email },
-    });
+    if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    // Second factor on: no session yet — hand back a short-lived challenge
+    // that only POST /login/2fa (with a valid code) can turn into one.
+    if (user.totp_enabled) {
+      return ok(res, {
+        requiresTwoFactor: true,
+        challenge: signChallenge(user, { secret: config.JWT_ADMIN_SECRET, realm: 'admin' }),
+      });
+    }
+    return ok(res, await finishAdminLogin(res, user));
+  })
+);
+
+async function finishAdminLogin(res, user) {
+  await issueAdminSession(res, user);
+  return { token: signAdminToken(user), admin: adminIdentity(user) };
+}
+
+mountTwoFactor(router, {
+  realm: 'admin',
+  secret: config.JWT_ADMIN_SECRET,
+  eligible: (user) => user.role === 'admin',
+  finishLogin: finishAdminLogin,
+  gate: requireAdmin,
+  audit: (req, action, user, summary) => audit({ admin: req.admin || user }, action, 'user', user.id, summary),
+});
+
+// Mint a fresh admin bearer token from the ndm_admin_refresh cookie (rotated on
+// every call). Open like /login: IP gate + login limiter, no bearer required.
+router.post(
+  '/refresh', adminRefreshLimiter, ipWhitelist,
+  asyncHandler(async (req, res) => {
+    const cookie = req.cookies && req.cookies[ADMIN_REFRESH_COOKIE];
+    if (!cookie) return fail(res, 'NO_REFRESH_TOKEN', 'Missing admin refresh token', 401);
+    const user = await User.findByAdminRefreshTokenHash(hashRefreshToken(cookie));
+    if (!user || user.role !== 'admin') {
+      res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+      return fail(res, 'INVALID_REFRESH_TOKEN', 'Admin session is invalid or has expired', 401);
+    }
+    if (user.banned) {
+      await User.update(user.id, { adminRefreshTokenHash: null });
+      res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+      return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    }
+    await issueAdminSession(res, user);
+    return ok(res, { token: signAdminToken(user) });
+  })
+);
+
+router.post(
+  '/logout', ipWhitelist,
+  asyncHandler(async (req, res) => {
+    const cookie = req.cookies && req.cookies[ADMIN_REFRESH_COOKIE];
+    if (cookie) {
+      const user = await User.findByAdminRefreshTokenHash(hashRefreshToken(cookie));
+      if (user) await User.update(user.id, { adminRefreshTokenHash: null });
+    }
+    res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+    return ok(res, { loggedOut: true });
   })
 );
 
 router.use(requireAdmin);
 
 router.get(
+  '/me',
+  asyncHandler(async (req, res) => ok(res, {
+    ...adminIdentity(req.admin), twoFactorEnabled: Boolean(req.admin.totp_enabled),
+  }))
+);
+
+router.get(
   '/stats',
   asyncHandler(async (req, res) => {
     const [totalUsers, activeSubscriptions, paidSubs, signupAgg,
            pendingReviews, recentPayments, planDistribution,
-           revenueSeries, recentActivity] = await Promise.all([
+           revenueSeries, recentActivity, ads] = await Promise.all([
       User.count(),
       Subscription.countActive(),
       Subscription.findPaidActive(),
@@ -83,6 +187,7 @@ router.get(
       Subscription.countByPlan(),
       Payment.revenueByMonth(6),
       AuditLog.listRecent(12),
+      Ad.stats(),
     ]);
 
     const mrr = paidSubs.reduce((sum, s) => sum + monthlyPrice(s.plan), 0);
@@ -98,6 +203,7 @@ router.get(
       planDistribution,
       revenueSeries,
       recentActivity,
+      ads,
       lastUpdated: new Date().toISOString(),
       system: {
         node: process.version,
@@ -136,13 +242,13 @@ router.get(
 router.post(
   '/users', validate(createAdminUserSchema),
   asyncHandler(async (req, res) => {
-    const { name, email, password, role, plan } = req.body;
+    const { name, email, password, plan } = req.body;
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
     const user = await User.create({
       name,
       email,
       passwordHash: await bcrypt.hash(password, 12),
-      role,
+      role: 'user',
       emailVerified: true,
     });
     const subscription = await Subscription.create({
@@ -154,7 +260,7 @@ router.post(
       startDate: new Date(),
       expiryDate: planExpiry(plan),
     });
-    await audit(req, 'user.created', 'user', user.id, `Created user ${email}`, { role, plan });
+    await audit(req, 'user.created', 'user', user.id, `Created user ${email}`, { role: 'user', plan });
     return ok(res, { user: safeUser(user), subscription }, 201);
   })
 );
@@ -218,22 +324,24 @@ router.get(
 router.put(
   '/users/:id', validate(updateUserSchema),
   asyncHandler(async (req, res) => {
-    const { banned, plan, role } = req.body;
+    const { banned, plan } = req.body;
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (blockedStaffTarget(req, res, user)) return undefined;
 
     const updates = {};
     if (banned !== undefined) updates.banned = banned;
     if (req.body.emailVerified !== undefined) updates.emailVerified = req.body.emailVerified;
-    if (role !== undefined) updates.role = role;
-    if (user.id === req.admin.id && (banned === true || role === 'user'))
-      return fail(res, 'SELF_LOCKOUT', 'You cannot disable or demote your own admin account', 400);
+    if (user.id === req.admin.id && banned === true)
+      return fail(res, 'SELF_LOCKOUT', 'You cannot disable your own admin account', 400);
     if (Object.keys(updates).length) await User.update(user.id, updates);
 
     if (plan !== undefined) {
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
       if (currentSubscription) {
-        await Subscription.updateByUserId(user.id, { plan, seats: planSeats(plan) });
+        // An explicit admin plan change ends any running trial so lazy trial
+        // expiry cannot silently undo it later.
+        await Subscription.updateByUserId(user.id, { plan, seats: planSeats(plan), trialEndsAt: null });
       } else {
         await Subscription.create({
           userId: user.id,
@@ -259,9 +367,11 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (blockedStaffTarget(req, res, user)) return undefined;
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(req.body.password, 12),
       refreshTokenHash: null,
+      adminRefreshTokenHash: null,
     });
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
@@ -273,7 +383,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
-    await User.update(user.id, { refreshTokenHash: null });
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
     await audit(req, 'user.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
     return ok(res, { revoked: true });
   })
@@ -329,6 +440,8 @@ router.put(
     if (status !== undefined) updates.status = status;
     if (seats !== undefined) updates.seats = seats;
     if (plan !== undefined && seats === undefined) updates.seats = planSeats(plan);
+    // See PUT /users/:id — an explicit plan change ends a running trial.
+    if (plan !== undefined) updates.trialEndsAt = null;
     await Subscription.update(id, updates);
     const fresh = await Subscription.findById(id);
     await audit(req, 'subscription.updated', 'subscription', id, `Updated subscription ${id}`, req.body);
@@ -342,8 +455,13 @@ router.post(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    // Drop every live seat lease. The activation rows stay, so the devices are
+    // still listed and can re-take a seat — this frees the seats, it does not
+    // blacklist the machines.
+    const freed = await Subscription.releaseAllSeats(id);
     await Subscription.update(id, { deviceFingerprint: null });
-    await audit(req, 'subscription.device_revoked', 'subscription', id, `Revoked device for subscription ${id}`);
+    await audit(req, 'subscription.device_revoked', 'subscription', id,
+      `Released ${freed} seat lease(s) for subscription ${id}`, { freed });
     return ok(res, await Subscription.findById(id));
   })
 );
@@ -395,9 +513,14 @@ router.get(
 router.post(
   '/releases', validate(createReleaseSchema),
   asyncHandler(async (req, res) => {
-    const { version, windowsUrl, linuxUrl, changelog, isLatest } = req.body;
+    const { version, windowsUrl, linuxUrl, changelog, isLatest, windowsSha256, linuxSha256 } = req.body;
+    // One row per version (uq_releases_version). Say so instead of a 500.
+    if (await Release.findByVersion(version))
+      return fail(res, 'VERSION_EXISTS', `Release v${version} already exists — edit it instead`, 409);
     if (isLatest) await Release.unsetLatest();
-    const release = await Release.create({ version, windowsUrl, linuxUrl, changelog, isLatest });
+    const release = await Release.create({
+      version, windowsUrl, linuxUrl, changelog, isLatest, windowsSha256, linuxSha256,
+    });
     await audit(req, 'release.created', 'release', release.id, `Created release v${version}`, { isLatest: Boolean(isLatest) });
     return ok(res, release, 201);
   })
@@ -407,11 +530,18 @@ router.put(
   '/releases/:id', validate(updateReleaseSchema),
   asyncHandler(async (req, res) => {
     const { isLatest, ...rest } = req.body;
+    if (rest.version !== undefined) {
+      const clash = await Release.findByVersion(rest.version);
+      if (clash && clash.id !== Number(req.params.id))
+        return fail(res, 'VERSION_EXISTS', `Release v${rest.version} already exists`, 409);
+    }
     if (isLatest === true) await Release.unsetLatestExcept(Number(req.params.id));
     const updates = {};
     if (rest.version !== undefined) updates.version = rest.version;
     if (rest.windowsUrl !== undefined) updates.windowsUrl = rest.windowsUrl;
     if (rest.linuxUrl !== undefined) updates.linuxUrl = rest.linuxUrl;
+    if (rest.windowsSha256 !== undefined) updates.windowsSha256 = rest.windowsSha256;
+    if (rest.linuxSha256 !== undefined) updates.linuxSha256 = rest.linuxSha256;
     if (rest.changelog !== undefined) updates.changelog = rest.changelog;
     if (isLatest !== undefined) updates.isLatest = isLatest;
     await Release.update(Number(req.params.id), updates);
@@ -419,6 +549,82 @@ router.put(
     if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
     await audit(req, 'release.updated', 'release', release.id, `Updated release v${release.version}`, req.body);
     return ok(res, release);
+  })
+);
+
+/**
+ * Upload the installer for one OS.
+ *
+ * The body is the raw file (Content-Type: application/octet-stream) rather than
+ * multipart: an installer is hundreds of megabytes, and streaming the request
+ * straight to disk keeps memory flat and avoids pulling in a parser just for
+ * this one route. `express.json` only claims application/json, so the request
+ * stream arrives here untouched.
+ *
+ * The SHA-256 is computed while streaming and stored, so the desktop updater's
+ * checksum enforcement works for uploads without anyone typing a hash by hand.
+ */
+router.put(
+  '/releases/:id/artifact/:os', validate(releaseArtifactParamsSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { os } = req.params;
+    const release = await Release.findById(id);
+    if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
+
+    const originalName = req.get('x-filename') || `nexa-${release.version}-${os}`;
+    let stored;
+    try {
+      stored = await storeUpload(req, {
+        os,
+        version: release.version,
+        originalName,
+        maxBytes: config.MAX_RELEASE_UPLOAD_MB * 1024 * 1024,
+      });
+    } catch (err) {
+      if (err && err.status) return fail(res, err.code || 'UPLOAD_FAILED', err.message, err.status);
+      throw err;
+    }
+
+    // Replacing an artifact: remove the previous file only after the new one is
+    // safely on disk, so a failed upload never leaves the release with nothing.
+    const previous = os === 'windows' ? release.windows_file : release.linux_file;
+
+    await Release.update(id, os === 'windows'
+      ? {
+        windowsFile: stored.file, windowsFilename: stored.filename,
+        windowsSize: stored.size, windowsSha256: stored.sha256,
+      }
+      : {
+        linuxFile: stored.file, linuxFilename: stored.filename,
+        linuxSize: stored.size, linuxSha256: stored.sha256,
+      });
+    if (previous && previous !== stored.file) await removeStored(previous);
+
+    await audit(req, 'release.artifact_uploaded', 'release', id,
+      `Uploaded ${os} installer for v${release.version} (${stored.filename})`,
+      { os, size: stored.size, sha256: stored.sha256 });
+    return ok(res, { ...stored, release: await Release.findById(id) });
+  })
+);
+
+router.delete(
+  '/releases/:id/artifact/:os', validate(releaseArtifactParamsSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { os } = req.params;
+    const release = await Release.findById(id);
+    if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
+    const artifact = artifactFor(release, os);
+    if (!artifact) return fail(res, 'NOT_FOUND', `No uploaded ${os} installer on this release`, 404);
+
+    await Release.update(id, os === 'windows'
+      ? { windowsFile: null, windowsFilename: null, windowsSize: null, windowsSha256: null }
+      : { linuxFile: null, linuxFilename: null, linuxSize: null, linuxSha256: null });
+    await removeStored(artifact.storedName);
+    await audit(req, 'release.artifact_removed', 'release', id,
+      `Removed ${os} installer from v${release.version}`, { os });
+    return ok(res, { removed: true, release: await Release.findById(id) });
   })
 );
 
@@ -430,7 +636,65 @@ router.delete(
     if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
     if (release.is_latest) return fail(res, 'LATEST_RELEASE', 'Set another release as latest before deleting this one', 400);
     await Release.remove(id);
+    // Drop the installers too — otherwise deleting releases silently fills the
+    // disk with orphaned multi-hundred-MB files nothing references.
+    await Promise.all([
+      release.windows_file ? removeStored(release.windows_file) : null,
+      release.linux_file ? removeStored(release.linux_file) : null,
+    ]);
     await audit(req, 'release.deleted', 'release', id, `Deleted release v${release.version}`);
+    return ok(res, { deleted: true });
+  })
+);
+
+// ---- Ads (shown to free installs only; see utils/ads.js) -------------------
+
+router.get(
+  '/ads',
+  asyncHandler(async (req, res) => {
+    const ads = await Ad.listAll();
+    return ok(res, ads.map((ad) => ({ ...ad, ctr: ctr(ad) })));
+  })
+);
+
+router.get(
+  '/ads/stats',
+  asyncHandler(async (req, res) => {
+    return ok(res, await Ad.stats());
+  })
+);
+
+router.post(
+  '/ads', validate(createAdSchema),
+  asyncHandler(async (req, res) => {
+    const ad = await Ad.create({ ...req.body, createdBy: req.admin && req.admin.id });
+    await audit(req, 'ad.created', 'ad', ad.id, `Created ad "${ad.title}"`, {
+      placement: ad.placement, active: Boolean(ad.active),
+    });
+    return ok(res, { ...ad, ctr: ctr(ad) }, 201);
+  })
+);
+
+router.put(
+  '/ads/:id', validate(updateAdSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!(await Ad.findById(id))) return fail(res, 'NOT_FOUND', 'Ad not found', 404);
+    await Ad.update(id, req.body);
+    const ad = await Ad.findById(id);
+    await audit(req, 'ad.updated', 'ad', id, `Updated ad "${ad.title}"`, req.body);
+    return ok(res, { ...ad, ctr: ctr(ad) });
+  })
+);
+
+router.delete(
+  '/ads/:id', validate(adIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const ad = await Ad.findById(id);
+    if (!ad) return fail(res, 'NOT_FOUND', 'Ad not found', 404);
+    await Ad.remove(id);
+    await audit(req, 'ad.deleted', 'ad', id, `Deleted ad "${ad.title}"`);
     return ok(res, { deleted: true });
   })
 );

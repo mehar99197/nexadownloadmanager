@@ -1,7 +1,12 @@
+import { useEffect, useState } from 'react';
+import api, { unwrap } from '../api/client';
+import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Button from '../components/Button';
 import Card from '../components/Card';
 import { BrandMark } from '../components/Brand';
+import WarpField from '../components/WarpField';
+import CountUp from '../components/CountUp';
 
 const FEATURES = [
   {
@@ -60,39 +65,77 @@ const FEATURES = [
       </svg>
     ),
     title: 'Smart scheduling',
-    desc: 'Set speed limits, schedule quiet hours, and configure concurrency around the way you actually work.',
+    desc: 'Set global and per-download speed limits, schedule a start time, and pick how many transfers run at once.',
   },
 ];
 
-const STATS = [
-  { value: '1,000+', label: 'supported sites' },
-  { value: '10x', label: 'faster transfers' },
-  { value: '50K+', label: 'active users' },
-  { value: '99.9%', label: 'reliability' },
-];
+const COLS_CLASS = { 1: 'md:grid-cols-1', 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4' };
+
 
 export default function Home() {
+  usePageMeta({
+    title: 'Fast downloads for Windows and Linux',
+    description:
+      'Nexa Download Manager accelerates HTTP downloads with up to 16 connections per file and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
+  });
+
+  const [stats, setStats] = useState(null);
+  const [release, setRelease] = useState(null);
+
+  // Real numbers only. If either call fails we simply hide those tiles.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.allSettled([api.get('/stats'), api.get('/releases/latest')]).then(([s, r]) => {
+      if (cancelled) return;
+      if (s.status === 'fulfilled') {
+        const data = unwrap(s.value);
+        if (data && typeof data === 'object') setStats(data);
+      }
+      if (r.status === 'fulfilled') {
+        const data = unwrap(r.value);
+        if (data?.version) setRelease(data);
+      }
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const tiles = [];
+  if (stats && Number.isFinite(Number(stats.downloads))) {
+    tiles.push({ value: Number(stats.downloads), label: 'downloads served' });
+  }
+  if (stats && Number.isFinite(Number(stats.users))) {
+    tiles.push({ value: Number(stats.users), label: 'registered users' });
+  }
+  if (release?.version) {
+    tiles.push({ value: `v${release.version}`, label: 'latest version' });
+  }
+  tiles.push({ value: 'Up to 16', label: 'connections per file' });
+  if (tiles.length < 3) tiles.push({ value: 'Win + Linux', label: 'native desktop app' });
+
   return (
     <>
       <Section full className="hero-shell !pb-12 !pt-20 md:!pb-20 md:!pt-28">
+        <WarpField mode="hero" />
         <div className="container-x relative z-10">
           <div className="grid items-center gap-14 lg:grid-cols-[1.04fr_0.96fr] lg:gap-16">
             <div>
-              <span className="eyebrow">
-                <span className="eyebrow-dot" />
-                Nexa engine online / v2.1
-              </span>
-              <h1 className="mt-7 max-w-3xl text-5xl font-extrabold leading-[0.98] tracking-[-0.065em] text-white sm:text-6xl lg:text-[5.2rem]">
-                Download without the{' '}
-                <span className="text-gradient">waiting.</span>
+              {release?.version && (
+                <span className="eyebrow rise rise-1">
+                  <span className="eyebrow-dot" />
+                  Latest release / v{release.version}
+                </span>
+              )}
+              <h1 className="rise rise-2 mt-7 max-w-3xl text-5xl font-extrabold leading-[1.02] tracking-[-0.045em] text-white sm:text-6xl lg:text-[4.6rem]">
+                The internet, pulled into{' '}
+                <span className="text-gradient">one place.</span>
               </h1>
-              <p className="mt-7 max-w-xl text-base leading-8 text-slate-400 sm:text-lg">
+              <p className="rise rise-3 mt-7 max-w-xl text-base leading-8 text-slate-400 sm:text-lg">
                 NexaDownloadManager turns every transfer into a fast, focused
                 workflow. Videos, streams, torrents, and files, accelerated by
                 one intelligent queue.
               </p>
-              <div className="mt-9 flex flex-wrap items-center gap-3">
-                <Button to="/download" className="px-7 py-3.5 text-base">
+              <div className="rise rise-4 mt-9 flex flex-wrap items-center gap-3">
+                <Button to="/download" className="btn-breathe px-7 py-3.5 text-base">
                   Download free
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M5 12h14M13 6l6 6-6 6" />
@@ -102,17 +145,18 @@ export default function Home() {
                   Explore plans
                 </Button>
               </div>
-              <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-slate-500">
+              <div className="rise rise-5 mt-7 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-slate-500">
                 <span className="inline-flex items-center gap-2">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />
                   Free forever plan
                 </span>
                 <span>Windows / Linux</span>
                 <span>No credit card</span>
+                <span>Open source</span>
               </div>
             </div>
 
-            <div className="relative mx-auto w-full max-w-xl lg:ml-auto">
+            <div className="rise rise-3 relative mx-auto w-full max-w-xl lg:ml-auto">
               <div className="absolute -inset-7 rounded-[2rem] bg-[radial-gradient(circle,rgba(153,92,244,0.24),transparent_65%)] blur-2xl" />
               <div className="hero-console">
                 <div className="console-bar">
@@ -120,7 +164,7 @@ export default function Home() {
                   <span className="console-status">All systems ready</span>
                 </div>
                 <div className="console-heading">
-                  <BrandMark size={42} />
+                  <BrandMark size={48} className="brand-mark-hero" />
                   <div>
                     <p>NexaDownloadManager</p>
                     <p>Unified download queue</p>
@@ -153,10 +197,12 @@ export default function Home() {
       </Section>
 
       <Section className="!py-0">
-        <div className="stat-strip grid grid-cols-2 md:grid-cols-4">
-          {STATS.map((s) => (
+        <div data-stagger className={`stat-strip grid grid-cols-2 ${COLS_CLASS[tiles.length] || 'md:grid-cols-4'}`}>
+          {tiles.map((s) => (
             <div key={s.label} className="stat-item px-5 py-6 text-center first:border-0 md:px-8 md:py-7">
-              <div className="text-2xl font-extrabold tracking-tight text-white md:text-3xl">{s.value}</div>
+              <div className="text-2xl font-extrabold tracking-tight text-white md:text-3xl">
+                {typeof s.value === 'number' ? <CountUp value={s.value} /> : s.value}
+              </div>
               <div className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.13em] text-slate-500">{s.label}</div>
             </div>
           ))}
@@ -172,7 +218,7 @@ export default function Home() {
             that stays out of your way.
           </p>
         </div>
-        <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <div data-stagger className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature) => (
             <Card key={feature.title} className="card-hover !p-6">
               <div className="icon-tile">{feature.icon}</div>
@@ -192,13 +238,13 @@ export default function Home() {
                 <span className="text-xs font-bold uppercase tracking-[0.18em] text-brand-300">Your bandwidth, your rules</span>
                 <h2 className="mt-3 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">Make every download feel instant.</h2>
                 <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-400">
-                  Join thousands of people using NexaDownloadManager to move
-                  their files faster, with less friction and more control.
+                  Nexa is in beta and free to start. Grab the app, send us what
+                  breaks, and help shape what ships next.
                 </p>
               </div>
               <div className="flex flex-wrap gap-3 md:justify-end">
-                <Button to="/download">Get started</Button>
-                <Button to="/reviews" variant="ghost">See user stories</Button>
+                <Button to="/download" className="btn-breathe">Get started</Button>
+                <Button to="/compare" variant="ghost">Compare with IDM</Button>
               </div>
             </div>
           </Card>

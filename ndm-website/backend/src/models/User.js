@@ -15,6 +15,29 @@ const User = {
     return queryOne('SELECT * FROM users WHERE refresh_token_hash = ?', [hash]);
   },
 
+  // Admin SPA session cookie (ndm_admin_refresh) — separate from the user refresh token.
+  async findByAdminRefreshTokenHash(hash) {
+    return queryOne('SELECT * FROM users WHERE admin_refresh_token_hash = ?', [hash]);
+  },
+
+  // Root SPA session cookie (ndm_root_refresh) — a third, separate token store
+  // so a staff session and a creator session can never be mistaken for each other.
+  async findByRootRefreshTokenHash(hash) {
+    return queryOne('SELECT * FROM users WHERE root_refresh_token_hash = ?', [hash]);
+  },
+
+  // Every account that can reach a control panel, for the creator's admin screen.
+  async listStaff() {
+    return query(
+      `SELECT id, name, email, role, email_verified, banned, totp_enabled, created_at, updated_at
+       FROM users WHERE role IN ('admin', 'root') ORDER BY role DESC, created_at ASC`
+    );
+  },
+
+  async remove(id) {
+    await execute('DELETE FROM users WHERE id = ?', [id]);
+  },
+
   async create({ name, email, passwordHash, role, emailVerified }) {
     const id = await insert(
       'INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, ?, ?)',

@@ -2,7 +2,7 @@
 #include <QObject>
 #include <QUrl>
 #include <QString>
-#include <QProcess>
+#include <QByteArray>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QNetworkAccessManager>
@@ -11,18 +11,23 @@
 
 namespace nexa {
 
-// Downloads files from mega.nz by implementing the MEGA API protocol.
-// MEGA encrypts files with AES-128-CBC (key derived from the URL fragment),
-// so this grabber handles both the API negotiation and the decryption pass.
+class MegaCipher;   // AES-128-CTR stream decrypt + MEGA chunked CBC-MAC (OpenSSL EVP)
+
+// Downloads files from mega.nz by speaking the MEGA API protocol.
+//
+// MEGA public links carry a 32-byte node key in the URL fragment. Folding it
+// (first 16 bytes XOR last 16) gives the AES-128 key; bytes 16-23 are the CTR
+// nonce and bytes 24-31 the "meta-MAC" the file must verify against. File data
+// is AES-128-CTR, so it is decrypted IN-PLACE AS IT STREAMS IN — no temp file,
+// no second pass, and the GUI thread never blocks (the old openssl-CLI design
+// spawned a synchronous process per chunk and froze the app on large files).
+// The per-chunk CBC-MAC is accumulated alongside and checked at the end, so a
+// corrupted or wrong-key download is rejected instead of saved.
 //
 // URL shapes handled:
 //   https://mega.nz/#!fileid!key                    (old format)
 //   https://mega.nz/file/fileid#key                 (new format)
 //   https://mega.co.nz/...
-//
-// Decryption is delegated to the `openssl` CLI tool (AES-128-CBC) rather than
-// bundling a crypto library — openssl is widely available and avoids the need
-// for yet another dependency.
 class MegaGrabber : public QObject {
     Q_OBJECT
 public:
@@ -41,6 +46,20 @@ public:
     QString fileName() const;
     DownloadState state() const { return m_state; }
 
+    // Protocol helpers (exposed for unit tests).
+    // Split a 32-byte node key into the folded AES key, 8-byte nonce, 8-byte meta-MAC.
+    static bool splitFileKey(const QByteArray &nodeKey, QByteArray &aesKey,
+                             QByteArray &nonce, QByteArray &metaMac);
+    // Decrypt the node's "at" attribute blob (AES-128-CBC, zero IV) and return
+    // its "n" (file name), or an empty string when it doesn't parse.
+    static QString decryptAttributeName(const QByteArray &aesKey, const QByteArray &encryptedAttrs);
+    // Decrypt `ciphertext` (AES-128-CTR from offset 0) and return the 8-byte
+    // meta-MAC MEGA expects for that plaintext — used by tests to round-trip.
+    // `pieceSize` > 0 feeds the stream in pieces of that size (exercises the
+    // incremental chunk/MAC bookkeeping the way readyRead does).
+    static QByteArray decryptAndMac(const QByteArray &aesKey, const QByteArray &nonce,
+                                    QByteArray &ciphertextToPlaintext, int pieceSize = 0);
+
 signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
     void stateChanged(int id, DownloadState state, const QString &detail);
@@ -53,13 +72,14 @@ private slots:
 private:
     void setState(DownloadState s, const QString &detail = QString());
     void startDownload();
-    void decryptFile();
-    QString chooseSavePath() const;
+    void beginTransfer(const QString &downloadUrl);
+    void failAndCleanup(const QString &why);
+    QString chooseSavePath(const QString &preferredName) const;
 
     // Parse the mega.nz URL to extract file id and key (base64url-encoded).
     struct MegaFileKey {
-        QString id;    // file/node id
-        QByteArray key; // raw 32-byte key (first 16 = AES key, second 16 = CBC-MAC key)
+        QString id;      // file/node id
+        QByteArray key;  // raw 32-byte node key from the URL
         bool valid = false;
     };
     static MegaFileKey parseMegaUrl(const QUrl &url);
@@ -72,21 +92,19 @@ private:
     QNetworkAccessManager *m_nam = nullptr;
     DownloadState      m_state = DownloadState::Queued;
     MegaFileKey        m_fileKey;
+    QByteArray         m_aesKey, m_nonce, m_metaMac;
 
     // API step
     QString            m_apiHost;      // e.g. "g.api.mega.co.nz:443"
     QNetworkReply     *m_apiReply = nullptr;
 
-    // Download step
-    QFile              m_encryptedFile;
+    // Transfer step (decrypt-as-you-go)
+    QFile              m_outFile;
+    MegaCipher        *m_cipher = nullptr;
     QNetworkReply     *m_dlReply = nullptr;
     qint64             m_totalBytes = -1;
     qint64             m_doneBytes = 0;
 
-    // Decrypt step
-    QProcess          *m_decryptProc = nullptr;
-
-    // Speed tracking
     QElapsedTimer      m_clock;
 };
 

@@ -1,7 +1,25 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import api, { unwrap, setAccessToken, clearAccessToken } from '../api/client';
+import api, { unwrap, setAccessToken, clearAccessToken, restoreSession } from '../api/client';
 
 const AuthContext = createContext(null);
+
+const SESSION_HINT = 'ndm_session';
+
+function hasSessionHint() {
+  try {
+    return document.cookie.split(';').some((c) => c.trim().startsWith(`${SESSION_HINT}=`));
+  } catch {
+    return true;   // no cookie access (odd embed) — fall back to asking the server
+  }
+}
+
+function clearSessionHint() {
+  try {
+    document.cookie = `${SESSION_HINT}=; Max-Age=0; path=/`;
+  } catch {
+    // nothing to clear
+  }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -24,13 +42,24 @@ export function AuthProvider({ children }) {
   }, []);
 
   // The httpOnly refresh cookie rehydrates the in-memory access token on mount.
+  // The backend also sets a readable "ndm_session" marker beside it, so a
+  // visitor who never signed in is not greeted by a 401 + a failed refresh on
+  // every page load. No marker → no session → skip the round trips.
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
+      if (!hasSessionHint()) {
+        setLoading(false);
+        return;
+      }
       try {
+        // Refresh first, then /user/me — the access token only lives in memory,
+        // so every full page load would otherwise open with a 401.
+        if (!(await restoreSession())) throw new Error('no session');
         await refreshMe();
       } catch {
         setToken(null);
+        clearSessionHint();
         if (!cancelled) setUser(null);
       } finally {
         if (!cancelled) setLoading(false);
@@ -55,8 +84,10 @@ export function AuthProvider({ children }) {
     [refreshMe]
   );
 
-  const register = useCallback(async ({ name, email, password }) => {
-    const res = await api.post('/auth/register', { name, email, password });
+  const register = useCallback(async ({ name, email, password, turnstileToken }) => {
+    const res = await api.post('/auth/register', {
+      name, email, password, ...(turnstileToken ? { turnstileToken } : {}),
+    });
     return unwrap(res);
   }, []);
 
@@ -67,6 +98,7 @@ export function AuthProvider({ children }) {
       // ignore network/logout errors — we clear locally regardless
     }
     setToken(null);
+    clearSessionHint();
     setUser(null);
   }, []);
 

@@ -5,6 +5,9 @@ const { z } = require('zod');
 // The website backend uses MySQL AUTO_INCREMENT ids, not Mongo ObjectIds.
 const objectId = z.coerce.number().int().positive('Invalid id');
 
+// Artifact checksum: exactly 64 hex chars (case-insensitive, stored lowercase).
+const sha256 = z.string().trim().toLowerCase().regex(/^[a-f0-9]{64}$/, 'Invalid SHA-256 (expected 64 hex characters)');
+
 const adminLoginSchema = {
   body: z
     .object({
@@ -19,7 +22,9 @@ const createAdminUserSchema = {
     name: z.string().trim().min(1).max(255),
     email: z.string().trim().toLowerCase().email(),
     password: z.string().min(8).max(200),
-    role: z.enum(['user', 'admin']).default('user'),
+    // No `role` here on purpose: staff admins create ordinary customers only.
+    // Minting or promoting a control-panel account is creator-only, and lives
+    // at POST /api/root/admins.
     plan: z.enum(['free', 'pro', 'team']).default('free'),
   }).strict(),
 };
@@ -29,14 +34,13 @@ const resetUserPasswordSchema = {
   body: z.object({ password: z.string().min(8).max(200) }).strict(),
 };
 
-// Ban/unban + change plan + role.
+// Ban/unban + change plan. Role is absent by design — see createAdminUserSchema.
 const updateUserSchema = {
   params: z.object({ id: objectId }).strict(),
   body: z
     .object({
       banned: z.boolean().optional(),
       emailVerified: z.boolean().optional(),
-      role: z.enum(['user', 'admin']).optional(),
       plan: z.enum(['free', 'pro', 'team']).optional(),
     })
     .strict()
@@ -97,6 +101,8 @@ const createReleaseSchema = {
       version: z.string().trim().min(1).max(50),
       windowsUrl: z.string().url().optional(),
       linuxUrl: z.string().url().optional(),
+      windowsSha256: sha256.optional(),
+      linuxSha256: sha256.optional(),
       changelog: z.string().max(20000).optional(),
       isLatest: z.boolean().optional(),
     })
@@ -110,6 +116,8 @@ const updateReleaseSchema = {
       version: z.string().trim().min(1).max(50).optional(),
       windowsUrl: z.string().url().optional(),
       linuxUrl: z.string().url().optional(),
+      windowsSha256: sha256.nullable().optional(),
+      linuxSha256: sha256.nullable().optional(),
       changelog: z.string().max(20000).optional(),
       isLatest: z.boolean().optional(),
     })
@@ -126,7 +134,7 @@ const listQuerySchema = {
       q: z.string().trim().max(200).optional(),
       status: z.string().trim().max(50).optional(),
       plan: z.enum(['free', 'pro', 'team']).optional(),
-      role: z.enum(['user', 'admin']).optional(),
+      role: z.enum(['user', 'admin', 'root']).optional(),
       banned: z.enum(['true', 'false']).optional(),
       emailVerified: z.enum(['true', 'false']).optional(),
     })
@@ -135,6 +143,11 @@ const listQuerySchema = {
 
 const idParamSchema = {
   params: z.object({ id: objectId }).strict(),
+};
+
+// Installer upload/removal: /releases/:id/artifact/:os
+const releaseArtifactParamsSchema = {
+  params: z.object({ id: objectId, os: z.enum(['windows', 'linux']) }).strict(),
 };
 
 module.exports = {
@@ -149,6 +162,8 @@ module.exports = {
   bulkReviewSchema,
   createReleaseSchema,
   updateReleaseSchema,
+  releaseArtifactParamsSchema,
   listQuerySchema,
   idParamSchema,
+  sha256,
 };

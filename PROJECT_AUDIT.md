@@ -138,6 +138,199 @@ Relevant implementation locations:
 
 Design strength: Qt event-loop based asynchronous networking architecture ko relatively simple rakhta hai aur explicit worker-thread locking avoid karta hai. Design risk: many protocols ek large controller mein converge karte hain, isliye integration tests aur lifecycle ownership ko production release se pehle grow karna hoga.
 
+### 4.1.1 Udemy Enrolled Course Download — Full Flow
+
+Yeh flow detailed explanation hai ke kaise Nexa ek Udemy enrolled course ko download karta hai, browser extension se lekar parallel lecture download tak.
+
+#### Step 1 — Browser Extension (content.js / background.js)
+
+1. **User right-clicks** Udemy course/lecture page par → selects **"Download whole course with Nexa"** (`nexa-course` context menu).
+2. `handoff(url, tab, referrer, filename, quality, playlist=true, userInitiated=true)` trigger hota hai.
+3. `authDomainFor(url)` → host `www.udemy.com` ke liye `"udemy.com"` return karta hai (NEXA_AUTH_SITES derived from PROVIDER_CONFIG).
+4. `exportCookiesAsNetscape("udemy.com", url)` sabhi `*.udemy.com` cookies ko Netscape format mein export karta hai.
+5. Payload assemble hota hai:
+   ```json
+   {
+     "type": "download",
+     "url": "https://www.udemy.com/course/<slug>/learn/lecture/<id>#overview",
+     "playlist": true,
+     "userInitiated": true,
+     "authDomain": "udemy.com",
+     "authCookiesText": "<netscape formatted cookies>",
+     "cookies": "cookie1=val1; cookie2=val2",
+     "userAgent": "Mozilla/5.0 ...",
+     "referrer": "<tab url>"
+   }
+   ```
+6. `sendNative(payload)` → Chrome native messaging → `nexa-host` process.
+
+#### Step 2 — Native Host Bridge (nexa-host.cpp)
+
+1. Browser se **4-byte LE length-prefixed JSON** stdin par receive hota hai.
+2. Pehle running engine se connect karne ki koshish karta hai (`QLocalSocket` → `/tmp/nexa-ipc`).
+3. Agar engine nahi milta → `launchEngine()` → `nexa --background` process start → 40 retries (150ms each, total ~6s).
+4. Engine se **same length-prefixed frame format** mein reply receive karta hai.
+5. Reply browser ko wapas frame karta hai (`{ok: true, id: <taskId>}`).
+
+#### Step 3 — IPC Server (IpcServer.cpp → handlePayload)
+
+1. **Scheme validation**: `http`, `https`, ya `magnet` allow — `file://` reject.
+2. **Host validation**: Host empty hone par reject. Private-network targets `isPublicHttpUrl()` ke through reject.
+3. **Auth domain validation**: Domain format check (`[A-Za-z0-9.-]{1,253}`), `sameDomain` (host endsWith `.domain`), `approvedSibling` (CloudProviders::sameCredentialScope).
+4. **Cookie registration decision** (critical fix — 2026-08-11):
+   ```cpp
+   const bool isYtDlpSite = YtDlpGrabber::isSiteVideoUrl(url);
+   const bool hasBrowserCookies = isYtDlpSite
+       && am->resolve(url).kind == DomainAuth::Kind::BrowserCookies;
+   if (!cookiesText.isEmpty() && !hasBrowserCookies)
+       ar = am->registerCookieData(authDomain, cookiesText);
+   ```
+   - Udemy ke liye `isYtDlpSite=true` + `hasBrowserCookies=true` → **SKIP** cookie registration.
+   - BrowserCookies preserved → yt-dlp gets `--cookies-from-browser chrome`.
+   - Fallback: agar browser detect nahi hua → extension cookies use hote hain (`--cookies <file>`).
+5. **Headers assembly**: CR/LF injection guard, forbidden headers reject.
+6. **addDownload()**: `addDownload(url, ..., playlist=true, userInitiated=true, publicNetworkOnly=true)`.
+
+#### Step 4 — Download Engine (DownloadEngine.cpp → addDownload)
+
+1. **Browser login refresh**: `refreshBrowserLoginFor(url)` → finds `"udemy.com"` → resolve returns `BrowserCookies` → refreshes profile-specific browser cookies.
+2. **Auth resolution**: `ytDlpArgs(url)` → `resolve(url)` → `BrowserCookies` → returns `{"--cookies-from-browser", "chrome"}`.
+3. **Pre-flight**: `validateFor(url)` → BrowserCookies always valid.
+4. **Route**: `isSiteVideoUrl(url)` → true → creates `YtDlpGrabber(playlist=true, authArgs={"--cookies-from-browser","chrome"})`.
+5. **Start**: `g->setPlaylistConcurrency(3); g->start();`
+
+#### Step 5 — YtDlpGrabber (URL Decision — critical fix)
+
+```cpp
+const bool isUdemy = host == "udemy.com" || host.endsWith(".udemy.com");
+if (isUdemy && !m_playlist)
+    runUrl = normalizeUdemyUrl(m_url, false);  // single lecture: canonical form
+// playlist: keep ORIGINAL URL — UdemyCourseIE extracts course ID from lecture page
+```
+
+**Why**: yt-dlp's `UdemyCourseIE` cannot extract course ID from course landing pages (`/<slug>/` or `/course/<slug>/`) — modern Udemy no longer embeds `ng-init` JSON or `data-course-id` attributes. But lecture pages (`/learn/lecture/<id>`) DO expose the course ID. So playlist mode preserves the original lecture URL.
+
+#### Step 6 — Parallel Playlist Download (startPlaylistParallel)
+
+- `K = m_plConcurrency` (default 3) workers spawn hote hain.
+- Har worker: `--yes-playlist --playlist-items "j::K"` round-robin slice.
+- Worker 0: items 1,4,7,... | Worker 1: items 2,5,8,... | Worker 2: items 3,6,9,...
+- `commonArgs()` includes: `--cookies-from-browser chrome`, `--concurrent-fragments 16`, `--merge-output-format mp4`.
+- Progress tracking: `onPlOutput()` parses speed/percentage, `emitPlaylistProgress()` throttled at 400ms.
+- DRM detection: `[udemy] <id>` lines → `m_drmVideoIds` → surfaced in completion message.
+- Completion: `countPlaylistDone()` → unique saved videos → `"saved N videos"` or error.
+
+#### Flow Diagram
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│ BROWSER EXTENSION (Chromium MV3)                                    │
+│                                                                     │
+│  content.js: context menu "Download whole course with Nexa"         │
+│       │                                                             │
+│       ▼                                                             │
+│  background.js: handoff(url, tab, playlist=true)                    │
+│       │ authDomainFor() → "udemy.com"                               │
+│       │ exportCookiesAsNetscape() → Netscape cookie text            │
+│       │ sendNative({url, playlist, authDomain, authCookiesText})    │
+└───────┼─────────────────────────────────────────────────────────────┘
+        │  Native Messaging (4-byte LE framed JSON)
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ NATIVE HOST (nexa-host)                                             │
+│                                                                     │
+│  readMessage(stdin) → relayToEngine(QLocalSocket "nexa-ipc")        │
+│  engine nahi mila → launchEngine("nexa --background") → retry       │
+│  engine reply → writeMessage(stdout) → browser ko response          │
+└───────┼─────────────────────────────────────────────────────────────┘
+        │  QLocalSocket (4-byte LE framed JSON)
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ IPC SERVER (IpcServer::handlePayload)                                │
+│                                                                     │
+│  URL validation (scheme, host, public-network check)                │
+│  Auth domain validation (format, sameDomain/approvedSibling)        │
+│  Cookie decision:                                                   │
+│    isYtDlpSite && hasBrowserCookies? → SKIP registerCookieData      │
+│    (preserves --cookies-from-browser)                               │
+│    else → registerCookieData() → --cookies <temp-file>              │
+│  Headers assembly + sanitization                                    │
+│  addDownload(url, playlist=true, userInitiated=true)                │
+└───────┼─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ DOWNLOAD ENGINE (DownloadEngine::addDownload)                        │
+│                                                                     │
+│  refreshBrowserLoginFor(url) → detects Chrome/Firefox profile       │
+│  ytDlpArgs(url) → resolve() → BrowserCookies                        │
+│    returns ["--cookies-from-browser", "chrome"]                     │
+│  validateFor(url) → pre-flight auth check                           │
+│  isSiteVideoUrl(url) → true (udemy.com in kAuthSites)               │
+│  Creates YtDlpGrabber(id, url, authArgs, playlist=true)             │
+└───────┼─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ YT-DLP GRABBER (YtDlpGrabber::start)                                │
+│                                                                     │
+│  Udemy + playlist? → keep ORIGINAL lecture URL                      │
+│    (UdemyCourseIE extracts course ID from lecture page)             │
+│  Udemy + !playlist? → normalizeUdemyUrl() canonical form            │
+│  commonArgs() → --cookies-from-browser chrome + all yt-dlp flags    │
+│  startPlaylistParallel() → 3 workers, round-robin slices            │
+│       │                                                             │
+│       ├─ Worker 0: --playlist-items "1::3" → lectures 1,4,7,...     │
+│       ├─ Worker 1: --playlist-items "2::3" → lectures 2,5,8,...     │
+│       └─ Worker 2: --playlist-items "3::3" → lectures 3,6,9,...     │
+│                                                                     │
+│  onPlOutput() → parse progress, speed, DRM detection                │
+│  onPlProcFinished() → count saved, surface errors                   │
+└───────┼─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ YT-DLP (External Process)                                           │
+│                                                                     │
+│  UdemyCourseIE: downloads lecture page → extracts course ID         │
+│  Fetches /api-2.0/courses/<id>/cached-subscriber-curriculum-items   │
+│  Enumerates all lectures → playlist_result                          │
+│  UdemyIE (per lecture): downloads video + audio, merges via FFmpeg  │
+│  Saves to output directory with --restrict-filenames                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### yt-dlp Udemy Extractors
+
+yt-dlp ke **do extractors** Udemy ke liye hain:
+
+| Extractor | Match Pattern | Use |
+|-----------|--------------|-----|
+| `UdemyIE` | `/<slug>/learn/v4/t/lecture/<id>` ya `#/lecture/<id>` | Single lecture download |
+| `UdemyCourseIE` | `/<first-path-segment>` (e.g., `/course/<slug>/` ya `/<slug>/`) | Whole course enumeration |
+
+**Key finding (2026-08-11)**: `UdemyCourseIE` modern Udemy course landing pages se course ID extract nahi kar pata (page ab AngularJS `ng-init` ya `data-course-id` attributes embed nahi karta). **Lekin** lecture pages (`/learn/lecture/<id>`) se course ID successfully extract kar leta hai jab `--yes-playlist` flag use hota hai. Is liye Nexa playlist mode mein original lecture URL preserve karta hai.
+
+#### Key Files Involved
+
+| File | Role |
+|------|------|
+| `extension-chromium/background.js` | Cookie export, context menu, native messaging |
+| `extension-chromium/content.js` | Udemy page detection, lecture URL regex |
+| `native-host/nexa-host.cpp` | stdin→socket bridge, engine launch, frame relay |
+| `src/ipc/IpcServer.cpp` | URL/auth validation, cookie registration decision, download dispatch |
+| `src/ipc/IpcProtocol.h` | 8MB max frame size constant |
+| `src/core/DownloadEngine.cpp` | Auth resolution, browser login refresh, grabber creation |
+| `src/core/DownloadEngine.h` | `refreshBrowserLoginFor()`, `providers()`, `m_plConcurrency` |
+| `src/site/YtDlpGrabber.cpp` | URL normalization, yt-dlp args, parallel playlist workers |
+| `src/site/YtDlpGrabber.h` | `normalizeUdemyUrl()`, `udemyCourseSlug()`, `startPlaylistParallel()` |
+| `src/auth/AuthenticationManager.cpp` | `registerCookieData()`, `ytDlpArgs()`, `resolve()`, `registerBrowserCookies()` |
+| `src/auth/AuthenticationManager.h` | `DomainAuth::Kind::BrowserCookies`, `DomainAuth::Kind::CookieFile` |
+| `src/auth/BrowserLogin.cpp` | `detectBrowser()`, `bestProfileForDomain()`, `authSites()` |
+| `src/auth/CookieFile.cpp` | Netscape cookie parse, deduplication, cookie header assembly |
+| `src/auth/CloudProviders.cpp` | Provider registry: auth sites, hosts, credential siblings |
+| `resources/cloud_providers.json` | Udemy provider config: `isSiteVideo: true`, `isAuthSite: true` |
+
 ### 4.2 Website
 
 Actual website architecture:

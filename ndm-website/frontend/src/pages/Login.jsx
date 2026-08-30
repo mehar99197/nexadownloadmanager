@@ -1,14 +1,16 @@
 import { useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import Spinner from '../components/Spinner';
+import usePageMeta from '../hooks/usePageMeta';
 
 export default function Login() {
+  usePageMeta({ title: "Sign in", description: "Sign in to your Nexa Download Manager account to manage your plan, license key and billing." });
+
   const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
@@ -19,12 +21,16 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  if (isAuthenticated) {
-    navigate('/dashboard', { replace: true });
-    return <Spinner center />;
-  }
+  // Where to go after signing in. Only same-site paths are honoured, so a
+  // crafted link cannot bounce a visitor to another origin.
+  const rawNext = searchParams.get('next') || '';
+  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard';
 
-  const next = searchParams.get('next') || '/dashboard';
+  // A signed-in visitor is sent on to `next`. This branch also fires the
+  // instant login() resolves (isAuthenticated flips before navigate() runs),
+  // so it MUST honour `next` too — sending everyone to /dashboard here broke
+  // every ?next= link, e.g. accepting a team invitation.
+  if (isAuthenticated) return <Navigate to={next} replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();

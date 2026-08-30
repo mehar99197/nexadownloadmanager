@@ -6,31 +6,35 @@ class QNetworkAccessManager;
 
 namespace nexa {
 
-// A lightweight update *checker* (not an auto-installer). It GETs a small JSON
-// document describing the latest release and, if that version is newer than the
-// running one, tells the UI so it can point the user at the download.
+// Update checker. GETs a small JSON document describing the latest release and,
+// if that version is newer than the running one, tells the UI — which then
+// downloads the installer through the normal engine (verifying the feed's
+// SHA-256 when present) and launches it.
 //
-// The endpoint is configured via $NEXA_UPDATE_URL and must return:
-//   { "version": "0.2.0", "url": "https://…/download", "notes": "what's new" }
+// Feed (served by the website at /api/releases/feed?os=<platform>):
+//   { "version": "0.2.0", "url": "https://…/download/windows",
+//     "notes": "what's new", "sha256": "<hex or empty>" }
 //
-// Auto-applying an update is intentionally out of scope: it's platform-specific
-// (.deb / NSIS / AppImage) and security-sensitive (signature verification), so
-// Nexa surfaces the new version and link and lets the user update via their
-// normal channel. Disabled (no network call) when $NEXA_UPDATE_URL is unset.
+// $NEXA_UPDATE_URL overrides the feed URL; "off" disables checking entirely.
 class UpdateChecker : public QObject {
     Q_OBJECT
 public:
     explicit UpdateChecker(QObject *parent = nullptr);
 
-    bool isConfigured() const;                  // is $NEXA_UPDATE_URL set?
+    bool isConfigured() const;                  // false only when NEXA_UPDATE_URL=off
+    QString feedUrl() const;                    // env override, else the default feed
     void check(const QString &currentVersion);  // async; emits one signal below
+
+    // "windows" | "linux" | "macos" — the feed's os selector for this build.
+    static QString platformKey();
 
     // Public for unit-testing the comparison: true if `remote` > `current`
     // under dotted numeric semantics (1.10 > 1.9, trailing zeros ignored).
     static bool isNewer(const QString &remote, const QString &current);
 
 signals:
-    void updateAvailable(const QString &version, const QString &url, const QString &notes);
+    void updateAvailable(const QString &version, const QString &url,
+                         const QString &notes, const QString &sha256);
     void upToDate();
     void checkFailed(const QString &reason);
 

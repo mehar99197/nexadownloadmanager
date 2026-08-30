@@ -22,6 +22,15 @@ struct TaskRecord {
     QVector<SegmentInfo> segments;
 };
 
+// A download the user asked to start at a future time (IDM-style scheduler).
+// Survives restarts; headers/cookies are deliberately NOT persisted.
+struct ScheduledRecord {
+    int     id = 0;
+    QString url;
+    qint64  startAtMs = 0;   // epoch milliseconds
+    QString name;            // optional suggested file name
+};
+
 // Thin SQLite persistence layer (history, queue, per-segment resume state).
 class Database {
 public:
@@ -37,6 +46,11 @@ public:
     // `olderThanDays` days ago; pass 0 to clear all completed history. Returns
     // the number of download rows removed. Surfaced via Settings.
     int  clearCompleted(int olderThanDays = 0);
+
+    // Scheduled (not yet started) downloads.
+    void saveScheduled(int id, const QString &url, qint64 startAtMs, const QString &name);
+    void removeScheduled(int id);
+    QVector<ScheduledRecord> loadScheduled();   // also bumps nextId() past their ids
 
 private:
     void ensureSchema();

@@ -8,25 +8,30 @@ import Button from '../components/Button';
 import Input from '../components/Input';
 import StarRating from '../components/StarRating';
 import Spinner from '../components/Spinner';
+import Turnstile, { turnstileEnabled } from '../components/Turnstile';
+import usePageMeta from '../hooks/usePageMeta';
 
 const PAGE_SIZE = 10;
 
-function RatingBreakdown({ breakdown, totalCount, averageRating }) {
-  const max = Object.values(breakdown || {}).reduce((a, b) => Math.max(a, b), 0) || 1;
+function RatingBreakdown({ breakdown, averageRating }) {
+  // The breakdown is site-wide while totalCount follows the active star filter,
+  // so bars scale against the breakdown's own total — never the filtered count
+  // (a 5★ filter drew bars past 100%) and never zero (width: NaN%).
+  const allReviews = Object.values(breakdown || {}).reduce((a, b) => a + (Number(b) || 0), 0);
 
   return (
     <Card className="rating-card !p-6">
       <div className="text-center">
         <div className="text-4xl font-extrabold text-white">
-          {averageRating != null ? averageRating.toFixed(1) : '—'}
+          {allReviews > 0 && averageRating != null ? Number(averageRating).toFixed(1) : '—'}
         </div>
         <StarRating value={averageRating || 0} readOnly size={18} className="mt-1 justify-center" />
-        <p className="mt-1 text-xs text-zinc-500">{totalCount} review{totalCount !== 1 ? 's' : ''}</p>
+        <p className="mt-1 text-xs text-zinc-500">{allReviews} review{allReviews !== 1 ? 's' : ''}</p>
       </div>
       <div className="mt-6 space-y-2.5">
         {[5, 4, 3, 2, 1].map((star) => {
           const count = breakdown?.[star] || 0;
-          const pct = max ? (count / totalCount) * 100 : 0;
+          const pct = allReviews ? (count / allReviews) * 100 : 0;
           return (
             <div key={star} className="flex items-center gap-2 text-xs">
               <span className="w-3 text-zinc-400">{star}</span>
@@ -52,6 +57,8 @@ function ReviewForm({ onSubmitted }) {
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   if (!isAuthenticated) return null;
 
@@ -68,7 +75,10 @@ function ReviewForm({ onSubmitted }) {
     }
     setSubmitting(true);
     try {
-      await api.post('/reviews', { rating, comment: comment.trim() });
+      await api.post('/reviews', {
+        rating, comment: comment.trim(), ...(turnstileToken ? { turnstileToken } : {}),
+      });
+      setTurnstileReset((n) => n + 1);
       toast.success('Review submitted! It will appear after approval.');
       setRating(0);
       setComment('');
@@ -79,6 +89,7 @@ function ReviewForm({ onSubmitted }) {
         err?.message ||
         'Failed to submit review.';
       setError(msg);
+      setTurnstileReset((n) => n + 1);
     } finally {
       setSubmitting(false);
     }
@@ -105,7 +116,8 @@ function ReviewForm({ onSubmitted }) {
             {error}
           </div>
         )}
-        <Button type="submit" disabled={submitting}>
+        <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
+        <Button type="submit" disabled={submitting || (turnstileEnabled() && !turnstileToken)}>
           {submitting ? 'Submitting…' : 'Submit review'}
         </Button>
       </form>
@@ -114,6 +126,8 @@ function ReviewForm({ onSubmitted }) {
 }
 
 export default function Reviews() {
+  usePageMeta({ title: "Reviews", description: "What people say about Nexa Download Manager — real, moderated reviews from users." });
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -181,7 +195,9 @@ export default function Reviews() {
             </div>
 
             {data.reviews.length === 0 ? (
-              <p className="text-zinc-500">No reviews yet. Be the first!</p>
+              <p className="text-zinc-500">
+                {filter ? `No ${filter}-star reviews yet.` : 'No reviews yet. Be the first!'}
+              </p>
             ) : (
               data.reviews.map((r) => (
                 <Card key={r.id} className="card-hover !p-6">
@@ -225,11 +241,7 @@ export default function Reviews() {
           </div>
 
           <div className="space-y-5">
-            <RatingBreakdown
-              breakdown={data.ratingBreakdown}
-              totalCount={data.totalCount}
-              averageRating={data.averageRating}
-            />
+            <RatingBreakdown breakdown={data.ratingBreakdown} averageRating={data.averageRating} />
             <ReviewForm onSubmitted={() => fetchReviews(page, filter)} />
           </div>
         </div>

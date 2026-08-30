@@ -3,3 +3,6 @@ node_modules
 dist
 *.log
 mongo-data
+
+# Uploaded release installers (large binaries — never committed)
+backend/uploads/

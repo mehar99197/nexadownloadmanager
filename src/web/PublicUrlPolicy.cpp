@@ -35,6 +35,14 @@ static bool isPublicAddress(const QHostAddress &address)
     if (address.isNull() || address.isLoopback() || address.isLinkLocal() ||
         address.isMulticast() || !address.isGlobal())
         return false;
+    // QHostAddress::isGlobal() does not consistently exclude IPv6 unique-local
+    // addresses across Qt versions. Explicitly reject fc00::/7 as private LAN
+    // space so DNS names cannot bypass the public-target policy via IPv6.
+    if (address.protocol() == QAbstractSocket::IPv6Protocol) {
+        const Q_IPV6ADDR bytes = address.toIPv6Address();
+        if ((bytes[0] & 0xfe) == 0xfc)
+            return false;
+    }
     return true;
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QVector>
+#include "core/Types.h"
 
 class QLocalServer;
 class QLocalSocket;
@@ -27,6 +29,11 @@ signals:
     // Emitted when a peer sends {"type":"show"} (e.g. a second `nexa` launch, or
     // the browser popup) asking the running instance to surface its window.
     void showWindowRequested();
+    // Emitted when the extension sends {"type":"links"} — a page's harvested links
+    // (already validated: http(s), public hosts, de-duplicated, capped) for the UI
+    // to present in the link-grabber dialog.
+    void linksReceived(const QString &pageUrl, const QString &pageTitle,
+                       const QVector<nexa::LinkItem> &links, const nexa::HeaderList &headers);
 
 private slots:
     void onNewConnection();

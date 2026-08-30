@@ -6,6 +6,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QCheckBox;
 class QLabel;
+class QComboBox;
 
 namespace nexa {
 
@@ -25,8 +26,23 @@ public:
     // Called once at startup (before CLI flags, which may override).
     static void loadInto(DownloadEngine *engine);
 
+signals:
+    // Fired after Save: everything is persisted and applied to the engine.
+    // MainWindow forwards it so main() can re-apply dashboard settings.
+    void settingsApplied();
+
+signals:
+    // A theme was previewed or committed from this dialog (live stylesheet
+    // change) — MainWindow repaints the widgets it draws itself.
+    void themeChanged();
+
 private:
     void apply();   // push the dialog's values to the engine + QSettings
+    // Show a theme immediately so it can be judged; Cancel puts back whatever
+    // was in force when the dialog opened.
+    void applyThemePreview(const QString &id);
+
+    QString m_themeOnOpen;   // restored if the dialog is cancelled
 
     DownloadEngine *m_engine;
 
@@ -35,6 +51,20 @@ private:
     QCheckBox      *m_clipboard = nullptr;
     QCheckBox      *m_confirmStart = nullptr;   // IDM-style ask-before-download
     QCheckBox      *m_showComplete = nullptr;   // IDM-style completion prompt
+    QCheckBox      *m_notify = nullptr;         // tray/desktop notifications
+    QCheckBox      *m_autoUpdate = nullptr;     // silent daily update check
+    QComboBox      *m_whenDone = nullptr;       // post-download action
+    QCheckBox      *m_dashEnabled = nullptr;    // remote web dashboard
+    QSpinBox       *m_dashPort = nullptr;
+    QCheckBox      *m_dashLan = nullptr;
+    QComboBox      *m_theme = nullptr;
+    QComboBox      *m_language = nullptr;
+    QComboBox      *m_proxyMode = nullptr;
+    QLineEdit      *m_proxyHost = nullptr;
+    QSpinBox       *m_proxyPort = nullptr;
+    QLineEdit      *m_proxyUser = nullptr;
+    QLineEdit      *m_proxyPass = nullptr;
+    QLabel         *m_dashUrl = nullptr;        // current URL (+token) or "not running"
     QSpinBox       *m_maxConc = nullptr;
     QSpinBox       *m_speedKB = nullptr;       // 0 = unlimited
     QSpinBox       *m_streamConc = nullptr;
@@ -45,6 +75,8 @@ private:
     QSpinBox       *m_torrentUlKB = nullptr;
     QDoubleSpinBox *m_seedRatio = nullptr;
     QCheckBox      *m_aiRename = nullptr;
+    QCheckBox      *m_virusScan = nullptr;
+    QLineEdit      *m_virusCmd = nullptr;
     QCheckBox      *m_errLog = nullptr;     // opt-in troubleshooting log to a file
     QLineEdit      *m_licenseKey = nullptr;
     QLabel         *m_licenseStatus = nullptr;

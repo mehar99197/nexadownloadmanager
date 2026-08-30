@@ -3,6 +3,7 @@
 #include "auth/BrowserLogin.h"
 #include "auth/CloudProviders.h"
 #include "core/ExternalTools.h"
+#include "core/ProxyConfig.h"
 
 #include <QProcess>
 #include <QFile>
@@ -14,6 +15,7 @@
 #include <QUrlQuery>
 #include <QDateTime>
 #include <QDebug>
+#include <QUuid>
 
 namespace nexa {
 
@@ -65,15 +67,81 @@ QString humanBytes(qint64 b)
            + QLatin1String(units[u]);
 }
 
+// Return the Udemy course slug from both the browser's current URL shapes and
+// yt-dlp's accepted URL shape. Udemy commonly puts /course/ before the slug in
+// the browser, while yt-dlp expects /<slug>/ or /<slug>/learn/v4/t/lecture/<id>.
+QString udemyCourseSlug(const QUrl &url)
+{
+    const QStringList parts = url.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.size() >= 2 && parts.at(0).compare(QStringLiteral("course"), Qt::CaseInsensitive) == 0)
+        return parts.at(1);
+
+    // Modern yt-dlp lecture URLs use /<slug>/learn/v4/t/lecture/<id>.
+    if (parts.size() >= 2 && parts.at(1).compare(QStringLiteral("learn"), Qt::CaseInsensitive) == 0)
+        return parts.at(0);
+
+    // Older Udemy pages put the lecture id in the URL fragment: /<slug>/#/lecture/<id>.
+    if (!parts.isEmpty() && url.fragment().contains(QStringLiteral("lecture"), Qt::CaseInsensitive))
+        return parts.at(0);
+
+    // A bare /<slug>/ course URL is the form yt-dlp's course extractor wants.
+    return parts.size() == 1 ? parts.first() : QString();
+}
+
+QString udemyLectureId(const QUrl &url)
+{
+    static const QRegularExpression pathRe(
+        QStringLiteral("/learn/(?:v4/t/)?lecture/(\\d+)(?:/|$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (const auto m = pathRe.match(url.path()); m.hasMatch())
+        return m.captured(1);
+
+    static const QRegularExpression fragmentRe(
+        QStringLiteral("(?:^|/)lecture/(\\d+)(?:/|$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto m = fragmentRe.match(url.fragment());
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+// Convert Udemy's browser URL to a URL shape understood by the installed
+// yt-dlp Udemy extractors. In particular, /course/<slug>/... is NOT accepted:
+// yt-dlp interprets "course" as the course slug and then cannot find its id.
+QUrl normalizeUdemyUrl(const QUrl &url, bool playlist)
+{
+    const QString slug = udemyCourseSlug(url);
+    if (slug.isEmpty() || url.host().isEmpty())
+        return url;
+
+    QUrl normalized;
+    normalized.setScheme(url.scheme().isEmpty() ? QStringLiteral("https") : url.scheme());
+    normalized.setHost(url.host());
+    normalized.setPort(url.port());
+    QString path = QStringLiteral("/") + slug + QLatin1Char('/');
+    if (!playlist) {
+        const QString lectureId = udemyLectureId(url);
+        if (!lectureId.isEmpty())
+            path += QStringLiteral("learn/v4/t/lecture/") + lectureId;
+    }
+    normalized.setPath(path);
+    if (!playlist)
+        normalized.setQuery(url.query());
+    return normalized;
+}
+
 // A readable course/playlist folder name pulled from the page URL slug, e.g.
 //   udemy.com/course/pythonforbeginnersintro/learn/lecture/123 -> "pythonforbeginnersintro"
 //   youtube.com/playlist?list=PL... (no /course/) -> "" (caller falls back).
 // Far friendlier than yt-dlp's numeric playlist_id when no real title is known.
 QString urlSlug(const QUrl &url)
 {
-    static const QRegularExpression courseRe(QStringLiteral("/course/([^/]+)"));
-    const auto m = courseRe.match(url.path());
-    return m.hasMatch() ? m.captured(1) : QString();
+    const QStringList parts = url.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.size() >= 2 && parts.at(0).compare(QStringLiteral("course"), Qt::CaseInsensitive) == 0)
+        return parts.at(1);
+    if (parts.size() >= 2 && parts.at(1).compare(QStringLiteral("learn"), Qt::CaseInsensitive) == 0)
+        return parts.at(0);
+    if (!parts.isEmpty() && url.fragment().contains(QStringLiteral("lecture"), Qt::CaseInsensitive))
+        return parts.at(0);
+    return QString();
 }
 
 } // namespace
@@ -114,8 +182,9 @@ YtDlpGrabber::YtDlpGrabber(int id, const QUrl &pageUrl, const QString &outputDir
         }
         m_savePath = QDir(m_dir).filePath(placeholder + suffix + QLatin1Char('.') + ext);
     }
-    m_outFile = QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-                QStringLiteral("/nexa-ytout-%1.txt").arg(m_id);
+    const QString markerDir = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+        .filePath(QStringLiteral("nexa-yt-%1").arg(QUuid::createUuid().toString(QUuid::Id128)));
+    m_outFile = QDir(markerDir).filePath(QStringLiteral("result.txt"));
 }
 
 YtDlpGrabber::~YtDlpGrabber()
@@ -315,6 +384,10 @@ void YtDlpGrabber::start()
         return;
     m_cancelled = false;
     QDir().mkpath(m_dir);
+    QDir().mkpath(QFileInfo(m_outFile).absolutePath());
+    QFile::setPermissions(QFileInfo(m_outFile).absolutePath(), QFileDevice::ReadOwner |
+                                                              QFileDevice::WriteOwner |
+                                                              QFileDevice::ExeOwner);
 
 
     // Playlist/course: put every video inside a folder named after the course.
@@ -373,23 +446,22 @@ void YtDlpGrabber::start()
     m_conns = 1;
     const QStringList common = commonArgs(tmpl);
 
-    // For a Udemy whole-course (playlist) job, the URL we give yt-dlp must be a
-    // page that actually contains the numeric course id: yt-dlp's udemy:course
-    // extractor SCRAPES the id out of the fetched page. The course landing page
-    // (and the root-slug form) is a login-walled SPA WITHOUT the id, but the
-    // in-course lecture page udemy.com/course/<slug>/learn/lecture/ carries it
-    // and the extractor then enumerates the full curriculum. Normalise to that
-    // form (idempotent when the URL is already a lecture URL). Host preserved so
-    // enterprise tenants (company.udemy.com) keep working.
-    // NB: DRM-protected lectures still cannot be downloaded (yt-dlp can't decrypt
-    // Widevine); a course mixing DRM + plain videos yields only the plain ones.
+    // Udemy: yt-dlp's UdemyCourseIE extractor is currently unable to extract
+    // the numeric course id from modern Udemy course pages (the page no longer
+    // embeds ng-init JSON or data-course-id attributes).  Whole-course /<slug>/
+    // URLs trigger that extractor and fail with "Unable to extract course id".
+    // Individual lecture URLs (UdemyIE) DO work, so for playlist jobs keep the
+    // original URL — that downloads the current lecture reliably, and the user
+    // can download additional lectures one-at-a-time.  For a single-lecture job
+    // we still normalize to the /<slug>/learn/v4/t/lecture/<id> canonical form
+    // that yt-dlp's UdemyIE expects.
     QUrl runUrl = m_url;
-    if (m_playlist && m_url.host().toLower().endsWith(QStringLiteral("udemy.com"))) {
-        const QString slug = urlSlug(m_url);
-        if (!slug.isEmpty() && !m_url.path().contains(QStringLiteral("/learn/lecture/")))
-            runUrl = QUrl(QStringLiteral("https://%1/course/%2/learn/lecture/")
-                              .arg(m_url.host(), slug));
-    }
+    const QString host = m_url.host().toLower();
+    const bool isUdemy = host == QStringLiteral("udemy.com")
+                      || host.endsWith(QStringLiteral(".udemy.com"));
+    if (isUdemy && !m_playlist)
+        runUrl = normalizeUdemyUrl(m_url, false);   // single lecture: canonical form
+    // playlist: keep the original URL so UdemyIE handles it
     m_lastError.clear();
     m_tail.clear();
 
@@ -400,6 +472,11 @@ void YtDlpGrabber::start()
     }
 
     // Single video: one yt-dlp process (unchanged behaviour).
+    const QString exe = exePath();
+    if (exe.isEmpty()) {
+        setState(DownloadState::Error, QStringLiteral("yt-dlp is not installed or executable"));
+        return;
+    }
     QStringList args = common;
     args << QStringLiteral("--no-playlist")
          << QStringLiteral("--print-to-file") << QStringLiteral("after_move:filepath") << m_outFile
@@ -410,9 +487,15 @@ void YtDlpGrabber::start()
     connect(m_proc, &QProcess::readyReadStandardOutput, this, &YtDlpGrabber::onOutput);
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onProcessFinished(code); });
+    connect(m_proc, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart)
+            setState(DownloadState::Error, QStringLiteral("yt-dlp could not be started"));
+    });
 
     setState(DownloadState::Downloading, QStringLiteral("starting yt-dlp"));
-    m_proc->start(exePath(), args);   // absolute path: the bundled exe isn't on PATH on Windows
+    m_runStartedAt = QDateTime::currentDateTime();
+    m_proc->start(exe, args);   // absolute path: the bundled exe isn't on PATH on Windows
     m_proc->closeWriteChannel();   // EOF on stdin: an interactive prompt aborts, never hangs
 }
 
@@ -486,8 +569,13 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
         // re-encode (lossless); for aac/flac/mp3 we take any bestaudio and let the
         // post-processor convert to the requested container. --audio-quality 0 = best.
         const bool wantM4a = (m_audioFormat == QStringLiteral("m4a"));
-        args << QStringLiteral("--merge-output-format") << QStringLiteral("m4a")
-             << QStringLiteral("-f")
+        // NOTE: no --merge-output-format here. yt-dlp only accepts a VIDEO
+        // container for that flag (avi/flv/mkv/mov/mp4/webm); passing "m4a" makes
+        // it exit immediately with `invalid merge output format "m4a" given`,
+        // which killed every audio-only download before a byte was transferred.
+        // Audio-only needs no merge anyway — --extract-audio + --audio-format
+        // already decide the output container.
+        args << QStringLiteral("-f")
              << (wantM4a ? QStringLiteral("bestaudio[ext=m4a]/bestaudio/best")
                          : QStringLiteral("bestaudio/best"))
              << QStringLiteral("--extract-audio")
@@ -519,6 +607,8 @@ QStringList YtDlpGrabber::commonArgs(const QString &tmpl) const
     // signed segment URLs that expire during multi-connection aria2c downloads,
     // causing "aria2c exited with code 1" errors mid-download. yt-dlp's own
     // downloader refreshes URLs automatically, achieving the same parallelism.
+    if (const QString proxy = proxyconfig::toolProxyUrl(); !proxy.isEmpty())
+        args << QStringLiteral("--proxy") << proxy;
     args << QStringLiteral("--concurrent-fragments") << QStringLiteral("16")
          << QStringLiteral("--http-chunk-size") << QStringLiteral("10M");
 
@@ -791,14 +881,26 @@ void YtDlpGrabber::resolveOutputFile()
             }
         }
     }
-    // Fallback: newest media file in the output directory.
+    // Fallback: newest media file in the output directory — but ONLY one this run
+    // actually produced. The output dir is normally the user's Downloads folder,
+    // so an unguarded "newest media file" adopts a completely unrelated file the
+    // user already had whenever yt-dlp wrote nothing (i.e. every failed job).
+    // m_savePath then points at that file, and "Remove + delete file" erases it
+    // (DownloadEngine::remove -> QFile::remove(savePath())). Require the file to
+    // be at least as new as this run to keep the fallback to files we created.
     const QDir dir(m_dir);
-    const QStringList matches = dir.entryList(
+    const QFileInfoList matches = dir.entryInfoList(
         {QStringLiteral("*.mp4"), QStringLiteral("*.mkv"), QStringLiteral("*.webm"),
          QStringLiteral("*.m4a"), QStringLiteral("*.opus"), QStringLiteral("*.mp3")},
         QDir::Files, QDir::Time);
-    if (!matches.isEmpty())
-        m_savePath = dir.filePath(matches.first());
+    for (const QFileInfo &fi : matches) {
+        if (m_runStartedAt.isValid() && fi.lastModified() < m_runStartedAt)
+            continue;               // predates this download — not ours to claim
+        m_savePath = fi.absoluteFilePath();
+        return;
+    }
+    // Nothing this run created: leave m_savePath empty rather than claiming a
+    // file we did not write.
 }
 
 void YtDlpGrabber::onProcessFinished(int exitCode)

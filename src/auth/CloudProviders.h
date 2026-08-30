@@ -65,7 +65,6 @@ public:
     int providerForGoogleDrive() const;
 
 private:
-    QString registrableDomain(const QString &host) const;
     QVector<CloudProvider> m_providers;
 };
 

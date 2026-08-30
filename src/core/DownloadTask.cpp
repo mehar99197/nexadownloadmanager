@@ -1,6 +1,7 @@
 #include "core/DownloadTask.h"
 #include "web/PublicUrlPolicy.h"
 #include "core/SegmentDownloader.h"
+#include "core/RateLimiter.h"
 #include "core/Database.h"
 #include "auth/AuthUtils.h"
 #include "auth/CloudProviders.h"
@@ -15,7 +16,7 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QUrlQuery>
-#include <QSet>
+#include <QCryptographicHash>
 #include <algorithm>
 
 namespace nexa {
@@ -35,33 +36,14 @@ static const QString kDrmErrorDetail = QStringLiteral(
 static bool isSensitiveHeader(const QByteArray &name)
 {
     const QByteArray l = name.toLower();
-    return l == "cookie" || l == "authorization";
+    return l == "cookie" || l == "authorization" || l == "referer" ||
+           l == "proxy-authorization" || l == "x-api-key" ||
+           l == "x-csrf-token";
 }
 
-// Best-effort registrable domain (eTLD+1) WITHOUT a public-suffix list: take the
-// last two labels, or the last three when the second-to-last is a well-known
-// second-level domain (co.uk, com.au, …) so siblings under those don't collapse
-// together. Good enough to decide whether two hosts are the same first party.
-static QString registrableDomain(const QString &host)
-{
-    const QStringList parts = host.toLower().split(QLatin1Char('.'), Qt::SkipEmptyParts);
-    if (parts.size() <= 2)
-        return parts.join(QLatin1Char('.'));
-    static const QSet<QString> kSld = {
-        QStringLiteral("co"),  QStringLiteral("com"), QStringLiteral("net"),
-        QStringLiteral("org"), QStringLiteral("gov"), QStringLiteral("edu"),
-        QStringLiteral("ac"),  QStringLiteral("ne"),  QStringLiteral("or"),
-    };
-    const int n = parts.size();
-    if (parts[n - 2].size() <= 3 && kSld.contains(parts[n - 2]))
-        return QStringList(parts.mid(n - 3)).join(QLatin1Char('.'));
-    return QStringList(parts.mid(n - 2)).join(QLatin1Char('.'));
-}
-
-// Two hosts share a credential scope when they're the same host OR the same
-// first party (registrable domain), OR they're credential siblings of the same
-// cloud provider (e.g. google.com ↔ googleusercontent.com). The sibling data is
-// driven entirely by the cloud_providers.json registry — no hardcoded arrays.
+// Two hosts share a credential scope when they're the same host or are explicit
+// credential siblings of the same cloud provider. The registry, not naive
+// suffix inference, defines those sibling relationships.
 static bool sameCredentialScope(const QString &host, const QString &credHost,
                                 const CloudProviders *providers)
 {
@@ -72,17 +54,13 @@ static bool sameCredentialScope(const QString &host, const QString &credHost,
         return false;
     if (host.compare(credHost, Qt::CaseInsensitive) == 0)
         return true;
-    const QString rHost = registrableDomain(host);
-    const QString rCred = registrableDomain(credHost);
-    if (rHost == rCred)
-        return true;
     if (providers)
         return providers->sameCredentialScope(host, credHost);
     return false;
 }
 
 // Apply the captured headers to `req`, dropping the sensitive ones unless the
-// request targets the credential's first party (so cookies/tokens stay scoped).
+// request targets the credential's exact or explicitly approved sibling host.
 static void applyScopedHeaders(QNetworkRequest &req, const HeaderList &headers,
                                const QString &credHost, const CloudProviders *providers)
 {
@@ -169,11 +147,45 @@ QString DownloadTask::fileName() const
     return QFileInfo(m_savePath).fileName();
 }
 
+void DownloadTask::setSpeedLimit(qint64 bytesPerSec)
+{
+    const qint64 bps = qMax<qint64>(0, bytesPerSec);
+    if (bps == 0 && !m_taskLimiter)
+        return;                       // already unlimited; nothing to build
+    if (!m_taskLimiter)
+        m_taskLimiter = new RateLimiter(this);
+    m_taskLimiter->setLimit(bps);
+    // Push it to the workers already running for this download.
+    for (SegmentDownloader *w : m_workers)
+        if (w)
+            w->setTaskRateLimiter(m_taskLimiter);
+}
+
+qint64 DownloadTask::speedLimit() const
+{
+    return m_taskLimiter ? m_taskLimiter->limit() : 0;
+}
+
 bool DownloadTask::renameTo(const QString &newFileName)
 {
+    QString safeName = newFileName;
+    safeName.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    safeName = QFileInfo(safeName).fileName().trimmed();
+    for (QChar &c : safeName) {
+        if (c.unicode() < 0x20 || c == QChar(0x7f) ||
+            c == QLatin1Char(':') || c == QLatin1Char('*') ||
+            c == QLatin1Char('?') || c == QLatin1Char('"') ||
+            c == QLatin1Char('<') || c == QLatin1Char('>') ||
+            c == QLatin1Char('|'))
+            c = QLatin1Char('_');
+    }
+    if (safeName.isEmpty() || safeName == QLatin1String(".") ||
+        safeName == QLatin1String(".."))
+        return false;
+
     const QFileInfo fi(m_savePath);
     const QString dir = fi.absolutePath();
-    QString target = dir + QStringLiteral("/") + newFileName;
+    QString target = dir + QStringLiteral("/") + safeName;
     if (target == m_savePath)
         return true;
     // Don't clobber an existing file: name.ext -> name (1).ext, etc.
@@ -585,6 +597,19 @@ void DownloadTask::sendProbe()
                            << "method=" << (m_probeWasHead ? "HEAD" : "GET");
     QNetworkAccessManager *nam = probeManager();
     m_probe = m_probeWasHead ? nam->head(req) : nam->get(req);
+    if (!m_probeWasHead) {
+        // A server that ignores Range may start streaming the entire object in
+        // response to the one-byte probe. We only need its headers; abort the
+        // body as soon as Qt has received them so a large file is not buffered
+        // before the real transfer even begins.
+        connect(m_probe, &QNetworkReply::metaDataChanged, this, [this]() {
+            if (!m_probe)
+                return;
+            const int status = m_probe->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status == 200)
+                m_probe->abort();
+        });
+    }
     connect(m_probe, &QNetworkReply::finished, this, &DownloadTask::onProbeFinished);
 }
 
@@ -830,7 +855,9 @@ void DownloadTask::onConfirmPageFinished()
         return;
     }
     m_url = resolved;
-    m_credHost = m_url.host();
+    // Keep the original credential origin. The resolved button URL may be on
+    // an unrelated CDN; applyScopedHeaders()/makeWorker() will then strip
+    // Cookie/Authorization instead of trusting HTML from the confirm page.
     m_confirmPageFetched = true;
     m_probeRedirects = 0;
     sendProbe();
@@ -967,6 +994,36 @@ void DownloadTask::restore(qint64 totalBytes, const QVector<SegmentInfo> &segmen
                            bool rangesSupported, const QString &etag,
                            const QString &lastModified)
 {
+    bool valid = !segments.isEmpty();
+    QVector<SegmentInfo> byStart = segments;
+    std::sort(byStart.begin(), byStart.end(),
+              [](const SegmentInfo &a, const SegmentInfo &b) { return a.start < b.start; });
+    for (int i = 0; valid && i < segments.size(); ++i) {
+        const SegmentInfo &s = segments.at(i);
+        valid = s.index == i && s.start >= 0 && s.end >= s.start
+             && s.done >= 0 && s.done <= s.length();
+        if (totalBytes > 0)
+            valid = valid && s.end < totalBytes;
+    }
+    if (valid && totalBytes > 0) {
+        valid = byStart.first().start == 0 && byStart.last().end == totalBytes - 1;
+        for (int i = 1; valid && i < byStart.size(); ++i)
+            valid = byStart.at(i - 1).end + 1 == byStart.at(i).start;
+    }
+    if (!valid) {
+        // Never trust malformed persisted offsets. Clear them so the next Resume
+        // performs a clean probe instead of writing into overlapping/gapped ranges.
+        m_total = -1;
+        m_done = 0;
+        m_segments.clear();
+        m_rangesSupported = false;
+        m_etag.clear();
+        m_lastModified.clear();
+        setState(DownloadState::Paused, QStringLiteral("saved progress invalid; restarting"));
+        persist();
+        return;
+    }
+
     m_total = totalBytes;
     m_segments = segments;
     // Use the persisted capability; fall back to the old segment-count heuristic
@@ -977,7 +1034,9 @@ void DownloadTask::restore(qint64 totalBytes, const QVector<SegmentInfo> &segmen
     m_done = 0;
     for (const auto &s : m_segments)
         m_done += s.done;
-    if (m_done >= m_total && m_total > 0)
+    const QFileInfo output(m_savePath);
+    const bool outputLooksComplete = output.isFile() && output.size() >= m_total;
+    if (m_done >= m_total && m_total > 0 && outputLooksComplete)
         setState(DownloadState::Completed);
     else
         setState(DownloadState::Paused, QStringLiteral("restored"));
@@ -1024,6 +1083,7 @@ SegmentDownloader *DownloadTask::makeWorker(const SegmentInfo &seg)
         if (inCredentialScope || !isSensitiveHeader(h.first))
             workerHeaders.append(h);
     auto *w = new SegmentDownloader(seg, m_url, m_savePath, workerHeaders, m_nam, m_limiter, this);
+    w->setTaskRateLimiter(m_taskLimiter);
     w->setIfRangeValidator(resumeValidator());
     w->setPublicNetworkOnly(m_publicNetworkOnly);
     connect(w, &SegmentDownloader::progressed,  this, &DownloadTask::onSegmentProgressed);
@@ -1333,7 +1393,24 @@ void DownloadTask::finalizeShort(qint64 totalReceived)
         persist();
         return;
     }
-    setState(DownloadState::Completed, QStringLiteral("done"));
+
+    // Compute SHA-256 hash and verify if expected hash was provided
+    m_hashResult = computeSha256();
+    QString completionDetail = QStringLiteral("done");
+    if (m_hashResult.hasExpected) {
+        if (m_hashResult.verified) {
+            completionDetail = QStringLiteral("done (hash verified)");
+        } else {
+            // Hash mismatch - this is a data integrity error
+            setState(DownloadState::Error,
+                     QStringLiteral("hash mismatch: expected %1, got %2")
+                     .arg(m_expectedSha256.toLower(), m_hashResult.sha256));
+            persist();
+            return;
+        }
+    }
+
+    setState(DownloadState::Completed, completionDetail);
     persist();
     emit progress(m_id, m_total, m_total, 0.0);
     emit finished(m_id);
@@ -1352,10 +1429,71 @@ void DownloadTask::checkAllComplete()
         persist();
         return;
     }
-    setState(DownloadState::Completed, QStringLiteral("done"));
+
+    // Compute SHA-256 hash and verify if expected hash was provided
+    m_hashResult = computeSha256();
+    QString completionDetail = QStringLiteral("done");
+    if (m_hashResult.hasExpected) {
+        if (m_hashResult.verified) {
+            completionDetail = QStringLiteral("done (hash verified)");
+            if (kDebug)
+                qDebug().noquote() << "NEXA HASH VERIFIED" << m_id << m_hashResult.sha256;
+        } else {
+            // Hash mismatch - this is a data integrity error
+            setState(DownloadState::Error,
+                     QStringLiteral("hash mismatch: expected %1, got %2")
+                     .arg(m_expectedSha256.toLower(), m_hashResult.sha256));
+            persist();
+            return;
+        }
+    }
+
+    setState(DownloadState::Completed, completionDetail);
     persist();
     emit progress(m_id, m_done, m_total, 0.0);
     emit finished(m_id);
+}
+
+// Compute SHA-256 hash of the downloaded file for integrity verification.
+// This is called after download completion but before marking as "Completed".
+HashVerification DownloadTask::computeSha256() const
+{
+    HashVerification result;
+
+    // Only compute if we have a valid file
+    QFileInfo fi(m_savePath);
+    if (!fi.exists() || fi.size() == 0) {
+        return result;
+    }
+
+    QFile file(m_savePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return result;
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    constexpr qint64 chunkSize = 1024 * 1024; // 1 MB chunks
+    qint64 totalRead = 0;
+
+    while (!file.atEnd()) {
+        const QByteArray chunk = file.read(chunkSize);
+        if (chunk.isEmpty())
+            break;
+        hash.addData(chunk);
+        totalRead += chunk.size();
+    }
+    file.close();
+
+    result.sha256 = QString::fromLatin1(hash.result().toHex());
+
+    // Check against expected hash if provided
+    if (!m_expectedSha256.isEmpty()) {
+        result.hasExpected = true;
+        // Normalize both to lowercase for comparison
+        result.verified = (m_expectedSha256.toLower() == result.sha256.toLower());
+    }
+
+    return result;
 }
 
 void DownloadTask::pause()

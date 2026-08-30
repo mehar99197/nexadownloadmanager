@@ -51,6 +51,29 @@ api.interceptors.response.use(
 );
 
 /**
+ * Rehydrate the in-memory access token from the httpOnly refresh cookie.
+ * Called once on load (when the session hint says there may be a session)
+ * BEFORE any authenticated request, so a signed-in user's page load never
+ * starts with a 401 that then has to be recovered by the interceptor.
+ * Resolves true when a token was obtained.
+ */
+export async function restoreSession() {
+  try {
+    refreshPromise ||= axios.post(
+      `${import.meta.env.VITE_API_URL || '/api'}/auth/refresh`, {}, { withCredentials: true }
+    ).finally(() => { refreshPromise = null; });
+    const res = await refreshPromise;
+    const token = res.data?.data?.token;
+    if (!token) return false;
+    setAccessToken(token);
+    return true;
+  } catch {
+    clearAccessToken();
+    return false;
+  }
+}
+
+/**
  * Unwrap the standard success envelope: { ok:true, data }.
  * NOTE: POST /api/license/validate is the ONE endpoint that does NOT use this
  * envelope — but the website never calls it (the C++ app does).

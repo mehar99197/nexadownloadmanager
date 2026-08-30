@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import api, { unwrap } from '../api/client.js';
+import { useConfirm } from '../components/ConfirmDialog.jsx';
 import DataTable from '../components/DataTable.jsx';
 import Pagination from '../components/Pagination.jsx';
 import Badge from '../components/Badge.jsx';
@@ -16,6 +17,7 @@ function errorMessage(err, fallback) {
 }
 
 export default function Subscriptions() {
+  const confirm = useConfirm();
   const [data, setData] = useState({ subscriptions: [], totalCount: 0 });
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -80,12 +82,18 @@ export default function Subscriptions() {
   };
 
   const revokeDevice = async (subscription) => {
-    if (!window.confirm(`Revoke the registered device for ${subscription.userEmail}?`)) return;
+    const sure = await confirm({
+      title: `Free every seat on ${subscription.userEmail}'s licence?`,
+      message: 'Machines currently using it drop to Free until they re-validate. Nothing is blacklisted — the same devices can take a seat again.',
+      confirmLabel: 'Free seats',
+      danger: true,
+    });
+    if (!sure) return;
     try {
       await unwrap(api.post(`/admin/subscriptions/${subscription.id}/revoke-device`));
       await loadSubscriptions();
     } catch (err) {
-      setError(errorMessage(err, 'Unable to revoke device.'));
+      setError(errorMessage(err, 'Unable to free the seats.'));
     }
   };
 
@@ -115,12 +123,12 @@ export default function Subscriptions() {
     { key: 'license', header: 'License', render: (subscription) => <span className="font-mono text-xs text-admin-muted">{subscription.license_key}</span> },
     { key: 'started', header: 'Started', render: (subscription) => formatDate(subscription.start_date) },
     { key: 'expires', header: 'Expires', render: (subscription) => formatDate(subscription.expiry_date) },
-    { key: 'actions', header: '', className: 'text-right', render: (subscription) => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => revokeDevice(subscription)}>Revoke device</Button><Button variant="secondary" size="sm" onClick={() => openEditor(subscription)}>Manage</Button></div> },
+    { key: 'actions', header: '', className: 'text-right', render: (subscription) => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => revokeDevice(subscription)}>Free seats</Button><Button variant="secondary" size="sm" onClick={() => openEditor(subscription)}>Manage</Button></div> },
   ];
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Revenue & licenses</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Subscriptions</h2><p className="mt-2 max-w-2xl text-sm text-admin-muted">Search billing records, change access, revoke devices, issue a manual license, or export the full catalog.</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={exportSubscriptions}>Export CSV</Button><Button onClick={() => setCreateOpen(true)}>Issue subscription</Button></div></div>
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Revenue & licenses</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Subscriptions</h2><p className="mt-2 max-w-2xl text-sm text-admin-muted">Search billing records, change access, free a licence's seats, issue a manual license, or export the full catalog.</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={exportSubscriptions}>Export CSV</Button><Button onClick={() => setCreateOpen(true)}>Issue subscription</Button></div></div>
       <div className="admin-card grid gap-3 lg:grid-cols-[1.5fr_0.7fr_0.7fr_auto_auto] lg:items-end"><form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); setPage(1); setQuery(search.trim()); }}><Input aria-label="Search subscriptions" name="subscriptionSearch" label="Search" placeholder="Name or email" value={search} onChange={(event) => setSearch(event.target.value)} /><Button type="submit" variant="secondary">Search</Button></form><label className="block"><span className="admin-label">Plan</span><select className="admin-input" value={plan} onChange={(event) => { setPlan(event.target.value); setPage(1); }}><option value="">All plans</option><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><label className="block"><span className="admin-label">Status</span><select className="admin-input" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}><option value="">All statuses</option><option value="active">Active</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option></select></label><Button variant="ghost" onClick={() => { setSearch(''); setQuery(''); setPlan(''); setStatus(''); setPage(1); }}>Clear</Button><Button variant="ghost" onClick={loadSubscriptions} disabled={loading}>Refresh</Button></div>
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
       <div className="admin-card !p-0"><div className="border-b border-admin-border px-5 py-4"><p className="text-sm text-admin-muted"><span className="font-bold text-admin-text">{data.totalCount}</span> matching subscriptions</p></div><DataTable columns={columns} rows={data.subscriptions} loading={loading} emptyMessage="No subscriptions match these filters." /></div>

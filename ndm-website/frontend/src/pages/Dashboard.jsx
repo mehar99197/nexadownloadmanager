@@ -1,10 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../components/Toast';
+import { useConfirm } from '../components/ConfirmDialog';
 import api, { unwrap } from '../api/client';
+import { clearPendingTrial, hasPendingTrial, startTrial, trialDaysLeft } from '../api/trial';
+import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import Input from '../components/Input';
 import Spinner from '../components/Spinner';
 
 function StatCard({ label, value, icon }) {
@@ -14,9 +19,9 @@ function StatCard({ label, value, icon }) {
         <div className="icon-tile !h-11 !w-11 shrink-0">
           {icon}
         </div>
-        <div>
+        <div className="min-w-0">
           <p className="text-[0.65rem] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p>
-          <p className="text-xl font-bold text-white">{value}</p>
+          <p className="truncate text-xl font-bold text-white" title={typeof value === 'string' ? value : undefined}>{value}</p>
         </div>
       </div>
     </Card>
@@ -55,6 +60,9 @@ function LicenseCard({ license }) {
       </div>
       <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
         <span>Plan: <span className="font-medium text-zinc-300 capitalize">{license.plan}</span></span>
+        {license.viaTeam && (
+          <span>Shared by: <span className="font-medium text-zinc-300">{license.teamOwner}</span></span>
+        )}
         <span>Status: <span className="font-medium text-zinc-300 capitalize">{license.status}</span></span>
         {license.expiryDate && (
           <span>
@@ -65,30 +73,392 @@ function LicenseCard({ license }) {
           </span>
         )}
       </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Paste this key in the app under Settings &rarr; License.{' '}
+        <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
+      </p>
     </Card>
   );
 }
 
+function timeAgo(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const min = Math.round(ms / 60000);
+  if (min < 2) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+
+/**
+ * Seats are concurrent: a licence covers N machines AT A TIME. This is where
+ * a user frees one when the app on another machine is holding it.
+ */
+function DevicesCard({ onChanged }) {
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  const load = async () => {
+    try {
+      setData(unwrap(await api.get('/user/devices')));
+    } catch {
+      setData({ seats: 0, activeSeats: 0, devices: [] });
+    }
+  };
+
+  // The desktop app claims and frees seats while this page sits open, so a
+  // one-shot fetch goes stale the moment the app activates. Keep the card
+  // live: refresh every 30s and whenever the tab regains focus.
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 30_000);
+    const onFocus = () => { if (!document.hidden) load(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+     
+  }, []);
+
+  const release = async (device) => {
+    setBusyId(device.id);
+    try {
+      await api.delete(`/user/devices/${device.id}`);
+      toast.success(`Signed ${device.name} out. The seat is free.`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not free that seat.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (!data) return null;
+  const { seats, activeSeats, devices } = data;
+
+  return (
+    <Card className="card-hover !p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-white">Your devices</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {seats} seat{seats === 1 ? '' : 's'} · {activeSeats} in use right now. A seat frees itself 15 minutes after the app closes.
+          </p>
+        </div>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${activeSeats >= seats && seats > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+          {activeSeats}/{seats} in use
+        </span>
+      </div>
+      {devices.length === 0 ? (
+        <p className="mt-4 text-sm text-zinc-500">No device has activated this key yet.</p>
+      ) : (
+        <ul className="mt-4 divide-y divide-[var(--color-surface-border)]">
+          {devices.map((d) => (
+            <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">
+                  {d.name}
+                  <span className="ml-2 font-mono text-[0.7rem] font-normal text-slate-500">{d.shortId}</span>
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {d.active ? 'Holding a seat' : 'Not holding a seat'}
+                  {d.lastSeenAt ? ` · last seen ${timeAgo(d.lastSeenAt)}` : ''}
+                </p>
+              </div>
+              {d.active && (
+                <Button variant="ghost" onClick={() => release(d)} disabled={busyId === d.id}>
+                  {busyId === d.id ? 'Freeing…' : 'Free this seat'}
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Team roster. Owners of a Team plan invite by email and remove people;
+ * members see whose team they are on and can leave. Everyone else sees
+ * nothing — the card only renders when there is a team to show.
+ */
+function TeamCard({ onChanged }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [team, setTeam] = useState(null);
+  const [email, setEmail] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    try {
+      setTeam(unwrap(await api.get('/team')));
+    } catch {
+      setTeam({ role: 'none' });
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const invite = async (e) => {
+    e.preventDefault();
+    setError('');
+    setInviting(true);
+    try {
+      await api.post('/team/invites', { email: email.trim() });
+      toast.success(`Invitation sent to ${email.trim()}.`);
+      setEmail('');
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || 'Could not send the invitation.');
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const resend = async (member) => {
+    setBusyId(member.id);
+    try {
+      await api.post(`/team/invites/${member.id}/resend`);
+      toast.success(`Invitation re-sent to ${member.email}.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not re-send the invitation.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (member) => {
+    const pending = member.status === 'invited';
+    const sure = await confirm({
+      title: pending ? 'Withdraw this invitation?' : `Remove ${member.name || member.email}?`,
+      message: pending
+        ? `${member.email} will no longer be able to accept.`
+        : 'They lose access to the team licence key; the app on their machine returns to Free at its next check.',
+      confirmLabel: pending ? 'Withdraw' : 'Remove',
+      danger: true,
+    });
+    if (!sure) return;
+    setBusyId(member.id);
+    try {
+      await api.delete(`/team/members/${member.id}`);
+      toast.success(pending ? 'Invitation withdrawn.' : `${member.email} removed from the team.`);
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not remove that person.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const leave = async () => {
+    const sure = await confirm({
+      title: `Leave ${team.owner.name}'s team?`,
+      message: 'The team licence key disappears from your dashboard and the app returns to your own plan.',
+      confirmLabel: 'Leave team',
+      danger: true,
+    });
+    if (!sure) return;
+    setBusyId('leave');
+    try {
+      await api.post('/team/leave');
+      toast.success('You left the team.');
+      await load();
+      onChanged?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not leave the team.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (!team || team.role === 'none') return null;
+
+  if (team.role === 'member') {
+    return (
+      <Card className="card-hover !p-6">
+        <h3 className="font-semibold text-white">Your team</h3>
+        <p className="mt-2 text-sm text-zinc-400">
+          You are on <span className="font-semibold text-white">{team.owner.name}</span>&rsquo;s{' '}
+          <span className="capitalize">{team.plan}</span> plan
+          {team.usable ? '. The team licence key is shown above.' : ', which is not active right now.'}
+        </p>
+        <div className="mt-4">
+          <Button variant="ghost" onClick={leave} disabled={busyId === 'leave'}>
+            {busyId === 'leave' ? 'Leaving…' : 'Leave team'}
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="card-hover !p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-white">Your team</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {team.seats} people on one key, five machines at a time. Members get the key on their own dashboard.
+          </p>
+        </div>
+        <span className="rounded-full bg-brand-400/15 px-2.5 py-1 text-xs font-bold text-brand-100">
+          {team.used}/{team.seats} people
+        </span>
+      </div>
+
+      <ul className="mt-4 divide-y divide-[var(--color-surface-border)]">
+        {team.members.map((m) => (
+          <li key={m.id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-white">{m.name || m.email}</p>
+              <p className="mt-0.5 truncate text-xs text-slate-500">
+                {m.name ? `${m.email} · ` : ''}
+                {m.status === 'active' ? `joined ${timeAgo(m.acceptedAt) || 'recently'}` : `invited ${timeAgo(m.invitedAt) || 'just now'} · pending`}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {m.status === 'invited' && (
+                <Button variant="ghost" onClick={() => resend(m)} disabled={busyId === m.id}>Re-send</Button>
+              )}
+              <Button variant="ghost" onClick={() => remove(m)} disabled={busyId === m.id}>
+                {m.status === 'invited' ? 'Withdraw' : 'Remove'}
+              </Button>
+            </div>
+          </li>
+        ))}
+        {team.members.length === 0 && (
+          <li className="py-3 text-sm text-zinc-500">Nobody has been invited yet.</li>
+        )}
+      </ul>
+
+      {team.canInvite ? (
+        <form onSubmit={invite} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <Input
+              label="Invite by email"
+              name="inviteEmail"
+              type="email"
+              required
+              placeholder="colleague@company.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              error={error || undefined}
+            />
+          </div>
+          <Button type="submit" disabled={inviting || !email.trim()}>
+            {inviting ? 'Sending…' : 'Send invite'}
+          </Button>
+        </form>
+      ) : (
+        <p className="mt-4 text-xs text-slate-500">
+          {team.usable ? 'Every place on this plan is taken. Remove someone to invite another.' : 'This plan is not active, so invitations are paused.'}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+function TrialBanner({ subscription, onStart, starting }) {
+  if (subscription?.trial) {
+    const days = trialDaysLeft(subscription.trialEndsAt);
+    return (
+      <div className="mt-6 flex flex-col gap-3 rounded-xl border border-accent-400/35 bg-accent-500/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-accent-300">
+          <span className="font-bold text-white">Pro trial</span>
+          {' · '}
+          {days === 0 ? 'ends today' : `${days} day${days === 1 ? '' : 's'} left`}
+          {subscription.trialEndsAt && (
+            <span className="text-slate-400">
+              {' '}(until {new Date(subscription.trialEndsAt).toLocaleDateString()})
+            </span>
+          )}
+        </div>
+        <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+      </div>
+    );
+  }
+
+  const isFree = (subscription?.plan || 'free') === 'free';
+  if (isFree && !subscription?.trialEndsAt) {
+    return (
+      <div className="mt-6 flex flex-col gap-3 rounded-xl border border-brand-400/30 bg-brand-400/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-brand-100">
+          <span className="font-bold text-white">Try Pro free for 7 days.</span>{' '}
+          Unlimited concurrent downloads and AI rename — no card needed.
+        </div>
+        <Button onClick={onStart} disabled={starting}>
+          {starting ? 'Starting…' : 'Start your free 7-day Pro trial'}
+        </Button>
+      </div>
+    );
+  }
+  return null;
+}
+
 export default function Dashboard() {
-  const { user } = useAuth();
+  usePageMeta({ title: 'Dashboard', description: 'Your Nexa Download Manager account: plan, license key and billing.' });
+
+  const { user, refreshMe } = useAuth();
+  const toast = useToast();
   const [license, setLicense] = useState(null);
   const [loadingLicense, setLoadingLicense] = useState(true);
+  const [startingTrial, setStartingTrial] = useState(false);
+  const redeemed = useRef(false);
+
+  const subscription = user?.subscription;
+  // A Team member on the Free plan uses the team's licence, so the summary
+  // tiles and the trial offer follow the plan they actually have.
+  const viaTeam = Boolean(user?.team) && (subscription?.plan || 'free') === 'free';
+
+  const loadLicense = async () => {
+    try {
+      const res = await api.get('/user/license');
+      setLicense(unwrap(res));
+    } catch {
+      // no license — that's fine
+    } finally {
+      setLoadingLicense(false);
+    }
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    const fetch = async () => {
-      try {
-        const res = await api.get('/user/license');
-        if (!cancelled) setLicense(unwrap(res));
-      } catch {
-        // no license — that's fine
-      } finally {
-        if (!cancelled) setLoadingLicense(false);
-      }
-    };
-    fetch();
-    return () => { cancelled = true; };
+    loadLicense();
   }, []);
+
+  const handleStartTrial = async () => {
+    setStartingTrial(true);
+    try {
+      const result = await startTrial();
+      if (result.started) toast.success('Your 7-day Pro trial has started.');
+      else toast.info('This account has already used its Pro trial.');
+      await refreshMe();
+      await loadLicense();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not start the trial.');
+    } finally {
+      setStartingTrial(false);
+    }
+  };
+
+  // Redeem a trial requested during registration (/register?trial=1) once.
+  useEffect(() => {
+    if (redeemed.current || !user || !hasPendingTrial()) return;
+    redeemed.current = true;
+    clearPendingTrial();
+    if (subscription?.trial || subscription?.trialEndsAt || (subscription?.plan && subscription.plan !== 'free')) return;
+    handleStartTrial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   return (
     <Section>
@@ -105,10 +475,18 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {!viaTeam && <TrialBanner subscription={subscription} onStart={handleStartTrial} starting={startingTrial} />}
+
       <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Plan"
-          value={user?.subscription?.plan || 'Free'}
+          value={
+            <span className="capitalize">
+              {viaTeam ? 'Team' : (subscription?.plan || 'Free')}
+              {subscription?.trial && !viaTeam && <span className="ml-2 text-xs font-semibold uppercase tracking-wide text-accent-300">Trial</span>}
+              {viaTeam && <span className="ml-2 text-xs font-semibold uppercase tracking-wide text-brand-300">via team</span>}
+            </span>
+          }
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4" />
@@ -119,7 +497,7 @@ export default function Dashboard() {
         />
         <StatCard
           label="Status"
-          value={user?.subscription?.status || 'active'}
+          value={<span className="capitalize">{subscription?.status || 'active'}</span>}
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
@@ -129,7 +507,7 @@ export default function Dashboard() {
         />
         <StatCard
           label="Email"
-          value={user?.email || '—'}
+          value={<span className="text-base">{user?.email || '—'}</span>}
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="4" width="20" height="16" rx="2" />
@@ -139,7 +517,7 @@ export default function Dashboard() {
         />
         <StatCard
           label="Seats"
-          value={user?.subscription?.seats || '1'}
+          value={subscription?.seats || '1'}
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -151,8 +529,10 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="mt-8">
+      <div className="mt-8 grid gap-6 lg:grid-cols-2">
         {loadingLicense ? <Spinner center /> : <LicenseCard license={license} />}
+        <DevicesCard />
+        <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
       </div>
 
       <div className="mt-8 grid gap-6 sm:grid-cols-2">
@@ -161,18 +541,17 @@ export default function Dashboard() {
           <div className="mt-4 flex flex-wrap gap-3">
             <Link to="/download" className="btn btn-primary">Download App</Link>
             <Link to="/pricing" className="btn btn-ghost">Upgrade Plan</Link>
+            <Link to="/docs" className="btn btn-ghost">Docs</Link>
           </div>
         </Card>
         <Card className="card-hover !p-6">
           <h3 className="font-semibold text-white">Need help?</h3>
           <p className="mt-2 text-sm text-zinc-400">
-            Check our documentation or reach out to support.
+            Check the <Link to="/faq" className="text-slate-200 hover:text-brand-300">FAQ</Link> and{' '}
+            <Link to="/docs" className="text-slate-200 hover:text-brand-300">documentation</Link>, or reach out to support.
           </p>
           <div className="mt-4">
-            <Button
-              href="mailto:support@nexadownloadmanager.com"
-              variant="ghost"
-            >
+            <Button to="/contact" variant="ghost">
               Contact Support
             </Button>
           </div>

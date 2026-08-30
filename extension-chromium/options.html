@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexa options</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="page">
+    <header class="head">
+      <img class="logo" src="icons/icon48.png" width="32" height="32" alt="">
+      <div>
+        <h1>Nexa Download Manager</h1>
+        <p class="muted">Browser integration settings <span id="version"></span></p>
+      </div>
+    </header>
+
+    <p id="load-error" class="banner bad" hidden>Could not load settings from the extension. Reload the extension and open this page again.</p>
+
+    <form id="form" autocomplete="off">
+      <section class="card">
+        <h2>Downloads</h2>
+        <label class="row" for="enabled">
+          <span class="row-label">
+            <span>Take over downloads</span>
+            <span class="hint">Master switch. When off, every download stays in the browser.</span>
+          </span>
+          <input id="enabled" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row" for="askBeforeHandoff">
+          <span class="row-label">
+            <span>Ask before starting</span>
+            <span class="hint">Nexa shows its confirm dialog before each download starts.</span>
+          </span>
+          <input id="askBeforeHandoff" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row" for="notifyOnHandoff">
+          <span class="row-label">
+            <span>Notify when a download is sent to Nexa</span>
+            <span class="hint">Shows a system notification such as "Sent to Nexa: file.zip".</span>
+          </span>
+          <input id="notifyOnHandoff" class="switch" type="checkbox" role="switch">
+        </label>
+        <label class="row" for="showFloatingButton">
+          <span class="row-label">
+            <span>Show the “Download with NDM” button on videos</span>
+            <span class="hint">The button that floats over the player on pages with playable media.</span>
+          </span>
+          <input id="showFloatingButton" class="switch" type="checkbox" role="switch">
+        </label>
+        <div class="row">
+          <label class="row-label" for="minSizeMB">
+            <span>Minimum size to take over</span>
+            <span class="hint">Files smaller than this stay in the browser when their size is known. 0 = every size.</span>
+          </label>
+          <span class="input-unit">
+            <input id="minSizeMB" type="number" min="0" step="1" inputmode="numeric">
+            <span class="unit">MB</span>
+          </span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>File types</h2>
+        <label class="row" for="interceptAll">
+          <span class="row-label">
+            <span>All file types</span>
+            <span class="hint">Take over every download regardless of extension.</span>
+          </span>
+          <input id="interceptAll" class="switch" type="checkbox" role="switch">
+        </label>
+        <div class="field">
+          <label for="interceptTypes">Take over these extensions</label>
+          <textarea id="interceptTypes" rows="4" spellcheck="false" placeholder="zip rar 7z exe mp4 pdf …"></textarea>
+          <p class="hint">Separate with spaces, commas or new lines. Downloads without a detectable extension are always offered to Nexa.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Paused sites</h2>
+        <div class="field">
+          <label for="disabledHosts">Nexa stays out of these sites (and their subdomains)</label>
+          <textarea id="disabledHosts" rows="5" spellcheck="false" placeholder="example.com&#10;downloads.internal.net"></textarea>
+          <p class="hint">One host per line. Use "Pause on this site" in the toolbar popup to add the current site quickly.</p>
+        </div>
+      </section>
+
+      <div class="bar">
+        <button id="btn-save" type="submit" class="btn btn-primary">Save</button>
+        <button id="btn-reset" type="button" class="btn">Reset to defaults</button>
+        <span class="spacer"></span>
+        <button id="btn-diag" type="button" class="btn">Export diagnostics</button>
+      </div>
+    </form>
+
+    <details id="diag-box" class="card" hidden>
+      <summary>Diagnostics JSON</summary>
+      <textarea id="diag-text" rows="12" readonly spellcheck="false"></textarea>
+    </details>
+
+    <footer class="foot muted">
+      <a href="https://nexadownloadmanager.com" target="_blank" rel="noopener noreferrer">nexadownloadmanager.com</a>
+      ·
+      <a href="https://nexadownloadmanager.com/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>
+      ·
+      Shortcut: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> sends the current page to Nexa
+    </footer>
+  </main>
+
+  <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+  <script src="options.js"></script>
+</body>
+</html>

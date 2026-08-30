@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "Nexa Download Manager Integration",
+    "description": "Extension name shown in the browser and the store listing."
+  },
+  "extDescription": {
+    "message": "Hands downloads and media streams off to the Nexa desktop app for fast multi-connection downloading.",
+    "description": "Short extension description shown in the browser and the store listing."
+  }
+}

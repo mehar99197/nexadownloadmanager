@@ -16,16 +16,19 @@ const SIZES = {
   md: 'px-4 py-2 text-sm',
 };
 
-export default function Button({
+import { forwardRef } from 'react';
+
+const Button = forwardRef(function Button({
   variant = 'primary',
   size = 'md',
   type = 'button',
   className = '',
   children,
   ...props
-}) {
+}, ref) {
   return (
     <button
+      ref={ref}
       type={type}
       className={`inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors disabled:cursor-not-allowed ${VARIANTS[variant] || VARIANTS.primary} ${SIZES[size] || SIZES.md} ${className}`}
       {...props}
@@ -33,4 +36,6 @@ export default function Button({
       {children}
     </button>
   );
-}
+});
+
+export default Button;

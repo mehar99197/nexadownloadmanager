@@ -14,8 +14,26 @@ QString authReasonFromYtDlpLine(const QString &line)
 {
     static const QRegularExpression httpRe(QStringLiteral("HTTP Error (401|403)"),
                                            QRegularExpression::CaseInsensitiveOption);
-    if (const auto m = httpRe.match(line); m.hasMatch())
+    // A 401 always means "not authenticated". A 403 does NOT: yt-dlp reports both
+    // "you are not logged in" and "the CDN refused this media URL" as HTTP Error
+    // 403. The second is by far the common case on YouTube — a signed googlevideo
+    // URL that expired, is IP-bound, or was built by a yt-dlp too old to solve the
+    // current player challenge — and no cookie can fix it. Reporting that as
+    // "authentication required" sends the user to Site Logins to chase a
+    // credential problem that does not exist, so classify the two separately by
+    // the download stage the line came from.
+    static const QRegularExpression mediaStageRe(
+        QStringLiteral("unable to download video data|unable to download media|"
+                       "unable to download format|got error:|fragment \\d+|"
+                       "giving up after|content too short"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (const auto m = httpRe.match(line); m.hasMatch()) {
+        if (m.captured(1) == QLatin1String("403") && mediaStageRe.match(line).hasMatch())
+            return QStringLiteral("media server refused the download (HTTP 403) — the "
+                                  "stream URL expired or yt-dlp is out of date. Update "
+                                  "yt-dlp, then retry (this is not a login problem)");
         return QStringLiteral("authentication required (HTTP %1)").arg(m.captured(1));
+    }
 
     static const QRegularExpression botRe(QStringLiteral("Sign in to confirm you.*bot"),
                                           QRegularExpression::CaseInsensitiveOption);

@@ -39,6 +39,11 @@ public:
     // throttles its reads against it. Null = unlimited.
     void setRateLimiter(RateLimiter *limiter) { m_limiter = limiter; }
 
+    // Per-download speed cap in bytes/sec (0 = unlimited). Applied on top of the
+    // global cap, so this download can be throttled without slowing the others.
+    void   setSpeedLimit(qint64 bytesPerSec);
+    qint64 speedLimit() const;
+
     // Dynamic re-segmentation (work-stealing): when a connection finishes its
     // segment, it splits the largest remaining segment and takes the tail, so no
     // connection idles near the end. On by default (the IDM-style speed-up).
@@ -47,7 +52,16 @@ public:
     // Data-driven cloud provider registry (shared, owned by the engine).
     // When set, all host credential-scoping and confirm-page decisions use it.
     void setCloudProviders(const CloudProviders *p) { m_providers = p; }
-    void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
+        void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
+
+    // Set an expected SHA-256 hash for verification on completion.
+    // The hash should be a 64-character hex string. If set, the download
+    // will compute the actual hash and report verification status.
+    void setExpectedSha256(const QString &hash) { m_expectedSha256 = hash; }
+    QString expectedSha256() const { return m_expectedSha256; }
+
+    // Get the hash verification result (valid after download completes).
+    HashVerification hashVerification() const { return m_hashResult; }
 
     // Given a server-provided filename, returns the full path to save to
     // (categorised + de-duplicated). Set by the engine; used when a
@@ -122,6 +136,7 @@ private:
     void finalizeShort(qint64 totalReceived);             // accept actual size, truncate
     void onSizeDiscovered(qint64 total, bool rangesSupported);   // adopt size/Range the live GET revealed
     QString resumeValidator() const;
+    HashVerification computeSha256() const;  // Compute SHA-256 of the downloaded file
 
     int                       m_id;
     QUrl                      m_url;
@@ -142,8 +157,11 @@ private:
     bool                      m_rangesSupported = false;
     bool                      m_dynamicResegment = true;   // work-stealing on by default
     bool                      m_publicNetworkOnly = false;
-    QString                   m_etag;
+        QString                   m_etag;
     QString                   m_lastModified;
+    RateLimiter              *m_taskLimiter = nullptr;   // per-download cap (lazily created)
+    QString                   m_expectedSha256;  // Expected SHA-256 hash for verification
+    HashVerification          m_hashResult;      // Result of hash verification after completion
 
     QNetworkReply            *m_probe = nullptr;
     QNetworkAccessManager    *m_driveProbeNam = nullptr;

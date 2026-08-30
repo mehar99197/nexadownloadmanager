@@ -244,6 +244,29 @@ int main(int argc, char **argv)
     CHECK(authReasonFromYtDlpLine("[download] 12% of 5MiB").isEmpty(),
           "ordinary progress line is not an auth error");
 
+    // A media-stage 403 is a CDN/expired-URL/stale-yt-dlp failure, NOT a missing
+    // credential. These are the verbatim lines yt-dlp emits when a googlevideo
+    // URL is refused; misreporting them as "authentication required" sent users
+    // to Site Logins to fix a problem no cookie can solve.
+    for (const char *mediaLine : {
+             "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+             "[download] Got error: HTTP Error 403: Forbidden. Retrying (attempt 1 of 10)...",
+             "ERROR: unable to download format: HTTP Error 403: Forbidden" }) {
+        const QString why = authReasonFromYtDlpLine(QString::fromLatin1(mediaLine));
+        CHECK(!why.isEmpty(), "media-stage 403 still produces a reason");
+        CHECK(!why.contains("authentication required"),
+              "media-stage 403 is NOT reported as an authentication failure");
+        CHECK(why.contains("yt-dlp is out of date"),
+              "media-stage 403 points at the real cause (stale yt-dlp / expired URL)");
+    }
+    // A 401, and an extractor-stage 403, remain genuine auth failures.
+    CHECK(authReasonFromYtDlpLine("ERROR: HTTP Error 401: Unauthorized")
+              .contains("authentication required"),
+          "401 is still an authentication failure");
+    CHECK(authReasonFromYtDlpLine("ERROR: [udemy] course: HTTP Error 403: Forbidden")
+              .contains("authentication required"),
+          "extractor-stage 403 is still an authentication failure");
+
     std::printf("\nAUTH TESTS: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

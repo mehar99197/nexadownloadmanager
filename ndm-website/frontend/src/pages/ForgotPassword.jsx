@@ -1,23 +1,29 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import api, { unwrap } from '../api/client';
+import api from '../api/client';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
+import Turnstile, { turnstileEnabled } from '../components/Turnstile';
+import usePageMeta from '../hooks/usePageMeta';
 
 export default function ForgotPassword() {
+  usePageMeta({ title: "Reset password", description: "Request a password reset link for your Nexa Download Manager account." });
+
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setSubmitting(true);
     try {
-      await api.post('/auth/forgot-password', { email });
+      await api.post('/auth/forgot-password', { email, ...(turnstileToken ? { turnstileToken } : {}) });
       setSent(true);
     } catch (err) {
       const msg =
@@ -25,6 +31,7 @@ export default function ForgotPassword() {
         err?.message ||
         'Something went wrong. Please try again.';
       setError(msg);
+      setTurnstileReset((n) => n + 1);
     } finally {
       setSubmitting(false);
     }
@@ -73,7 +80,9 @@ export default function ForgotPassword() {
                 </div>
               )}
 
-              <Button type="submit" className="w-full" disabled={submitting}>
+              <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
+
+              <Button type="submit" className="w-full" disabled={submitting || (turnstileEnabled() && !turnstileToken)}>
                 {submitting ? 'Sending…' : 'Send reset link'}
               </Button>
 

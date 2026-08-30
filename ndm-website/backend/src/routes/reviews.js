@@ -6,6 +6,7 @@ const Review = require('../models/Review');
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireAuth } = require('../middleware/auth');
+const { requireTurnstile } = require('../middleware/turnstile');
 const { ok } = require('../utils/respond');
 const { createReviewSchema, listReviewsQuerySchema } = require('../schemas/review.schema');
 
@@ -20,7 +21,13 @@ router.get(
       Review.ratingBreakdown(),
     ]);
     return ok(res, {
-      reviews, page, limit, totalCount,
+      // The site reads camelCase (userName, createdAt); the rows are snake_case.
+      // Without this every reviewer rendered as "Anonymous".
+      reviews: reviews.map((r) => ({
+        id: r.id, userName: r.user_name, rating: r.rating, comment: r.comment,
+        createdAt: r.created_at,
+      })),
+      page, limit, totalCount,
       averageRating: Math.round(averageRating * 100) / 100,
       ratingBreakdown,
     });
@@ -28,7 +35,7 @@ router.get(
 );
 
 router.post(
-  '/', requireAuth, validate(createReviewSchema),
+  '/', requireAuth, requireTurnstile, validate(createReviewSchema),
   asyncHandler(async (req, res) => {
     const { rating, comment } = req.body;
     const review = await Review.upsertByUserId(req.user.id, {

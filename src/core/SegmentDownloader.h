@@ -31,6 +31,11 @@ public:
     void start();              // begins / resumes from seg.done
     void stop();               // aborts the in-flight request (keeps bytes done)
     void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
+
+    // Optional SECOND limiter scoped to this download alone. Reads are granted
+    // by whichever of the two budgets is tighter, so a per-download cap and the
+    // global cap compose instead of overriding each other. Null = only global.
+    void setTaskRateLimiter(RateLimiter *limiter);
     void setIfRangeValidator(const QString &validator) { m_ifRangeValidator = validator; }
 
     // Shrink this segment's end (dynamic re-segmentation): the worker then stops
@@ -57,13 +62,15 @@ private slots:
 
 private:
     void pump();   // read what the rate limiter allows, write it, repeat
+    QString responseValidationError() const;
 
     SegmentInfo             m_seg;
     QUrl                    m_url;
     QString                 m_filePath;
     HeaderList              m_headers;
     QNetworkAccessManager  *m_nam = nullptr;
-    RateLimiter            *m_limiter = nullptr;
+    RateLimiter            *m_limiter = nullptr;       // global (engine-owned)
+    RateLimiter            *m_taskLimiter = nullptr;   // this download only
     QNetworkReply          *m_reply = nullptr;
     QFile                   m_file;
     bool                    m_stopped = false;
@@ -71,6 +78,11 @@ private:
     bool                    m_publicNetworkOnly = false;
     QString                 m_ifRangeValidator;
     bool                    m_validatorMismatch = false;
+    qint64                  m_requestStart = 0;
+    qint64                  m_requestEnd = 0;
+    bool                    m_openEndedRequest = false;
+    QString                 m_responseError;
+    int                     m_redirects = 0;
 };
 
 } // namespace nexa

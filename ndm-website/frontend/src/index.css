@@ -20,16 +20,88 @@
   --color-accent-500: #965cf4;
   --color-accent-600: #7436d4;
 
-  --color-surface-0: #06080e;
-  --color-surface-1: #0b0f18;
-  --color-surface-2: #111827;
-  --color-surface-3: #192238;
+  --color-surface-0: #04060d;
+  --color-surface-1: #090d17;
+  --color-surface-2: #101627;
+  --color-surface-3: #182238;
   --color-surface-border: #263454;
 
   --color-muted: #97a4bc;
+  --color-nav-bg: rgba(4, 6, 13, 0.78);
   --radius-xl2: 1.35rem;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Sora", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Light theme.                                                        */
+/*                                                                      */
+/*  Tailwind v4 compiles every colour utility to a CSS variable, so the */
+/*  whole site flips by redefining those variables — no markup churn.   */
+/*  The greys are inverted along their ramp (slate-400 is secondary     */
+/*  text in both themes, just dark-on-light here), and --color-white,   */
+/*  which the design uses for "strongest text", becomes near-black.     */
+/*  Anything that must stay white on a coloured fill (the primary       */
+/*  button, the "most popular" badge) sets its colour explicitly below. */
+/* ------------------------------------------------------------------ */
+:root[data-theme='light'] {
+  --color-surface-0: #f6f7fb;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #eef1f8;
+  --color-surface-border: #dde2ee;
+
+  --color-muted: #5b6480;
+  --color-nav-bg: rgba(255, 255, 255, 0.82);
+
+  /* "Strongest text" in the design system. */
+  --color-white: #0d1123;
+
+  /* Secondary/tertiary text, inverted along the ramp. */
+  --color-slate-200: #1b2138;
+  --color-slate-300: #303a56;
+  --color-slate-400: #4d5773;
+  --color-slate-500: #626c88;
+  --color-slate-600: #737d99;
+  --color-zinc-200: #1b2138;
+  --color-zinc-300: #303a56;
+  --color-zinc-400: #4d5773;
+  --color-zinc-500: #626c88;
+
+  /* Brand tints legible on white (the dark theme's neons wash out). */
+  --color-brand-100: #23306a;
+  --color-brand-200: #24408f;
+  --color-brand-300: #1f56b8;
+  --color-accent-300: #6b3bc4;
+}
+
+:root[data-theme='light'] body {
+  background:
+    radial-gradient(circle at 8% -10%, rgba(138, 92, 246, 0.09), transparent 32rem),
+    radial-gradient(circle at 92% 9%, rgba(43, 199, 255, 0.06), transparent 28rem),
+    var(--color-surface-0);
+  color: #141a2c;
+}
+
+/* The grid overlay is tuned for a dark ground; soften it on light. */
+:root[data-theme='light'] body::before {
+  opacity: 0.5;
+  background-image: linear-gradient(rgba(90, 76, 190, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(90, 76, 190, 0.05) 1px, transparent 1px);
+}
+
+:root[data-theme='light'] *::selection {
+  color: #fff;
+  background: rgba(99, 84, 220, 0.75);
+}
+
+:root[data-theme='light'] * {
+  scrollbar-color: #c2c9db transparent;
+}
+
+:root[data-theme='light'] *::-webkit-scrollbar-thumb {
+  background: #c2c9db;
 }
 
 html {
@@ -118,23 +190,62 @@ textarea {
     }
   }
 
+  /* Sign-in / sign-up (AuthLayout) carry no footer, so the form section takes
+     the height the footer used to occupy and the card stays optically centred
+     rather than sitting high above an empty strip. Scoped to `.auth-main`, so
+     the other `.auth-section` pages — which still have a footer — are
+     untouched. */
+  .auth-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  /* `.section`'s 4.5–6.5rem rhythm is sized for long content pages; on a
+     single centred card it only pushed the form off-screen and put a
+     scrollbar on a page that has nothing to scroll to. */
+  .auth-main > .auth-section,
+  .auth-main > .page-enter > .auth-section {
+    flex: 1;
+    padding-block: 2.5rem;
+  }
+
   .brand-lockup {
     display: inline-flex;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.78rem;
     min-width: 0;
   }
 
   .brand-lockup img {
-    filter: drop-shadow(0 0 16px rgba(139, 92, 246, 0.24));
+    border-radius: 0.82rem;
+    filter: drop-shadow(0 0 18px rgba(139, 92, 246, 0.32));
   }
 
   .brand-wordmark {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.28rem;
     color: #fff;
-    font-size: 1.02rem;
-    font-weight: 750;
+    font-size: 1.03rem;
+    font-weight: 800;
     letter-spacing: -0.04em;
     white-space: nowrap;
+  }
+
+  .brand-name {
+    color: #fff;
+  }
+
+  .brand-product {
+    background-image: linear-gradient(105deg, #c18aff 0%, #8171ff 52%, #42cfff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .brand-mark-hero {
+    box-shadow: 0 0 24px rgba(126, 108, 255, 0.24);
   }
 
   .card {
@@ -261,6 +372,15 @@ textarea {
     font-weight: 800;
     letter-spacing: -0.055em;
     line-height: 1.03;
+  }
+
+  /* A section heading inside the intro block (the home page's "One queue.
+     Everything.") — Tailwind's preflight leaves h2 at body size otherwise. */
+  .page-intro h2 {
+    font-size: clamp(1.9rem, 3.6vw, 2.9rem);
+    font-weight: 800;
+    letter-spacing: -0.045em;
+    line-height: 1.08;
   }
 
   .page-intro p {
@@ -471,6 +591,58 @@ textarea {
     border-left: 1px solid rgba(93, 117, 170, 0.26);
   }
 
+  /* Recessed surfaces INSIDE a card (inline code, <pre>, table headers, the
+     quick-start tiles) and the standalone call-to-action panels. One class
+     each, so the light theme restates them once instead of per page — the
+     old per-element rgba() backgrounds stayed dark on light and the text,
+     which does flip, vanished into them. */
+  .surface-inset {
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(7, 11, 19, 0.7);
+  }
+
+  .surface-panel {
+    border: 1px solid rgba(93, 117, 170, 0.3);
+    background: rgba(13, 19, 32, 0.82);
+  }
+
+  .site-footer {
+    border-top: 1px solid rgba(93, 117, 170, 0.28);
+    background: rgba(8, 11, 18, 0.9);
+  }
+
+  .mobile-menu {
+    border-top: 1px solid rgba(93, 117, 170, 0.28);
+    background: rgba(11, 15, 24, 0.97);
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #cbd5e1;
+    border: 1px solid rgba(93, 117, 170, 0.42);
+    background: rgba(17, 24, 39, 0.6);
+    transition: border-color 160ms ease, color 160ms ease;
+  }
+
+  .icon-btn:hover {
+    color: #fff;
+    border-color: #b77aff;
+  }
+
+  .note-info {
+    color: #d5f8ff;
+    border: 1px solid rgba(43, 199, 255, 0.3);
+    background: rgba(43, 199, 255, 0.1);
+  }
+
+  .note-warn {
+    color: #fde68a;
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    background: rgba(251, 191, 36, 0.1);
+  }
+
   .icon-tile {
     display: inline-flex;
     align-items: center;
@@ -482,5 +654,340 @@ textarea {
     border-radius: 0.9rem;
     background: linear-gradient(145deg, rgba(149, 102, 244, 0.22), rgba(44, 199, 255, 0.08));
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 28px -20px rgba(49, 200, 255, 0.85);
+  }
+}
+
+@layer components {
+  /* These sit on a brand gradient in both themes, so their text must stay
+     white even though --color-white flips to near-black on light. */
+  .btn-primary,
+  .badge-on-brand {
+    color: #fff;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Light theme: component surfaces.                                    */
+/*                                                                      */
+/*  The token overrides above cover Tailwind utilities, but the classes */
+/*  in @layer components paint their own gradients and borders. Those   */
+/*  are re-stated here for light.                                       */
+/*                                                                      */
+/*  Deliberately NOT flipped: .hero-console and its children, and       */
+/*  .download-row. They are a picture of the Nexa app, which is dark —  */
+/*  lightening them would misrepresent the product.                     */
+/* ------------------------------------------------------------------ */
+:root[data-theme='light'] .card {
+  background: linear-gradient(145deg, #ffffff, #fbfcff);
+  border: 1px solid var(--color-surface-border);
+  box-shadow: 0 1px 2px rgba(20, 26, 44, 0.04), 0 8px 24px -18px rgba(20, 26, 44, 0.28);
+}
+
+:root[data-theme='light'] .card-hover:hover {
+  border-color: rgba(108, 92, 231, 0.45);
+}
+
+:root[data-theme='light'] .btn-ghost {
+  color: #2a3350;
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .btn-ghost:hover {
+  color: #14183a;
+  background: #f2f0ff;
+  border-color: rgba(108, 92, 231, 0.55);
+}
+
+:root[data-theme='light'] .eyebrow {
+  color: #4a3c9e;
+  background: rgba(108, 92, 231, 0.09);
+  border-color: rgba(108, 92, 231, 0.28);
+}
+
+:root[data-theme='light'] .input-field {
+  color: #141a2c;
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .input-field:focus {
+  border-color: #6c5ce7;
+  background: #ffffff;
+}
+
+:root[data-theme='light'] .input-field::placeholder {
+  color: #8b93ab;
+}
+
+:root[data-theme='light'] .page-intro {
+  color: #4d5773;
+}
+
+:root[data-theme='light'] .stat-strip {
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .stat-item {
+  border-left-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .auth-card {
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .icon-tile {
+  background: rgba(108, 92, 231, 0.08);
+  border-color: rgba(108, 92, 231, 0.22);
+}
+
+/* .brand-name is plain text (no background-clip), so it only needs a colour —
+   giving it a gradient would paint a filled box behind the word. */
+:root[data-theme='light'] .brand-name {
+  color: #101736;
+}
+
+/* .brand-product IS clipped gradient text; darken its stops for white. */
+:root[data-theme='light'] .brand-product {
+  background-image: linear-gradient(105deg, #7c4dd6 0%, #4f46e5 52%, #0b83c4 100%);
+}
+
+/* The hero's gradient word washes out on white: darken its stops. */
+:root[data-theme='light'] .text-gradient {
+  background-image: linear-gradient(110deg, #4b2fa8 5%, #7c4dd6 40%, #3f5bd9 68%, #0b83c4 100%);
+}
+
+:root[data-theme='light'] .surface-inset {
+  background: #f3f5fa;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .surface-panel,
+:root[data-theme='light'] .site-footer,
+:root[data-theme='light'] .mobile-menu {
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .icon-btn {
+  color: #4d5773;
+  background: #ffffff;
+  border-color: var(--color-surface-border);
+}
+
+:root[data-theme='light'] .icon-btn:hover {
+  color: #14183a;
+  border-color: rgba(108, 92, 231, 0.55);
+}
+
+:root[data-theme='light'] .note-info {
+  color: #1f3a8a;
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+:root[data-theme='light'] .note-warn {
+  color: #7a4a00;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.38);
+}
+
+/* Billing cycle switch: a surface in both themes rather than a fixed dark pill. */
+.billing-toggle {
+  border-color: rgba(93, 117, 170, 0.4);
+  background: rgba(17, 24, 39, 0.82);
+}
+
+:root[data-theme='light'] .billing-toggle {
+  border-color: var(--color-surface-border);
+  background: #ffffff;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Warp Intake — the locked site direction (concept 01).              */
+/*                                                                      */
+/*  Display type (Sora) on the two heading levels, the hero vortex     */
+/*  stage, the ambient star field behind every page, and the scroll    */
+/*  reveal. All motion is gated on prefers-reduced-motion; the reveal  */
+/*  classes are only ever applied by JS once IntersectionObserver is   */
+/*  confirmed, so crawlers and test DOMs always see the content.       */
+/* ------------------------------------------------------------------ */
+h1,
+h2 {
+  font-family: var(--font-display);
+}
+
+/* Sora is wider than the old system stack; ease the crush. */
+.page-intro h1 {
+  letter-spacing: -0.04em;
+}
+
+.page-intro h2 {
+  letter-spacing: -0.03em;
+}
+
+.warp-stage {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+}
+
+.warp-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.warp-stage canvas,
+.warp-ambient canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px) scale(0.985);
+    transition: opacity 700ms cubic-bezier(0.22, 0.61, 0.36, 1),
+      transform 700ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  .reveal-in {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Warp Intake — motion pass 2: orchestration and life.               */
+/*                                                                      */
+/*  Page transitions, the hero's staggered entrance, the floating       */
+/*  console, gradient shimmer, breathing CTAs and per-card stagger on   */
+/*  any [data-stagger] grid inside a revealed section. Everything       */
+/*  lives behind prefers-reduced-motion; without it every element is    */
+/*  simply visible in its final state.                                  */
+/* ------------------------------------------------------------------ */
+.auth-main > .page-enter {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .page-enter {
+    animation: page-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  .rise {
+    animation: rise-in 700ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  .rise-1 { animation-delay: 60ms; }
+  .rise-2 { animation-delay: 150ms; }
+  .rise-3 { animation-delay: 240ms; }
+  .rise-4 { animation-delay: 330ms; }
+  .rise-5 { animation-delay: 420ms; }
+
+  .hero-console {
+    animation:
+      console-rise 800ms cubic-bezier(0.22, 0.61, 0.36, 1) both,
+      console-float 7s ease-in-out 800ms infinite;
+  }
+
+  .text-gradient {
+    background-size: 220% 100%;
+    animation: gradient-pan 7s ease-in-out infinite alternate;
+  }
+
+  .eyebrow-dot {
+    animation: dot-pulse 2.4s ease-in-out infinite;
+  }
+
+  .btn-breathe {
+    animation: cta-breathe 3.8s ease-in-out infinite;
+  }
+
+  .progress-track span {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .progress-track span::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+    transform: translateX(-100%);
+    animation: bar-sheen 2.6s ease-in-out infinite;
+  }
+
+  .download-row + .download-row .progress-track span::after {
+    animation-delay: 0.6s;
+  }
+
+  .download-row + .download-row + .download-row .progress-track span::after {
+    animation-delay: 1.2s;
+  }
+
+  .reveal [data-stagger] > * {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+
+  .reveal-in [data-stagger] > * {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity 650ms cubic-bezier(0.22, 0.61, 0.36, 1),
+      transform 650ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  .reveal-in [data-stagger] > *:nth-child(2) { transition-delay: 70ms; }
+  .reveal-in [data-stagger] > *:nth-child(3) { transition-delay: 140ms; }
+  .reveal-in [data-stagger] > *:nth-child(4) { transition-delay: 210ms; }
+  .reveal-in [data-stagger] > *:nth-child(5) { transition-delay: 280ms; }
+  .reveal-in [data-stagger] > *:nth-child(6) { transition-delay: 350ms; }
+  .reveal-in [data-stagger] > *:nth-child(7) { transition-delay: 420ms; }
+  .reveal-in [data-stagger] > *:nth-child(8) { transition-delay: 490ms; }
+
+  @keyframes page-in {
+    from { opacity: 0; transform: translateY(14px); }
+  }
+
+  @keyframes rise-in {
+    from { opacity: 0; transform: translateY(16px); }
+  }
+
+  @keyframes console-rise {
+    from { opacity: 0; transform: rotate(2.6deg) translateY(26px); }
+    to { opacity: 1; transform: rotate(1.5deg) translateY(0); }
+  }
+
+  @keyframes console-float {
+    0%, 100% { transform: rotate(1.5deg) translateY(0); }
+    50% { transform: rotate(1.05deg) translateY(-9px); }
+  }
+
+  @keyframes gradient-pan {
+    from { background-position: 0% 50%; }
+    to { background-position: 100% 50%; }
+  }
+
+  @keyframes dot-pulse {
+    50% { opacity: 0.55; box-shadow: 0 0 22px #4bd6ff; }
+  }
+
+  @keyframes cta-breathe {
+    50% { box-shadow: 0 14px 40px -10px rgba(53, 201, 255, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.3); }
+  }
+
+  @keyframes bar-sheen {
+    0% { transform: translateX(-100%); }
+    55%, 100% { transform: translateX(220%); }
   }
 }

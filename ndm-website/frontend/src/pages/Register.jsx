@@ -1,28 +1,41 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
+import { markPendingTrial, startTrial } from '../api/trial';
+import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import Spinner from '../components/Spinner';
+import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 
 export default function Register() {
+  usePageMeta({
+    title: 'Create account',
+    description: 'Create a free Nexa Download Manager account. Every account gets a 7-day Pro trial — no card needed.',
+  });
+
   const { register, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
+  const [searchParams] = useSearchParams();
+  const wantsTrial = searchParams.get('trial') === '1';
+  // Only same-site paths are honoured, so a crafted link cannot bounce elsewhere.
+  const rawNext = searchParams.get('next') || '';
+  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard';
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
-  if (isAuthenticated) {
-    navigate('/dashboard', { replace: true });
-    return <Spinner center />;
-  }
+  // A signed-in visitor lands on the dashboard. <Navigate> instead of calling
+  // navigate() here: a state update during render is a React error.
+  if (isAuthenticated) return <Navigate to={next} replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -33,15 +46,31 @@ export default function Register() {
     }
     setSubmitting(true);
     try {
-      await register({ name, email, password });
-      toast.success('Account created! Please check your email to verify.');
-      navigate('/login', { replace: true });
+      await register({ name, email, password, turnstileToken });
+      if (wantsTrial) {
+        // Register never returns a session, so the trial is redeemed on the
+        // first authenticated page (Dashboard) — or here, if the backend ever
+        // starts logging users in on registration. TRIAL_UNAVAILABLE is ignored.
+        markPendingTrial();
+        try {
+          await startTrial();
+        } catch {
+          // not logged in yet — Dashboard will pick the pending trial up
+        }
+      }
+      toast.success(
+        wantsTrial
+          ? 'Account created! Sign in to start your 7-day Pro trial.'
+          : 'Account created! Please check your email to verify.'
+      );
+      navigate(`/login?next=${encodeURIComponent(next)}`, { replace: true });
     } catch (err) {
       const msg =
         err?.response?.data?.error?.message ||
         err?.message ||
         'Registration failed. Please try again.';
       setError(msg);
+      setTurnstileReset((n) => n + 1);
     } finally {
       setSubmitting(false);
     }
@@ -51,12 +80,14 @@ export default function Register() {
     <Section className="auth-section flex min-h-[70vh] items-center">
       <div className="mx-auto w-full max-w-md">
         <div className="mb-5 text-center">
-          <span className="eyebrow"><span className="eyebrow-dot" />Start moving faster</span>
+          <span className="eyebrow"><span className="eyebrow-dot" />{wantsTrial ? '7-day Pro trial · no card needed' : 'Start moving faster'}</span>
         </div>
         <Card className="auth-card !p-8 sm:!p-9">
           <h1 className="text-3xl font-extrabold tracking-tight text-white">Create your <span className="text-gradient">flow.</span></h1>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Start downloading faster — it&apos;s free.
+            {wantsTrial
+              ? 'Your Pro trial starts the moment you sign in. No card, no auto-charge.'
+              : 'Start downloading faster — it’s free.'}
           </p>
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-4" noValidate>
@@ -95,12 +126,19 @@ export default function Register() {
               </div>
             )}
 
-            <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? 'Creating account…' : 'Create account'}
+            <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
+
+            <Button type="submit" className="w-full" disabled={submitting || (turnstileEnabled() && !turnstileToken)}>
+              {submitting ? 'Creating account…' : wantsTrial ? 'Create account & start trial' : 'Create account'}
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-slate-500">
+          <p className="mt-6 text-center text-xs leading-5 text-slate-500">
+            By creating an account you agree to the{' '}
+            <Link to="/terms" className="text-slate-300 hover:text-brand-300">Terms</Link> and{' '}
+            <Link to="/privacy" className="text-slate-300 hover:text-brand-300">Privacy Policy</Link>.
+          </p>
+          <p className="mt-4 text-center text-sm text-slate-500">
             Already have an account?{' '}
             <Link
               to="/login"

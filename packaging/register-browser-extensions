@@ -1,0 +1,134 @@
+#!/bin/sh
+# System-wide browser-extension hooks for Linux. The .deb postinst runs
+# "install" as root, postrm runs "remove". Mirrors src/ipc/ExtensionInstaller.cpp
+# (which does the same for the per-user hooks on Windows and macOS, and on Linux
+# only verifies what this script wrote).
+#
+# Every browser installs the extension FROM ITS STORE, so this is a no-op for
+# any browser whose id in extension-ids.env is still empty.
+set -eu
+
+here=$(dirname "$(readlink -f "$0")")
+ids_file=${NEXA_EXTENSION_IDS:-$here/extension-ids.env}
+root=${NEXA_SYSTEM_ROOT:-}          # tests point this at a scratch directory
+mode=${1:-install}
+
+[ -r "$ids_file" ] || { echo "register-browser-extensions: $ids_file missing, nothing to do" >&2; exit 0; }
+# shellcheck disable=SC1090
+. "$ids_file"
+chrome_id=${NEXA_CHROME_STORE_ID:-}
+edge_id=${NEXA_EDGE_STORE_ID:-}
+xpi_url=${NEXA_FIREFOX_XPI_URL:-}
+ff_id=${NEXA_FIREFOX_EXT_ID:-nexa@nexa.local}
+chrome_update="https://clients2.google.com/service/update2/crx"
+edge_update="https://edge.microsoft.com/extensionwebstorebase/v1/crx"
+
+valid_id() { printf '%s' "$1" | grep -Eq '^[a-p]{32}$'; }
+
+have() {
+    # "installed" = a launcher on PATH or the vendor's install directory.
+    for exe in "$@"; do
+        command -v "$exe" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+put_file() {   # put_file <path> <content>
+    mkdir -p "$(dirname "$1")"
+    if [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; then return 0; fi
+    printf '%s\n' "$2" > "$1"
+    chmod 644 "$1"
+}
+
+external_json() { printf '{\n  "external_update_url": "%s"\n}' "$1"; }
+policy_json()   { printf '{\n  "ExtensionSettings": {\n    "%s": {\n      "installation_mode": "normal_installed",\n      "update_url": "%s"\n    }\n  }\n}' "$1" "$2"; }
+
+# Firefox policies.json may already carry other policies: merge one key.
+firefox_policy() {   # firefox_policy install|remove
+    path="$root/etc/firefox/policies/policies.json"
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "register-browser-extensions: python3 missing, skipping Firefox policy" >&2
+        return 0
+    fi
+    mkdir -p "$(dirname "$path")"
+    NEXA_POLICY_PATH="$path" NEXA_FF_ID="$ff_id" NEXA_XPI="$xpi_url" NEXA_MODE="$1" python3 - <<'PY'
+import json, os
+path, ext_id, xpi, mode = (os.environ[k] for k in ("NEXA_POLICY_PATH", "NEXA_FF_ID", "NEXA_XPI", "NEXA_MODE"))
+root = {}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            root = json.load(f) or {}
+    except ValueError:
+        root = {}
+policies = root.setdefault("policies", {})
+settings = policies.setdefault("ExtensionSettings", {})
+entry = {"installation_mode": "normal_installed", "install_url": xpi}
+if mode == "install":
+    if settings.get(ext_id) == entry:
+        raise SystemExit(0)
+    settings[ext_id] = entry
+else:
+    if ext_id not in settings:
+        raise SystemExit(0)
+    del settings[ext_id]
+    if not settings:
+        del policies["ExtensionSettings"]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(root, f, indent=2)
+    f.write("\n")
+PY
+}
+
+case "$mode" in
+install)
+    if valid_id "$chrome_id"; then
+        if have google-chrome google-chrome-stable || [ -d "$root/opt/google/chrome" ]; then
+            put_file "$root/opt/google/chrome/extensions/$chrome_id.json" "$(external_json "$chrome_update")"
+            put_file "$root/usr/share/google-chrome/extensions/$chrome_id.json" "$(external_json "$chrome_update")"
+        fi
+        if have chromium chromium-browser || [ -d "$root/usr/lib/chromium" ]; then
+            put_file "$root/usr/share/chromium/extensions/$chrome_id.json" "$(external_json "$chrome_update")"
+            put_file "$root/usr/share/chromium-browser/extensions/$chrome_id.json" "$(external_json "$chrome_update")"
+        fi
+        if have brave-browser brave || [ -d "$root/opt/brave.com" ]; then
+            put_file "$root/etc/brave/policies/managed/nexa-extension.json" "$(policy_json "$chrome_id" "$chrome_update")"
+        fi
+        if have vivaldi vivaldi-stable || [ -d "$root/opt/vivaldi" ]; then
+            put_file "$root/etc/vivaldi/policies/managed/nexa-extension.json" "$(policy_json "$chrome_id" "$chrome_update")"
+        fi
+    fi
+    if have microsoft-edge microsoft-edge-stable || [ -d "$root/opt/microsoft/msedge" ]; then
+        if valid_id "$edge_id"; then
+            put_file "$root/etc/opt/edge/policies/managed/nexa-extension.json" "$(policy_json "$edge_id" "$edge_update")"
+        elif valid_id "$chrome_id"; then
+            put_file "$root/etc/opt/edge/policies/managed/nexa-extension.json" "$(policy_json "$chrome_id" "$chrome_update")"
+        fi
+    fi
+    case "$xpi_url" in
+    https://*)
+        if have firefox firefox-esr || [ -d "$root/usr/lib/firefox" ] || [ -d "$root/usr/lib/firefox-esr" ]; then
+            firefox_policy install
+        fi
+        ;;
+    esac
+    ;;
+remove)
+    for id in "$chrome_id" "$edge_id"; do
+        [ -n "$id" ] || continue
+        rm -f "$root/opt/google/chrome/extensions/$id.json" \
+              "$root/usr/share/google-chrome/extensions/$id.json" \
+              "$root/usr/share/chromium/extensions/$id.json" \
+              "$root/usr/share/chromium-browser/extensions/$id.json"
+    done
+    rm -f "$root/etc/brave/policies/managed/nexa-extension.json" \
+          "$root/etc/vivaldi/policies/managed/nexa-extension.json" \
+          "$root/etc/opt/edge/policies/managed/nexa-extension.json"
+    firefox_policy remove
+    ;;
+*)
+    echo "usage: $0 install|remove" >&2
+    exit 2
+    ;;
+esac
+exit 0

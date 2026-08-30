@@ -1,7 +1,7 @@
 #include "ui/UiHelpers.h"
+#include "ui/Theme.h"
 
 #include <QLabel>
-#include <QProgressBar>
 #include <QFileInfo>
 #include <initializer_list>
 
@@ -34,16 +34,22 @@ QString humanTime(qint64 s)
 
 QColor statusColor(DownloadState s)
 {
+    // Taken from the active theme so the light palette's darker, contrast-checked
+    // status colours are used on a white ground instead of the neon dark ones.
+    const theme::Palette &p = theme::current();
     switch (s) {
-        case DownloadState::Completed:   return QColor(0x34d399);  // emerald
-        case DownloadState::Downloading: return QColor(0x22d3ee);  // cyan (brand)
-        case DownloadState::Probing:     return QColor(0xa78bfa);  // violet (brand)
-        case DownloadState::Paused:      return QColor(0xfbbf24);  // amber
-        case DownloadState::Error:       return QColor(0xfb7185);  // rose
-        case DownloadState::Queued:      return QColor(0x94a3b8);  // grey
+        case DownloadState::Completed:   return QColor(p.doneFg);
+        case DownloadState::Downloading: return QColor(p.activeFg);
+        case DownloadState::Probing:     return QColor(p.accent);
+        case DownloadState::Paused:      return QColor(p.pausedFg);
+        case DownloadState::Error:       return QColor(p.errorFg);
+        case DownloadState::Queued:      return QColor(p.queuedFg);
     }
-    return QColor(0xe8edf4);
+    return QColor(p.text);
 }
+
+QColor mutedTextColor() { return QColor(theme::current().textFaint); }
+QColor valueTextColor() { return QColor(theme::current().text); }
 
 QString statusLabel(DownloadState s)
 {
@@ -61,40 +67,35 @@ Accent fileAccent(const QString &name)
     const QString badge = ext.isEmpty() ? QStringLiteral("FILE")
                                         : ext.left(4).toUpper();
     if (has({"mp4", "mkv", "mov", "webm", "avi", "ts", "m4v", "flv", "wmv"}))
-        return { QColor(0x8b5cf6), badge };                       // video  - violet
+        return { QColor(0xa374ff), badge };                       // video  - violet
     if (has({"mp3", "m4a", "aac", "opus", "wav", "flac", "ogg"}))
-        return { QColor(0xec4899), badge };                       // audio  - pink
+        return { QColor(0xf28ac8), badge };                       // audio  - pink
     if (has({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic"}))
-        return { QColor(0x14b8a6), badge };                       // images - teal
+        return { QColor(0x45dfc1), badge };                       // images - mint
     if (has({"zip", "rar", "7z", "bz2", "xz", "tar", "gz", "tgz"}))
-        return { QColor(0xf59e0b), badge };                       // archives - amber
+        return { QColor(0xf6c76b), badge };                       // archives - amber
     if (has({"pdf", "doc", "docx", "txt", "rtf", "md", "csv",
              "xls", "xlsx", "ppt", "pptx"}))
-        return { QColor(0x3b82f6), badge };                       // docs   - blue
-    return { QColor(0x64748b), badge };                           // other  - slate
+        return { QColor(0x65b9ff), badge };                       // docs   - blue
+    return { QColor(0x7180a2), badge };                           // other  - slate
 }
 
 void paintIcon(QLabel *icon, const QString &name)
 {
     const Accent a = fileAccent(name);
+    // The type hues are tuned for a dark ground; on a light theme the same hue
+    // is darkened until the badge letters stay readable on their own tint.
+    QColor ink = a.color;
+    if (!theme::isDark())
+        ink = QColor(int(ink.red() * 0.62), int(ink.green() * 0.58), int(ink.blue() * 0.62));
     icon->setText(a.badge);
     icon->setStyleSheet(QStringLiteral(
-        "background: rgba(%1,%2,%3,38); color: rgb(%1,%2,%3); "
-        "border-radius: 9px; font-weight: 700; font-size: 10px;")
-        .arg(a.color.red()).arg(a.color.green()).arg(a.color.blue()));
-}
-
-void paintBar(QProgressBar *bar, const QColor &c)
-{
-    bar->setStyleSheet(QStringLiteral(
-        "QProgressBar { background: #1b222c; border: 0; border-radius: 3px; } "
-        "QProgressBar::chunk { background: %1; border-radius: 3px; }")
-        // Active downloads use the brand cyan→purple gradient; other states keep
-        // their solid semantic colour (done=emerald, paused=amber, error=rose).
-        .arg(c == QColor(0x22d3ee)
-                 ? QStringLiteral("qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-                                  "stop:0 #22d3ee, stop:1 #8b5cf6)")
-                 : c.name()));
+        "background: rgba(%1,%2,%3,%7); color: rgb(%4,%5,%6); "
+        "border: 1px solid rgba(%1,%2,%3,90); border-radius: 9px; "
+        "font-weight: 700; font-size: 10px;")
+        .arg(a.color.red()).arg(a.color.green()).arg(a.color.blue())
+        .arg(ink.red()).arg(ink.green()).arg(ink.blue())
+        .arg(theme::isDark() ? 34 : 28));
 }
 
 } // namespace nexa

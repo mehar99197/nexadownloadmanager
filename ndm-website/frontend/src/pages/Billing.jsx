@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api, { unwrap } from '../api/client';
 import { useToast } from '../components/Toast';
+import { useConfirm } from '../components/ConfirmDialog';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Spinner from '../components/Spinner';
+import usePageMeta from '../hooks/usePageMeta';
 
 function PaymentRow({ payment }) {
   return (
@@ -39,12 +40,16 @@ function PaymentRow({ payment }) {
 }
 
 export default function Billing() {
+  usePageMeta({ title: "Billing", description: "Manage your Nexa Download Manager subscription and view payment history." });
+
   const toast = useToast();
+  const confirm = useConfirm();
   const [payments, setPayments] = useState([]);
   const [subStatus, setSubStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancelling, setCancelling] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const mockCompleted = useRef(false);
 
@@ -86,9 +91,33 @@ export default function Billing() {
       loadData();
     }
   }, [loadData, searchParams, setSearchParams, toast]);
+  const handlePortal = async () => {
+    setPortalBusy(true);
+    try {
+      const data = unwrap(await api.post('/subscription/portal'));
+      if (data?.url) {
+        window.location.href = data.url;
+        return;
+      }
+      // No Stripe customer yet (a trial, or a plan granted by an admin).
+      toast.info('Nothing to manage yet — this plan was not paid through Stripe.');
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not open the billing portal.');
+    } finally {
+      setPortalBusy(false);
+    }
+  };
+
 
   const handleCancel = async () => {
-    if (!confirm('Are you sure you want to cancel your subscription?')) return;
+    const sure = await confirm({
+      title: 'Cancel your subscription?',
+      message: 'Your plan stays active until the end of the period you already paid for. After that the account returns to Free — nothing is deleted.',
+      confirmLabel: 'Cancel subscription',
+      cancelLabel: 'Keep my plan',
+      danger: true,
+    });
+    if (!sure) return;
     setCancelling(true);
     try {
       await api.post('/subscription/cancel');
@@ -165,8 +194,13 @@ export default function Billing() {
                   <span className="text-sm text-white">{subStatus.seats}</span>
                 </div>
               )}
-              {subStatus.status === 'active' && (
-                <div className="border-t border-[var(--color-surface-border)] pt-4">
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && (
+                <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
+                  {/* Stripe's own portal handles cards, invoices and receipts —
+                      things we deliberately never store ourselves. */}
+                  <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
+                    {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
+                  </Button>
                   <Button
                     variant="ghost"
                     onClick={handleCancel}
@@ -180,6 +214,17 @@ export default function Billing() {
             </div>
           ) : (
             <p className="mt-4 text-sm text-zinc-500">No active subscription.</p>
+          )}
+          {subStatus?.plan === 'free' && (
+            <p className="mt-4 border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
+              The free plan never expires and has nothing to cancel.{' '}
+              <Link to="/pricing" className="text-slate-300 hover:text-brand-300">See what Pro adds</Link>.
+            </p>
+          )}
+          {subStatus?.trial && (
+            <p className="mt-4 border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
+              You are on the free Pro trial — nothing is billed and nothing renews; it simply ends.
+            </p>
           )}
         </Card>
 

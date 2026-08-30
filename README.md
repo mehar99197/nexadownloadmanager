@@ -64,13 +64,40 @@ media-stream grabbing, and more. C++ / Qt 6.
   2am") and extracts the URLs + schedule. Available in the GUI, CLI (`--ai`),
   and dashboard (`POST /api/ai`); enabled when `ANTHROPIC_API_KEY` is set.
   *Verified end-to-end against a mock API: both rename and NL-command paths.*
-- **Modern dark UI** — themed desktop GUI (brand header with live aggregate
-  speed, color-coded status, progress bars) sharing the dashboard's palette,
-  plus a Nexa app/extension icon set.
+- **Free plan is ad-supported, paid plans are not** — one sponsored strip above
+  the download list on Free, managed by the site admin (`/admin/ads`: create,
+  schedule, weight, pause, impressions/clicks/CTR). Pro and Team are ad-free and
+  the API refuses to return an ad for a paid licence, so it is not just a
+  client-side hide. Nothing is ever bundled into the installer.
+- **64 built-in themes, each one moving differently** — a Themes gallery
+  (View → Themes…, `Ctrl+Shift+T`) where every look is a live miniature of the
+  app; clicking one applies it instantly, and a search box finds "comet" or
+  "needle" as easily as "ocean". 42 dark and 22 light, plus "Match my system".
+  A theme is more than a palette: each one has its own speed gauge (arc, ring,
+  LED bars, analogue needle, orbit or liquid wave), its own sparkline (line,
+  area, bars, dots, steps, ribbon), its own loading animation (bounce, shimmer,
+  stripes, pulse, comet, dash, segments, wave), its own progress fill and its
+  own tempo. No two themes share a gauge/spark/loader combination or an accent
+  colour, and every one is contrast-tested in CI.
+- **Modern themed UI** — brand header with live aggregate speed, color-coded
+  status and progress bars, sharing the dashboard's palette, plus a Nexa
+  app/extension icon set.
 - **YouTube & 1000+ sites** — paste a YouTube URL (or use the extension's
   quality picker) and Nexa downloads it via **yt-dlp**, muxing the best
   video+audio to MP4 named from the title. *Verified: a real video downloaded
   as av1 240p + opus audio, merged and named from the page title.*
+
+- **Everyday polish (0.2)** — menu bar with shortcuts (Ctrl+N, Space, Ctrl+F,
+  Ctrl+,), tray notifications on finish/fail, a first-run setup guide, a
+  scheduler (start later, survives restarts), post-download actions (open folder,
+  sleep, shut down), an IDM-style link grabber for "Download all links", SHA-256
+  verification from the Add dialog, a Settings toggle for the phone dashboard,
+  automatic update checks with download-and-install, Export logs, and a 7-day Pro
+  trial with a 7-day offline grace for paid plans.
+- **Browser extension 0.2** — toolbar popup (engine status, on/off, pause-this-
+  site, recent handoffs, grab links/media), options page (file types, minimum
+  size, site list, notifications), real notifications and badge, Alt+Shift+N,
+  store-ready packaging (`dist/nexa-chrome-store.zip` without the dev `key`).
 
 ## Build
 
@@ -155,6 +182,9 @@ nexa [--max=N] [--no-categorize] [--batch] [--resume-all]
   --dashboard[=PORT] start the remote web dashboard (default port 8088, loopback)
   --dashboard-lan    bind to 0.0.0.0 (requires NEXA_TLS_CERT and NEXA_TLS_KEY)
   --dashboard-token  set the dashboard access token (otherwise auto-generated)
+  --register-extensions
+                     write the browser-extension auto-install hooks and exit
+                     (Linux: run with sudo for non-.deb installs)
   --ai-rename        AI-rename files to clean names on completion (needs API key)
   --ai "<text>"      natural-language add/schedule, e.g. --ai "get these tonight"
   pattern            e.g. "http://host/file[1-20].jpg" expands to 20 downloads

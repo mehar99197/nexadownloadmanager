@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexa</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="head">
+    <img class="logo" src="icons/icon32.png" width="22" height="22" alt="">
+    <h1>Nexa</h1>
+    <span id="version" class="muted version"></span>
+    <button id="btn-options-icon" class="icon-btn" type="button" title="Options" aria-label="Open options">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>
+      </svg>
+    </button>
+  </header>
+
+  <section id="status" class="status status-wait" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="status-text">Connecting to Nexa…</span>
+    <a id="get-nexa" class="link" href="https://nexadownloadmanager.com/download" target="_blank" rel="noopener noreferrer" hidden>Get Nexa</a>
+    <button id="btn-retry" class="mini" type="button" hidden>Retry</button>
+  </section>
+
+  <section class="toggles" aria-label="Quick settings">
+    <label class="row" for="tgl-enabled">
+      <span class="row-label">Take over downloads</span>
+      <input id="tgl-enabled" class="switch" type="checkbox" role="switch">
+    </label>
+    <label class="row" for="tgl-pause">
+      <span class="row-label">Pause on this site <span id="site-host" class="muted host"></span></span>
+      <input id="tgl-pause" class="switch" type="checkbox" role="switch">
+    </label>
+  </section>
+
+  <section class="actions" aria-label="Actions">
+    <button id="btn-links" type="button" class="btn">Grab all links on this page</button>
+    <button id="btn-media" type="button" class="btn">Grab media on this page <span id="media-count" class="count" hidden></span></button>
+    <div class="btn-pair">
+      <button id="btn-open" type="button" class="btn btn-primary">Open Nexa</button>
+      <button id="btn-options" type="button" class="btn">Options</button>
+    </div>
+  </section>
+
+  <section class="recent" aria-label="Recent handoffs">
+    <h2>Recent</h2>
+    <ul id="recent-list" class="recent-list"></ul>
+    <p id="recent-empty" class="muted empty">Nothing sent to Nexa yet.</p>
+  </section>
+
+  <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+  <script src="popup.js"></script>
+</body>
+</html>

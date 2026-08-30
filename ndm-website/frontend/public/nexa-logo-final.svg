@@ -6,7 +6,6 @@
     <linearGradient id="shine" x1="128" y1="18" x2="128" y2="144" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity="0.16"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
     <filter id="depth" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#02030A" flood-opacity="0.75"/></filter>
   </defs>
-  <!-- Transparent outside the rounded plate; the plate is part of the logo. -->
   <rect x="10" y="10" width="236" height="236" rx="58" fill="url(#plate)"/>
   <rect x="10" y="10" width="236" height="236" rx="58" fill="url(#shine)"/>
   <rect x="15" y="15" width="226" height="226" rx="53" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="2"/>

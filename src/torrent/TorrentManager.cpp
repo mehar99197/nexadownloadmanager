@@ -30,6 +30,7 @@ struct TorrentManager::Impl {
     QHash<int, lt::torrent_handle>  handles;
     QHash<int, QString>             names;
     QSet<int>                       completed;   // ids we've already signalled done
+    QSet<int>                       errored;     // ids already reported as failed
     int                             dlLimit = 0; // session download cap, B/s (0=∞)
     int                             ulLimit = 0; // session upload cap, B/s (0=∞)
     double                          seedRatio = 0.0;  // 0 = don't seed past completion
@@ -143,15 +144,26 @@ bool TorrentManager::add(int id, const QString &magnetOrPath, const QString &sav
 void TorrentManager::pause(int id)
 {
     auto it = d->handles.find(id);
-    if (it != d->handles.end() && it->is_valid())
+    if (it != d->handles.end() && it->is_valid()) {
+        // add_torrent_params defaults to torrent_flags::default_flags, which
+        // INCLUDES auto_managed. An auto-managed torrent is owned by libtorrent's
+        // queue manager, which re-starts it within a second or so — making a bare
+        // pause() a silent no-op. Drop out of auto-management first so the pause
+        // actually sticks; resume() puts it back.
+        it->unset_flags(lt::torrent_flags::auto_managed);
         it->pause();
+    }
 }
 
 void TorrentManager::resume(int id)
 {
     auto it = d->handles.find(id);
-    if (it != d->handles.end() && it->is_valid())
+    if (it != d->handles.end() && it->is_valid()) {
         it->resume();
+        // Hand the torrent back to the queue manager so session-wide limits
+        // (active_downloads/active_seeds) keep applying.
+        it->set_flags(lt::torrent_flags::auto_managed);
+    }
 }
 
 void TorrentManager::remove(int id, bool deleteFiles)
@@ -204,10 +216,48 @@ void TorrentManager::poll()
     std::vector<lt::alert*> alerts;
     d->session->pop_alerts(&alerts);
 
+    // Inspect them before dropping them. These are the ONLY channel through which
+    // libtorrent reports a fatal problem — a corrupt/unreadable .torrent, a disk
+    // write failure, or a magnet whose metadata never resolved. Discarding the
+    // whole queue meant such a torrent simply sat at 0% forever with no error
+    // ever reaching the user.
+    const auto idForHandle = [this](const lt::torrent_handle &h) -> int {
+        for (auto it = d->handles.cbegin(); it != d->handles.cend(); ++it) {
+            if (it.value() == h)
+                return it.key();
+        }
+        return -1;
+    };
+    const auto reportFailure = [this](int id, const QString &why) {
+        if (id < 0 || d->errored.contains(id))
+            return;                       // unknown handle, or already reported
+        d->errored.insert(id);
+        emit stateChanged(id, DownloadState::Error, why);
+    };
+    for (lt::alert *a : alerts) {
+        if (const auto *e = lt::alert_cast<lt::torrent_error_alert>(a)) {
+            reportFailure(idForHandle(e->handle),
+                          QStringLiteral("torrent error: %1")
+                              .arg(QString::fromStdString(e->error.message())));
+        } else if (const auto *e = lt::alert_cast<lt::file_error_alert>(a)) {
+            reportFailure(idForHandle(e->handle),
+                          QStringLiteral("disk error: %1")
+                              .arg(QString::fromStdString(e->error.message())));
+        } else if (const auto *e = lt::alert_cast<lt::metadata_failed_alert>(a)) {
+            reportFailure(idForHandle(e->handle),
+                          QStringLiteral("could not fetch torrent metadata: %1")
+                              .arg(QString::fromStdString(e->error.message())));
+        }
+        // Tracker/peer errors are routine (many trackers are dead) and must NOT
+        // fail the torrent — DHT/PEX can still find peers.
+    }
+
     for (auto it = d->handles.begin(); it != d->handles.end(); ++it) {
         const int id = it.key();
         if (!it->is_valid())
             continue;
+        if (d->errored.contains(id))
+            continue;   // already failed above; don't overwrite Error with a status
 
         const lt::torrent_status st = it->status();
 

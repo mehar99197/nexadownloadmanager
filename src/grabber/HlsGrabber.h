@@ -12,6 +12,8 @@ class QProcess;
 
 namespace nexa {
 
+class CloudProviders;
+
 // Grabs an adaptive video stream and produces a single MP4.
 //   * HLS (.m3u8): parses the master + media playlist ourselves, downloads all
 //     segments in parallel, rewrites a local playlist, then muxes with FFmpeg
@@ -34,6 +36,9 @@ public:
     // Parallel segment fetches. Defaults to 16; the engine wires this to the
     // user's Settings value so it can be tuned (or throttled on slow links).
     void setConcurrency(int n);
+    void setCredentialScope(const CloudProviders *providers, const QString &originHost)
+    { m_providers = providers; m_credentialHost = originHost.toLower(); }
+    void setPublicNetworkOnly(bool on) { m_publicNetworkOnly = on; }
 
     int           id()        const { return m_id; }
     QUrl          url()       const { return m_url; }
@@ -60,10 +65,12 @@ private:
     void handleMaster(const QString &text);
     void handleMedia(const QString &text);
     void pumpDownloads();          // keep up to kConcurrency segment fetches busy
+    void startSegmentRequest(int index, int redirects);
     void startMux();
     void muxViaFfmpegDirect();     // DASH / fallback path
     QString tempDir() const;
     void cleanupTemp();
+    HeaderList scopedHeaders(const QUrl &target) const;
 
     struct Segment {
         QUrl    url;
@@ -82,6 +89,7 @@ private:
     QProcess              *m_ffmpeg = nullptr;
 
     QString                m_localPlaylist;   // rewritten index.m3u8 on disk
+    QString                m_tempPath;        // private random per-run directory
     QVector<Segment>       m_segments;
     int                    m_nextToFetch = 0;
     int                    m_inFlight = 0;
@@ -93,6 +101,10 @@ private:
     QElapsedTimer          m_clock;
 
     int                    m_concurrency = 16;   // parallel segment fetches (accelerator)
+    const CloudProviders  *m_providers = nullptr;
+    QString                m_credentialHost;
+    bool                   m_publicNetworkOnly = false;
+    int                    m_redirects = 0;
 };
 
 } // namespace nexa

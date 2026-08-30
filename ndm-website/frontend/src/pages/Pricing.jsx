@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api, { unwrap } from '../api/client';
+import { startTrial } from '../api/trial';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
+import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -10,15 +12,57 @@ import Spinner from '../components/Spinner';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
-function PlanCard({ plan, billingCycle, onSelect, loading }) {
+/**
+ * Decide what the plan's button should say and do, based on who is looking.
+ * Returns { label, action: 'register' | 'trial' | 'checkout' | 'none', to?, disabled }.
+ */
+function resolveCta(plan, user) {
+  const sub = user?.subscription;
+  const currentPlan = sub?.plan || (user ? 'free' : null);
+  const trialUsed = Boolean(sub?.trialEndsAt);
+  const onTrial = Boolean(sub?.trial);
+
+  if (plan.id === 'free') {
+    if (!user) return { label: 'Get started free', action: 'link', to: '/register' };
+    if (currentPlan === 'free') return { label: 'Current plan', action: 'none', disabled: true };
+    return { label: 'Included in your plan', action: 'none', disabled: true };
+  }
+
+  if (plan.id === 'pro') {
+    if (!user) return { label: 'Start 7-day free trial', action: 'link', to: '/register?trial=1' };
+    if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', disabled: true };
+    if (currentPlan === 'pro' && onTrial) return { label: 'Keep Pro after trial', action: 'checkout' };
+    if (currentPlan === 'free' && !trialUsed) return { label: 'Start 7-day free trial', action: 'trial' };
+    return { label: 'Upgrade to Pro', action: 'checkout' };
+  }
+
+  // team
+  if (!user) return { label: 'Get Team', action: 'link', to: '/register' };
+  if (currentPlan === 'team') return { label: 'Current plan', action: 'none', disabled: true };
+  return { label: 'Get Team', action: 'checkout' };
+}
+
+function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
   const price =
     billingCycle === 'yearly' ? plan.yearly || plan.price : plan.monthly || plan.price;
   const isFree = price === 0;
+  const cta = resolveCta(plan, user);
+  const highlight = plan.id === 'pro';
+
+  const handleClick = () => {
+    if (cta.action === 'checkout') onCheckout(plan.id);
+    else if (cta.action === 'trial') onTrial();
+  };
+
+  const buttonProps =
+    cta.action === 'link'
+      ? { to: cta.to }
+      : { onClick: handleClick, disabled: busy || cta.disabled };
 
   return (
-    <Card className={`relative flex flex-col !p-7 ${plan.id === 'pro' ? 'border-accent-400/60 shadow-[0_0_44px_-16px_rgba(150,92,244,0.72)]' : ''}`}>
-      {plan.id === 'pro' && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-white shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
+    <Card className={`relative flex flex-col !p-7 ${highlight ? '!overflow-visible border-accent-400/60 shadow-[0_0_44px_-16px_rgba(150,92,244,0.72)]' : ''}`}>
+      {highlight && (
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 badge-on-brand text-[0.65rem] font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
           Most popular
         </span>
       )}
@@ -46,19 +90,29 @@ function PlanCard({ plan, billingCycle, onSelect, loading }) {
       <div className="mt-7">
         <Button
           className="w-full"
-          variant={plan.id === 'pro' ? 'primary' : 'ghost'}
-          disabled={loading || isFree}
-          onClick={() => onSelect(plan.id)}
+          variant={highlight ? 'primary' : 'ghost'}
+          {...buttonProps}
         >
-          {isFree ? 'Current Plan' : plan.id === 'pro' ? 'Upgrade to Pro' : 'Get Team'}
+          {cta.label}
         </Button>
+        {plan.id === 'pro' && user?.subscription?.trial && (
+          <p className="mt-2 text-center text-xs text-slate-500">
+            You&apos;re on the Pro trial — pick a billing cycle to keep it.
+          </p>
+        )}
       </div>
     </Card>
   );
 }
 
 export default function Pricing() {
-  const { isAuthenticated } = useAuth();
+  usePageMeta({
+    title: 'Pricing',
+    description:
+      'Nexa Download Manager is free forever for up to 3 concurrent downloads. Pro is $5/month or $45/year and every account gets a 7-day Pro trial with no card required.',
+  });
+
+  const { user, isAuthenticated, refreshMe } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -66,6 +120,8 @@ export default function Pricing() {
   const [billingCycle, setBillingCycle] = useState('yearly');
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [coupon, setCoupon] = useState('');
+  const [couponState, setCouponState] = useState({ status: 'idle', message: '' });
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -85,19 +141,40 @@ export default function Pricing() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleSelect = async (planId) => {
+  // Check the code before checkout so the price shown is the price charged.
+  const handleApplyCoupon = async (event) => {
+    event.preventDefault();
+    const code = coupon.trim();
+    if (!code) return;
+    setCouponState({ status: 'checking', message: '' });
+    try {
+      const data = unwrap(await api.post('/subscription/coupon', { couponCode: code }));
+      const off = data.percentOff
+        ? `${data.percentOff}% off`
+        : data.amountOff
+          ? `$${data.amountOff} off`
+          : 'discount applied';
+      setCouponState({ status: 'valid', message: `${data.code} — ${off}` });
+    } catch (err) {
+      setCouponState({
+        status: 'invalid',
+        message: err?.response?.data?.error?.message || 'That code is not valid.',
+      });
+    }
+  };
+
+  const handleCheckout = async (planId) => {
     if (!isAuthenticated) {
       navigate('/login?next=/pricing');
       return;
     }
-    if (planId === 'free') return;
-
     setError('');
     setChecking(true);
     try {
       const res = await api.post('/subscription/checkout', {
         plan: planId,
         billingCycle,
+        ...(coupon.trim() ? { couponCode: coupon.trim() } : {}),
       });
       const data = unwrap(res);
       if (data?.url) {
@@ -111,6 +188,33 @@ export default function Pricing() {
         err?.response?.data?.error?.message ||
         err?.message ||
         'Checkout failed.';
+      setError(msg);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleTrial = async () => {
+    if (!isAuthenticated) {
+      navigate('/register?trial=1');
+      return;
+    }
+    setError('');
+    setChecking(true);
+    try {
+      const result = await startTrial();
+      if (result.started) {
+        toast.success('Your 7-day Pro trial has started.');
+      } else {
+        toast.info('This account has already used its Pro trial.');
+      }
+      await refreshMe();
+      navigate('/dashboard');
+    } catch (err) {
+      const msg =
+        err?.response?.data?.error?.message ||
+        err?.message ||
+        'Could not start the trial.';
       setError(msg);
     } finally {
       setChecking(false);
@@ -134,7 +238,7 @@ export default function Pricing() {
       ) : plans ? (
         <>
           <div className="mt-8 flex justify-center">
-            <div className="inline-flex rounded-xl border border-[rgba(93,117,170,0.4)] bg-[rgba(17,24,39,0.82)] p-1 shadow-[0_16px_35px_-25px_rgba(126,108,255,0.8)]">
+            <div className="billing-toggle inline-flex rounded-xl border p-1 shadow-[0_16px_35px_-25px_rgba(126,108,255,0.8)]">
               {['monthly', 'yearly'].map((c) => (
                 <button
                   key={c}
@@ -147,7 +251,7 @@ export default function Pricing() {
                   onClick={() => setBillingCycle(c)}
                 >
                   {c}
-                  {c === 'yearly' && (
+                  {c === 'yearly' && plans.pro?.monthly && plans.pro?.yearly && (
                     <span className="ml-1.5 rounded bg-brand-400/15 px-1.5 py-0.5 text-[11px] text-brand-300">
                       Save {Math.round(((plans.pro.monthly * 12 - plans.pro.yearly) / (plans.pro.monthly * 12)) * 100)}%
                     </span>
@@ -163,22 +267,57 @@ export default function Pricing() {
             </div>
           )}
 
-          <div className="mt-12 grid gap-6 md:grid-cols-3">
-            {['free', 'pro', 'team'].map((id) => (
+          <form onSubmit={handleApplyCoupon} className="mx-auto mt-6 flex max-w-md items-center gap-2">
+            <label htmlFor="coupon" className="sr-only">Promotion code</label>
+            <input
+              id="coupon"
+              value={coupon}
+              onChange={(e) => {
+                setCoupon(e.target.value);
+                setCouponState({ status: 'idle', message: '' });
+              }}
+              placeholder="Promotion code (optional)"
+              autoComplete="off"
+              className="input-field flex-1"
+            />
+            <Button
+              type="submit"
+              variant="ghost"
+              disabled={!coupon.trim() || couponState.status === 'checking'}
+            >
+              {couponState.status === 'checking' ? 'Checking…' : 'Apply'}
+            </Button>
+          </form>
+          {couponState.message && (
+            <p
+              role="status"
+              className={`mx-auto mt-2 max-w-md text-center text-sm ${
+                couponState.status === 'valid' ? 'text-emerald-300' : 'text-red-300'
+              }`}
+            >
+              {couponState.message}
+            </p>
+          )}
+
+          <div data-stagger className="mt-12 grid gap-6 md:grid-cols-3">
+            {['free', 'pro', 'team'].filter((id) => plans[id]).map((id) => (
               <PlanCard
                 key={id}
                 plan={plans[id]}
                 billingCycle={billingCycle}
-                onSelect={handleSelect}
-                loading={checking}
+                user={user}
+                onCheckout={handleCheckout}
+                onTrial={handleTrial}
+                busy={checking}
               />
             ))}
           </div>
 
-          <p className="mx-auto mt-8 max-w-lg text-center text-xs text-zinc-500">
-            All plans include a 7-day free trial of Pro features. Payment
-            processing is handled securely by Stripe. You can cancel anytime
-            from your billing dashboard.
+          <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
+            Every account gets a 7-day Pro trial — no card needed. Payment
+            processing is handled securely by Stripe. Cancel anytime from your
+            billing dashboard; refunds within 14 days of a charge, see the{' '}
+            <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
           </p>
         </>
       ) : null}

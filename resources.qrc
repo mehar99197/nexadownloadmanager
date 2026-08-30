@@ -1,6 +1,8 @@
 <RCC>
   <qresource prefix="/">
     <file alias="nexa.png">assets/nexa.png</file>
+    <file alias="nexa-logo.svg">assets/nexa-logo.svg</file>
     <file alias="cloud_providers.json">resources/cloud_providers.json</file>
+    <file alias="extension-ids.env">packaging/extension-ids.env</file>
   </qresource>
 </RCC>

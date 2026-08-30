@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /billing
+Disallow: /profile
+Disallow: /verify-email
+Disallow: /reset-password
+Disallow: /admin/
+
+Sitemap: https://nexadownloadmanager.com/sitemap.xml

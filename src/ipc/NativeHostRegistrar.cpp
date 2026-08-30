@@ -7,12 +7,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QSet>
+#include <QSettings>
 #include <QString>
 #include <QStringList>
-
-#ifdef Q_OS_WIN
-#  include <QSettings>
-#endif
 
 namespace {
 
@@ -22,6 +21,36 @@ namespace {
 //  * Firefox: the gecko id from extension-firefox/manifest.json.
 const QString kHostName      = QStringLiteral("com.nexa.host");
 const QString kChromeExtId   = QStringLiteral("cbogjffoidaepbcbogbfibnldhkckhpb");
+// Store-published copies get a DIFFERENT id (the Web Store ignores the manifest
+// "key"). Add each store id here once it is known so store installs can talk to
+// the host too; until then it can be supplied at runtime (see chromeExtensionIds).
+const QStringList kChromeStoreExtIds = {
+    // e.g. QStringLiteral("abcdefghijklmnopabcdefghijklmnop"),  // Chrome Web Store
+    // e.g. QStringLiteral("abcdefghijklmnopabcdefghijklmnop"),  // Edge Add-ons
+};
+
+// Every Chromium extension id allowed to reach the host: the pinned dev id, the
+// known store ids, plus any extra ids from NEXA_EXTRA_EXTENSION_IDS (comma-
+// separated) or the QSettings key nativeHost/extraChromeIds — so a freshly
+// published store id works before the next app release hard-codes it.
+QStringList chromeExtensionIds()
+{
+    static const QRegularExpression idRe(QStringLiteral("\\A[a-p]{32}\\z"));
+    QStringList ids{kChromeExtId};
+    ids << kChromeStoreExtIds;
+    ids << qEnvironmentVariable("NEXA_EXTRA_EXTENSION_IDS").split(QLatin1Char(','), Qt::SkipEmptyParts);
+    ids << QSettings().value(QStringLiteral("nativeHost/extraChromeIds")).toStringList();
+    QStringList out;
+    QSet<QString> seen;
+    for (QString id : ids) {
+        id = id.trimmed().toLower();
+        if (idRe.match(id).hasMatch() && !seen.contains(id)) {
+            seen.insert(id);
+            out << id;
+        }
+    }
+    return out;
+}
 const QString kFirefoxExtId  = QStringLiteral("nexa@nexa.local");
 const QString kDescription   = QStringLiteral("Nexa Download Manager native messaging host");
 
@@ -44,12 +73,15 @@ QByteArray manifestJson(const QString &hostBin, bool firefox)
     o.insert(QStringLiteral("description"), kDescription);
     o.insert(QStringLiteral("path"),        hostBin);
     o.insert(QStringLiteral("type"),        QStringLiteral("stdio"));
-    if (firefox)
+    if (firefox) {
         o.insert(QStringLiteral("allowed_extensions"),
                  QJsonArray{ kFirefoxExtId });
-    else
-        o.insert(QStringLiteral("allowed_origins"),
-                 QJsonArray{ QStringLiteral("chrome-extension://%1/").arg(kChromeExtId) });
+    } else {
+        QJsonArray origins;
+        for (const QString &id : chromeExtensionIds())
+            origins.append(QStringLiteral("chrome-extension://%1/").arg(id));
+        o.insert(QStringLiteral("allowed_origins"), origins);
+    }
     return QJsonDocument(o).toJson(QJsonDocument::Indented);
 }
 

@@ -167,16 +167,18 @@ void launchEngine()
     if (!fi.exists())
         return;
 #ifndef _WIN32
-    // Packaged Linux binaries are normally root-owned, so rejecting every owner
-    // other than the browser user made native-host autostart fail on a normal
-    // .deb installation. Trust only the current user or root, and require a
-    // non-writable executable so an untrusted user cannot replace what the host
-    // launches. Symlinks are rejected to avoid a simple link-swap attack.
+    // Packaged Linux binaries are normally root-owned, while developer builds
+    // are owned by the browser user and may be group-writable due to the
+    // workspace umask. Trust only the current user or root. Enforce the
+    // non-writable check for root-owned binaries so an untrusted user cannot
+    // replace what the host launches; the current user already owns their dev
+    // build and is the account that invokes this native host. Symlinks are
+    // rejected to avoid a simple link-swap attack.
     if (!fi.isFile() || fi.isSymLink() || !fi.isExecutable())
         return;
     if (fi.ownerId() != ::geteuid() && fi.ownerId() != 0)
         return;
-    if (fi.permissions() & (QFileDevice::WriteGroup | QFileDevice::WriteOther))
+    if (fi.ownerId() == 0 && fi.permissions() & (QFileDevice::WriteGroup | QFileDevice::WriteOther))
         return;
 #endif
     if (!QProcess::startDetached(exe, {QStringLiteral("--background")}))

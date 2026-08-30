@@ -178,8 +178,29 @@ static QSslServer *makeTlsServer(QObject *parent)
     return ssl;
 }
 
+bool WebServer::isRunning() const
+{
+    return m_server && m_server->isListening();
+}
+
+void WebServer::stop()
+{
+    if (!m_server)
+        return;
+    m_server->close();
+    const auto socks = m_conns.keys();
+    for (QTcpSocket *sock : socks)
+        closeConnection(sock);
+    m_conns.clear();
+    m_server->deleteLater();
+    m_server = nullptr;
+    m_port = 0;
+    m_tls = false;
+}
+
 bool WebServer::start(quint16 port, bool lanAccessible, const QString &token)
 {
+    stop();
     m_token = token;
     QSslServer *ssl = makeTlsServer(this);
     if (lanAccessible && !ssl) {

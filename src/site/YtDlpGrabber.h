@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QSet>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include "core/Types.h"
 
 class QProcess;
@@ -135,6 +136,9 @@ private:
     qint64          m_plLastEmitMs = 0;         // throttle aggregate progress emits
     QElapsedTimer   m_plClock;
     bool            m_cancelled = false;
+    // When this run's yt-dlp process was launched. resolveOutputFile()'s
+    // newest-file fallback uses it to refuse files that predate the download.
+    QDateTime       m_runStartedAt;
     int             m_lastPct = -1;
     qint64          m_lastEmitDone = -1;  // throttle UI updates to meaningful deltas
     int             m_conns = 16;         // parallel fragment connections in use

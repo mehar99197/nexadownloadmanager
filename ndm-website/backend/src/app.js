@@ -12,6 +12,8 @@ const asyncHandler = require('./utils/asyncHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const User = require('./models/User');
+const Release = require('./models/Release');
+const { publicStats } = require('./utils/stats');
 
 const app = express();
 
@@ -34,8 +36,13 @@ app.get('/api/health', (req, res) => ok(res, { status: 'up' }));
 app.get(
   '/api/stats',
   asyncHandler(async (req, res) => {
-    const users = await User.count();
-    return ok(res, { users, downloads: 10000 + users * 7 });
+    // Real numbers only: registered users + SUM(releases.download_count),
+    // which the counting redirect (GET /api/releases/download/:os) increments.
+    const [users, downloads] = await Promise.all([User.count(), Release.sumDownloadCount()]);
+    // Below the configured floor a figure is omitted, never rounded up.
+    return ok(res, publicStats({ users, downloads }, {
+      minUsers: config.STATS_MIN_USERS, minDownloads: config.STATS_MIN_DOWNLOADS,
+    }));
   })
 );
 
@@ -43,10 +50,14 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/subscription', require('./routes/subscription'));
 app.use('/api/license', require('./routes/license'));
+app.use('/api/ads', require('./routes/ads'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/releases', require('./routes/releases'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/root', require('./routes/root'));
 app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/contact', require('./routes/contact'));
+app.use('/api/team', require('./routes/team'));
 
 app.use(notFound);
 app.use(errorHandler);

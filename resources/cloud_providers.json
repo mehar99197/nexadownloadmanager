@@ -751,6 +751,38 @@
       "isSiteVideo": true,
       "isAuthSite": false,
       "handlesDriveViaHttp": false
+    },
+    {
+      "id": "moviebox",
+      "label": "MovieBox",
+      "authDomain": "movie-box.co",
+      "cookieDomain": "movie-box.co",
+      "hosts": [
+        "movie-box.co",
+        "www.movie-box.co",
+        "aoneroom.com",
+        "macdn.aoneroom.com",
+        "pacdn.aoneroom.com",
+        "pbcdnw.aoneroom.com",
+        "hakunaymatata.com",
+        "sbcdnw2.hakunaymatata.com"
+      ],
+      "credentialSiblings": [
+        "movie-box.co",
+        "aoneroom.com",
+        "macdn.aoneroom.com",
+        "pacdn.aoneroom.com",
+        "pbcdnw.aoneroom.com",
+        "hakunaymatata.com",
+        "sbcdnw2.hakunaymatata.com"
+      ],
+      "normalizeUrl": false,
+      "hasConfirmPage": false,
+      "usesYtDlp": false,
+      "routesThroughYtDlp": false,
+      "isSiteVideo": true,
+      "isAuthSite": false,
+      "handlesDriveViaHttp": false
     }
   ],
   "extensionCookieForwarding": {
@@ -816,6 +848,11 @@
         "you.com": "you.com",
         "you.ai": "you.com"
       }
+    },
+    "moviebox": {
+      "forwardCookieUrl": "https://movie-box.co/",
+      "exportDomain": "movie-box.co",
+      "hostMatchers": ["movie-box.co", "www.movie-box.co", "aoneroom.com", "macdn.aoneroom.com", "pacdn.aoneroom.com", "pbcdnw.aoneroom.com", "hakunaymatata.com", "sbcdnw2.hakunaymatata.com"]
     }
   }
 }

@@ -1,11 +1,21 @@
 #include "ui/MainWindow.h"
 #include "ui/UiHelpers.h"
+#include "ui/Theme.h"
 #include "ui/DownloadDetailsDialog.h"
 #include "ui/SiteLoginsDialog.h"
 #include "ui/SettingsDialog.h"
+#include "ui/ThemeGalleryDialog.h"
+#include "ui/AdBanner.h"
+#include "ui/Motion.h"
+#include "ads/AdService.h"
 #include "ui/ClipboardMonitor.h"
+#include "ui/LinkGrabberDialog.h"
+#include "ui/FirstRunWizard.h"
+#include "license/LicenseManager.h"
 #include "core/DownloadEngine.h"
 #include "core/UpdateChecker.h"
+#include "core/VirusScanner.h"
+#include "core/DownloadImport.h"
 #include "core/DownloadTask.h"
 #include "core/Logging.h"
 
@@ -17,6 +27,12 @@
 #include <QLineEdit>
 #include <QProgressBar>
 #include <QMenu>
+#include <QMenuBar>
+#include <QRegularExpression>
+#include <QSignalBlocker>
+#include <QAbstractSpinBox>
+#include <QDateTimeEdit>
+#include <QProgressDialog>
 #include <QShortcut>
 #include <QKeySequence>
 #include <QProcess>
@@ -52,8 +68,20 @@
 #include <QUrl>
 #include <QSettings>
 #include <QTimer>
+#include <QDateTime>
 #include <QDropEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QMimeData>
+#include <QInputDialog>
 #include <QAbstractItemView>
+#include <QAbstractItemModel>
+#include <QVariantAnimation>
+#include <QEasingCurve>
+#include <QCursor>
+#include <QEvent>
+#include <QMouseEvent>
+#include <QPaintEvent>
 #include <QScreen>
 #include <QGuiApplication>
 #include <functional>
@@ -68,10 +96,11 @@ namespace nexa {
 using nexa::humanSize;
 using nexa::humanSpeed;
 using nexa::statusColor;
+using nexa::mutedTextColor;
+using nexa::valueTextColor;
 using nexa::statusLabel;
 using nexa::fileAccent;
 using nexa::paintIcon;
-using nexa::paintBar;
 using nexa::Accent;
 
 namespace {
@@ -84,14 +113,174 @@ enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColActions
 // and hand them to a callback; MainWindow then re-lays the table (rebuilding the
 // widgets correctly). No Q_OBJECT needed — a std::function avoids moc on a
 // .cpp-local class.
-class ReorderTable : public QTableWidget {
+// A compact aggregate-throughput sparkline for the SPEED tile. The per-download
+// details plate has a full graph; this is the at-a-glance version, so the main
+// window shows the engine actually working without opening anything.
+class SpeedSpark : public QWidget {
 public:
-    using QTableWidget::QTableWidget;
-    std::function<void(int from, int to)> onReorder;
+    explicit SpeedSpark(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedHeight(18);
+        setMinimumWidth(80);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        // The app-wide sheet gives every QWidget the window background; keep this
+        // one clear so an idle (empty) sparkline is invisible rather than a box.
+        setStyleSheet(QStringLiteral("background: transparent;"));
+    }
+
+    // Called on every stats refresh (~1 Hz).
+    void addSample(double bytesPerSec)
+    {
+        m_samples.append(qMax(0.0, bytesPerSec));
+        while (m_samples.size() > kMaxSamples)
+            m_samples.removeFirst();
+        update();
+    }
 
 protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        // paintSpark draws nothing until there are two samples and a peak, so
+        // an idle tile stays invisible rather than showing a misleading flat line.
+        // The style (line, area, bars, dots, steps, ribbon) is the theme's.
+        QPainter p(this);
+        const theme::Palette &pal = theme::current();
+        motion::paintSpark(p, QRectF(rect()).adjusted(0, 2, 0, -2), m_samples, kMaxSamples,
+                           QColor(pal.accentCool), pal);
+    }
+
+private:
+    static constexpr int kMaxSamples = 60;   // ~1 minute of history at 1 Hz
+    QVector<double> m_samples;
+};
+
+class ReorderTable : public QTableWidget {
+public:
+    ReorderTable(int rows, int cols, QWidget *parent = nullptr)
+        : QTableWidget(rows, cols, parent),
+          m_fade(new QVariantAnimation(this))
+    {
+        // Moves over the bare cells reach the viewport directly…
+        viewport()->setMouseTracking(true);
+        // …except that Qt drops a tracking-only move at the first widget under
+        // the cursor (a label in the file tile, say) and never propagates it to
+        // the viewport. Application-level filters still see every move, so the
+        // band is fed from eventFilter() for anything inside the viewport.
+        qApp->installEventFilter(this);
+
+        m_fade->setEasingCurve(QEasingCurve::OutCubic);
+        connect(m_fade, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            m_mix = v.toDouble();
+            repaintBand();
+        });
+        // Rows shifting under a still cursor (insert, remove, rebuild) must
+        // re-aim the band; defer past the view's own relayout of the same signal.
+        auto resync = [this]() { QTimer::singleShot(0, this, [this]() { syncToCursor(true); }); };
+        connect(model(), &QAbstractItemModel::rowsInserted,  this, resync);
+        connect(model(), &QAbstractItemModel::rowsRemoved,   this, resync);
+        connect(model(), &QAbstractItemModel::modelReset,    this, resync);
+        connect(model(), &QAbstractItemModel::layoutChanged, this, resync);
+    }
+
+    std::function<void(int from, int to)> onReorder;
+    // A drag that did NOT start in this table is a link the user dropped onto
+    // Nexa; the window handles it instead of trying to reorder rows.
+    std::function<bool(const QMimeData *)> onExternalDrop;
+
+protected:
+    // ---- Row hover -------------------------------------------------------
+    // The stylesheet deliberately has no ::item:hover (Qt applies it per cell,
+    // and cells under a widget never show it, so a row used to light up block
+    // by block). Instead the view paints ONE band under the whole row. It is a
+    // plain hover: the row under the cursor is lit, the previous one is not,
+    // with only a short fade so it never flickers. No travelling highlight.
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::MouseMove) {
+            auto *w = qobject_cast<QWidget *>(watched);
+            if (w && w != viewport() && viewport()->isAncestorOf(w)) {
+                const QPoint global = static_cast<QMouseEvent *>(event)->globalPosition().toPoint();
+                setHoverRow(rowUnder(viewport()->mapFromGlobal(global)));
+            }
+        }
+        return QTableWidget::eventFilter(watched, event);
+    }
+
+    bool viewportEvent(QEvent *event) override
+    {
+        switch (event->type()) {
+        case QEvent::MouseMove:
+            setHoverRow(rowUnder(static_cast<QMouseEvent *>(event)->position().toPoint()));
+            break;
+        case QEvent::Leave:
+            // Only sent when the cursor really leaves the viewport (header,
+            // another widget, outside the window) — not when it moves onto a
+            // cell widget, which stays inside the viewport's hover chain.
+            setHoverRow(-1);
+            break;
+        default:
+            break;
+        }
+        return QTableWidget::viewportEvent(event);
+    }
+
+    void scrollContentsBy(int dx, int dy) override
+    {
+        QTableWidget::scrollContentsBy(dx, dy);
+        // The rows moved under a still cursor: carry the band with its row so it
+        // never lags the content, then re-aim at whatever is under the cursor now.
+        m_bandY += dy;
+        repaintBand();
+        syncToCursor(false);
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        if (m_mix > 0.005 && m_bandH > 0) {
+            const theme::Palette &pal = theme::current();
+            // The same colour the old per-cell rule flattened onto the row ground,
+            // so every theme's hover reads exactly as it was designed.
+            QColor c = theme::flatten(pal.rowHover, theme::flatten(pal.tableBg, QColor(pal.windowB)));
+            c.setAlphaF(c.alphaF() * m_mix);
+            QPainter p(viewport());
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            p.drawRoundedRect(bandRect(), kRadius, kRadius);
+        }
+        QTableWidget::paintEvent(event);   // items, row lines and the selection go on top
+    }
+
+    bool isExternal(const QDropEvent *event) const
+    { return event->source() != this; }
+
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (isExternal(event)) {
+            if (onExternalDrop) event->acceptProposedAction();
+            return;
+        }
+        QTableWidget::dragEnterEvent(event);
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (isExternal(event)) {
+            if (onExternalDrop) event->acceptProposedAction();
+            return;
+        }
+        QTableWidget::dragMoveEvent(event);
+    }
+
     void dropEvent(QDropEvent *event) override
     {
+        if (isExternal(event)) {
+            if (onExternalDrop && onExternalDrop(event->mimeData()))
+                event->acceptProposedAction();
+            setState(NoState);
+            stopAutoScroll();
+            return;
+        }
         const int from = currentRow();
         const QModelIndex idx = indexAt(event->position().toPoint());
         const int to = idx.isValid() ? idx.row() : rowCount() - 1;
@@ -107,6 +296,78 @@ protected:
         if (from >= 0 && to >= 0 && from != to && onReorder)
             onReorder(from, to);
     }
+
+private:
+    static constexpr int    kInsetX    = 6;     // the band is a card inside the row,
+    static constexpr int    kInsetY    = 3;     // not a stripe across it
+    static constexpr double kRadius    = 9.0;
+    static constexpr int    kFadeInMs  = 90;    // just enough to not flicker
+    static constexpr int    kFadeOutMs = 140;
+
+    int rowUnder(const QPoint &viewportPos) const
+    {
+        if (!viewport()->rect().contains(viewportPos)) return -1;
+        const int row = rowAt(viewportPos.y());
+        return (row >= 0 && rowHeight(row) > 0) ? row : -1;   // filtered-out rows have no height
+    }
+
+    QRectF bandRect() const
+    {
+        return QRectF(kInsetX, m_bandY + kInsetY,
+                      viewport()->width() - 2 * kInsetX, m_bandH - 2 * kInsetY);
+    }
+
+    // Repaint only the strip the band occupied and occupies now; the rest of
+    // the list does not need a frame for a hover.
+    void repaintBand()
+    {
+        const QRect now = bandRect().toAlignedRect().adjusted(-1, -1, 1, 1);
+        viewport()->update(now.united(m_lastBand));
+        m_lastBand = now;
+    }
+
+    static void retarget(QVariantAnimation *a, double from, double to, int ms)
+    {
+        a->stop();
+        if (qAbs(to - from) < 1e-4) return;
+        a->setStartValue(from);
+        a->setEndValue(to);
+        a->setDuration(qMax(1, int(ms / theme::current().motion.tempo)));
+        a->start();
+    }
+
+    void setHoverRow(int row, bool snap = false)
+    {
+        if (row >= 0 && (row >= rowCount() || rowHeight(row) <= 0)) row = -1;
+        if (row == m_hoverRow && !snap) return;
+        m_hoverRow = row;
+        if (row < 0) {
+            retarget(m_fade, m_mix, 0.0, int(kFadeOutMs * m_mix));
+            return;
+        }
+        // Move straight to the new row (repainting where the band was too),
+        // then bring it up if it was not already showing.
+        m_bandY = rowViewportPosition(row);
+        m_bandH = rowHeight(row);
+        repaintBand();
+        retarget(m_fade, m_mix, 1.0, int(kFadeInMs * (1.0 - m_mix)));
+    }
+
+    void syncToCursor(bool snap)
+    {
+        if (!viewport()->underMouse()) {
+            if (m_hoverRow >= 0) setHoverRow(-1);
+            return;
+        }
+        setHoverRow(rowUnder(viewport()->mapFromGlobal(QCursor::pos())), snap);
+    }
+
+    QVariantAnimation *m_fade;
+    int    m_hoverRow = -1;
+    double m_mix   = 0.0;    // 0 = no band, 1 = fully shown
+    double m_bandY = 0.0;    // viewport y of the hovered row
+    double m_bandH = 0.0;
+    QRect  m_lastBand;
 };
 
 // ---- cell builders (children are named so the slots can find + update them) --
@@ -148,9 +409,8 @@ QWidget *buildProgressCell()
     auto *h = new QHBoxLayout(w);
     h->setContentsMargins(4, 0, 12, 0);
     h->setSpacing(8);
-    auto *bar = new QProgressBar(w);
+    auto *bar = new motion::ThemedBar(w);
     bar->setObjectName(QStringLiteral("p_bar"));
-    bar->setTextVisible(false);
     bar->setFixedHeight(3);
     bar->setRange(0, 100);
     bar->setValue(0);
@@ -232,11 +492,12 @@ QIcon sortGlyph()
 MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     : QMainWindow(parent), m_engine(engine)
 {
-    setWindowTitle(QStringLiteral("Nexa Download Manager"));
+    setWindowTitle(tr("Nexa Download Manager"));
     setWindowIcon(QIcon(QStringLiteral(":/nexa.png")));
-    resize(960, 600);
+    resize(1180, 720);
     // Below this the action-bar buttons + search would clip (no wrapping).
-    setMinimumSize(760, 460);
+    setMinimumSize(880, 560);
+    setAcceptDrops(true);      // drop a link, magnet or .torrent anywhere on the window
 
     auto *central = new QWidget(this);
     central->setObjectName(QStringLiteral("Root"));
@@ -247,58 +508,75 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     // ---- Header bar: logo + brand + breadcrumb (center) + actions (right) --
     auto *header = new QWidget(central);
     header->setObjectName(QStringLiteral("HeaderBar"));
-    header->setFixedHeight(48);
+    header->setFixedHeight(72);
     auto *hl = new QHBoxLayout(header);
-    hl->setContentsMargins(16, 0, 16, 0);
-    hl->setSpacing(10);
+    hl->setContentsMargins(22, 0, 22, 0);
+    hl->setSpacing(12);
 
     // Brand mark: the Nexa logo (same asset as the window/empty-state icon).
     auto *logo = new QLabel(header);
     logo->setObjectName(QStringLiteral("BrandLogo"));
-    logo->setFixedSize(28, 28);
+    logo->setFixedSize(42, 42);
     logo->setAlignment(Qt::AlignCenter);
-    logo->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(28, 28));
-    auto *brand = new QLabel(QStringLiteral("NDM"), header);
+    logo->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(42, 42));
+
+    auto *brandStack = new QWidget(header);
+    brandStack->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *brandLayout = new QVBoxLayout(brandStack);
+    brandLayout->setContentsMargins(0, 0, 0, 0);
+    brandLayout->setSpacing(1);
+    auto *brand = new QLabel(tr("Nexa"), brandStack);
     brand->setObjectName(QStringLiteral("BrandTitle"));
-    auto *crumb = new QLabel(QStringLiteral("Downloads"), header);
+    auto *brandSub = new QLabel(tr("DOWNLOAD MANAGER"), brandStack);
+    brandSub->setObjectName(QStringLiteral("BrandSub"));
+    brandLayout->addWidget(brand);
+    brandLayout->addWidget(brandSub);
+
+    auto *crumb = new QLabel(tr("Downloads  /  Overview"), header);
     crumb->setObjectName(QStringLiteral("Breadcrumb"));
 
-    auto *settingsBtn = new QPushButton(QString::fromUtf8("⚙"), header);
+    auto *settingsBtn = new QPushButton(tr("Settings"), header);
     settingsBtn->setObjectName(QStringLiteral("IconBtn"));
     settingsBtn->setCursor(Qt::PointingHandCursor);
-    settingsBtn->setToolTip(QStringLiteral("Settings, Site logins & more"));
-    auto *folderBtn = new QPushButton(QString::fromUtf8("🗀"), header);
+    settingsBtn->setToolTip(tr("Settings, Site logins & more"));
+    auto *folderBtn = new QPushButton(tr("Open folder"), header);
     folderBtn->setObjectName(QStringLiteral("IconBtn"));
     folderBtn->setCursor(Qt::PointingHandCursor);
-    folderBtn->setToolTip(QStringLiteral("Open the download folder"));
-    auto *addBtn = new QPushButton(QStringLiteral("+  New Download"), header);
+    folderBtn->setToolTip(tr("Open the download folder"));
+    auto *addBtn = new QPushButton(tr("+  New download"), header);
     addBtn->setObjectName(QStringLiteral("NewDl"));
     addBtn->setCursor(Qt::PointingHandCursor);
-    addBtn->setToolTip(QStringLiteral("Add a new download (URL, video, magnet, or playlist)"));
+    addBtn->setToolTip(tr("Add a new download (URL, video, magnet, or playlist)"));
 
     hl->addWidget(logo);
-    hl->addWidget(brand);
+    hl->addWidget(brandStack);
     hl->addStretch(1);
-    hl->addWidget(crumb);
+    hl->addWidget(crumb, 0, Qt::AlignVCenter);   // a pill, not a full-height block
     hl->addStretch(1);
     hl->addWidget(settingsBtn);
     hl->addWidget(folderBtn);
     hl->addWidget(addBtn);
     root->addWidget(header);
 
+    addBtn->setAccessibleName(tr("New download"));
+    folderBtn->setAccessibleName(tr("Open the download folder"));
+    settingsBtn->setAccessibleName(tr("Settings and more"));
+    logo->setAccessibleName(tr("Nexa"));
     connect(addBtn,    &QPushButton::clicked, this, &MainWindow::promptAddUrl);
     connect(folderBtn, &QPushButton::clicked, this, &MainWindow::openDownloadFolder);
     connect(settingsBtn, &QPushButton::clicked, this, [this, settingsBtn]() {
         QMenu menu(this);
-        menu.addAction(QStringLiteral("Settings…"),       this, &MainWindow::onSettings);
-        menu.addAction(QStringLiteral("Site logins…"),    this, &MainWindow::onSiteLogins);
-        QAction *clip = menu.addAction(QStringLiteral("Monitor clipboard for links"));
+        menu.addAction(tr("Settings…"),       this, &MainWindow::onSettings);
+        menu.addAction(tr("Themes…"),         this, &MainWindow::onThemes);
+        menu.addAction(tr("Site logins…"),    this, &MainWindow::onSiteLogins);
+        QAction *clip = menu.addAction(tr("Monitor clipboard for links"));
         clip->setCheckable(true);
         clip->setChecked(m_clipboard && m_clipboard->isEnabled());
         connect(clip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
-        menu.addAction(QStringLiteral("Remove selected"), this, &MainWindow::removeSelected);
+        menu.addAction(tr("Remove selected"), this, &MainWindow::removeSelected);
         menu.addSeparator();
-        menu.addAction(QStringLiteral("Check for updates…"), this, &MainWindow::onCheckUpdates);
+        menu.addAction(tr("Check for updates…"), this, &MainWindow::onCheckUpdates);
+        menu.addAction(tr("Export logs…"), this, &MainWindow::onExportLogs);
         menu.exec(settingsBtn->mapToGlobal(QPoint(0, settingsBtn->height() + 4)));
     });
 
@@ -314,7 +592,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         cell->setObjectName(metricIndex++ == 0 ? QStringLiteral("MetricFirst")
                                                : QStringLiteral("Metric"));
         auto *cv = new QVBoxLayout(cell);
-        cv->setContentsMargins(22, 12, 22, 12);
+        cv->setContentsMargins(22, 14, 22, 14);
         cv->setSpacing(3);
         auto *lab = new QLabel(label, cell);          lab->setObjectName(QStringLiteral("MetricLabel"));
         auto *val = new QLabel(QStringLiteral("—"), cell); val->setObjectName(QStringLiteral("MetricValue"));
@@ -325,6 +603,12 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     };
     makeMetric(QStringLiteral("ACTIVE"),    &m_metActiveVal, &m_metActiveSub);
     makeMetric(QStringLiteral("SPEED"),     &m_metSpeedVal,  &m_metSpeedSub);
+    {   // Slot the sparkline under the SPEED value, above its caption.
+        auto *spark = new SpeedSpark(m_metSpeedVal->parentWidget());
+        m_speedSpark = spark;
+        if (auto *lay = qobject_cast<QVBoxLayout *>(m_metSpeedVal->parentWidget()->layout()))
+            lay->insertWidget(lay->indexOf(m_metSpeedSub), spark);
+    }
     makeMetric(QStringLiteral("COMPLETED"), &m_metDoneVal,   &m_metDoneSub);
     makeMetric(QStringLiteral("STORAGE"),   &m_metStoreVal,  &m_metStoreSub);
     root->addWidget(metrics);
@@ -332,9 +616,9 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     // ---- Toolbar: ghost actions (left) + search (right) -------------------
     auto *toolbar = new QWidget(central);
     toolbar->setObjectName(QStringLiteral("Toolbar"));
-    toolbar->setFixedHeight(42);
+    toolbar->setFixedHeight(56);
     auto *tl = new QHBoxLayout(toolbar);
-    tl->setContentsMargins(16, 0, 16, 0);
+    tl->setContentsMargins(22, 0, 22, 0);
     tl->setSpacing(8);
     auto ghost = [&](const QString &t) {
         auto *b = new QPushButton(t, toolbar);
@@ -343,7 +627,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
         tl->addWidget(b);
         return b;
     };
-    auto *pauseBtn  = ghost(QStringLiteral("Pause All"));
+    auto *pauseBtn  = ghost(QStringLiteral("Pause all"));
     auto *resumeBtn = ghost(QStringLiteral("Resume"));
     auto *filterBtn = ghost(QStringLiteral("Filter"));
     auto *sortBtn   = ghost(QStringLiteral("Sort"));
@@ -354,12 +638,25 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     tl->addStretch(1);
     m_search = new QLineEdit(toolbar);
     m_search->setObjectName(QStringLiteral("Search"));
-    m_search->setPlaceholderText(QStringLiteral("Search..."));
+    m_search->setPlaceholderText(tr("Search..."));
     m_search->setClearButtonEnabled(true);
-    m_search->setFixedWidth(240);
+    m_search->setFixedWidth(270);
     m_search->addAction(searchIcon(), QLineEdit::LeadingPosition);   // magnifier inside left
+    m_search->setAccessibleName(tr("Search downloads"));
+    pauseBtn->setAccessibleName(tr("Pause all downloads"));
+    resumeBtn->setAccessibleName(tr("Resume all downloads"));
+    filterBtn->setAccessibleName(tr("Filter downloads by status"));
+    sortBtn->setAccessibleName(tr("Sort downloads"));
     tl->addWidget(m_search);
     root->addWidget(toolbar);
+
+    // ---- Sponsored strip: Free installs only ------------------------------
+    // AdService decides whether there is anything to show (and refuses outright
+    // on a paid plan); the banner hides itself whenever there isn't.
+    m_ads = new AdService(m_engine->license(), this);
+    m_adBanner = new AdBanner(m_ads, this);
+    root->addWidget(m_adBanner);
+    m_ads->start();
 
     connect(pauseBtn,  &QPushButton::clicked, this, &MainWindow::pauseAll);
     connect(resumeBtn, &QPushButton::clicked, this, &MainWindow::resumeAll);
@@ -369,6 +666,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
 
     // ---- Downloads table --------------------------------------------------
     auto *table = new ReorderTable(0, ColCount, central);
+    table->onExternalDrop = [this](const QMimeData *mime) { return addDroppedPayload(mime) > 0; };
     table->onReorder = [this](int from, int to) {
         // Defer past the drop machinery: rebuilding the table mid-dropEvent
         // would delete the rows Qt is still holding.
@@ -391,7 +689,7 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table->setColumnWidth(ColStatus, 92);
     m_table->setColumnWidth(ColActions, 56);
     m_table->horizontalHeader()->setHighlightSections(false);
-    m_table->horizontalHeader()->setFixedHeight(34);
+    m_table->horizontalHeader()->setFixedHeight(38);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -402,9 +700,18 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table->setDropIndicatorShown(true);
     m_table->setDragDropOverwriteMode(false);
     m_table->setShowGrid(false);
-    m_table->setFocusPolicy(Qt::NoFocus);
+    // Wheel and drag scroll by pixels, not by whole 58px rows, so the list
+    // glides instead of stepping.
+    m_table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // The queue is the main content: it must be reachable and navigable by
+    // keyboard (Tab to it, arrows to move, Space to pause, Delete to remove).
+    m_table->setFocusPolicy(Qt::StrongFocus);
+    m_table->setAccessibleName(tr("Downloads"));
+    m_table->setAccessibleDescription(
+        QStringLiteral("List of downloads. Use the arrow keys to choose one, Space to pause or "
+                       "resume it, Ctrl+I for details, and Delete to remove it."));
     m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(50);
+    m_table->verticalHeader()->setDefaultSectionSize(58);
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_table, &QTableWidget::customContextMenuRequested,
             this, &MainWindow::showRowMenu);
@@ -417,12 +724,15 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     auto *el = new QVBoxLayout(emptyPage);
     el->setAlignment(Qt::AlignCenter);
     auto *emptyIcon = new QLabel(emptyPage);
-    emptyIcon->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(64, 64));
-    emptyIcon->setFixedSize(64, 64);
+    emptyIcon->setPixmap(QIcon(QStringLiteral(":/nexa.png")).pixmap(84, 84));
+    emptyIcon->setFixedSize(84, 84);
     emptyIcon->setScaledContents(true);
     emptyIcon->setStyleSheet(QStringLiteral("opacity:0.5;"));
     emptyIcon->setAlignment(Qt::AlignCenter);
-    auto *emptyTitle = new QLabel(QStringLiteral("No downloads yet"), emptyPage);
+    auto *emptyKicker = new QLabel(tr("NEXA ENGINE READY"), emptyPage);
+    emptyKicker->setObjectName(QStringLiteral("EmptyKicker"));
+    emptyKicker->setAlignment(Qt::AlignCenter);
+    auto *emptyTitle = new QLabel(tr("No downloads yet"), emptyPage);
     emptyTitle->setObjectName(QStringLiteral("EmptyTitle"));
     emptyTitle->setAlignment(Qt::AlignCenter);
     auto *emptyHint = new QLabel(
@@ -433,7 +743,17 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     emptyHint->setWordWrap(true);
     emptyHint->setMaximumWidth(420);
     el->addWidget(emptyIcon, 0, Qt::AlignHCenter);
-    el->addSpacing(14);
+    // The theme's own loading animation, idling: the empty page is the one
+    // place a new user sees motion before anything is downloading.
+    auto *emptyPulse = new motion::ThemedBar(emptyPage);
+    emptyPulse->setObjectName(QStringLiteral("EmptyPulse"));
+    emptyPulse->setFixedSize(140, 3);
+    emptyPulse->setRange(0, 0);
+    el->addSpacing(12);
+    el->addWidget(emptyPulse, 0, Qt::AlignHCenter);
+    el->addSpacing(16);
+    el->addWidget(emptyKicker, 0, Qt::AlignHCenter);
+    el->addSpacing(5);
     el->addWidget(emptyTitle, 0, Qt::AlignHCenter);
     el->addSpacing(6);
     el->addWidget(emptyHint, 0, Qt::AlignHCenter);
@@ -450,12 +770,12 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     // ---- Footer: live stats (left) + version (right) ----------------------
     m_footerLeft  = new QLabel(this);
     m_footerLeft->setObjectName(QStringLiteral("FootStat"));
-    m_footerClear = new QPushButton(QStringLiteral("Clear completed downloads"), this);
+    m_footerClear = new QPushButton(tr("Clear completed downloads"), this);
     m_footerClear->setObjectName(QStringLiteral("Ghost"));
     m_footerClear->setCursor(Qt::PointingHandCursor);
     m_footerClear->setEnabled(false);          // greyed until finished downloads exist
     connect(m_footerClear, &QPushButton::clicked, this, &MainWindow::clearCompleted);
-    m_footerRight = new QLabel(QStringLiteral("v%1  ·  NexaDL").arg(QApplication::applicationVersion()), this);
+    m_footerRight = new QLabel(tr("v%1  ·  NexaDL").arg(QApplication::applicationVersion()), this);
     m_footerRight->setObjectName(QStringLiteral("FootVer"));
     statusBar()->addWidget(m_footerLeft);
     // Permanent widgets sit at the bottom-right, laid left-to-right in call order.
@@ -465,15 +785,34 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     statusBar()->addPermanentWidget(m_footerClear);
     statusBar()->setSizeGripEnabled(false);   // window resizes from its edges anyway
 
-    auto *del = new QShortcut(QKeySequence::Delete, this);
-    connect(del, &QShortcut::activated, this, &MainWindow::removeSelected);
-
     connect(m_engine, &DownloadEngine::taskAdded,        this, &MainWindow::onTaskAdded);
     connect(m_engine, &DownloadEngine::taskProgress,     this, &MainWindow::onTaskProgress);
     connect(m_engine, &DownloadEngine::taskStateChanged, this, &MainWindow::onTaskStateChanged);
     connect(m_engine, &DownloadEngine::taskFinished,     this, &MainWindow::onTaskFinished);
     connect(m_engine, &DownloadEngine::taskRemoved,      this, &MainWindow::onTaskRemoved);
     connect(m_engine, &DownloadEngine::taskRenamed,      this, &MainWindow::onTaskRenamed);
+    connect(m_engine, &DownloadEngine::freeLimitReached, this, &MainWindow::onFreeLimitReached);
+
+    // A download refused outright by the plan (currently login-gated course
+    // sites on Free). The engine supplies the wording so the reason is stated
+    // once, in one place.
+    connect(m_engine, &DownloadEngine::downloadBlocked, this,
+            [this](const QUrl &, const QString &reason) {
+        QMessageBox::information(this, tr("Pro feature"), reason);
+    });
+
+    // Every seat is busy on other machines. Not an error in the licence — say
+    // exactly that, because "license rejected" would send the user hunting for
+    // a problem with their key.
+    connect(m_engine->license(), &LicenseManager::seatLimitReached, this,
+            [this](int seats) {
+        QMessageBox::warning(this, tr("All seats in use"),
+            tr("This license covers %n device(s) at a time, and they are all in use "
+               "right now.\n\nClose Nexa on another machine, or manage your devices at "
+               "nexadownloadmanager.com/dashboard.", nullptr, seats));
+    });
+    connect(m_engine, &DownloadEngine::scheduledAdded,   this, [this](int) { updateStats(); });
+    connect(m_engine, &DownloadEngine::scheduledRemoved, this, [this](int) { updateStats(); });
     // IDM-style: a held (externally-added) download asks before it starts. Resolve
     // the real filename FIRST so the prompt's "Save as" opens with it (never the
     // raw URL token). Open as soon as the probe finishes, or after a short timeout
@@ -516,30 +855,75 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     if (settings.value(QStringLiteral("clipboardMonitor"), false).toBool())
         m_clipboard->setEnabled(true);
 
+    // Optional malware scan of finished files (off by default; drives the
+    // machine's own scanner). A detection is loud: dialog + tray notification.
+    m_scanner = new VirusScanner(this);
+    connect(m_scanner, &VirusScanner::infected, this,
+            [this](int id, const QString &path, const QString &detail) {
+        notifyTray(tr("Malware detected"), QFileInfo(path).fileName(), /*warning=*/true);
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Critical);
+        box.setWindowTitle(tr("Malware detected"));
+        box.setText(tr("Your scanner flagged “%1”.").arg(QFileInfo(path).fileName()));
+        box.setInformativeText(detail);
+        QPushButton *del = box.addButton(tr("Delete the file"), QMessageBox::DestructiveRole);
+        box.addButton(tr("Keep it"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == del)
+            m_engine->remove(id, /*deleteFile=*/true);
+    });
+    connect(m_scanner, &VirusScanner::clean, this, [this](int id, const QString &) {
+        const int row = rowForId(id);
+        if (row >= 0)
+            if (auto *item = m_table->item(row, ColStatus))
+                item->setToolTip(tr("Scanned: no malware found"));
+    });
+    connect(m_scanner, &VirusScanner::unavailable, this,
+            [this](int, const QString &, const QString &why) {
+        statusBar()->showMessage(tr("Virus scan could not run: %1").arg(why), 8000);
+    });
+
     // Update checker (version notification only — never auto-installs). A silent
     // check runs shortly after launch if NEXA_UPDATE_URL is configured; the gear
     // menu's "Check for updates…" forces one with explicit feedback.
     m_updates = new UpdateChecker(this);
     connect(m_updates, &UpdateChecker::updateAvailable, this,
-            [this](const QString &ver, const QString &url, const QString &notes) {
+            [this](const QString &ver, const QString &url, const QString &notes, const QString &sha256) {
         const QString skip = QSettings().value(QStringLiteral("skipUpdateVersion")).toString();
         if (!m_manualUpdateCheck && ver == skip)
             return;   // user chose to skip this version on a prior silent check
+        m_manualUpdateCheck = false;
         QMessageBox box(this);
-        box.setWindowTitle(QStringLiteral("Update available"));
-        box.setText(QStringLiteral("Nexa %1 is available (you have %2).")
+        box.setWindowTitle(tr("Update available"));
+        box.setText(tr("Nexa %1 is available (you have %2).")
                         .arg(ver, QApplication::applicationVersion()));
         if (!notes.isEmpty())
             box.setInformativeText(notes);
-        QPushButton *get  = box.addButton(QStringLiteral("Download"), QMessageBox::AcceptRole);
-        QPushButton *skipB = box.addButton(QStringLiteral("Skip this version"), QMessageBox::DestructiveRole);
-        box.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+        QPushButton *get = nullptr;
+        if (!url.isEmpty())
+            get = box.addButton(tr("Download && install"), QMessageBox::AcceptRole);
+        QPushButton *skipB = box.addButton(tr("Skip this version"), QMessageBox::DestructiveRole);
+        box.addButton(tr("Later"), QMessageBox::RejectRole);
         box.exec();
-        if (box.clickedButton() == get && !url.isEmpty())
-            QDesktopServices::openUrl(QUrl(url));
-        else if (box.clickedButton() == skipB)
+        if (get && box.clickedButton() == get) {
+            // The installer is just another download: segmented, resumable, and
+            // (when the feed carries a checksum) SHA-256 verified before we run it.
+            const int id = m_engine->addDownload(QUrl(url), QString(), {}, QString(), QString(),
+                                                 false, /*userInitiated=*/true);
+            if (id < 0) {
+                QMessageBox::warning(this, QStringLiteral("Update"),
+                                     QStringLiteral("The installer could not be queued."));
+                return;
+            }
+            if (!sha256.isEmpty())
+                if (auto *t = m_engine->task(id))
+                    t->setExpectedSha256(sha256);
+            m_pendingUpdateTask = id;
+            m_pendingUpdateVersion = ver;
+            statusBar()->showMessage(tr("Downloading Nexa %1…").arg(ver), 8000);
+        } else if (box.clickedButton() == skipB) {
             QSettings().setValue(QStringLiteral("skipUpdateVersion"), ver);
-        m_manualUpdateCheck = false;
+        }
     });
     connect(m_updates, &UpdateChecker::upToDate, this, [this]() {
         if (m_manualUpdateCheck)
@@ -552,12 +936,19 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
             QMessageBox::warning(this, QStringLiteral("Update check failed"), why);
         m_manualUpdateCheck = false;
     });
-    if (m_updates->isConfigured())
-        QTimer::singleShot(3000, this, [this]() {
-            m_manualUpdateCheck = false;
-            m_updates->check(QApplication::applicationVersion());
-        });
+    // Silent daily check (Settings → "Check for updates automatically").
+    if (m_updates->isConfigured()
+        && QSettings().value(QStringLiteral("updates/auto"), true).toBool()) {
+        const QDateTime last = QSettings().value(QStringLiteral("updates/lastCheck")).toDateTime();
+        if (!last.isValid() || last.secsTo(QDateTime::currentDateTime()) > 24 * 3600)
+            QTimer::singleShot(4000, this, [this]() {
+                m_manualUpdateCheck = false;
+                QSettings().setValue(QStringLiteral("updates/lastCheck"), QDateTime::currentDateTime());
+                m_updates->check(QApplication::applicationVersion());
+            });
+    }
 
+    buildMenuBar();
     updateStats();
 }
 
@@ -601,10 +992,14 @@ void MainWindow::updateStats()
     setGood(m_metActiveSub, active > 0);
 
     m_metSpeedVal->setText(spd);
-    m_metSpeedSub->setText(QStringLiteral("avg per session"));
+    // m_speedSpark is held as QWidget* because SpeedSpark is local to this file
+    // (no Q_OBJECT, so no qobject_cast); nothing else is ever stored there.
+    if (m_speedSpark)
+        static_cast<SpeedSpark *>(m_speedSpark)->addSample(totalSpeed);
+    m_metSpeedSub->setText(tr("avg per session"));
 
     m_metDoneVal->setText(QString::number(completed));
-    m_metDoneSub->setText(QStringLiteral("+%1 today").arg(m_completedThisSession));
+    m_metDoneSub->setText(tr("+%1 today").arg(m_completedThisSession));
     setGood(m_metDoneSub, m_completedThisSession > 0);
 
     QString cap;
@@ -617,13 +1012,17 @@ void MainWindow::updateStats()
 
     // ---- Footer: "Active: N   Queued: N   Done: N" (values brighter) -------
     auto stat = [](const QString &label, int n) {
-        return QStringLiteral("<span style='color:#5c6675'>%1:</span> "
-                              "<span style='color:#8a94a3'>%2</span>").arg(label).arg(n);
+        return QStringLiteral("<span style='color:%1'>%2:</span> "
+                              "<span style='color:%3'>%4</span>")
+            .arg(theme::current().textFaint, label, theme::current().textMuted)
+            .arg(n);
     };
     QStringList parts{ stat(QStringLiteral("Active"), active),
                        stat(QStringLiteral("Queued"), queued),
                        stat(QStringLiteral("Done"),   completed) };
     if (errors) parts << stat(QStringLiteral("Errors"), errors);
+    const int scheduled = m_engine->scheduledJobs().size();
+    if (scheduled) parts << stat(QStringLiteral("Scheduled"), scheduled);
     m_footerLeft->setText(parts.join(QStringLiteral("&nbsp;&nbsp;&nbsp;&nbsp;")));
 
     // Bottom-right "Clear completed downloads" — always visible, enabled only
@@ -651,7 +1050,7 @@ void MainWindow::promptAddUrl()
     // A small themed dialog: URL + a "whole course / playlist" toggle. The
     // playlist flag flows to yt-dlp's --yes-playlist for course/playlist URLs.
     QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("New Download"));
+    dlg.setWindowTitle(tr("New Download"));
     auto *outer = new QVBoxLayout(&dlg);
     outer->setContentsMargins(14, 14, 14, 14);
     auto *plate = new QWidget(&dlg);
@@ -661,12 +1060,12 @@ void MainWindow::promptAddUrl()
     v->setContentsMargins(18, 16, 18, 16);
     v->setSpacing(10);
 
-    auto *lbl = new QLabel(QStringLiteral("Enter URL"), plate);
+    auto *lbl = new QLabel(tr("Enter URL"), plate);
     lbl->setProperty("ddRole", "label");
     auto *edit = new QLineEdit(preset, plate);
     edit->setMinimumWidth(420);
     edit->setPlaceholderText(QStringLiteral("https://…  (HTTP/FTP, video, magnet, or a course/playlist)"));
-    auto *plCheck = new QCheckBox(QStringLiteral("Download whole course / playlist"), plate);
+    auto *plCheck = new QCheckBox(tr("Download whole course / playlist"), plate);
     auto *plHint = new QLabel(QStringLiteral("For Udemy/Coursera course URLs or a YouTube "
                                              "playlist — fetches every lecture/video."), plate);
     plHint->setProperty("ddRole", "label");
@@ -679,16 +1078,36 @@ void MainWindow::promptAddUrl()
     auto *afRow = new QWidget(plate);
     auto *afLay = new QHBoxLayout(afRow);
     afLay->setContentsMargins(0, 0, 0, 0);
-    auto *afLbl = new QLabel(QStringLiteral("Audio format"), afRow);
+    auto *afLbl = new QLabel(tr("Audio format"), afRow);
     afLbl->setProperty("ddRole", "label");
     auto *afCombo = new QComboBox(afRow);
-    afCombo->addItem(QStringLiteral("M4A · AAC (lossless copy, best)"), QStringLiteral("m4a"));
-    afCombo->addItem(QStringLiteral("AAC"),  QStringLiteral("aac"));
-    afCombo->addItem(QStringLiteral("FLAC (re-encode)"), QStringLiteral("flac"));
-    afCombo->addItem(QStringLiteral("MP3 (re-encode)"),  QStringLiteral("mp3"));
+    afCombo->addItem(tr("M4A · AAC (lossless copy, best)"), QStringLiteral("m4a"));
+    afCombo->addItem(tr("AAC"),  QStringLiteral("aac"));
+    afCombo->addItem(tr("FLAC (re-encode)"), QStringLiteral("flac"));
+    afCombo->addItem(tr("MP3 (re-encode)"),  QStringLiteral("mp3"));
     afLay->addWidget(afLbl);
     afLay->addWidget(afCombo, 1);
     afRow->setVisible(false);
+
+    // Optional integrity check: paste the publisher's SHA-256 and Nexa verifies
+    // the finished file against it (mismatch = error, never a silent bad file).
+    auto *hashEdit = new QLineEdit(plate);
+    hashEdit->setPlaceholderText(tr("SHA-256 to verify after download (optional)"));
+    hashEdit->setToolTip(tr("64 hex characters, as published next to the file."));
+
+    // IDM-style scheduler: start at a chosen time instead of now.
+    auto *laterRow = new QWidget(plate);
+    auto *laterLay = new QHBoxLayout(laterRow);
+    laterLay->setContentsMargins(0, 0, 0, 0);
+    auto *laterCheck = new QCheckBox(tr("Start later, at"), laterRow);
+    auto *laterWhen = new QDateTimeEdit(QDateTime::currentDateTime().addSecs(3600), laterRow);
+    laterWhen->setCalendarPopup(true);
+    laterWhen->setDisplayFormat(QStringLiteral("ddd d MMM yyyy  HH:mm"));
+    laterWhen->setMinimumDateTime(QDateTime::currentDateTime());
+    laterWhen->setEnabled(false);
+    laterLay->addWidget(laterCheck);
+    laterLay->addWidget(laterWhen, 1);
+    connect(laterCheck, &QCheckBox::toggled, laterWhen, &QWidget::setEnabled);
 
     // Show the audio-format row only when the typed URL is an Apple Music link.
     auto isAppleMusic = [](const QString &text) {
@@ -705,13 +1124,15 @@ void MainWindow::promptAddUrl()
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, plate);
     if (auto *okBtn = btns->button(QDialogButtonBox::Ok)) {
         okBtn->setObjectName(QStringLiteral("Primary"));
-        okBtn->setText(QStringLiteral("Download"));
+        okBtn->setText(tr("Download"));
     }
     v->addWidget(lbl);
     v->addWidget(edit);
     v->addWidget(plCheck);
     v->addWidget(plHint);
     v->addWidget(afRow);
+    v->addWidget(hashEdit);
+    v->addWidget(laterRow);
     v->addStretch(1);
     v->addWidget(btns);
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -720,6 +1141,25 @@ void MainWindow::promptAddUrl()
 
     if (dlg.exec() != QDialog::Accepted || edit->text().trimmed().isEmpty())
         return;
+    const QString expectedHash = hashEdit->text().trimmed().toLower();
+    static const QRegularExpression hexRe(QStringLiteral("\\A[0-9a-f]{64}\\z"));
+    if (!expectedHash.isEmpty() && !hexRe.match(expectedHash).hasMatch()) {
+        QMessageBox::warning(this, QStringLiteral("Invalid checksum"),
+                             QStringLiteral("A SHA-256 is 64 hexadecimal characters."));
+        return;
+    }
+
+    if (laterCheck->isChecked() && laterWhen->dateTime() > QDateTime::currentDateTime()) {
+        const int sid = m_engine->scheduleDownload(QUrl::fromUserInput(edit->text().trimmed()),
+                                                   laterWhen->dateTime());
+        if (sid < 0)
+            QMessageBox::warning(this, QStringLiteral("Invalid URL"),
+                                 QStringLiteral("That URL could not be parsed."));
+        else
+            statusBar()->showMessage(tr("Scheduled for %1 — see Downloads → Scheduled…")
+                                         .arg(laterWhen->dateTime().toString(QStringLiteral("ddd d MMM HH:mm"))), 8000);
+        return;
+    }
 
     // userInitiated=true: the user already confirmed here, so start directly
     // rather than firing the second "confirm before download" prompt.
@@ -729,9 +1169,17 @@ void MainWindow::promptAddUrl()
     const int id = m_engine->addDownload(QUrl::fromUserInput(edit->text().trimmed()),
                                          QString(), {}, QString(), QString(),
                                          plCheck->isChecked(), /*userInitiated=*/true, audioFmt);
-    if (id < 0)
+    if (id < 0) {
         QMessageBox::warning(this, QStringLiteral("Invalid URL"),
                              QStringLiteral("That URL could not be parsed."));
+        return;
+    }
+    if (!expectedHash.isEmpty()) {
+        if (auto *t = m_engine->task(id))
+            t->setExpectedSha256(expectedHash);
+        else
+            statusBar()->showMessage(tr("Checksum verification applies to file downloads only."), 6000);
+    }
 }
 
 // IDM-style "Download File Info" prompt, shown before a HELD download starts.
@@ -753,7 +1201,7 @@ void MainWindow::showConfirmPrompt(int id)
     // Top-level when the main window is hidden (browser handoff), like the plate.
     QWidget *par = (isVisible() && !isMinimized()) ? this : nullptr;
     QDialog dlg(par);
-    dlg.setWindowTitle(QStringLiteral("New Download"));
+    dlg.setWindowTitle(tr("New Download"));
     // Minimize + close enabled, maximize disabled. Qt::Window (not Dialog) so the
     // minimize button actually works on GNOME; fixed size (below) is what makes
     // the WM drop the maximize button.
@@ -810,8 +1258,8 @@ void MainWindow::showConfirmPrompt(int id)
     grid->addWidget(mkLabel(QStringLiteral("Folder")),  2, 0); grid->addLayout(folderRow, 2, 1);
 
     auto *btnRow = new QHBoxLayout;
-    auto *later  = new QPushButton(QStringLiteral("Download Later"), plate);
-    auto *cancel = new QPushButton(QStringLiteral("Cancel"), plate);
+    auto *later  = new QPushButton(tr("Download Later"), plate);
+    auto *cancel = new QPushButton(tr("Cancel"), plate);
     auto *start  = new QPushButton(QString::fromUtf8("▶  Start Download"), plate);
     start->setObjectName(QStringLiteral("Primary"));
     for (auto *b : {later, cancel, start})
@@ -869,7 +1317,7 @@ void MainWindow::showCompleteDialog(int id)
 
     QWidget *par = (isVisible() && !isMinimized()) ? this : nullptr;
     QDialog dlg(par);
-    dlg.setWindowTitle(QStringLiteral("Download complete"));
+    dlg.setWindowTitle(tr("Download complete"));
     // Minimize + close enabled, maximize disabled (Qt::Window so minimize works;
     // fixed size makes the WM drop the maximize button).
     dlg.setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint
@@ -892,17 +1340,17 @@ void MainWindow::showCompleteDialog(int id)
     auto *nameL = new QLabel(QFileInfo(path).fileName(), plate);
     nameL->setProperty("ddRole", "value");
     nameL->setWordWrap(true);
-    auto *savedLbl = new QLabel(QStringLiteral("Saved to"), plate);
+    auto *savedLbl = new QLabel(tr("Saved to"), plate);
     savedLbl->setProperty("ddRole", "label");
     auto *pathL = new QLabel(QFileInfo(path).absolutePath(), plate);
     pathL->setObjectName(QStringLiteral("Dd_host"));
     pathL->setWordWrap(true);
-    auto *dontShow = new QCheckBox(QStringLiteral("Don't show this dialog again"), plate);
+    auto *dontShow = new QCheckBox(tr("Don't show this dialog again"), plate);
 
     auto *btnRow = new QHBoxLayout;
-    auto *folderBtn = new QPushButton(QStringLiteral("Open folder"), plate);
-    auto *closeBtn  = new QPushButton(QStringLiteral("Close"), plate);
-    auto *openBtn   = new QPushButton(QStringLiteral("Open"), plate);
+    auto *folderBtn = new QPushButton(tr("Open folder"), plate);
+    auto *closeBtn  = new QPushButton(tr("Close"), plate);
+    auto *openBtn   = new QPushButton(tr("Open"), plate);
     openBtn->setObjectName(QStringLiteral("Primary"));
     for (auto *b : {folderBtn, closeBtn, openBtn})
         b->setCursor(Qt::PointingHandCursor);
@@ -947,6 +1395,552 @@ void MainWindow::showCompleteDialog(int id)
         s.setValue(QStringLiteral("ui/showCompleteDialog"), false);
 }
 
+void MainWindow::showLinkGrabber(const QString &pageUrl, const QString &pageTitle,
+                                 const QVector<LinkItem> &links, const HeaderList &headers)
+{
+    showAndRaise();
+    auto *dlg = new LinkGrabberDialog(m_engine, pageUrl, pageTitle, links, headers, this);
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
+}
+
+// The Free plan runs 3 downloads at once. When a 4th is queued because of that
+// cap, say so once per session and offer the trial / a license key — a silent
+// queue reads as "Nexa is slow", which is the opposite of what happened.
+void MainWindow::onFreeLimitReached(int id)
+{
+    Q_UNUSED(id);
+    if (m_upgradeNudged || m_restoring)
+        return;
+    if (!QSettings().value(QStringLiteral("ui/upgradeNudge"), true).toBool())
+        return;
+    m_upgradeNudged = true;
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Free plan: 3 downloads at once"));
+    box.setText(tr("This download is queued — the Free plan runs 3 downloads at a time."));
+    box.setInformativeText(QStringLiteral("Pro removes the limit (up to 16 at once), adds AI file naming, "
+                                          "and starts with a free 7-day trial — no card needed."));
+    QPushButton *trial = box.addButton(tr("Start free trial"), QMessageBox::AcceptRole);
+    QPushButton *key   = box.addButton(tr("Enter license key"), QMessageBox::ActionRole);
+    box.addButton(tr("Not now"), QMessageBox::RejectRole);
+    auto *dontShow = new QCheckBox(tr("Don't remind me again"), &box);
+    box.setCheckBox(dontShow);
+    box.exec();
+    if (dontShow->isChecked())
+        QSettings().setValue(QStringLiteral("ui/upgradeNudge"), false);
+    if (box.clickedButton() == trial)
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://nexadownloadmanager.com/pricing?trial=1")));
+    else if (box.clickedButton() == key)
+        onSettings();
+}
+
+void MainWindow::togglePauseSelected()
+{
+    const int id = selectedId();
+    if (id < 0)
+        return;
+    const DownloadState s = m_engine->stateOf(id);
+    if (s == DownloadState::Downloading || s == DownloadState::Probing || s == DownloadState::Queued)
+        m_engine->pause(id);
+    else if (s == DownloadState::Paused || s == DownloadState::Error)
+        m_engine->resume(id);
+}
+
+// The installer finished downloading (and, when the feed had a checksum, was
+// verified by the engine — a mismatch would have errored, never reached here).
+void MainWindow::offerInstallUpdate(int id)
+{
+    const QString path = m_engine->savePathOf(id);
+    const QString version = m_pendingUpdateVersion;
+    const bool verified = m_stateDetail.value(id).contains(QLatin1String("verified"));
+    m_pendingUpdateTask = -1;
+    m_pendingUpdateVersion.clear();
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return;
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Update ready"));
+    box.setText(tr("Nexa %1 has been downloaded%2.")
+                    .arg(version, verified ? QStringLiteral(" and verified") : QString()));
+#ifdef Q_OS_WIN
+    box.setInformativeText(QStringLiteral("Install now? Nexa will close while the installer runs; "
+                                          "your downloads resume when you reopen it."));
+#else
+    box.setInformativeText(QStringLiteral("Open the package now? Your system's package installer "
+                                          "will take it from here; restart Nexa afterwards."));
+#endif
+    QPushButton *now = box.addButton(tr("Install now"), QMessageBox::AcceptRole);
+    box.addButton(tr("Later"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() != now)
+        return;
+#ifdef Q_OS_WIN
+    if (QProcess::startDetached(path, {}))
+        QTimer::singleShot(300, qApp, &QApplication::quit);
+    else
+        QMessageBox::warning(this, QStringLiteral("Update"),
+                             QStringLiteral("The installer could not be started. Run it from %1.").arg(path));
+#else
+    if (!QProcess::startDetached(QStringLiteral("xdg-open"), {path}))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+#endif
+}
+
+void MainWindow::buildMenuBar()
+{
+    QMenuBar *bar = menuBar();
+
+    QMenu *file = bar->addMenu(QStringLiteral("&File"));
+    QAction *aNew = file->addAction(tr("&New download…"), this, &MainWindow::promptAddUrl);
+    aNew->setShortcut(QKeySequence::New);
+    QAction *aSmart = file->addAction(tr("&Smart add (AI)…"), this, &MainWindow::promptSmartAdd);
+    aSmart->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
+    file->addAction(tr("&Import downloads…"), this, &MainWindow::importDownloads);
+    QAction *aFolder = file->addAction(tr("Open download &folder"), this, &MainWindow::openDownloadFolder);
+    aFolder->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_O));
+    file->addSeparator();
+    file->addAction(tr("&Export logs…"), this, &MainWindow::onExportLogs);
+    file->addSeparator();
+    QAction *aQuit = file->addAction(tr("&Quit Nexa"), qApp, &QApplication::quit);
+    aQuit->setShortcut(QKeySequence::Quit);
+    aQuit->setMenuRole(QAction::QuitRole);
+
+    QMenu *dl = bar->addMenu(QStringLiteral("&Downloads"));
+    QAction *aToggle = dl->addAction(tr("&Pause / resume selected"), this, &MainWindow::togglePauseSelected);
+    aToggle->setShortcut(QKeySequence(Qt::Key_Space));
+    QAction *aDetails = dl->addAction(tr("&Details…"), this, [this]() {
+        const int id = selectedId();
+        if (id >= 0)
+            openDetails(id);
+    });
+    aDetails->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_I));
+    QAction *aRemove = dl->addAction(tr("&Remove selected"), this, &MainWindow::removeSelected);
+    aRemove->setShortcut(QKeySequence::Delete);
+    // Space and Delete are plain keys with window-wide shortcut context, so Qt
+    // would dispatch them to these actions BEFORE the focused widget sees them —
+    // making it impossible to type a space or delete a character in the search
+    // box. Disable them whenever a text-entry widget holds focus.
+    const auto syncTypingShortcuts = [aToggle, aRemove](QWidget *focused) {
+        const bool typing = qobject_cast<QLineEdit *>(focused) != nullptr
+                            || qobject_cast<QAbstractSpinBox *>(focused) != nullptr
+                            || (focused && focused->inherits("QTextEdit"))
+                            || (focused && focused->inherits("QPlainTextEdit"));
+        aToggle->setEnabled(!typing);
+        aRemove->setEnabled(!typing);
+    };
+    connect(qApp, &QApplication::focusChanged, this,
+            [syncTypingShortcuts](QWidget *, QWidget *now) { syncTypingShortcuts(now); });
+    syncTypingShortcuts(QApplication::focusWidget());
+    dl->addSeparator();
+    QAction *aPauseAll = dl->addAction(tr("Pause &all"), this, &MainWindow::pauseAll);
+    aPauseAll->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
+    QAction *aResumeAll = dl->addAction(tr("Resume a&ll"), this, &MainWindow::resumeAll);
+    aResumeAll->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    QAction *aClear = dl->addAction(tr("&Clear completed"), this, &MainWindow::clearCompleted);
+    aClear->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Delete));
+    dl->addSeparator();
+    QAction *aSched = dl->addAction(tr("&Scheduled…"), this, &MainWindow::showScheduled);
+    aSched->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    QAction *aShut = dl->addAction(tr("Shut down computer when done (this session)"));
+    aShut->setCheckable(true);
+    connect(aShut, &QAction::toggled, this, [this](bool on) {
+        m_shutdownThisSession = on;
+        if (on)
+            statusBar()->showMessage(tr("Nexa will shut the computer down when the queue finishes."), 6000);
+    });
+
+    QMenu *view = bar->addMenu(QStringLiteral("&View"));
+    QAction *aFind = view->addAction(tr("&Find…"), this, [this]() {
+        if (m_search) {
+            m_search->setFocus(Qt::ShortcutFocusReason);
+            m_search->selectAll();
+        }
+    });
+    aFind->setShortcut(QKeySequence::Find);
+    view->addAction(tr("F&ilter by status…"), this, &MainWindow::showFilterMenu);
+    view->addAction(tr("&Sort…"), this, &MainWindow::showSortMenu);
+    view->addSeparator();
+    QAction *aThemes = view->addAction(tr("&Themes…"), this, &MainWindow::onThemes);
+    aThemes->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T));
+
+    QMenu *tools = bar->addMenu(QStringLiteral("&Tools"));
+    QAction *aSettings = tools->addAction(tr("&Settings…"), this, &MainWindow::onSettings);
+    aSettings->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    aSettings->setMenuRole(QAction::PreferencesRole);
+    tools->addAction(tr("Site &logins…"), this, &MainWindow::onSiteLogins);
+    tools->addAction(tr("Setup &guide…"), this, &MainWindow::showSetupGuide);
+    QAction *aClip = tools->addAction(tr("&Monitor clipboard for links"));
+    aClip->setCheckable(true);
+    connect(tools, &QMenu::aboutToShow, this, [this, aClip]() {
+        const QSignalBlocker blocker(aClip);
+        aClip->setChecked(m_clipboard && m_clipboard->isEnabled());
+    });
+    connect(aClip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
+
+    QMenu *help = bar->addMenu(QStringLiteral("&Help"));
+    help->addAction(tr("&Documentation"), this, []() {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://nexadownloadmanager.com/docs")));
+    });
+    help->addAction(tr("&Report a problem"), this, []() {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/mehar99197/nexadownloadmanager/issues")));
+    });
+    help->addSeparator();
+    help->addAction(tr("Check for &updates…"), this, &MainWindow::onCheckUpdates);
+    QAction *aAbout = help->addAction(tr("&About Nexa"), this, [this]() {
+        QMessageBox::about(this, QStringLiteral("About Nexa"),
+            QStringLiteral("<b>Nexa Download Manager</b> %1<br><br>"
+                           "Segmented downloads, video grabbing, torrents and cloud links "
+                           "in one queue — on Windows and Linux.<br><br>"
+                           "<a href=\"https://nexadownloadmanager.com\">nexadownloadmanager.com</a>")
+                .arg(QApplication::applicationVersion()));
+    });
+    aAbout->setMenuRole(QAction::AboutRole);
+}
+
+void MainWindow::showScheduled()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Scheduled downloads"));
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->setContentsMargins(14, 14, 14, 14);
+    auto *plate = new QWidget(&dlg);
+    plate->setObjectName(QStringLiteral("Plate"));
+    outer->addWidget(plate);
+    auto *v = new QVBoxLayout(plate);
+    v->setContentsMargins(18, 16, 18, 16);
+    v->setSpacing(8);
+
+    auto *table = new QTableWidget(0, 3, plate);
+    table->setHorizontalHeaderLabels({QStringLiteral("Starts"), QStringLiteral("URL"), QString()});
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setShowGrid(false);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    table->setColumnWidth(0, 170);
+    table->setColumnWidth(2, 90);
+    auto *empty = new QLabel(tr("Nothing scheduled. Tick “Start later” in New download to add one."), plate);
+    empty->setProperty("ddRole", "label");
+    empty->setWordWrap(true);
+
+    auto refill = [this, table, empty]() {
+        const auto jobs = m_engine->scheduledJobs();
+        table->setRowCount(0);
+        for (const auto &job : jobs) {
+            const int row = table->rowCount();
+            table->insertRow(row);
+            table->setItem(row, 0, new QTableWidgetItem(job.when.toString(QStringLiteral("ddd d MMM  HH:mm"))));
+            auto *urlItem = new QTableWidgetItem(job.url.toString());
+            urlItem->setToolTip(job.url.toString());
+            table->setItem(row, 1, urlItem);
+            auto *cancel = new QPushButton(tr("Cancel"), table);
+            cancel->setCursor(Qt::PointingHandCursor);
+            const int jobId = job.id;
+            connect(cancel, &QPushButton::clicked, this, [this, jobId]() { m_engine->cancelScheduled(jobId); });
+            table->setCellWidget(row, 2, cancel);
+        }
+        table->setVisible(!jobs.isEmpty());
+        empty->setVisible(jobs.isEmpty());
+    };
+    refill();
+    connect(m_engine, &DownloadEngine::scheduledRemoved, &dlg, [refill](int) { refill(); });
+    connect(m_engine, &DownloadEngine::scheduledAdded,   &dlg, [refill](int) { refill(); });
+
+    auto *btns = new QDialogButtonBox(QDialogButtonBox::Close, plate);
+    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(table, 1);
+    v->addWidget(empty);
+    v->addWidget(btns);
+    dlg.resize(720, 360);
+    dlg.exec();
+}
+
+namespace {
+// Platform power actions for "when all downloads finish". Returns false when
+// no command could be started (the user is told; nothing else happens).
+bool runPowerAction(const QString &action)
+{
+    QStringList candidates;   // "program|arg|arg" — first that starts wins
+#if defined(Q_OS_WIN)
+    if (action == QLatin1String("shutdown"))
+        candidates << QStringLiteral("shutdown|/s|/t|5");
+    else
+        candidates << QStringLiteral("rundll32.exe|powrprof.dll,SetSuspendState|0,1,0");
+#elif defined(Q_OS_MACOS)
+    if (action == QLatin1String("shutdown"))
+        candidates << QStringLiteral("osascript|-e|tell application \"System Events\" to shut down");
+    else
+        candidates << QStringLiteral("pmset|sleepnow");
+#else
+    if (action == QLatin1String("shutdown"))
+        candidates << QStringLiteral("systemctl|poweroff") << QStringLiteral("loginctl|poweroff")
+                   << QStringLiteral("shutdown|-h|now");
+    else
+        candidates << QStringLiteral("systemctl|suspend") << QStringLiteral("loginctl|suspend");
+#endif
+    for (const QString &c : candidates) {
+        QStringList parts = c.split(QLatin1Char('|'));
+        const QString prog = parts.takeFirst();
+        if (QProcess::startDetached(prog, parts))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
+// Runs once per batch, after the last active job finishes: open folder, sleep,
+// or shut down (Settings), or the session-only "shut down when done" toggle.
+// Sleep/shutdown show a 60-second countdown the user can cancel.
+void MainWindow::maybeRunWhenDone()
+{
+    if (m_whenDoneFired || m_restoring)
+        return;
+    if (!m_engine->allTerminal() || !m_engine->scheduledJobs().isEmpty())
+        return;
+    QString action = QSettings().value(QStringLiteral("ui/whenDone"), QStringLiteral("none")).toString();
+    if (m_shutdownThisSession)
+        action = QStringLiteral("shutdown");
+    if (action == QLatin1String("none"))
+        return;
+    m_whenDoneFired = true;
+
+    if (action == QLatin1String("folder")) {
+        openDownloadFolder();
+        return;
+    }
+    const bool shutdown = action == QLatin1String("shutdown");
+    showAndRaise();
+    QProgressDialog countdown(this);
+    countdown.setWindowTitle(shutdown ? QStringLiteral("Shutting down") : QStringLiteral("Going to sleep"));
+    countdown.setLabelText(tr("All downloads finished. %1 in 60 seconds…")
+                               .arg(shutdown ? QStringLiteral("Shutting down") : QStringLiteral("Sleeping")));
+    countdown.setCancelButtonText(tr("Cancel"));
+    countdown.setRange(0, 60);
+    countdown.setValue(0);
+    countdown.setWindowModality(Qt::ApplicationModal);
+    countdown.setMinimumDuration(0);
+    int elapsed = 0;
+    QTimer tick;
+    tick.setInterval(1000);
+    connect(&tick, &QTimer::timeout, &countdown, [&]() {
+        ++elapsed;
+        // Accept BEFORE the value can reach the maximum: setValue(maximum) makes
+        // QProgressDialog reset() and hide itself, which would end exec() with an
+        // ambiguous result instead of our explicit "countdown finished".
+        if (elapsed >= 60) {
+            countdown.accept();
+            return;
+        }
+        countdown.setValue(elapsed);
+        countdown.setLabelText(tr("All downloads finished. %1 in %2 seconds…")
+                                   .arg(shutdown ? QStringLiteral("Shutting down") : QStringLiteral("Sleeping"))
+                                   .arg(60 - elapsed));
+    });
+    tick.start();
+    const bool finished = countdown.exec() == QDialog::Accepted;
+    tick.stop();
+    if (!finished || countdown.wasCanceled()) {
+        m_shutdownThisSession = false;
+        statusBar()->showMessage(tr("Cancelled."), 4000);
+        return;
+    }
+    if (!runPowerAction(action))
+        QMessageBox::warning(this, QStringLiteral("Power action failed"),
+                             QStringLiteral("Nexa could not %1 this computer (no permission or command available).")
+                                 .arg(shutdown ? QStringLiteral("shut down") : QStringLiteral("suspend")));
+    else if (shutdown)
+        QTimer::singleShot(500, qApp, &QApplication::quit);
+}
+
+// A drag carries something we can download when it has file/http URLs, a magnet,
+// or plain text that parses as one of those.
+bool MainWindow::payloadLooksDownloadable(const QMimeData *mime)
+{
+    if (!mime)
+        return false;
+    if (mime->hasUrls()) {
+        const auto urls = mime->urls();
+        for (const QUrl &u : urls) {
+            const QString s = u.scheme().toLower();
+            if (s == QLatin1String("http") || s == QLatin1String("https")
+                || s == QLatin1String("ftp") || s == QLatin1String("magnet"))
+                return true;
+            if (u.isLocalFile() && u.toLocalFile().endsWith(QLatin1String(".torrent"), Qt::CaseInsensitive))
+                return true;
+        }
+        return false;
+    }
+    if (mime->hasText()) {
+        const QString t = mime->text().trimmed();
+        return t.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+               || t.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+               || t.startsWith(QLatin1String("ftp://"), Qt::CaseInsensitive)
+               || t.startsWith(QLatin1String("magnet:"), Qt::CaseInsensitive);
+    }
+    return false;
+}
+
+// Queue everything downloadable in a drop. Local .torrent files are handed over
+// as file URLs (the engine's torrent path takes them); text may hold several
+// links, one per line.
+int MainWindow::addDroppedPayload(const QMimeData *mime)
+{
+    if (!mime)
+        return 0;
+    QStringList targets;
+    if (mime->hasUrls()) {
+        const auto urls = mime->urls();
+        for (const QUrl &u : urls) {
+            const QString s = u.scheme().toLower();
+            if (u.isLocalFile()) {
+                if (u.toLocalFile().endsWith(QLatin1String(".torrent"), Qt::CaseInsensitive))
+                    targets << u.toLocalFile();
+            } else if (s == QLatin1String("http") || s == QLatin1String("https")
+                       || s == QLatin1String("ftp") || s == QLatin1String("magnet")) {
+                targets << u.toString();
+            }
+        }
+    } else if (mime->hasText()) {
+        const auto lines = mime->text().split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                                              Qt::SkipEmptyParts);
+        for (const QString &line : lines) {
+            const QString t = line.trimmed();
+            if (t.startsWith(QLatin1String("http"), Qt::CaseInsensitive)
+                || t.startsWith(QLatin1String("ftp://"), Qt::CaseInsensitive)
+                || t.startsWith(QLatin1String("magnet:"), Qt::CaseInsensitive))
+                targets << t;
+        }
+    }
+    int added = 0;
+    for (const QString &t : targets) {
+        // userInitiated: dropping it IS the confirmation, so don't ask again.
+        const int id = m_engine->addDownload(QUrl::fromUserInput(t), QString(), {}, QString(),
+                                             QString(), false, /*userInitiated=*/true);
+        if (id >= 0)
+            ++added;
+    }
+    if (added > 0) {
+        showAndRaise();
+        statusBar()->showMessage(added == 1 ? QStringLiteral("Added 1 download")
+                                            : QStringLiteral("Added %1 downloads").arg(added), 5000);
+    }
+    return added;
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (payloadLooksDownloadable(event->mimeData()))
+        event->acceptProposedAction();
+}
+
+void MainWindow::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (payloadLooksDownloadable(event->mimeData()))
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    if (addDroppedPayload(event->mimeData()) > 0)
+        event->acceptProposedAction();
+}
+
+// Per-download speed cap. Shown from the row menu; 0 means "no limit".
+void MainWindow::promptSpeedLimit(int id)
+{
+    if (!m_engine->supportsSpeedLimit(id))
+        return;
+    const qint64 current = m_engine->taskSpeedLimit(id);
+    bool ok = false;
+    const int kb = QInputDialog::getInt(
+        this, QStringLiteral("Limit this download"),
+        QStringLiteral("Maximum speed for “%1”, in KB/s.\n0 means no limit for this download.")
+            .arg(m_engine->nameOf(id)),
+        int(current / 1024), 0, 1024 * 1024, 64, &ok);
+    if (!ok)
+        return;
+    m_engine->setTaskSpeedLimit(id, qint64(kb) * 1024);
+    statusBar()->showMessage(kb > 0
+        ? QStringLiteral("Limited to %1").arg(humanSpeed(double(kb) * 1024))
+        : QStringLiteral("Speed limit removed"), 5000);
+}
+
+// Natural-language add/schedule ("grab these two tonight at 2am"). Needs an
+// Anthropic key and a paid plan; both are reported plainly when missing.
+void MainWindow::promptSmartAdd()
+{
+    if (!m_engine->aiAvailable()) {
+        QMessageBox::information(this, QStringLiteral("Smart add"),
+            QStringLiteral("Smart add needs an Anthropic API key.\n\nSet ANTHROPIC_API_KEY in your "
+                           "environment and restart Nexa."));
+        return;
+    }
+    if (m_engine->licensePlan() == QLatin1String("free")) {
+        QMessageBox::information(this, QStringLiteral("Smart add"),
+            QStringLiteral("Smart add is a Pro feature. Start the free 7-day trial from "
+                           "Settings or nexadownloadmanager.com/pricing."));
+        return;
+    }
+    bool ok = false;
+    const QString text = QInputDialog::getMultiLineText(
+        this, QStringLiteral("Smart add"),
+        QStringLiteral("Describe what you want, in your own words:"),
+        QStringLiteral("download https://example.com/a.iso and https://example.com/b.iso tonight at 2am"),
+        &ok);
+    if (!ok || text.trimmed().isEmpty())
+        return;
+    m_engine->runAiCommand(text.trimmed());
+    statusBar()->showMessage(tr("Working on it — new downloads will appear here."), 6000);
+}
+
+// Switching from another manager: read its export file and queue everything the
+// user picks. Supported formats live in core/DownloadImport.
+void MainWindow::importDownloads()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import downloads"), QDir::homePath(), downloadimport::fileDialogFilter());
+    if (path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Import failed"),
+                             tr("Could not read %1.").arg(path));
+        return;
+    }
+    // Exports are small; a huge file here means it isn't one.
+    const QByteArray raw = f.read(8 * 1024 * 1024);
+    f.close();
+    const auto items = downloadimport::parseAny(path, QString::fromUtf8(raw));
+    if (items.isEmpty()) {
+        QMessageBox::information(this, tr("Nothing to import"),
+            tr("No downloadable links were found in %1.").arg(QFileInfo(path).fileName()));
+        return;
+    }
+    // Show them in the link grabber so the user chooses what actually gets queued.
+    QVector<LinkItem> links;
+    links.reserve(items.size());
+    for (const auto &d : items)
+        links.append({d.url, d.fileName, QStringLiteral("link")});
+    // Headers differ per entry; the grabber applies one set, so pass the first
+    // entry's context (the common case: one export, one site).
+    showLinkGrabber(QString(), QFileInfo(path).fileName(), links,
+                    items.first().headers);
+}
+
+void MainWindow::showSetupGuide()
+{
+    showAndRaise();
+    auto *wiz = new FirstRunWizard(m_engine, this);
+    wiz->setAttribute(Qt::WA_DeleteOnClose);
+    connect(wiz, &QDialog::finished, this, [this](int) {
+        // The wizard may have changed the clipboard-capture preference.
+        setClipboardMonitoring(QSettings().value(QStringLiteral("clipboardMonitor"), false).toBool());
+    });
+    wiz->show();
+}
+
 void MainWindow::onSiteLogins()
 {
     SiteLoginsDialog dlg(m_engine, this);
@@ -957,6 +1951,72 @@ void MainWindow::onCheckUpdates()
 {
     m_manualUpdateCheck = true;
     m_updates->check(QApplication::applicationVersion());
+}
+
+// Gear menu → "Export logs…": copy the opt-in troubleshooting log to a place the
+// user picks (so they can attach it to a bug report).
+void MainWindow::onExportLogs()
+{
+    const QString src = logFilePath();
+    if (!QFileInfo::exists(src) || QFileInfo(src).size() == 0) {
+        QMessageBox::information(this, QStringLiteral("No log yet"),
+            QStringLiteral("Turn on “Save error logs to a file” in Settings. The log is written "
+                           "at %1 the next time Nexa reports a warning or error.").arg(src));
+        return;
+    }
+    const QString suggested = QDir::homePath() + QStringLiteral("/nexa-log-%1.txt")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmm")));
+    const QString dest = QFileDialog::getSaveFileName(this, QStringLiteral("Export logs"), suggested,
+                                                      QStringLiteral("Text files (*.txt *.log)"));
+    if (dest.isEmpty())
+        return;
+    if (QFileInfo::exists(dest))
+        QFile::remove(dest);
+    if (!QFile::copy(src, dest)) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"),
+                             QStringLiteral("Could not write %1.").arg(dest));
+        return;
+    }
+    statusBar()->showMessage(tr("Log exported to %1").arg(dest), 6000);
+}
+
+void MainWindow::onThemes()
+{
+    ThemeGalleryDialog dlg(this);
+
+    // Free installs get the two core palettes; the rest carry a PRO badge and
+    // explain themselves when clicked. Entitlements come from the licence
+    // server, so this list widens the moment a subscription activates.
+    const Entitlements &features = m_engine->license()->features();
+    dlg.setThemeEntitlement(features.themes == QLatin1String("all"), features.freeThemes);
+    connect(&dlg, &ThemeGalleryDialog::lockedThemeChosen, this,
+            [this, &dlg](const QString &, const QString &name) {
+        QMessageBox::information(&dlg, tr("Pro theme"),
+            tr("“%1” is part of the Pro theme collection.\n\n"
+               "Free includes Nexa Dark and Nexa Light. Start the free 7-day trial in "
+               "Settings, or see nexadownloadmanager.com/pricing to unlock all themes.")
+                .arg(name));
+    });
+
+    // The gallery applies as you click, so repaint the hand-drawn bits live.
+    connect(&dlg, &ThemeGalleryDialog::themeApplied, this, [this]() { refreshTheme(); });
+    dlg.exec();
+    refreshTheme();
+}
+
+// A theme swap re-styles everything driven by the stylesheet for free; these
+// are the pieces Nexa paints itself and therefore has to redraw by hand.
+void MainWindow::refreshTheme()
+{
+    for (auto it = m_idToRow.constBegin(); it != m_idToRow.constEnd(); ++it) {
+        const int id = it.key(), row = it.value();
+        if (row < 0 || row >= m_table->rowCount())
+            continue;
+        refreshFileCell(row, id);
+        setRowStatus(row, m_engine->stateOf(id), m_stateDetail.value(id));
+    }
+    updateStats();
+    update();
 }
 
 void MainWindow::onSettings()
@@ -978,6 +2038,8 @@ void MainWindow::onSettings()
     //    app).
     auto *dlg = new SettingsDialog(m_engine, nullptr);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &SettingsDialog::settingsApplied, this, &MainWindow::dashboardSettingsChanged);
+    connect(dlg, &SettingsDialog::themeChanged, this, &MainWindow::refreshTheme);
     // Explicit decorations: title + system menu + minimise + close, but NO
     // maximise/fullscreen button. CustomizeWindowHint stops Qt re-adding the
     // defaults. Combined with the dialog's fixed height, it can't be maximised.
@@ -1100,7 +2162,7 @@ void MainWindow::moveRow(int from, int to)
     // While a search filter is active, rows are hidden (not removed), so the
     // visual from/to no longer line up with the full queue order — a reorder
     // would move the wrong task. Disallow reordering until the filter is cleared.
-    if (m_search && !m_search->text().trimmed().isEmpty())
+    if ((m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1)
         return;
     const int rows = m_table->rowCount();
     if (from < 0 || from >= rows)
@@ -1242,13 +2304,13 @@ bool MainWindow::setupTray()
         return false;
 
     m_tray = new QSystemTrayIcon(windowIcon(), this);
-    m_tray->setToolTip(QStringLiteral("Nexa Download Manager"));
+    m_tray->setToolTip(tr("Nexa Download Manager"));
 
     auto *menu = new QMenu(this);
-    menu->addAction(QStringLiteral("Open Nexa"),  this, &MainWindow::showAndRaise);
-    menu->addAction(QStringLiteral("Add URL…"),   this, &MainWindow::promptAddUrl);
+    menu->addAction(tr("Open Nexa"),  this, &MainWindow::showAndRaise);
+    menu->addAction(tr("Add URL…"),   this, &MainWindow::promptAddUrl);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("Quit Nexa"),  qApp, &QApplication::quit);
+    menu->addAction(tr("Quit Nexa"),  qApp, &QApplication::quit);
     m_tray->setContextMenu(menu);
 
     // Single click / double click on the tray icon surfaces the window.
@@ -1257,8 +2319,21 @@ bool MainWindow::setupTray()
                 if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick)
                     showAndRaise();
             });
+    // Clicking a notification balloon brings the window back.
+    connect(m_tray, &QSystemTrayIcon::messageClicked, this, &MainWindow::showAndRaise);
     m_tray->show();
     return true;
+}
+
+void MainWindow::notifyTray(const QString &title, const QString &body, bool warning)
+{
+    if (!m_tray || !m_tray->isVisible())
+        return;
+    if (!QSettings().value(QStringLiteral("ui/notifications"), true).toBool())
+        return;
+    m_tray->showMessage(title, body,
+                        warning ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information,
+                        7000);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -1330,14 +2405,14 @@ void MainWindow::showSortMenu()
         rebuildInOrder(order);          // view-only: doesn't touch the engine queue
         applyFilter(m_search->text());
     };
-    menu.addAction(QStringLiteral("Name (A–Z)"), this, [this, sortBy]() {
+    menu.addAction(tr("Name (A–Z)"), this, [this, sortBy]() {
         sortBy([this](int a, int b) {
             return m_engine->nameOf(a).compare(m_engine->nameOf(b), Qt::CaseInsensitive) < 0; });
     });
-    menu.addAction(QStringLiteral("Status"), this, [this, sortBy]() {
+    menu.addAction(tr("Status"), this, [this, sortBy]() {
         sortBy([this](int a, int b) { return int(m_engine->stateOf(a)) < int(m_engine->stateOf(b)); });
     });
-    menu.addAction(QStringLiteral("Host"), this, [this, sortBy]() {
+    menu.addAction(tr("Host"), this, [this, sortBy]() {
         sortBy([this](int a, int b) {
             return m_engine->hostOf(a).compare(m_engine->hostOf(b), Qt::CaseInsensitive) < 0; });
     });
@@ -1357,23 +2432,38 @@ void MainWindow::showRowMenu(const QPoint &pos)
 
     const int row = idx.row();
     QMenu menu(this);
-    menu.addAction(QStringLiteral("Details…"), this, [this, id]() { openDetails(id); });
+    menu.addAction(tr("Details…"), this, [this, id]() { openDetails(id); });
     menu.addSeparator();
-    menu.addAction(QStringLiteral("Pause"),  this, [this, id]() { m_engine->pause(id); });
-    menu.addAction(QStringLiteral("Resume"), this, [this, id]() { m_engine->resume(id); });
+    menu.addAction(tr("Pause"),  this, [this, id]() { m_engine->pause(id); });
+    menu.addAction(tr("Resume"), this, [this, id]() { m_engine->resume(id); });
     menu.addSeparator();
     // Reorder the queue (also possible by dragging the row).
-    QAction *top = menu.addAction(QStringLiteral("Move to top"),
+    QAction *top = menu.addAction(tr("Move to top"),
                                   this, [this, row]() { moveRow(row, 0); });
-    QAction *up  = menu.addAction(QStringLiteral("Move up"),
+    QAction *up  = menu.addAction(tr("Move up"),
                                   this, [this]() { moveSelected(-1); });
-    QAction *dn  = menu.addAction(QStringLiteral("Move down"),
+    QAction *dn  = menu.addAction(tr("Move down"),
                                   this, [this]() { moveSelected(+1); });
     top->setEnabled(row > 0);
     up->setEnabled(row > 0);
     dn->setEnabled(row < m_table->rowCount() - 1);
+    const bool filtered = (m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1;
+    if (filtered) {
+        for (QAction *a : {top, up, dn}) {
+            a->setEnabled(false);
+            a->setToolTip(tr("Clear the search/filter to reorder the queue"));
+        }
+        menu.setToolTipsVisible(true);
+    }
     menu.addSeparator();
-    menu.addAction(QStringLiteral("Remove"), this, &MainWindow::removeSelected);
+    if (m_engine->supportsSpeedLimit(id)) {
+        const qint64 cap = m_engine->taskSpeedLimit(id);
+        menu.addAction(cap > 0 ? QStringLiteral("Limit speed… (now %1)").arg(humanSpeed(double(cap)))
+                               : QStringLiteral("Limit speed…"),
+                       this, [this, id]() { promptSpeedLimit(id); });
+    }
+    menu.addSeparator();
+    menu.addAction(tr("Remove"), this, &MainWindow::removeSelected);
     menu.exec(m_table->viewport()->mapToGlobal(pos));
 }
 
@@ -1416,22 +2506,23 @@ void MainWindow::setRowStatus(int row, DownloadState state, const QString &detai
             }
         }
     }
-    // Progress chunk colour follows the state (blue active / amber paused / green done).
+    // Progress fill colour follows the state (active / amber paused / green done);
+    // the fill STYLE and the loading animation are the theme's.
     if (auto *pc = m_table->cellWidget(row, ColProgress))
-        if (auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar")))
-            paintBar(bar, statusColor(state));
+        if (auto *bar = pc->findChild<motion::ThemedBar*>(QStringLiteral("p_bar")))
+            bar->setAccent(statusColor(state));
     // First action button is contextual: pause (running) / resume (paused/error) /
     // open-folder (done). A queued item has nothing to toggle — show only Remove.
     if (auto *ac = m_table->cellWidget(row, ColActions)) {
         if (auto *tg = ac->findChild<QPushButton*>(QStringLiteral("a_toggle"))) {
             if (state == DownloadState::Completed) {
-                tg->setText(QString::fromUtf8("🗀")); tg->setToolTip(QStringLiteral("Open folder")); tg->setVisible(true);
+                tg->setText(QString::fromUtf8("🗀")); tg->setToolTip(tr("Open folder")); tg->setVisible(true);
             } else if (state == DownloadState::Downloading || state == DownloadState::Probing) {
-                tg->setText(QString::fromUtf8("❚❚")); tg->setToolTip(QStringLiteral("Pause"));       tg->setVisible(true);
+                tg->setText(QString::fromUtf8("❚❚")); tg->setToolTip(tr("Pause"));       tg->setVisible(true);
             } else if (state == DownloadState::Queued) {
                 tg->setVisible(false);
             } else {   // Paused / Error
-                tg->setText(QString::fromUtf8("▶")); tg->setToolTip(QStringLiteral("Resume"));        tg->setVisible(true);
+                tg->setText(QString::fromUtf8("▶")); tg->setToolTip(tr("Resume"));        tg->setVisible(true);
             }
         }
     }
@@ -1449,12 +2540,15 @@ QWidget *MainWindow::buildActionsCell(int id)
     toggle->setProperty("ActIcon", true);
     toggle->setFixedSize(24, 24);
     toggle->setCursor(Qt::PointingHandCursor);
+    // The label is a glyph, so state the action for assistive technology.
+    toggle->setAccessibleName(tr("Pause or resume this download"));
     auto *second = new QPushButton(QString::fromUtf8("✕"), w);
     second->setObjectName(QStringLiteral("a_second"));
     second->setProperty("ActIcon", true);
     second->setFixedSize(24, 24);
     second->setCursor(Qt::PointingHandCursor);
-    second->setToolTip(QStringLiteral("Remove"));
+    second->setToolTip(tr("Remove"));
+    second->setAccessibleName(tr("Remove this download"));
     h->addStretch(1);
     h->addWidget(toggle);
     h->addWidget(second);
@@ -1480,18 +2574,20 @@ void MainWindow::showRowMenuFor(int id, const QPoint &globalPos)
     if (row >= 0)
         m_table->selectRow(row);
     QMenu menu(this);
-    menu.addAction(QStringLiteral("Details…"), this, [this, id]() { openDetails(id); });
+    menu.addAction(tr("Details…"), this, [this, id]() { openDetails(id); });
     menu.addSeparator();
-    menu.addAction(QStringLiteral("Pause"),  this, [this, id]() { m_engine->pause(id); });
-    menu.addAction(QStringLiteral("Resume"), this, [this, id]() { m_engine->resume(id); });
+    menu.addAction(tr("Pause"),  this, [this, id]() { m_engine->pause(id); });
+    menu.addAction(tr("Resume"), this, [this, id]() { m_engine->resume(id); });
     menu.addSeparator();
-    menu.addAction(QStringLiteral("Open download folder"), this, &MainWindow::openDownloadFolder);
-    menu.addAction(QStringLiteral("Remove"), this, &MainWindow::removeSelected);
+    menu.addAction(tr("Open download folder"), this, &MainWindow::openDownloadFolder);
+    menu.addAction(tr("Remove"), this, &MainWindow::removeSelected);
     menu.exec(globalPos);
 }
 
 void MainWindow::onTaskAdded(int id)
 {
+    m_whenDoneFired = false;   // a new job starts a new batch for the when-done action
+
     if (rowForId(id) >= 0)
         return;
     const int row = m_table->rowCount();
@@ -1507,13 +2603,13 @@ void MainWindow::onTaskAdded(int id)
     refreshFileCell(row, id);
 
     auto *sizeItem = new QTableWidgetItem(QStringLiteral("—"));
-    sizeItem->setForeground(QColor(0x8b94a7));
+    sizeItem->setForeground(mutedTextColor());
     m_table->setItem(row, ColSize, sizeItem);
 
     m_table->setCellWidget(row, ColProgress, buildProgressCell());
 
     auto *speedItem = new QTableWidgetItem(QStringLiteral("—"));
-    speedItem->setForeground(QColor(0x8b94a7));
+    speedItem->setForeground(mutedTextColor());
     m_table->setItem(row, ColSpeed, speedItem);
 
     m_table->setCellWidget(row, ColStatus, buildStatusCell());
@@ -1552,7 +2648,7 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
     }
 
     if (auto *pc = m_table->cellWidget(row, ColProgress)) {
-        auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar"));
+        auto *bar = pc->findChild<motion::ThemedBar*>(QStringLiteral("p_bar"));
         auto *pct = pc->findChild<QLabel*>(QStringLiteral("p_pct"));
         if (bar && pct) {
             if (total > 0) {
@@ -1569,7 +2665,7 @@ void MainWindow::onTaskProgress(int id, qint64 done, qint64 total, double bps)
     if (auto *speedItem = m_table->item(row, ColSpeed)) {
         const QString s = humanSpeed(bps);
         speedItem->setText(s.isEmpty() ? QStringLiteral("—") : s);
-        speedItem->setForeground(s.isEmpty() ? QColor(0x8b94a7) : QColor(0xc7cedb));
+        speedItem->setForeground(s.isEmpty() ? mutedTextColor() : valueTextColor());
     }
 
     updateStats();
@@ -1584,6 +2680,20 @@ void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &
         return;
     setRowStatus(row, state, detail);
 
+    // Announce a failure once per error episode (a retry that errors again after
+    // leaving Error re-announces). Skipped during the startup restore replay.
+    if (state == DownloadState::Error) {
+        if (!m_restoring && !m_errorNotified.contains(id)) {
+            m_errorNotified.insert(id);
+            notifyTray(QStringLiteral("Download failed"),
+                       detail.isEmpty() ? m_engine->nameOf(id)
+                                        : QStringLiteral("%1\n%2").arg(m_engine->nameOf(id), detail),
+                       /*warning=*/true);
+        }
+    } else {
+        m_errorNotified.remove(id);
+    }
+
     // A completed task always reads 100% (covers tasks restored as Complete,
     // whose final byte counts aren't replayed through onTaskProgress).
     if (state == DownloadState::Completed)
@@ -1593,7 +2703,7 @@ void MainWindow::onTaskStateChanged(int id, DownloadState state, const QString &
     if (state != DownloadState::Downloading && state != DownloadState::Probing) {
         if (auto *speedItem = m_table->item(row, ColSpeed)) {
             speedItem->setText(QStringLiteral("—"));
-            speedItem->setForeground(QColor(0x8b94a7));
+            speedItem->setForeground(mutedTextColor());
         }
     }
 
@@ -1619,6 +2729,12 @@ void MainWindow::onTaskFinished(int id)
     if (firstFinish) {
         m_countedDone.insert(id);
         ++m_completedThisSession;
+        // Tray balloon when the user isn't looking at Nexa (window hidden, in the
+        // tray, or behind the browser) or when the completion dialog is disabled;
+        // otherwise the IDM-style dialog below is the announcement.
+        const bool dialogOn = QSettings().value(QStringLiteral("ui/showCompleteDialog"), true).toBool();
+        if (!isActiveWindow() || !dialogOn || m_engine->isPlaylist(id))
+            notifyTray(QStringLiteral("Download complete"), m_engine->nameOf(id));
     }
     // The final progress signal can be missed by a restored/short download, so
     // use the finished file itself as the authoritative per-row byte count.
@@ -1640,12 +2756,12 @@ void MainWindow::onTaskFinished(int id)
         if (finalSize >= 0) {
             if (auto *sizeItem = m_table->item(row, ColSize)) {
                 sizeItem->setText(humanSize(finalSize));
-                sizeItem->setForeground(QColor(0xc7cedb));
+                sizeItem->setForeground(valueTextColor());
             }
         }
     }
     if (auto *pc = m_table->cellWidget(row, ColProgress)) {
-        if (auto *bar = pc->findChild<QProgressBar*>(QStringLiteral("p_bar"))) {
+        if (auto *bar = pc->findChild<motion::ThemedBar*>(QStringLiteral("p_bar"))) {
             bar->setRange(0, 100);
             bar->setValue(100);
         }
@@ -1654,13 +2770,24 @@ void MainWindow::onTaskFinished(int id)
     }
     if (auto *speedItem = m_table->item(row, ColSpeed)) {
         speedItem->setText(QStringLiteral("—"));
-        speedItem->setForeground(QColor(0x8b94a7));
+        speedItem->setForeground(mutedTextColor());
     }
     updateStats();
     // On completion, auto-close the per-download details plate and show the
     // IDM-style completion prompt (Open / Open folder / Close) instead. Only on
     // the FIRST finish (see firstFinish), so it never double-pops. Skipped for the
     // startup restore replay and for multi-video playlist jobs.
+    if (firstFinish && VirusScanner::enabled() && !m_engine->isPlaylist(id)) {
+        const QString path = m_engine->savePathOf(id);
+        if (!path.isEmpty() && QFileInfo::exists(path))
+            m_scanner->scan(id, path);
+    }
+    if (firstFinish)
+        QTimer::singleShot(800, this, &MainWindow::maybeRunWhenDone);
+    if (firstFinish && id == m_pendingUpdateTask) {
+        QTimer::singleShot(0, this, [this, id]() { offerInstallUpdate(id); });
+        return;
+    }
     if (firstFinish && !m_engine->isPlaylist(id))
         QTimer::singleShot(0, this, [this, id]() {
             if (auto dlg = m_openDialogs.value(id))
@@ -1675,7 +2802,7 @@ void MainWindow::onTaskRenamed(int id, const QString &newName)
     if (row < 0)
         return;
     refreshFileCell(row, id);
-    m_footerLeft->setToolTip(QStringLiteral("Renamed to %1").arg(newName));
+    m_footerLeft->setToolTip(tr("Renamed to %1").arg(newName));
 }
 
 void MainWindow::onTaskRemoved(int id)

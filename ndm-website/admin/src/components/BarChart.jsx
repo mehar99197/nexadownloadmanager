@@ -37,14 +37,16 @@ export default function BarChart({
           return (
             <div
               key={d.label ?? i}
-              className="group flex min-w-0 flex-1 flex-col items-center justify-end"
+              className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end"
               title={`${d.label}: ${valueFormatter(value)}`}
             >
               <span className="mb-1 text-[10px] font-medium text-admin-muted opacity-0 transition-opacity group-hover:opacity-100">
                 {valueFormatter(value)}
               </span>
+              {/* max-w keeps a bar looking like a bar: with one or two days of
+                  data a plain w-full column stretched into a full-width slab. */}
               <div
-                className={`w-full rounded-t-md transition-all ${barClassName}`}
+                className={`w-full max-w-16 rounded-t-md transition-all ${barClassName}`}
                 style={{ height: `${pct}%` }}
               />
             </div>

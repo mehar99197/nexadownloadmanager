@@ -18,6 +18,7 @@ class HlsGrabber;
 class TorrentManager;
 class YtDlpGrabber;
 class MegaGrabber;
+class SpotifyGrabber;
 class AiClient;
 class Database;
 class AuthenticationManager;
@@ -46,7 +47,8 @@ public:
                      const QString &siteFormat = QString(),
                      bool playlist = false,
                      bool userInitiated = false,    // true = user already confirmed; start now
-                     const QString &audioFormat = QString());  // audio-only sites: m4a/aac/flac/mp3
+                     const QString &audioFormat = QString(),  // audio-only sites: m4a/aac/flac/mp3
+                     bool publicNetworkOnly = false);       // untrusted browser/dashboard target
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);
@@ -79,8 +81,18 @@ public:
     static QStringList expandPattern(const QString &token);
 
     // Schedule a download to start at a future time (IDM-style scheduler).
+    // Persisted (URL/time/name only — never headers) so it survives a restart;
+    // returns the scheduled job id, or -1 for an invalid URL.
+    struct ScheduledJob {
+        int       id = 0;
+        QUrl      url;
+        QDateTime when;
+        QString   name;
+    };
     int scheduleDownload(const QUrl &url, const QDateTime &when,
-                         const HeaderList &headers = {});
+                         const HeaderList &headers = {}, const QString &name = QString());
+    bool cancelScheduled(int id);
+    QVector<ScheduledJob> scheduledJobs() const;   // ordered by start time
 
     void setDownloadDir(const QString &dir) { m_downloadDir = dir; }
     QString downloadDir() const { return m_downloadDir; }
@@ -93,6 +105,12 @@ public:
     // all active segmented downloads via a token-bucket RateLimiter.
     void   setSpeedLimit(qint64 bytesPerSec);
     qint64 speedLimit() const;
+
+    // Per-download cap in bytes/sec (0 = unlimited), applied on top of the global
+    // one. Only meaningful for segmented HTTP downloads; other job types ignore it.
+    void   setTaskSpeedLimit(int id, qint64 bytesPerSec);
+    qint64 taskSpeedLimit(int id) const;
+    bool   supportsSpeedLimit(int id) const { return m_tasks.contains(id); }
 
     // Sort completed files into per-type subfolders (Video/, Audio/, ...).
     void setAutoCategorize(bool on) { m_autoCategorize = on; }
@@ -193,6 +211,15 @@ signals:
     void taskFinished(int id);
     void taskRemoved(int id);
     void taskRenamed(int id, const QString &newName);   // AI rename applied
+    // A download was queued (not started) solely because the Free plan caps
+    // concurrency below what the user asked for — the UI can offer an upgrade.
+    void freeLimitReached(int id);
+    // A download was refused outright because the plan does not include it
+    // (currently: login-gated course sites on Free). Carries a ready-to-show
+    // explanation so the UI does not have to reconstruct the reason.
+    void downloadBlocked(const QUrl &url, const QString &reason);
+    void scheduledAdded(int id);      // a job was scheduled (or restored at startup)
+    void scheduledRemoved(int id);    // it fired (became a download) or was cancelled
 
 private slots:
     void cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec);
@@ -205,6 +232,9 @@ private:
     // Default the known auth sites to "use my logged-in browser" at startup, so
     // yt-dlp reads live cookies and the user never needs to open Site Logins.
     void    autoEnableBrowserLogins();
+    // Refresh an automatically detected browser session immediately before a
+    // site download. Browsers may be opened or switched after Nexa starts.
+    void    refreshBrowserLoginFor(const QUrl &url);
     // Fetch a remote .torrent file (async, following redirects), then hand the
     // local copy to the libtorrent session. libtorrent can't load an http URL.
     void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
@@ -214,6 +244,9 @@ private:
     void    ensureTorrents();        // lazily create the libtorrent session
     int     addRemoteDownload(const QUrl &url);
     void    applyLicensePlan(const QString &plan);
+    bool    isAuthSiteUrl(const QUrl &url) const;
+    void    armScheduled(int id, const QUrl &url, const QDateTime &when,
+                         const HeaderList &headers, const QString &name);
 
     struct ProgressInfo { qint64 done = 0; qint64 total = -1; double speed = 0.0; };
 
@@ -229,10 +262,12 @@ private:
     QHash<int, HlsGrabber*>   m_grabbers;
     QHash<int, YtDlpGrabber*> m_siteVideos;
     QHash<int, MegaGrabber*>  m_megaGrabbers;
+    QHash<int, SpotifyGrabber*> m_spotifyGrabbers;
     QSet<int>              m_torrentIds;
     QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
     QSet<int>              m_held;          // created but awaiting the user's confirm prompt
     QHash<int, QTimer*>    m_scheduledTimers;  // cancellable scheduled downloads
+    QHash<int, ScheduledJob> m_scheduled;      // what each timer will start
     QHash<int, QString>    m_resolvedNames; // real filename from the pre-prompt probe
     bool                   m_confirmBeforeStart = false;
     QHash<int, ProgressInfo>  m_progress;     // latest done/total/speed per id
@@ -249,6 +284,9 @@ private:
     double                 m_seedRatio = 0.0;          // 0 = don't seed past completion
     bool                   m_autoCategorize = true;
     bool                   m_aiRename = false;
+    // Mirrors Entitlements::authSiteDownloads. Free by default so a build that
+    // has not yet heard from the licence server gates rather than leaks.
+    bool                   m_authSiteDownloads = false;
     bool                   m_aiRenameRequested = false;
     QString                m_licensePlan = QStringLiteral("free");
     bool                   m_inSchedule = false;

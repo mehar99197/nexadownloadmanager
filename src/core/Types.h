@@ -45,6 +45,22 @@ struct SegmentInfo {
     bool   complete() const { return done >= length(); }
 };
 
+// One candidate link harvested from a web page by the browser extension
+// ("Download all links" / "Grab media"), shown in the link-grabber dialog.
+struct LinkItem {
+    QString url;
+    QString text;   // anchor text / alt text (may be empty)
+    QString kind;   // "link" | "image" | "media"
+};
+
+// Hash verification result for completed downloads.
+// Stores the computed SHA-256 hash and whether it matched an expected value.
+struct HashVerification {
+    QString sha256;              // Hex-encoded SHA-256 hash of the downloaded file
+    bool    verified = false;    // True if expectedSha256 was set and matched
+    bool    hasExpected = false; // True if an expected hash was provided
+};
+
 } // namespace nexa
 
 Q_DECLARE_METATYPE(nexa::DownloadState)

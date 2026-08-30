@@ -15,6 +15,7 @@ int main(int argc, char **argv)
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://127.0.0.1/admin")), false));
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://10.0.0.1/")), false));
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://169.254.169.254/latest/meta-data")), false));
+    CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://[fc00::1]/internal")), false));
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://localhost:8080/")), false));
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("http://printer.local/")), false));
     CHECK(!nexa::isPublicHttpUrl(QUrl(QStringLiteral("file:///etc/passwd")), false));

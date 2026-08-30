@@ -2,6 +2,11 @@
 set -e
 
 if [ "$1" = "configure" ]; then
+    # Every browser on this machine gets the Nexa extension on its next start
+    # (system-wide hooks; the app itself can only verify them at runtime).
+    if [ -x /usr/share/nexa/register-browser-extensions ]; then
+        sh /usr/share/nexa/register-browser-extensions install || true
+    fi
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q /usr/share/applications || true
     fi

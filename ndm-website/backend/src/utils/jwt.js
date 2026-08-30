@@ -20,6 +20,12 @@ function signAdminToken(user) {
   return jwt.sign({ ...basePayload(user), typ: 'admin' }, config.JWT_ADMIN_SECRET, { expiresIn: '8h' });
 }
 
+// Root/creator sessions are a distinct token family signed with their own
+// secret, and expire sooner than the 8h staff session.
+function signRootToken(user) {
+  return jwt.sign({ ...basePayload(user), typ: 'root' }, config.JWT_ROOT_SECRET, { expiresIn: '4h' });
+}
+
 function signEmailToken(user) {
   return jwt.sign({ sub: String(user.id), typ: 'verify-email' }, config.JWT_SECRET, { expiresIn: '1h' });
 }
@@ -47,6 +53,10 @@ function verifyAdmin(token) {
   return verifyTyped(token, config.JWT_ADMIN_SECRET, 'admin');
 }
 
+function verifyRoot(token) {
+  return verifyTyped(token, config.JWT_ROOT_SECRET, 'root');
+}
+
 function verifyEmailToken(token) {
   return verifyTyped(token, config.JWT_SECRET, 'verify-email');
 }
@@ -68,7 +78,7 @@ function generateRefreshToken() {
 }
 
 module.exports = {
-  signAccessToken, signAdminToken, signEmailToken, signResetToken, signLicenseToken,
-  verifyAccess, verifyAdmin, verifyEmailToken, verifyResetToken, verifyLicense,
+  signAccessToken, signAdminToken, signRootToken, signEmailToken, signResetToken, signLicenseToken,
+  verifyAccess, verifyAdmin, verifyRoot, verifyEmailToken, verifyResetToken, verifyLicense,
   generateRefreshToken, hashRefreshToken,
 };

@@ -1,4 +1,5 @@
 #include "ui/SiteLoginsDialog.h"
+#include "ui/Theme.h"
 #include "core/DownloadEngine.h"
 #include "auth/AuthenticationManager.h"
 #include "auth/BrowserLogin.h"
@@ -19,7 +20,7 @@ namespace nexa {
 SiteLoginsDialog::SiteLoginsDialog(DownloadEngine *engine, QWidget *parent)
     : QDialog(parent), m_engine(engine)
 {
-    setWindowTitle(QStringLiteral("Site Logins"));
+    setWindowTitle(tr("Site Logins"));
     resize(580, 400);
     buildUi();
 }
@@ -37,13 +38,13 @@ void SiteLoginsDialog::buildUi()
     v->setContentsMargins(18, 16, 18, 16);
     v->setSpacing(12);
 
-    auto *title = new QLabel(QStringLiteral("Site Logins"), plate);
+    auto *title = new QLabel(tr("Site Logins"), plate);
     title->setObjectName(QStringLiteral("Dd_title"));
     v->addWidget(title);
 
     // Domain row
     auto *domRow = new QHBoxLayout;
-    auto *domLbl = new QLabel(QStringLiteral("Site"), plate);
+    auto *domLbl = new QLabel(tr("Site"), plate);
     domLbl->setProperty("ddRole", "label");
     domLbl->setFixedWidth(80);
     m_domain = new QComboBox(plate);
@@ -58,7 +59,7 @@ void SiteLoginsDialog::buildUi()
 
     // Browser-login row (the easy path: yt-dlp reads the live browser cookies).
     auto *browRow = new QHBoxLayout;
-    auto *browLbl = new QLabel(QStringLiteral("Browser"), plate);
+    auto *browLbl = new QLabel(tr("Browser"), plate);
     browLbl->setProperty("ddRole", "label");
     browLbl->setFixedWidth(80);
     m_browser = new QComboBox(plate);
@@ -66,7 +67,7 @@ void SiteLoginsDialog::buildUi()
                          QStringLiteral("brave"), QStringLiteral("chromium"),
                          QStringLiteral("edge"), QStringLiteral("opera"),
                          QStringLiteral("vivaldi")});
-    auto *useBrowser = new QPushButton(QStringLiteral("Use browser login"), plate);
+    auto *useBrowser = new QPushButton(tr("Use browser login"), plate);
     useBrowser->setObjectName(QStringLiteral("Primary"));
     useBrowser->setCursor(Qt::PointingHandCursor);
     browRow->addWidget(browLbl);
@@ -83,7 +84,7 @@ void SiteLoginsDialog::buildUi()
     v->addStretch(1);
 
     auto *btns = new QHBoxLayout;
-    auto *close = new QPushButton(QStringLiteral("Close"), plate);
+    auto *close = new QPushButton(tr("Close"), plate);
     close->setCursor(Qt::PointingHandCursor);
     btns->addStretch(1);
     btns->addWidget(close);
@@ -97,14 +98,14 @@ void SiteLoginsDialog::onUseBrowser()
     const QString domain  = m_domain->currentText().trimmed();
     const QString browser = m_browser->currentText().trimmed();
     if (domain.isEmpty()) {
-        m_status->setText(QStringLiteral("Pick a site first."));
-        m_status->setStyleSheet(QStringLiteral("color:#f59e0b;"));
+        m_status->setText(tr("Pick a site first."));
+        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().pausedFg));
         return;
     }
     AuthenticationManager *am = m_engine->auth();
     if (!am) {
-        m_status->setText(QStringLiteral("Auth subsystem unavailable."));
-        m_status->setStyleSheet(QStringLiteral("color:#ef4444;"));
+        m_status->setText(tr("Auth subsystem unavailable."));
+        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().errorFg));
         return;
     }
     // Silently pick the browser profile most recently logged into the site (no UI
@@ -116,10 +117,10 @@ void SiteLoginsDialog::onUseBrowser()
         m_status->setText(QStringLiteral("✓ Will use your %1 login for %2. Just stay logged in, "
                                          "then paste a course/lecture URL in New Download.")
                               .arg(browser, domain));
-        m_status->setStyleSheet(QStringLiteral("color:#22c55e;"));
+        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().doneFg));
     } else {
         m_status->setText(QStringLiteral("✕ %1").arg(ar.detail));
-        m_status->setStyleSheet(QStringLiteral("color:#ef4444;"));
+        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().errorFg));
     }
 }
 

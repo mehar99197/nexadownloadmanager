@@ -63,6 +63,12 @@ void Database::ensureSchema()
         " etag TEXT DEFAULT '',"
         " last_modified TEXT DEFAULT '')"));
     q.exec(QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS scheduled ("
+        " id INTEGER PRIMARY KEY,"
+        " url TEXT NOT NULL,"
+        " start_at INTEGER NOT NULL,"
+        " name TEXT DEFAULT '')"));
+    q.exec(QStringLiteral(
         "CREATE TABLE IF NOT EXISTS segments ("
         " download_id INTEGER NOT NULL,"
         " idx INTEGER NOT NULL,"
@@ -141,10 +147,13 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
     if (!m_db.isOpen())
         return;
 
-    // One transaction for the task row + every segment row. Previously each
-    // segment upsert committed on its own (one fsync each); batching them into a
-    // single commit is the bulk of the I/O win at the 2 s save cadence.
-    const bool inTx = m_db.transaction();
+    // Replace the task row and its complete segment layout atomically. Upserting
+    // only the current rows leaves stale segment indexes behind when a task is
+    // re-probed with fewer/different segments; those rows can corrupt a resume.
+    if (!m_db.transaction()) {
+        qWarning() << "Nexa DB saveTask: could not begin transaction:" << m_db.lastError().text();
+        return;
+    }
 
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
@@ -164,29 +173,87 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
     q.bindValue(QStringLiteral(":ranges"), task.rangesSupported() ? 1 : 0);
     q.bindValue(QStringLiteral(":etag"), task.etag());
     q.bindValue(QStringLiteral(":last_modified"), task.lastModified());
-    if (!q.exec())
+    if (!q.exec()) {
         qWarning() << "Nexa DB saveTask:" << q.lastError().text();
+        m_db.rollback();
+        return;
+    }
+
+    QSqlQuery clear(m_db);
+    clear.prepare(QStringLiteral("DELETE FROM segments WHERE download_id = :did"));
+    clear.bindValue(QStringLiteral(":did"), task.id());
+    if (!clear.exec()) {
+        qWarning() << "Nexa DB clearTaskSegments:" << clear.lastError().text();
+        m_db.rollback();
+        return;
+    }
 
     for (const SegmentInfo &s : segments) {
         QSqlQuery sq(m_db);
         sq.prepare(QStringLiteral(
             "INSERT INTO segments (download_id, idx, start, stop, done) "
-            "VALUES (:did, :idx, :start, :stop, :done) "
-            "ON CONFLICT(download_id, idx) DO UPDATE SET "
-            " start=excluded.start, stop=excluded.stop, done=excluded.done"));
+            "VALUES (:did, :idx, :start, :stop, :done)"));
         sq.bindValue(QStringLiteral(":did"), task.id());
         sq.bindValue(QStringLiteral(":idx"), s.index);
         sq.bindValue(QStringLiteral(":start"), s.start);
         sq.bindValue(QStringLiteral(":stop"), s.end);
         sq.bindValue(QStringLiteral(":done"), s.done);
-        if (!sq.exec())
+        if (!sq.exec()) {
             qWarning() << "Nexa DB saveTask segment:" << sq.lastError().text();
+            m_db.rollback();
+            return;
+        }
     }
 
-    if (inTx && !m_db.commit()) {
+    if (!m_db.commit()) {
         qWarning() << "Nexa DB saveTask commit:" << m_db.lastError().text();
         m_db.rollback();
     }
+}
+
+void Database::saveScheduled(int id, const QString &url, qint64 startAtMs, const QString &name)
+{
+    if (!m_db.isOpen())
+        return;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("INSERT OR REPLACE INTO scheduled (id, url, start_at, name) "
+                             "VALUES (:id, :url, :at, :name)"));
+    q.bindValue(QStringLiteral(":id"), id);
+    q.bindValue(QStringLiteral(":url"), url);
+    q.bindValue(QStringLiteral(":at"), startAtMs);
+    q.bindValue(QStringLiteral(":name"), name);
+    if (!q.exec())
+        qWarning() << "Nexa DB: saveScheduled failed:" << q.lastError().text();
+}
+
+void Database::removeScheduled(int id)
+{
+    if (!m_db.isOpen())
+        return;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM scheduled WHERE id = :id"));
+    q.bindValue(QStringLiteral(":id"), id);
+    q.exec();
+}
+
+QVector<ScheduledRecord> Database::loadScheduled()
+{
+    QVector<ScheduledRecord> out;
+    if (!m_db.isOpen())
+        return out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("SELECT id, url, start_at, name FROM scheduled ORDER BY start_at")))
+        return out;
+    while (q.next()) {
+        ScheduledRecord r;
+        r.id = q.value(0).toInt();
+        r.url = q.value(1).toString();
+        r.startAtMs = q.value(2).toLongLong();
+        r.name = q.value(3).toString();
+        m_nextId = qMax(m_nextId, r.id + 1);
+        out.append(r);
+    }
+    return out;
 }
 
 void Database::removeTask(int id)

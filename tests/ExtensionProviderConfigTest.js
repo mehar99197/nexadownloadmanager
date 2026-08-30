@@ -17,6 +17,8 @@ function listener() {
 function browserApi() {
   const noOpListener = listener();
   return {
+    action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+    commands: { onCommand: noOpListener },
     contextMenus: { create() {}, onClicked: noOpListener },
     cookies: { getAll: async () => [] },
     downloads: {
@@ -24,19 +26,27 @@ function browserApi() {
       cancel: async () => {},
       erase: async () => {},
     },
+    notifications: { create: async () => "id" },
     runtime: {
       id: "test-extension",
       lastError: null,
       onInstalled: noOpListener,
+      onStartup: noOpListener,
       onMessage: noOpListener,
+      getURL: (p) => "chrome-extension://test-extension/" + p,
+      getManifest: () => ({ version: "0.2.0" }),
       sendNativeMessage() {},
     },
+    scripting: { executeScript: async () => [] },
     storage: {
-      local: { get(defaults, callback) { callback(defaults); } },
+      local: {
+        get(defaults, callback) { callback(defaults); },
+        set(_values, callback) { if (callback) callback(); },
+      },
       onChanged: noOpListener,
       session: {
-        get: async () => ({}),
-        set() {},
+        get(_keys, callback) { if (callback) { callback({}); return undefined; } return Promise.resolve({}); },
+        set(_values, callback) { if (callback) callback(); },
         remove() {},
       },
     },
@@ -44,6 +54,7 @@ function browserApi() {
       onRemoved: noOpListener,
       onUpdated: noOpListener,
       query: async () => [],
+      get: async () => null,
       sendMessage: async () => ({ ok: true }),
     },
     webRequest: {
@@ -110,6 +121,11 @@ for (const relativePath of [
                `${relativePath}: evil-grok.com must not inherit AI handling`);
   assert.equal(api.providerFor("evil-perplexity.ai"), null,
                `${relativePath}: evil-perplexity.ai must not inherit AI handling`);
+  // MovieBox must be registered in BOTH copies (Firefox parity).
+  assert.equal(api.providerFor("pacdn.aoneroom.com")?.id, "moviebox",
+               `${relativePath}: aoneroom CDN routes to the moviebox provider`);
+  assert.equal(api.getProviderCookieInfo("https://www.movie-box.co/x")?.domain, "movie-box.co",
+               `${relativePath}: moviebox cookie scope`);
 }
 
 console.log("Extension provider config tests passed");

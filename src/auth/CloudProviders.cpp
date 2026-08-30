@@ -87,22 +87,6 @@ int CloudProviders::providerById(const QString &id) const
     return -1;
 }
 
-QString CloudProviders::registrableDomain(const QString &host) const
-{
-    const QStringList parts = host.toLower().split(QLatin1Char('.'), Qt::SkipEmptyParts);
-    if (parts.size() <= 2)
-        return parts.join(QLatin1Char('.'));
-    static const QSet<QString> kSld = {
-        QStringLiteral("co"),  QStringLiteral("com"), QStringLiteral("net"),
-        QStringLiteral("org"), QStringLiteral("gov"), QStringLiteral("edu"),
-        QStringLiteral("ac"),  QStringLiteral("ne"),  QStringLiteral("or"),
-    };
-    const int n = parts.size();
-    if (parts[n - 2].size() <= 3 && kSld.contains(parts[n - 2]))
-        return QStringList(parts.mid(n - 3)).join(QLatin1Char('.'));
-    return QStringList(parts.mid(n - 2)).join(QLatin1Char('.'));
-}
-
 bool CloudProviders::sameCredentialScope(const QString &host1, const QString &host2) const
 {
     if (host1.isEmpty() || host2.isEmpty())
@@ -110,32 +94,25 @@ bool CloudProviders::sameCredentialScope(const QString &host1, const QString &ho
     if (host1.compare(host2, Qt::CaseInsensitive) == 0)
         return true;
 
-    const QString rd1 = registrableDomain(host1);
-    const QString rd2 = registrableDomain(host2);
-    if (rd1 == rd2)
-        return true;
-
-    // Most sibling entries are registrable domains (e.g. googleusercontent.com),
-    // but a provider may need to approve one exact asset host on a shared CDN
-    // (e.g. pplx-res.cloudinary.com) without trusting every Cloudinary tenant.
-    // Match both forms so the registry can express that narrower boundary.
-    const auto matchesSibling = [](const QString &host, const QString &rd,
-                                   const QString &sibling) {
+    // Do not infer trust from a naive last-two-label "registrable domain": shared
+    // hosting domains can contain unrelated tenants. Trust only hosts explicitly
+    // listed by the provider registry (including their subdomains).
+    const auto matchesListed = [](const QString &host, const QStringList &listed) {
         const QString h = host.toLower();
-        const QString s = sibling.toLower();
-        return h == s || h.endsWith(QLatin1Char('.') + s)
-            || rd == s || rd.endsWith(QLatin1Char('.') + s);
+        for (const QString &entry : listed) {
+            const QString s = entry.toLower();
+            if (h == s || h.endsWith(QLatin1Char('.') + s))
+                return true;
+        }
+        return false;
     };
 
     for (const auto &p : m_providers) {
-        if (p.credentialSiblings.isEmpty())
-            continue;
-        bool has1 = false, has2 = false;
-        for (const QString &s : p.credentialSiblings) {
-            if (matchesSibling(host1, rd1, s)) has1 = true;
-            if (matchesSibling(host2, rd2, s)) has2 = true;
-        }
-        if (has1 && has2)
+        QStringList listed = p.hosts;
+        listed += p.credentialSiblings;
+        if (!p.authDomain.isEmpty())
+            listed.append(p.authDomain);
+        if (matchesListed(host1, listed) && matchesListed(host2, listed))
             return true;
     }
     return false;

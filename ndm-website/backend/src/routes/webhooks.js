@@ -4,7 +4,7 @@ const router = require('express').Router();
 
 const asyncHandler = require('../utils/asyncHandler');
 const stripe = require('../utils/stripe');
-const { sendLicenseEmail } = require('../utils/email');
+const { sendLicenseEmail, sendReceiptEmail } = require('../utils/email');
 const { planSeats, planExpiry } = require('../utils/license');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
@@ -68,10 +68,11 @@ async function handleCheckoutCompleted(obj, eventId) {
       const [created] = await connection.execute('SELECT * FROM subscriptions WHERE id = ?', [result.insertId]);
       current = created[0];
     } else {
+      // A paid activation ends any running no-card trial (trial_ends_at = NULL).
       await connection.execute(
         `UPDATE subscriptions
             SET plan = ?, status = 'active', seats = ?, expiry_date = ?, start_date = ?,
-                stripe_subscription_id = ?, stripe_customer_id = ?
+                trial_ends_at = NULL, stripe_subscription_id = ?, stripe_customer_id = ?
           WHERE id = ?`,
         [plan, planSeats(plan), planExpiry(plan, billingCycle), new Date(),
          obj.subscription ? String(obj.subscription) : current.stripe_subscription_id,
@@ -97,6 +98,11 @@ async function handleCheckoutCompleted(obj, eventId) {
   if (delivery === 'sent' || delivery === 'in_progress') return;
   try {
     await sendLicenseEmail(user, subscription.license_key, plan);
+    // A failed receipt must not lose the license email that already went out.
+    await sendReceiptEmail(user, {
+      plan, billingCycle, amount, currency: obj.currency || 'usd',
+      invoiceUrl: obj.invoice_url || obj.hosted_invoice_url || null,
+    }).catch((err) => console.error('[webhook] receipt email failed:', err.message));
     await LicenseEmailDelivery.markSent(eventId);
   } catch (err) {
     await LicenseEmailDelivery.markFailed(eventId, err).catch(() => {});

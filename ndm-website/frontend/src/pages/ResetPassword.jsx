@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import api, { unwrap } from '../api/client';
+import { Link, useSearchParams } from 'react-router-dom';
+import api from '../api/client';
 import { useToast } from '../components/Toast';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
+import usePageMeta from '../hooks/usePageMeta';
 
 export default function ResetPassword() {
+  usePageMeta({ title: "Set new password", description: "Choose a new password for your Nexa Download Manager account." });
+
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
   const toast = useToast();
   const token = searchParams.get('token') || '';
 

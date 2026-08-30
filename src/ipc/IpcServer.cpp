@@ -3,11 +3,15 @@
 #include "core/DownloadEngine.h"
 #include "core/ExternalTools.h"
 #include "auth/AuthenticationManager.h"
+#include "auth/CloudProviders.h"
+#include "web/PublicUrlPolicy.h"
+#include "site/YtDlpGrabber.h"
 
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QCoreApplication>
 #include <QJsonValue>
 #include <QJsonArray>
 #include <QProcess>
@@ -37,11 +41,16 @@ IpcServer::~IpcServer()
 
 bool IpcServer::start(const QString &name)
 {
-    m_server = new QLocalServer(this);
+    // Idempotent: a second call must not strand the listener the first one
+    // created (it stays parented to us and keeps accepting connections).
+    if (m_server && m_server->isListening())
+        return true;
+
     // Only clear the socket file if it is truly STALE (no live peer answers). If
     // a real instance is already listening, return false so the caller forwards
     // its work to that instance and exits instead of stealing the socket and
-    // opening a duplicate window.
+    // opening a duplicate window. Probe BEFORE allocating, so the common
+    // "another instance owns it" path allocates nothing at all.
     {
         QLocalSocket probe;
         probe.connectToServer(name);
@@ -50,6 +59,9 @@ bool IpcServer::start(const QString &name)
         if (alive)
             return false;                    // a real instance owns it
     }
+
+    delete m_server;                          // no-op when null; clears a failed attempt
+    m_server = new QLocalServer(this);
     // Restrict the socket to the current user so another local account can't
     // inject downloads (incl. file:// reads) through our IPC channel.
     m_server->setSocketOptions(QLocalServer::UserAccessOption);
@@ -59,18 +71,24 @@ bool IpcServer::start(const QString &name)
     if (!m_server->listen(name)) {
         if (m_server->serverError() != QAbstractSocket::AddressInUseError) {
             qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
+            delete m_server;
+            m_server = nullptr;
             return false;
         }
         QLocalSocket probe2;
         probe2.connectToServer(name);
         if (probe2.waitForConnected(200)) {   // someone won the race — yield to them
             probe2.abort();
+            delete m_server;
+            m_server = nullptr;
             return false;
         }
         probe2.abort();
         QLocalServer::removeServer(name);     // confirmed stale file from a crash
         if (!m_server->listen(name)) {
             qWarning() << "Nexa IPC listen failed:" << m_server->errorString();
+            delete m_server;
+            m_server = nullptr;
             return false;
         }
     }
@@ -131,6 +149,56 @@ void IpcServer::sendFramed(QLocalSocket *sock, const QJsonObject &o) const
     sock->flush();
 }
 
+namespace {
+
+// Assemble the headers a peer captured for a request — cookies, UA, referrer and
+// any extra "headers" (object {name:value} or array [[name,value],…]). Every
+// value goes through the same control-char guard so an untrusted extension
+// can't smuggle/inject headers, and framing headers are never accepted.
+HeaderList headersFromPayload(const QJsonObject &obj)
+{
+    auto headerSafe = [](const QString &s) {
+        for (const QChar c : s)
+            if (c < QChar(0x20) || c == QChar(0x7f))
+                return false;
+        return true;
+    };
+    static const QSet<QString> kDeniedHeaders = {
+        QStringLiteral("host"), QStringLiteral("content-length"),
+        QStringLiteral("transfer-encoding"), QStringLiteral("connection")};
+
+    HeaderList headers;
+    const QString cookies   = obj.value(QStringLiteral("cookies")).toString();
+    const QString userAgent = obj.value(QStringLiteral("userAgent")).toString();
+    const QString referrer  = obj.value(QStringLiteral("referrer")).toString();
+    if (!cookies.isEmpty()   && headerSafe(cookies))   headers.append({QByteArrayLiteral("Cookie"),     cookies.toUtf8()});
+    if (!userAgent.isEmpty() && headerSafe(userAgent)) headers.append({QByteArrayLiteral("User-Agent"), userAgent.toUtf8()});
+    if (!referrer.isEmpty()  && headerSafe(referrer))  headers.append({QByteArrayLiteral("Referer"),    referrer.toUtf8()});
+
+    auto add = [&](const QString &name, const QString &value) {
+        if (name.isEmpty() || kDeniedHeaders.contains(name.toLower()))
+            return;   // never let a peer set Host/Content-Length/etc.
+        if (headerSafe(name) && headerSafe(value))
+            headers.append({name.toUtf8(), value.toUtf8()});
+    };
+    const QJsonValue extra = obj.value(QStringLiteral("headers"));
+    if (extra.isObject()) {
+        const QJsonObject o = extra.toObject();
+        for (auto it = o.begin(); it != o.end(); ++it)
+            add(it.key(), it.value().toString());
+    } else if (extra.isArray()) {
+        const QJsonArray a = extra.toArray();
+        for (const QJsonValue &v : a) {
+            const QJsonArray pair = v.toArray();
+            if (pair.size() == 2)
+                add(pair.at(0).toString(), pair.at(1).toString());
+        }
+    }
+    return headers;
+}
+
+} // namespace
+
 void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
 {
     auto sendReply = [this, sock](const QJsonObject &o) { sendFramed(sock, o); };
@@ -148,6 +216,62 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if (type == QStringLiteral("show")) {
         emit showWindowRequested();
         sendReply(QJsonObject{{"ok", true}});
+        return;
+    }
+
+    // "ping": the extension popup asks whether the app is alive and what it's
+    // doing. (Reaching this code at all proves the host + app are installed.)
+    if (type == QStringLiteral("ping")) {
+        int active = 0, queued = 0;
+        for (const auto &snap : m_engine->snapshot()) {
+            if (snap.state == DownloadState::Downloading || snap.state == DownloadState::Probing)
+                ++active;
+            else if (snap.state == DownloadState::Queued)
+                ++queued;
+        }
+        sendReply(QJsonObject{{"ok", true},
+                              {"version", QCoreApplication::applicationVersion()},
+                              {"plan", m_engine->licensePlan()},
+                              {"active", active},
+                              {"queued", queued}});
+        return;
+    }
+
+    // "links": a page's harvested links for the link-grabber dialog. Validated
+    // exactly like a single download target (scheme allowlist, real host, public
+    // network only), de-duplicated and capped so a hostile page can't flood us.
+    if (type == QStringLiteral("links")) {
+        constexpr int kMaxLinks = 2000;
+        const QUrl pageUrl = QUrl::fromUserInput(obj.value(QStringLiteral("pageUrl")).toString());
+        const QString pageTitle = obj.value(QStringLiteral("pageTitle")).toString().simplified().left(200);
+        const QJsonArray arr = obj.value(QStringLiteral("links")).toArray();
+        QVector<LinkItem> items;
+        QSet<QString> seen;
+        for (const QJsonValue &v : arr) {
+            if (items.size() >= kMaxLinks)
+                break;
+            const QJsonObject o = v.toObject();
+            const QUrl u = QUrl::fromUserInput(o.value(QStringLiteral("url")).toString().trimmed());
+            const QString sch = u.scheme().toLower();
+            if (!u.isValid() || (sch != QLatin1String("http") && sch != QLatin1String("https"))
+                || u.host().isEmpty() || !isPublicHttpUrl(u))
+                continue;
+            const QString key = u.toString();
+            if (seen.contains(key))
+                continue;
+            seen.insert(key);
+            QString kind = o.value(QStringLiteral("kind")).toString();
+            if (kind != QLatin1String("image") && kind != QLatin1String("media"))
+                kind = QStringLiteral("link");
+            items.append({key, o.value(QStringLiteral("text")).toString().simplified().left(200), kind});
+        }
+        if (items.isEmpty()) {
+            sendReply(QJsonObject{{"ok", false}, {"message", "no downloadable links on this page"}});
+            return;
+        }
+        const QString page = (pageUrl.isValid() && !pageUrl.host().isEmpty()) ? pageUrl.toString() : QString();
+        emit linksReceived(page, pageTitle, items, headersFromPayload(obj));
+        sendReply(QJsonObject{{"ok", true}, {"count", items.size()}});
         return;
     }
 
@@ -170,6 +294,14 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if ((scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
         && url.host().isEmpty()) {
         sendReply(QJsonObject{{"ok", false}, {"message", "invalid url host"}});
+        return;
+    }
+    // Browser/native requests are untrusted entry points. Keep private-network
+    // targets available to the explicit desktop UI, but do not let a web page
+    // turn Nexa into a localhost/LAN/cloud-metadata fetch primitive.
+    if ((scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+        && !isPublicHttpUrl(url)) {
+        sendReply(QJsonObject{{"ok", false}, {"message", "private network target rejected"}});
         return;
     }
 
@@ -197,13 +329,41 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
                 sendReply(QJsonObject{{"ok", false}, {"message", "invalid auth domain"}});
                 return;
             }
+            const QString host = url.host().toLower();
+            const QString domain = authDomain.toLower();
+            const bool sameDomain = host == domain || host.endsWith(QLatin1Char('.') + domain);
+            const bool approvedSibling = m_engine->providers()
+                && m_engine->providers()->sameCredentialScope(host, domain);
+            if (!sameDomain && !approvedSibling) {
+                sendReply(QJsonObject{{"ok", false}, {"message", "auth domain does not match URL"}});
+                return;
+            }
             AuthResult ar = AuthResult::success();
             // Only cookie TEXT or a bearer token are accepted from this untrusted
             // channel. We deliberately do NOT accept an authCookiesFile path — that
             // would let any local peer make Nexa read an arbitrary file (~/.ssh/…).
             const QString cookiesText = obj.value(QStringLiteral("authCookiesText")).toString();
             const QString bearer      = obj.value(QStringLiteral("bearer")).toString();
-            if (!cookiesText.isEmpty()) {
+            if (!bearer.isEmpty() && scheme != QStringLiteral("https")) {
+                sendReply(QJsonObject{{"ok", false},
+                                      {"message", "bearer credentials require HTTPS"}});
+                return;
+            }
+            // For yt-dlp auth sites (Udemy, Vimeo, Coursera, etc.), the engine
+            // already registered --cookies-from-browser at startup via
+            // autoEnableBrowserLogins(). yt-dlp reads every cookie from the
+            // browser's SQLite store this way, which is more complete than the
+            // Netscape export the extension produces (that export only covers
+            // cookies the extension API can enumerate for this single domain).
+            // Prefer --cookies-from-browser, but fall back to the extension's
+            // cookie export when no supported browser was detected on this
+            // machine (e.g. a fresh install without Chrome/Firefox profiles).
+            // Use YtDlpGrabber::isSiteVideoUrl — its hardcoded fallback means
+            // this still works when CloudProviders fails to load at startup.
+            const bool isYtDlpSite = YtDlpGrabber::isSiteVideoUrl(url);
+            const bool hasBrowserCookies = isYtDlpSite
+                && am->resolve(url).kind == DomainAuth::Kind::BrowserCookies;
+            if (!cookiesText.isEmpty() && !hasBrowserCookies) {
                 ar = am->registerCookieData(authDomain, cookiesText);
             } else if (!bearer.isEmpty()) {
                 const qint64 exp = qint64(obj.value(QStringLiteral("bearerExpiresAt")).toDouble(0));
@@ -216,39 +376,7 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
         }
     }
 
-    // Reject header names/values carrying any control char (incl. TAB) or DEL so
-    // an untrusted extension can't smuggle extra headers via injection.
-    auto headerSafe = [](const QString &s) {
-        for (const QChar c : s)
-            if (c < QChar(0x20) || c == QChar(0x7f))
-                return false;
-        return true;
-    };
-    // Headers a remote peer must never set on our request (request smuggling /
-    // framing). The injection guard above blocks CR/LF; this blocks misuse of
-    // otherwise-valid header names.
-    static const QSet<QString> kDeniedHeaders = {
-        QStringLiteral("host"), QStringLiteral("content-length"),
-        QStringLiteral("transfer-encoding"), QStringLiteral("connection")};
-
-    // Assemble the headers the extension captured for this request — every value
-    // goes through the same CR/LF injection guard (cookies/UA/referrer included).
-    HeaderList headers;
-    const QString cookies   = obj.value(QStringLiteral("cookies")).toString();
-    const QString userAgent = obj.value(QStringLiteral("userAgent")).toString();
-    const QString referrer  = obj.value(QStringLiteral("referrer")).toString();
-    if (!cookies.isEmpty()   && headerSafe(cookies))   headers.append({QByteArrayLiteral("Cookie"),     cookies.toUtf8()});
-    if (!userAgent.isEmpty() && headerSafe(userAgent)) headers.append({QByteArrayLiteral("User-Agent"), userAgent.toUtf8()});
-    if (!referrer.isEmpty()  && headerSafe(referrer))  headers.append({QByteArrayLiteral("Referer"),    referrer.toUtf8()});
-
-    const QJsonObject extra = obj.value(QStringLiteral("headers")).toObject();
-    for (auto it = extra.begin(); it != extra.end(); ++it) {
-        const QString v = it.value().toString();
-        if (kDeniedHeaders.contains(it.key().toLower()))
-            continue;   // never let a peer set Host/Content-Length/etc.
-        if (headerSafe(it.key()) && headerSafe(v))
-            headers.append({it.key().toUtf8(), v.toUtf8()});
-    }
+    const HeaderList headers = headersFromPayload(obj);
 
     const QString suggestedName = obj.value(QStringLiteral("filename")).toString();
     const QString quality = obj.value(QStringLiteral("quality")).toString();   // YouTube etc.
@@ -256,9 +384,12 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     // A browser handoff can opt out of Nexa's second confirmation dialog when
     // the user has already clicked the browser's download action. Keep the
     // protocol default false so older/local callers retain the normal setting.
-    const bool userInitiated = obj.value(QStringLiteral("userInitiated")).toBool(false);
+    // The extension's "ask before handing off" option sends ask:true — treat the
+    // handoff as not-yet-confirmed so the app's confirm prompt (when enabled) runs.
+    const bool ask = obj.value(QStringLiteral("ask")).toBool(false);
+    const bool userInitiated = obj.value(QStringLiteral("userInitiated")).toBool(false) && !ask;
     const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality,
-                                         playlist, userInitiated);
+                                         playlist, userInitiated, QString(), true);
     if (id < 0)
         sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
     else
@@ -320,9 +451,17 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
             QString label = QStringLiteral("%1p").arg(h);
             if (fps >= 50)                       // annotate high frame-rates only
                 label += QString::number(fps);   // e.g. "1080p60"
-            const QString note = h >= 2160 ? QStringLiteral("4K")
-                               : h >= 1080 ? QStringLiteral("HD")
-                                           : QString();
+            // Consumer resolution tiers, tested high -> low so the FIRST match
+            // wins. The previous `h >= 2160 -> "4K"` test had no 4320 arm, so
+            // every 8K stream was labelled "4320p60 4K"; likewise 1440p was
+            // labelled "HD", a name that properly belongs to 720p.
+            const QString note = h >= 4320 ? QStringLiteral("8K")
+                               : h >= 2880 ? QStringLiteral("5K")
+                               : h >= 2160 ? QStringLiteral("4K")
+                               : h >= 1440 ? QStringLiteral("2K")
+                               : h >= 1080 ? QStringLiteral("FHD")
+                               : h >= 720  ? QStringLiteral("HD")
+                                           : QStringLiteral("SD");
             quals.append(QJsonObject{{"height", h}, {"fps", fps},
                                      {"label", label}, {"note", note}});
         }

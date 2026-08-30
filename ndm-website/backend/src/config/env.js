@@ -13,6 +13,7 @@ function bool(value, fallback = false) {
 }
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 function required(name, { fallback = undefined, productionRequired = false } = {}) {
   const value = process.env[name];
@@ -46,6 +47,10 @@ const config = {
     : process.env.JWT_ADMIN_SECRET || 'dev_admin_secret',
   LICENSE_JWT_SECRET: NODE_ENV === 'production' ? requiredSecret('LICENSE_JWT_SECRET')
     : process.env.LICENSE_JWT_SECRET || 'dev_license_secret',
+  // Root/creator tokens are a separate family from staff-admin tokens. A stolen
+  // or forged admin token can never satisfy requireRoot, and vice versa.
+  JWT_ROOT_SECRET: NODE_ENV === 'production' ? requiredSecret('JWT_ROOT_SECRET')
+    : process.env.JWT_ROOT_SECRET || 'dev_root_secret',
 
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
@@ -55,25 +60,65 @@ const config = {
   SMTP_USER: process.env.SMTP_USER || '',
   SMTP_PASS: process.env.SMTP_PASS || '',
   FROM_EMAIL: process.env.FROM_EMAIL || 'noreply@nexadownloadmanager.com',
+  // Where the website's contact form delivers. Defaults to FROM_EMAIL.
+  SUPPORT_EMAIL: process.env.SUPPORT_EMAIL || '',
+
+  // Cloudflare Turnstile secret for the anonymous write endpoints (register,
+  // password reset, contact, reviews). Blank = the gate is off; the site's
+  // VITE_TURNSTILE_SITE_KEY must be set in step with this.
+  TURNSTILE_SECRET_KEY: process.env.TURNSTILE_SECRET_KEY || '',
+
+  // Home-page statistics floor: a figure below this is omitted from
+  // GET /api/stats (the tile is hidden) rather than shown while it still reads
+  // as "nobody uses this". Never rounds up — see utils/stats.js.
+  STATS_MIN_USERS: parseInt(process.env.STATS_MIN_USERS, 10) || 50,
+  STATS_MIN_DOWNLOADS: parseInt(process.env.STATS_MIN_DOWNLOADS, 10) || 100,
+
+  // Key for the admin/root TOTP secrets at rest (AES-256-GCM). Falls back to
+  // JWT_ADMIN_SECRET so an existing deployment gains 2FA without new config;
+  // set it separately if you ever want to rotate JWT secrets independently.
+  TOTP_ENCRYPTION_KEY: process.env.TOTP_ENCRYPTION_KEY || '',
 
   ADMIN_ALLOWED_IPS: csv(process.env.ADMIN_ALLOWED_IPS, []),
+  // Extra IP gate for /api/root/*. Empty = reuse ADMIN_ALLOWED_IPS, so the root
+  // panel is never *less* restricted than the staff panel.
+  ROOT_ALLOWED_IPS: csv(process.env.ROOT_ALLOWED_IPS, []),
+  // The creator's email. requireRoot demands BOTH role='root' in the database
+  // AND a match against this value, so a stray UPDATE on the users table is not
+  // by itself enough to mint a root admin.
+  ROOT_ADMIN_EMAIL: String(process.env.ROOT_ADMIN_EMAIL || '').toLowerCase().trim(),
   TRUST_PROXY: process.env.TRUST_PROXY || '',
   CORS_ORIGINS: csv(process.env.CORS_ORIGINS, [
     'http://localhost:5173',
     'http://localhost:5174',
   ]),
-  FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
+  FRONTEND_URL,
+  // Public origin where this API is reachable under /api (used to build the
+  // absolute counting-download URL in the desktop update feed). Defaults to
+  // the site origin, which fronts /api in every deployment so far.
+  PUBLIC_API_URL: (process.env.PUBLIC_API_URL || FRONTEND_URL).replace(/\/+$/, ''),
 
   EMAIL_VERIFICATION_REQUIRED: bool(process.env.EMAIL_VERIFICATION_REQUIRED, NODE_ENV === 'production'),
+
+  // Where uploaded installers are stored. Keep this OFF the web root and on a
+  // volume with room for several builds — every artifact is a full installer.
+  RELEASE_UPLOAD_DIR: process.env.RELEASE_UPLOAD_DIR
+    || require('path').join(__dirname, '..', '..', 'uploads', 'releases'),
+  // Hard ceiling per uploaded artifact (MB). Streaming aborts past this.
+  MAX_RELEASE_UPLOAD_MB: parseInt(process.env.MAX_RELEASE_UPLOAD_MB, 10) || 1024,
 };
 
 config.isStripeMock = !config.STRIPE_SECRET_KEY;
 config.isEmailMock = !config.SMTP_HOST;
 
 if (config.isProd) {
-  if (config.JWT_SECRET === config.JWT_ADMIN_SECRET || config.JWT_SECRET === config.LICENSE_JWT_SECRET ||
-      config.JWT_ADMIN_SECRET === config.LICENSE_JWT_SECRET)
+  const jwtSecrets = [
+    config.JWT_SECRET, config.JWT_ADMIN_SECRET, config.LICENSE_JWT_SECRET, config.JWT_ROOT_SECRET,
+  ];
+  if (new Set(jwtSecrets).size !== jwtSecrets.length)
     throw new Error('[config] JWT secrets must all be different in production');
+  if (!config.ROOT_ADMIN_EMAIL)
+    throw new Error('[config] ROOT_ADMIN_EMAIL must name the creator account in production');
   if (!config.STRIPE_SECRET_KEY.startsWith('sk_') || !config.STRIPE_WEBHOOK_SECRET.startsWith('whsec_'))
     throw new Error('[config] live Stripe secret and webhook signing secret are required in production');
   if (config.isEmailMock)
@@ -82,6 +127,8 @@ if (config.isProd) {
     throw new Error('[config] production CORS_ORIGINS must contain HTTPS origins only');
   if (!config.FRONTEND_URL.startsWith('https://'))
     throw new Error('[config] FRONTEND_URL must use HTTPS in production');
+  if (!config.PUBLIC_API_URL.startsWith('https://'))
+    throw new Error('[config] PUBLIC_API_URL must use HTTPS in production');
   if (!config.ADMIN_ALLOWED_IPS.length)
     throw new Error('[config] ADMIN_ALLOWED_IPS must explicitly restrict production admin access');
   if (!config.TRUST_PROXY)

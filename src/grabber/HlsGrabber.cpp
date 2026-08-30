@@ -1,5 +1,7 @@
 #include "grabber/HlsGrabber.h"
 #include "core/ExternalTools.h"
+#include "auth/CloudProviders.h"
+#include "web/PublicUrlPolicy.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -11,8 +13,20 @@
 #include <QStandardPaths>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <QUuid>
 
 namespace nexa {
+
+static bool isSensitiveHeader(const QByteArray &name)
+{
+    const QByteArray lower = name.toLower();
+    return lower == QByteArrayLiteral("cookie")
+        || lower == QByteArrayLiteral("authorization")
+        || lower == QByteArrayLiteral("referer")
+        || lower == QByteArrayLiteral("proxy-authorization")
+        || lower == QByteArrayLiteral("x-api-key")
+        || lower == QByteArrayLiteral("x-csrf-token");
+}
 
 HlsGrabber::HlsGrabber(int id, const QUrl &url, const QString &savePath,
                        const HeaderList &headers, QObject *parent)
@@ -41,13 +55,27 @@ QString HlsGrabber::fileName() const
 
 QString HlsGrabber::tempDir() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    return base + QStringLiteral("/nexa-stream-%1").arg(m_id);
+    return m_tempPath;
 }
 
 void HlsGrabber::setConcurrency(int n)
 {
     m_concurrency = qBound(1, n, 64);
+}
+
+HeaderList HlsGrabber::scopedHeaders(const QUrl &target) const
+{
+    const QString host = target.host().toLower();
+    const bool inScope = !m_credentialHost.isEmpty()
+        && (host == m_credentialHost
+            || (m_providers && m_providers->sameCredentialScope(host, m_credentialHost)));
+    HeaderList out;
+    out.reserve(m_headers.size());
+    for (const auto &h : m_headers) {
+        if (!isSensitiveHeader(h.first) || inScope)
+            out.append(h);
+    }
+    return out;
 }
 
 void HlsGrabber::setState(DownloadState s, const QString &detail)
@@ -63,6 +91,11 @@ void HlsGrabber::setState(DownloadState s, const QString &detail)
 
 void HlsGrabber::start()
 {
+    if (m_publicNetworkOnly && !isPublicHttpUrl(m_url)) {
+        setState(DownloadState::Error,
+                 QStringLiteral("stream target is not a public HTTP(S) address"));
+        return;
+    }
     // HLS has no partial resume: a (re)start downloads from scratch. Reset all
     // per-run state and clear any stale temp dir so a restart after a cancel or
     // error can't append to the previous run's segment list or files.
@@ -76,18 +109,28 @@ void HlsGrabber::start()
     m_doneCount = 0;
     m_bytes = 0;
     m_localPlaylist.clear();
+    m_redirects = 0;
+
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    m_tempPath = QDir(base).filePath(
+        QStringLiteral("nexa-stream-%1").arg(QUuid::createUuid().toString(QUuid::Id128)));
 
     m_clock.start();
     QDir().mkpath(tempDir());
+    QFile::setPermissions(tempDir(), QFileDevice::ReadOwner |
+                                      QFileDevice::WriteOwner |
+                                      QFileDevice::ExeOwner);
 
-    // DASH and other manifests: let FFmpeg do the whole job.
-    if (m_url.path().toLower().endsWith(QStringLiteral(".mpd"))) {
-        muxViaFfmpegDirect();
-        return;
-    }
-
-    setState(DownloadState::Probing, QStringLiteral("fetching playlist"));
-    fetchPlaylist(m_url);
+    // HLS/DASH: let FFmpeg handle the stream directly instead of downloading
+    // segments one-by-one and muxing locally.  FFmpeg's built-in HLS client has
+    // robust retry logic, handles AES-128 encryption, multi-bitrate variant
+    // selection, and redirects — all of which break when we parse the playlist
+    // ourselves and replay individual segment URLs through QNetworkAccessManager.
+    // The per-segment approach was the original design for progress granularity,
+    // but segment downloads that silently fail produce a local playlist that
+    // references missing files, causing "FFmpeg mux failed (code 8)".
+    // Direct ffmpeg pass-through avoids all of these problems.
+    muxViaFfmpegDirect();
 }
 
 void HlsGrabber::cancel()
@@ -108,11 +151,16 @@ void HlsGrabber::cancel()
 
 void HlsGrabber::fetchPlaylist(const QUrl &u)
 {
+    if (m_publicNetworkOnly && !isPublicHttpUrl(u)) {
+        setState(DownloadState::Error,
+                 QStringLiteral("playlist target is not a public HTTP(S) address"));
+        return;
+    }
     QNetworkRequest req(u);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-    for (const auto &h : m_headers)
+                     QNetworkRequest::ManualRedirectPolicy);
+    for (const auto &h : scopedHeaders(u))
         req.setRawHeader(h.first, h.second);
 
     m_playlistReply = m_nam->get(req);
@@ -129,6 +177,25 @@ void HlsGrabber::onPlaylistFetched()
 
     if (r->error() != QNetworkReply::NoError) {
         setState(DownloadState::Error, r->errorString());
+        return;
+    }
+    const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status >= 300 && status < 400) {
+        if (++m_redirects > 8) {
+            setState(DownloadState::Error, QStringLiteral("too many playlist redirects"));
+            return;
+        }
+        const QByteArray location = r->rawHeader("Location");
+        const QUrl target = location.isEmpty() ? QUrl()
+            : r->url().resolved(QUrl::fromEncoded(location));
+        const QString scheme = target.scheme().toLower();
+        if (!target.isValid() || (scheme != QLatin1String("http") &&
+                                  scheme != QLatin1String("https"))) {
+            setState(DownloadState::Error, QStringLiteral("playlist redirect is not HTTP(S)"));
+            return;
+        }
+        m_url = target;
+        fetchPlaylist(target);
         return;
     }
     // Resolve relative URIs against the *final* (possibly redirected) URL.
@@ -209,9 +276,10 @@ void HlsGrabber::handleMedia(const QString &text)
     // A segment/key/init URI from an untrusted playlist must be http(s) ONLY:
     // `file:///etc/passwd` (local-file read) or an internal-network http target
     // (SSRF) would otherwise be fetched and muxed into the output the user opens.
-    auto httpOk = [](const QUrl &u) {
+    auto httpOk = [this](const QUrl &u) {
         const QString s = u.scheme().toLower();
-        return s == QStringLiteral("http") || s == QStringLiteral("https");
+        return (s == QStringLiteral("http") || s == QStringLiteral("https"))
+            && (!m_publicNetworkOnly || isPublicHttpUrl(u));
     };
     // Cap the number of segments so a malicious/huge playlist can't exhaust
     // memory / file descriptors / disk or freeze the UI building the list.
@@ -315,24 +383,29 @@ void HlsGrabber::pumpDownloads()
 {
     while (m_inFlight < m_concurrency && m_nextToFetch < m_segments.size()) {
         const int idx = m_nextToFetch++;
-        const Segment &seg = m_segments[idx];
-
-        // Own manager per request to dodge the 6-connections-per-host cap.
-        auto *nam = new QNetworkAccessManager(this);
-        QNetworkRequest req(seg.url);
-        req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
-        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
-        for (const auto &h : m_headers)
-            req.setRawHeader(h.first, h.second);
-
-        QNetworkReply *reply = nam->get(req);
-        reply->setProperty("segIndex", idx);
-        reply->setProperty("gen", m_runGen);
-        reply->setProperty("ownNam", QVariant::fromValue<void*>(nam));
-        connect(reply, &QNetworkReply::finished, this, &HlsGrabber::onSegmentFinished);
+        startSegmentRequest(idx, 0);
         ++m_inFlight;
     }
+}
+
+void HlsGrabber::startSegmentRequest(int index, int redirects)
+{
+    const Segment &seg = m_segments.at(index);
+    // Own manager per request to dodge the 6-connections-per-host cap.
+    auto *nam = new QNetworkAccessManager(this);
+    QNetworkRequest req(seg.url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Nexa/0.1"));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::ManualRedirectPolicy);
+    for (const auto &h : scopedHeaders(seg.url))
+        req.setRawHeader(h.first, h.second);
+
+    QNetworkReply *reply = nam->get(req);
+    reply->setProperty("segIndex", index);
+    reply->setProperty("redirects", redirects);
+    reply->setProperty("gen", m_runGen);
+    reply->setProperty("ownNam", QVariant::fromValue<void*>(nam));
+    connect(reply, &QNetworkReply::finished, this, &HlsGrabber::onSegmentFinished);
 }
 
 void HlsGrabber::onSegmentFinished()
@@ -355,6 +428,29 @@ void HlsGrabber::onSegmentFinished()
     }
 
     --m_inFlight;
+
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status >= 300 && status < 400) {
+        const int redirects = reply->property("redirects").toInt();
+        const QByteArray location = reply->rawHeader("Location");
+        const QUrl target = location.isEmpty() ? QUrl()
+            : reply->url().resolved(QUrl::fromEncoded(location));
+        const QString scheme = target.scheme().toLower();
+        if (redirects >= 8 || !target.isValid() ||
+            (scheme != QLatin1String("http") && scheme != QLatin1String("https")) ||
+            (m_publicNetworkOnly && !isPublicHttpUrl(target))) {
+            reply->deleteLater();
+            if (nam) nam->deleteLater();
+            setState(DownloadState::Error, QStringLiteral("invalid segment redirect"));
+            return;
+        }
+        m_segments[idx].url = target;
+        reply->deleteLater();
+        if (nam) nam->deleteLater();
+        ++m_inFlight;
+        startSegmentRequest(idx, redirects + 1);
+        return;
+    }
 
     if (reply->error() != QNetworkReply::NoError) {
         reply->deleteLater();
@@ -397,6 +493,11 @@ void HlsGrabber::onSegmentFinished()
 
 void HlsGrabber::startMux()
 {
+    const QString ffmpeg = resolveTool(QStringLiteral("ffmpeg"));
+    if (ffmpeg.isEmpty()) {
+        setState(DownloadState::Error, QStringLiteral("FFmpeg is not installed or executable"));
+        return;
+    }
     setState(DownloadState::Downloading, QStringLiteral("muxing to MP4"));
     QDir().mkpath(QFileInfo(m_savePath).absolutePath());
 
@@ -406,7 +507,7 @@ void HlsGrabber::startMux()
         QStringLiteral("-y"),
         QStringLiteral("-rw_timeout"), QStringLiteral("30000000"),   // 30s I/O timeout
         QStringLiteral("-allowed_extensions"), QStringLiteral("ALL"),
-        QStringLiteral("-protocol_whitelist"), QStringLiteral("file,crypto,data,http,https,tcp,tls"),
+        QStringLiteral("-protocol_whitelist"), QStringLiteral("file,crypto,http,https,tcp,tls"),
         QStringLiteral("-i"), m_localPlaylist,
         QStringLiteral("-c"), QStringLiteral("copy"),
         QStringLiteral("-bsf:a"), QStringLiteral("aac_adtstoasc"),
@@ -414,23 +515,59 @@ void HlsGrabber::startMux()
     };
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
-    m_ffmpeg->start(resolveTool(QStringLiteral("ffmpeg")), args);   // bundled exe isn't on PATH on Windows
+    connect(m_ffmpeg, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+        if (!m_cancelled && error == QProcess::FailedToStart)
+            setState(DownloadState::Error, QStringLiteral("FFmpeg could not be started"));
+    });
+    m_ffmpeg->start(ffmpeg, args);   // bundled exe isn't on PATH on Windows
     m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 
 void HlsGrabber::muxViaFfmpegDirect()
 {
+    if (m_publicNetworkOnly && !isPublicHttpUrl(m_url)) {
+        setState(DownloadState::Error,
+                 QStringLiteral("stream target is not a public HTTP(S) address"));
+        return;
+    }
+    const QString ffmpeg = resolveTool(QStringLiteral("ffmpeg"));
+    if (ffmpeg.isEmpty()) {
+        setState(DownloadState::Error, QStringLiteral("FFmpeg is not installed or executable"));
+        return;
+    }
     setState(DownloadState::Downloading, QStringLiteral("downloading via FFmpeg"));
     QDir().mkpath(QFileInfo(m_savePath).absolutePath());
 
     QStringList args = { QStringLiteral("-y"),
-                         QStringLiteral("-rw_timeout"), QStringLiteral("30000000") };  // 30s I/O timeout
+                         QStringLiteral("-rw_timeout"), QStringLiteral("30000000"),
+                         QStringLiteral("-protocol_whitelist"),
+                         // `crypto` is REQUIRED for AES-128 HLS (#EXT-X-KEY):
+                         // ffmpeg opens each encrypted segment through the crypto
+                         // protocol, and without it every such stream dies with
+                         // "Protocol 'crypto' not on whitelist" and writes nothing.
+                         // `file` is deliberately NOT listed here — this path takes
+                         // a REMOTE playlist, so allowing file: would let a hostile
+                         // playlist mux local files into the user's output.
+                         QStringLiteral("crypto,http,https,tcp,tls") };  // 30s I/O timeout
     // Forward captured headers (cookies/UA/referrer) to FFmpeg. Strip any CR/LF
     // from values so a header can't smuggle extra request headers into ffmpeg.
     auto noCRLF = [](const QString &s) { QString o = s; o.remove('\r'); o.remove('\n'); return o; };
     QString hdr;
     QString ua;
-    for (const auto &h : m_headers) {
+    // Only block truly credential-bearing headers from ffmpeg; Referer/Origin
+    // are just URLs, not secrets, and CDNs need them for hotlink protection.
+    auto isCredentialHeader = [](const QByteArray &name) {
+        const QByteArray lower = name.toLower();
+        return lower == QByteArrayLiteral("cookie")
+            || lower == QByteArrayLiteral("authorization")
+            || lower == QByteArrayLiteral("proxy-authorization")
+            || lower == QByteArrayLiteral("x-api-key")
+            || lower == QByteArrayLiteral("x-csrf-token");
+    };
+    for (const auto &h : scopedHeaders(m_url)) {
+        if (isCredentialHeader(h.first))
+            continue;
         if (h.first.compare("User-Agent", Qt::CaseInsensitive) == 0)
             ua = noCRLF(QString::fromUtf8(h.second));
         else
@@ -446,7 +583,12 @@ void HlsGrabber::muxViaFfmpegDirect()
     m_ffmpeg = new QProcess(this);
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
-    m_ffmpeg->start(resolveTool(QStringLiteral("ffmpeg")), args);   // bundled exe isn't on PATH on Windows
+    connect(m_ffmpeg, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+        if (!m_cancelled && error == QProcess::FailedToStart)
+            setState(DownloadState::Error, QStringLiteral("FFmpeg could not be started"));
+    });
+    m_ffmpeg->start(ffmpeg, args);   // bundled exe isn't on PATH on Windows
     m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
 }
 
@@ -475,8 +617,9 @@ void HlsGrabber::onMuxFinished(int exitCode)
 void HlsGrabber::cleanupTemp()
 {
     const QString dir = tempDir();
-    if (QDir(dir).exists())
+    if (!dir.isEmpty() && QDir(dir).exists())
         QDir(dir).removeRecursively();
+    m_tempPath.clear();
 }
 
 } // namespace nexa

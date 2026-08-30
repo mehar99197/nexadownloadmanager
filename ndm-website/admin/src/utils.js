@@ -30,3 +30,15 @@ export function downloadCsv(filename, rows, columns) {
   anchor.click();
   URL.revokeObjectURL(url);
 }
+
+// Human file size for release installers. Binary units (MiB steps) shown with
+// the familiar MB/GB labels, matching what Windows and most browsers report.
+export function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}

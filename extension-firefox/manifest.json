@@ -1,12 +1,15 @@
 {
-  "manifest_version": 2,
-  "name": "Nexa Download Manager Integration",
-  "version": "0.1.0",
-  "description": "Hands downloads and media streams off to the Nexa desktop app for fast multi-connection downloading.",
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "0.2.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "homepage_url": "https://nexadownloadmanager.com",
+  "author": "Nexa",
   "browser_specific_settings": {
     "gecko": {
       "id": "nexa@nexa.local",
-      "strict_min_version": "91.0"
+      "strict_min_version": "115.0"
     }
   },
   "permissions": [
@@ -16,18 +19,34 @@
     "webRequest",
     "storage",
     "nativeMessaging",
-    "tabs",
+    "notifications",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
     "<all_urls>"
   ],
   "background": {
-    "scripts": ["background.js"],
-    "persistent": true
+    "scripts": ["background.js"]
   },
-  "browser_action": {
+  "action": {
     "default_title": "Nexa Download Manager",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "send-page-to-nexa": {
+      "suggested_key": {
+        "default": "Alt+Shift+N"
+      },
+      "description": "Send the current page to Nexa"
     }
   },
   "content_scripts": [

@@ -12,6 +12,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Sql)
+# Translations are optional at build time: LinguistTools is only needed to turn
+# translations/*.ts into the .qm files that ship. Without it the app still builds
+# and simply runs in its source language (English).
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
+# AES-128-CTR + CBC-MAC for MEGA downloads (libcrypto is already pulled in by
+# libtorrent, so this adds no new runtime dependency to the bundles).
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 # BitTorrent support via libtorrent-rasterbar.
 # On Windows (MSYS2/MinGW) use the CMake config package to avoid pkg-config
@@ -42,6 +49,7 @@ add_executable(nexa
     src/torrent/TorrentManager.cpp
     src/site/YtDlpGrabber.cpp
     src/site/MegaGrabber.cpp
+    src/site/SpotifyGrabber.cpp
     src/auth/CookieFile.cpp
     src/auth/AuthUtils.cpp
     src/auth/AuthenticationManager.cpp
@@ -50,13 +58,26 @@ add_executable(nexa
     src/ai/AiClient.cpp
     src/ipc/IpcServer.cpp
     src/ipc/NativeHostRegistrar.cpp
+    src/ipc/ExtensionInstaller.cpp
     src/web/WebServer.cpp
     src/web/PublicUrlPolicy.cpp
     src/ui/UiHelpers.cpp
     src/ui/DownloadDetailsDialog.cpp
     src/ui/SiteLoginsDialog.cpp
     src/ui/SettingsDialog.cpp
+    src/core/DownloadImport.cpp
+    src/core/Portable.cpp
+    src/core/VirusScanner.cpp
+    src/core/ProxyConfig.cpp
     src/ui/ClipboardMonitor.cpp
+    src/ui/Localization.cpp
+    src/ui/Theme.cpp
+    src/ui/Motion.cpp
+    src/ui/ThemeGalleryDialog.cpp
+    src/ads/AdService.cpp
+    src/ui/AdBanner.cpp
+    src/ui/FirstRunWizard.cpp
+    src/ui/LinkGrabberDialog.cpp
     src/ui/MainWindow.cpp
 )
 
@@ -67,6 +88,7 @@ target_link_libraries(nexa PRIVATE
     Qt6::Widgets
     Qt6::Sql
     ${LIBTORRENT_TARGET}
+    OpenSSL::Crypto
 )
 
 # On Windows, build the GUI as a windows-subsystem (GUI) app so launching it does
@@ -77,6 +99,19 @@ target_link_libraries(nexa PRIVATE
 if(WIN32)
     set_target_properties(nexa PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(nexa PRIVATE Advapi32)
+endif()
+
+# macOS: build a real .app bundle so Finder/Launchpad treat it as an app and the
+# icon + identifier are right. nexa-host stays a plain command-line binary; the
+# browsers exec it directly by path.
+if(APPLE)
+    set_target_properties(nexa PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Nexa"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.nexa.downloadmanager"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_COPYRIGHT "Nexa Download Manager")
 endif()
 
 # Native messaging bridge — a tiny standalone exe the browsers launch.
@@ -106,6 +141,25 @@ if(NOT WIN32)
         RENAME nexa.png)
     install(FILES assets/nexa.png
         DESTINATION share/pixmaps)
+    # Browser-extension auto-install: the .deb postinst runs this as root so
+    # every browser on the machine picks the extension up on its next start.
+    install(PROGRAMS packaging/register-browser-extensions
+        DESTINATION share/nexa)
+    install(FILES packaging/extension-ids.env
+        DESTINATION share/nexa)
+endif()
+
+# ---------------------------------------------------------------------------
+# Translations: compile every translations/nexa_<lang>.ts into a .qm and install
+# it next to the binary (and under share/nexa for the .deb). Localization.cpp
+# searches both locations at runtime.
+file(GLOB NEXA_TS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/translations/nexa_*.ts")
+if(Qt6LinguistTools_FOUND AND NEXA_TS_FILES)
+    qt_add_translations(nexa TS_FILES ${NEXA_TS_FILES}
+        QM_FILES_OUTPUT_VARIABLE NEXA_QM_FILES)
+    install(FILES ${NEXA_QM_FILES} DESTINATION share/nexa/translations)
+elseif(NEXA_TS_FILES)
+    message(STATUS "Qt6 LinguistTools not found - shipping untranslated (English) UI")
 endif()
 
 # Auth-layer unit tests (built opt-in: cmake -DNEXA_BUILD_TESTS=ON). Run with
@@ -125,9 +179,19 @@ if(NEXA_BUILD_TESTS)
     add_executable(nexa_format_test
         tests/FormatTest.cpp
         src/ui/UiHelpers.cpp
+        src/ui/Theme.cpp
     )
     target_include_directories(nexa_format_test PRIVATE src)
     target_link_libraries(nexa_format_test PRIVATE Qt6::Core Qt6::Widgets)
+
+    # Theme catalogue: contrast + completeness for every built-in look.
+    add_executable(nexa_theme_test
+        tests/ThemeContrastTest.cpp
+        src/ui/Theme.cpp
+        src/ui/Motion.cpp
+    )
+    target_include_directories(nexa_theme_test PRIVATE src)
+    target_link_libraries(nexa_theme_test PRIVATE Qt6::Core Qt6::Widgets)
 
     add_executable(nexa_public_url_test
         tests/PublicUrlPolicyTest.cpp
@@ -144,11 +208,96 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_cloud_providers_test PRIVATE src)
     target_link_libraries(nexa_cloud_providers_test PRIVATE Qt6::Core Qt6::Network)
 
+    add_executable(nexa_range_integrity_test
+        tests/RangeIntegrityTest.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/auth/AuthUtils.cpp
+        src/web/PublicUrlPolicy.cpp
+    )
+    target_include_directories(nexa_range_integrity_test PRIVATE src)
+    target_link_libraries(nexa_range_integrity_test PRIVATE Qt6::Core Qt6::Network)
+
+    add_executable(nexa_database_persistence_test
+        tests/DatabasePersistenceTest.cpp
+        src/core/Database.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/CloudProviders.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_database_persistence_test PRIVATE src)
+    target_link_libraries(nexa_database_persistence_test PRIVATE
+        Qt6::Core Qt6::Network Qt6::Sql)
+
+    # Engine helpers: links the real DownloadEngine translation unit (and its
+    # dependency closure) so the tested code is the shipped code, not a copy.
+    add_executable(nexa_engine_helpers_test
+        tests/EngineHelpersTest.cpp
+        src/core/DownloadEngine.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/core/Database.cpp
+        src/core/Portable.cpp
+        src/core/UpdateChecker.cpp
+        src/core/ProxyConfig.cpp
+        src/grabber/HlsGrabber.cpp
+        src/torrent/TorrentManager.cpp
+        src/site/YtDlpGrabber.cpp
+        src/site/MegaGrabber.cpp
+        src/site/SpotifyGrabber.cpp
+        src/ai/AiClient.cpp
+        src/auth/AuthenticationManager.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/BrowserLogin.cpp
+        src/auth/CookieFile.cpp
+        src/auth/CloudProviders.cpp
+        src/license/LicenseManager.cpp
+        src/license/CredentialStore.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_engine_helpers_test PRIVATE src)
+    target_link_libraries(nexa_engine_helpers_test PRIVATE
+        Qt6::Core Qt6::Network Qt6::Sql ${LIBTORRENT_TARGET} OpenSSL::Crypto)
+
+    add_executable(nexa_download_import_test
+        tests/DownloadImportTest.cpp
+        src/core/DownloadImport.cpp
+    )
+    target_include_directories(nexa_download_import_test PRIVATE src)
+    target_link_libraries(nexa_download_import_test PRIVATE Qt6::Core)
+
+    add_executable(nexa_mega_crypto_test
+        tests/MegaCryptoTest.cpp
+        src/site/MegaGrabber.cpp
+    )
+    target_include_directories(nexa_mega_crypto_test PRIVATE src)
+    target_link_libraries(nexa_mega_crypto_test PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+
+    add_executable(nexa_extension_installer_test
+        tests/ExtensionInstallerTest.cpp
+        src/ipc/ExtensionInstaller.cpp
+    )
+    target_include_directories(nexa_extension_installer_test PRIVATE src)
+    target_link_libraries(nexa_extension_installer_test PRIVATE Qt6::Core)
+
     enable_testing()
+    add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
+    add_test(NAME extension_installer COMMAND nexa_extension_installer_test)
+    add_test(NAME download_import COMMAND nexa_download_import_test)
+    add_test(NAME engine_helpers COMMAND nexa_engine_helpers_test)
     add_test(NAME auth   COMMAND nexa_auth_test)
     add_test(NAME format COMMAND nexa_format_test)
+    add_test(NAME themes COMMAND nexa_theme_test)
     add_test(NAME public_url COMMAND nexa_public_url_test)
     add_test(NAME cloud_providers COMMAND nexa_cloud_providers_test)
+    add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
+    add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
 endif()
 
 # ===========================================================================

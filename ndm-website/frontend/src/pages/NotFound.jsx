@@ -1,7 +1,10 @@
 import Section from '../components/Section';
 import Button from '../components/Button';
+import usePageMeta from '../hooks/usePageMeta';
 
 export default function NotFound() {
+  usePageMeta({ title: "Page not found", description: "The page you were looking for does not exist." });
+
   return (
     <Section className="text-center">
       <span className="eyebrow"><span className="eyebrow-dot" />Signal lost</span>

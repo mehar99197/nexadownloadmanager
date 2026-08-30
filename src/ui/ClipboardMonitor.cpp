@@ -139,7 +139,7 @@ CaptureToast::CaptureToast(const QUrl &url, QWidget *parent)
     v->setContentsMargins(16, 13, 16, 13);
     v->setSpacing(8);
 
-    auto *title = new QLabel(QStringLiteral("🔗  Link detected"), plate);
+    auto *title = new QLabel(tr("🔗  Link detected"), plate);
     title->setObjectName(QStringLiteral("Dd_title"));
 
     auto *link = new QLabel(plate);
@@ -153,9 +153,9 @@ CaptureToast::CaptureToast(const QUrl &url, QWidget *parent)
     auto *row = new QHBoxLayout;
     row->setContentsMargins(0, 2, 0, 0);
     row->setSpacing(8);
-    auto *ignore = new QPushButton(QStringLiteral("Ignore"), plate);
+    auto *ignore = new QPushButton(tr("Ignore"), plate);
     ignore->setCursor(Qt::PointingHandCursor);
-    auto *download = new QPushButton(QStringLiteral("Download"), plate);
+    auto *download = new QPushButton(tr("Download"), plate);
     download->setObjectName(QStringLiteral("Primary"));
     download->setCursor(Qt::PointingHandCursor);
     row->addStretch(1);

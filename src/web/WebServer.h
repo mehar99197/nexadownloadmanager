@@ -33,6 +33,10 @@ public:
 
     // LAN binding requires a valid NEXA_TLS_CERT / NEXA_TLS_KEY pair.
     bool start(quint16 port, bool lanAccessible, const QString &token = QString());
+    // Stop listening and drop every live connection (safe to call when not running).
+    void stop();
+    bool isRunning() const;
+    QString token() const { return m_token; }
     quint16 port() const { return m_port; }
     // True when serving HTTPS (a cert/key pair was supplied via NEXA_TLS_CERT /
     // NEXA_TLS_KEY); lets the caller print the right scheme in the dashboard URL.

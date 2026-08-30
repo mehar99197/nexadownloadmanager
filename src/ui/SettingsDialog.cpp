@@ -1,6 +1,11 @@
 #include "ui/SettingsDialog.h"
 #include "core/DownloadEngine.h"
 #include "core/Logging.h"
+#include "core/ProxyConfig.h"
+#include "ui/Theme.h"
+#include "ui/ThemeGalleryDialog.h"
+#include "ui/Localization.h"
+#include "core/VirusScanner.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -10,6 +15,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QPushButton>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -19,6 +25,8 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QSettings>
+#include <QClipboard>
+#include <QApplication>
 #include "license/LicenseManager.h"
 
 namespace nexa {
@@ -42,12 +50,27 @@ constexpr auto kAiRename   = "aiRename";
 constexpr auto kErrLog     = "errorLogging";
 constexpr auto kConfirmStart  = "ui/confirmBeforeStart";   // IDM-style ask-before-download
 constexpr auto kShowComplete  = "ui/showCompleteDialog";   // IDM-style completion prompt
+constexpr auto kNotify        = "ui/notifications";        // tray balloons on finish/fail
+constexpr auto kAutoUpdate    = "updates/auto";            // silent daily check
+constexpr auto kWhenDone      = "ui/whenDone";             // none|folder|sleep|shutdown
+constexpr auto kDashEnabled   = "dashboard/enabled";
+constexpr auto kDashPort      = "dashboard/port";
+constexpr auto kDashLan       = "dashboard/lan";
+constexpr auto kDashUrl       = "dashboard/currentUrl";    // written by main() when running
+constexpr auto kVirusScan     = "security/virusScan";
+constexpr auto kVirusCmd      = "security/virusScanCommand";
+constexpr auto kLanguage      = "ui/language";             // empty = follow the system
+constexpr auto kProxyMode     = "proxy/mode";              // none | system | http | socks5
+constexpr auto kProxyHost     = "proxy/host";
+constexpr auto kProxyPort     = "proxy/port";
+constexpr auto kProxyUser     = "proxy/user";
+constexpr auto kProxyPass     = "proxy/password";
 
 QLabel *sectionHeader(const QString &text, QWidget *parent)
 {
     auto *l = new QLabel(text, parent);
-    l->setStyleSheet(QStringLiteral("color:#c7d2fe; font-weight:700; font-size:12px; "
-                                    "margin-top:6px;"));
+    l->setObjectName(QStringLiteral("SectionHead"));   // coloured by the active theme
+    l->setStyleSheet(QStringLiteral("margin-top:6px;"));
     return l;
 }
 } // namespace
@@ -78,7 +101,7 @@ void SettingsDialog::loadInto(DownloadEngine *engine)
 SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     : QDialog(parent), m_engine(engine)
 {
-    setWindowTitle(QStringLiteral("Settings"));
+    setWindowTitle(tr("Settings"));
     setMinimumWidth(460);
     // Lock the height (the scroll area handles the long form). The height is
     // FIXED so the window can't be dragged taller/shorter — vertical resizing
@@ -88,12 +111,6 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     if (QScreen *s = QGuiApplication::primaryScreen())
         h = qMin(h, s->availableGeometry().height() - 80);
     setFixedHeight(qMax(360, h));
-    // Make spin boxes / checkboxes legible on the dark theme.
-    setStyleSheet(QStringLiteral(
-        "QSpinBox, QDoubleSpinBox, QLineEdit { background:#0e1424; border:1px solid #232b42;"
-        " border-radius:8px; padding:5px 8px; color:#e6edf3; }"
-        "QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus { border-color:#3949ab; }"
-        "QCheckBox { color:#cbd5e1; }"));
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(14, 14, 14, 14);
@@ -124,27 +141,89 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     gen->setLabelAlignment(Qt::AlignRight);
     auto *dirRow = new QHBoxLayout;
     m_dir = new QLineEdit(m_engine->downloadDir(), plate);
-    auto *browse = new QPushButton(QStringLiteral("Browse…"), plate);
+    auto *browse = new QPushButton(tr("Browse…"), plate);
     browse->setCursor(Qt::PointingHandCursor);
     dirRow->addWidget(m_dir, 1);
     dirRow->addWidget(browse);
-    gen->addRow(QStringLiteral("Download folder"), dirRow);
+    gen->addRow(tr("Download folder"), dirRow);
+    m_whenDone = new QComboBox(plate);
+    m_whenDone->addItem(tr("Do nothing"), QStringLiteral("none"));
+    m_whenDone->addItem(tr("Open the download folder"), QStringLiteral("folder"));
+    m_whenDone->addItem(tr("Put the computer to sleep"), QStringLiteral("sleep"));
+    m_whenDone->addItem(tr("Shut down the computer"), QStringLiteral("shutdown"));
+    {
+        const int idx = m_whenDone->findData(st.value(QLatin1String(kWhenDone), QStringLiteral("none")).toString());
+        m_whenDone->setCurrentIndex(qMax(0, idx));
+    }
+    m_whenDone->setToolTip(tr("Runs once, after the last active download finishes (60-second countdown you can cancel)."));
+    gen->addRow(tr("When all downloads finish"), m_whenDone);
+    // Appearance: the full theme list inline, plus a gallery for people who
+    // would rather see the looks than read their names.
+    m_themeOnOpen = theme::savedId();
+    auto *themeRow = new QHBoxLayout;
+    m_theme = new QComboBox(plate);
+    for (const theme::ThemeInfo &t : theme::available()) {
+        const QString label = t.automatic
+            ? t.name
+            : QStringLiteral("%1 — %2").arg(t.dark ? tr("Dark") : tr("Light"), t.name);
+        m_theme->addItem(label, t.id);
+        m_theme->setItemData(m_theme->count() - 1, t.tagline, Qt::ToolTipRole);
+    }
+    m_theme->setCurrentIndex(qMax(0, m_theme->findData(theme::savedId())));
+    auto *themeBrowse = new QPushButton(tr("Browse themes…"), plate);
+    themeBrowse->setCursor(Qt::PointingHandCursor);
+    themeBrowse->setToolTip(tr("See every theme as a live preview."));
+    themeRow->addWidget(m_theme, 1);
+    themeRow->addWidget(themeBrowse);
+    gen->addRow(tr("Appearance"), themeRow);
+    // The combo previews live too — a theme you cannot see is hard to choose.
+    connect(m_theme, &QComboBox::currentIndexChanged, this, [this](int) {
+        applyThemePreview(m_theme->currentData().toString());
+    });
+    connect(themeBrowse, &QPushButton::clicked, this, [this]() {
+        ThemeGalleryDialog dlg(this);
+        connect(&dlg, &ThemeGalleryDialog::themeApplied, this, [this](const QString &id) {
+            const QSignalBlocker block(m_theme);      // already applied; just re-sync
+            m_theme->setCurrentIndex(qMax(0, m_theme->findData(id)));
+            emit themeChanged();                      // let the main window redraw
+        });
+        dlg.exec();
+        const QSignalBlocker block(m_theme);
+        m_theme->setCurrentIndex(qMax(0, m_theme->findData(theme::savedId())));
+    });
+    m_language = new QComboBox(plate);
+    for (const i18n::Language &lang : i18n::available()) {
+        const QString label = lang.code.isEmpty() || lang.nativeName == lang.englishName
+            ? lang.englishName
+            : QStringLiteral("%1 — %2").arg(lang.nativeName, lang.englishName);
+        m_language->addItem(label, lang.code);
+    }
+    m_language->setCurrentIndex(qMax(0, m_language->findData(i18n::savedLanguage())));
+    m_language->setToolTip(tr("Takes effect the next time Nexa starts."));
+    gen->addRow(tr("Language"), m_language);
     v->addLayout(gen);
 
     m_categorize = new QCheckBox(QStringLiteral("Sort completed files into type subfolders "
                                                 "(Video/, Audio/, …)"), plate);
     m_categorize->setChecked(m_engine->autoCategorize());
     v->addWidget(m_categorize);
-    m_clipboard = new QCheckBox(QStringLiteral("Monitor the clipboard for download links"), plate);
+    m_clipboard = new QCheckBox(tr("Monitor the clipboard for download links"), plate);
     m_clipboard->setChecked(st.value(QLatin1String(kClipboard), false).toBool());
     v->addWidget(m_clipboard);
     m_confirmStart = new QCheckBox(QStringLiteral("Ask before starting a download "
                                                  "(confirm the file & save location first)"), plate);
     m_confirmStart->setChecked(st.value(QLatin1String(kConfirmStart), true).toBool());
     v->addWidget(m_confirmStart);
-    m_showComplete = new QCheckBox(QStringLiteral("Show a dialog when a download completes"), plate);
+    m_showComplete = new QCheckBox(tr("Show a dialog when a download completes"), plate);
     m_showComplete->setChecked(st.value(QLatin1String(kShowComplete), true).toBool());
     v->addWidget(m_showComplete);
+    m_notify = new QCheckBox(tr("Show desktop notifications when a download finishes or fails"), plate);
+    m_notify->setChecked(st.value(QLatin1String(kNotify), true).toBool());
+    m_notify->setToolTip(tr("Shown from the tray icon when Nexa is in the background."));
+    v->addWidget(m_notify);
+    m_autoUpdate = new QCheckBox(tr("Check for updates automatically (once a day)"), plate);
+    m_autoUpdate->setChecked(st.value(QLatin1String(kAutoUpdate), true).toBool());
+    v->addWidget(m_autoUpdate);
 
     // ---- Downloads --------------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("Downloads"), plate));
@@ -153,37 +232,37 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_maxConc = new QSpinBox(plate);
     m_maxConc->setRange(1, 32);
     m_maxConc->setValue(m_engine->maxConcurrent());
-    dl->addRow(QStringLiteral("Max simultaneous downloads"), m_maxConc);
+    dl->addRow(tr("Max simultaneous downloads"), m_maxConc);
 
     m_speedKB = new QSpinBox(plate);
     m_speedKB->setRange(0, 1024 * 1024);   // up to 1 GB/s
     m_speedKB->setSingleStep(128);
     m_speedKB->setSuffix(QStringLiteral(" KB/s"));
-    m_speedKB->setSpecialValueText(QStringLiteral("Unlimited"));   // shown at 0
+    m_speedKB->setSpecialValueText(tr("Unlimited"));   // shown at 0
     m_speedKB->setValue(int(m_engine->speedLimit() / 1024));
-    dl->addRow(QStringLiteral("Global speed limit"), m_speedKB);
+    dl->addRow(tr("Global speed limit"), m_speedKB);
 
     m_streamConc = new QSpinBox(plate);
     m_streamConc->setRange(1, 64);
     m_streamConc->setValue(m_engine->streamConcurrency());
-    dl->addRow(QStringLiteral("HLS stream connections"), m_streamConc);
+    dl->addRow(tr("HLS stream connections"), m_streamConc);
 
     m_plConc = new QSpinBox(plate);
     m_plConc->setRange(1, 8);
     m_plConc->setValue(m_engine->playlistConcurrency());
-    dl->addRow(QStringLiteral("Playlist videos in parallel"), m_plConc);
+    dl->addRow(tr("Playlist videos in parallel"), m_plConc);
     v->addLayout(dl);
 
     // ---- Video sites ------------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("Video sites"), plate));
-    m_subs = new QCheckBox(QStringLiteral("Download and embed subtitles"), plate);
+    m_subs = new QCheckBox(tr("Download and embed subtitles"), plate);
     m_subs->setChecked(m_engine->subtitlesEnabled());
     v->addWidget(m_subs);
     auto *subForm = new QFormLayout;
     subForm->setLabelAlignment(Qt::AlignRight);
     m_subLangs = new QLineEdit(m_engine->subtitleLangs(), plate);
-    m_subLangs->setPlaceholderText(QStringLiteral("e.g. en,en-US,ur"));
-    subForm->addRow(QStringLiteral("Subtitle languages"), m_subLangs);
+    m_subLangs->setPlaceholderText(tr("e.g. en,en-US,ur"));
+    subForm->addRow(tr("Subtitle languages"), m_subLangs);
     v->addLayout(subForm);
     auto syncSubs = [this]() { m_subLangs->setEnabled(m_subs->isChecked()); };
     connect(m_subs, &QCheckBox::toggled, this, syncSubs);
@@ -198,42 +277,132 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
         sb->setRange(0, 1024 * 1024);
         sb->setSingleStep(128);
         sb->setSuffix(QStringLiteral(" KB/s"));
-        sb->setSpecialValueText(QStringLiteral("Unlimited"));
+        sb->setSpecialValueText(tr("Unlimited"));
         sb->setValue(initialBytes / 1024);
         return sb;
     };
     m_torrentDlKB = makeKB(m_engine->torrentDownloadLimit());
     m_torrentUlKB = makeKB(m_engine->torrentUploadLimit());
-    tor->addRow(QStringLiteral("Download limit"), m_torrentDlKB);
-    tor->addRow(QStringLiteral("Upload limit"), m_torrentUlKB);
+    tor->addRow(tr("Download limit"), m_torrentDlKB);
+    tor->addRow(tr("Upload limit"), m_torrentUlKB);
     m_seedRatio = new QDoubleSpinBox(plate);
     m_seedRatio->setRange(0.0, 100.0);
     m_seedRatio->setSingleStep(0.1);
     m_seedRatio->setDecimals(2);
-    m_seedRatio->setSpecialValueText(QStringLiteral("Don't seed"));   // shown at 0
+    m_seedRatio->setSpecialValueText(tr("Don't seed"));   // shown at 0
     m_seedRatio->setValue(m_engine->seedRatio());
-    tor->addRow(QStringLiteral("Seed to ratio"), m_seedRatio);
+    tor->addRow(tr("Seed to ratio"), m_seedRatio);
     v->addLayout(tor);
+
+    // ---- Network / proxy ----------------------------------------------------
+    v->addWidget(sectionHeader(QStringLiteral("Network"), plate));
+    auto *px = new QFormLayout;
+    px->setLabelAlignment(Qt::AlignRight);
+    m_proxyMode = new QComboBox(plate);
+    m_proxyMode->addItem(tr("No proxy (direct)"), QStringLiteral("none"));
+    m_proxyMode->addItem(tr("Use the system proxy"), QStringLiteral("system"));
+    m_proxyMode->addItem(tr("HTTP proxy"), QStringLiteral("http"));
+    m_proxyMode->addItem(tr("SOCKS5 proxy"), QStringLiteral("socks5"));
+    {
+        const int idx = m_proxyMode->findData(
+            st.value(QLatin1String(kProxyMode), QStringLiteral("none")).toString());
+        m_proxyMode->setCurrentIndex(qMax(0, idx));
+    }
+    px->addRow(tr("Connection"), m_proxyMode);
+    auto *proxyAddr = new QHBoxLayout;
+    m_proxyHost = new QLineEdit(st.value(QLatin1String(kProxyHost)).toString(), plate);
+    m_proxyHost->setPlaceholderText(QStringLiteral("127.0.0.1"));
+    m_proxyPort = new QSpinBox(plate);
+    m_proxyPort->setRange(0, 65535);
+    m_proxyPort->setValue(st.value(QLatin1String(kProxyPort), 0).toInt());
+    m_proxyPort->setSpecialValueText(QStringLiteral("—"));
+    proxyAddr->addWidget(m_proxyHost, 1);
+    proxyAddr->addWidget(m_proxyPort);
+    px->addRow(tr("Address"), proxyAddr);
+    m_proxyUser = new QLineEdit(st.value(QLatin1String(kProxyUser)).toString(), plate);
+    m_proxyUser->setPlaceholderText(QStringLiteral("optional"));
+    px->addRow(tr("Username"), m_proxyUser);
+    m_proxyPass = new QLineEdit(st.value(QLatin1String(kProxyPass)).toString(), plate);
+    m_proxyPass->setEchoMode(QLineEdit::Password);
+    m_proxyPass->setPlaceholderText(QStringLiteral("optional"));
+    px->addRow(tr("Password"), m_proxyPass);
+    v->addLayout(px);
+    auto *proxyNote = new QLabel(plate);
+    proxyNote->setWordWrap(true);
+    proxyNote->setObjectName(QStringLiteral("Muted"));
+    proxyNote->setText(QStringLiteral("Applies to downloads, video sites and licensing. "
+                                      "Credentials are stored in your Nexa settings file."));
+    v->addWidget(proxyNote);
+    auto syncProxyRows = [this]() {
+        const QString mode = m_proxyMode->currentData().toString();
+        const bool explicitProxy = mode == QLatin1String("http") || mode == QLatin1String("socks5");
+        for (QWidget *w : {static_cast<QWidget*>(m_proxyHost), static_cast<QWidget*>(m_proxyPort),
+                           static_cast<QWidget*>(m_proxyUser), static_cast<QWidget*>(m_proxyPass)})
+            w->setEnabled(explicitProxy);
+    };
+    syncProxyRows();
+    connect(m_proxyMode, &QComboBox::currentIndexChanged, this,
+            [syncProxyRows](int) { syncProxyRows(); });
+
+    // ---- Remote dashboard ---------------------------------------------------
+    v->addWidget(sectionHeader(QStringLiteral("Remote dashboard (control from your phone)"), plate));
+    m_dashEnabled = new QCheckBox(tr("Run the web dashboard while Nexa is open"), plate);
+    m_dashEnabled->setChecked(st.value(QLatin1String(kDashEnabled), false).toBool());
+    v->addWidget(m_dashEnabled);
+    auto *dash = new QFormLayout;
+    dash->setLabelAlignment(Qt::AlignRight);
+    m_dashPort = new QSpinBox(plate);
+    m_dashPort->setRange(1024, 65535);
+    m_dashPort->setValue(st.value(QLatin1String(kDashPort), 8088).toInt());
+    dash->addRow(tr("Port"), m_dashPort);
+    v->addLayout(dash);
+    m_dashLan = new QCheckBox(tr("Reachable from other devices on my network (needs NEXA_TLS_CERT / NEXA_TLS_KEY)"), plate);
+    m_dashLan->setChecked(st.value(QLatin1String(kDashLan), false).toBool());
+    v->addWidget(m_dashLan);
+    auto *urlRow = new QHBoxLayout;
+    m_dashUrl = new QLabel(plate);
+    m_dashUrl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_dashUrl->setWordWrap(true);
+    m_dashUrl->setObjectName(QStringLiteral("Muted"));
+    m_dashUrl->setStyleSheet(QStringLiteral("font-family: monospace;"));
+    auto *copyUrl = new QPushButton(tr("Copy link"), plate);
+    copyUrl->setCursor(Qt::PointingHandCursor);
+    urlRow->addWidget(m_dashUrl, 1);
+    urlRow->addWidget(copyUrl);
+    v->addLayout(urlRow);
+    auto refreshDashUrl = [this]() {
+        const QString url = QSettings().value(QLatin1String(kDashUrl)).toString();
+        m_dashUrl->setText(url.isEmpty()
+            ? QStringLiteral("Not running. Turn it on and press Save; the link (with its access token) appears here.")
+            : url);
+    };
+    refreshDashUrl();
+    connect(copyUrl, &QPushButton::clicked, this, [this]() {
+        const QString url = QSettings().value(QLatin1String(kDashUrl)).toString();
+        if (!url.isEmpty())
+            QApplication::clipboard()->setText(url);
+    });
+    connect(this, &SettingsDialog::settingsApplied, this, refreshDashUrl);
 
     // ---- License -----------------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("License"), plate));
     auto *licenseForm = new QFormLayout;
     licenseForm->setLabelAlignment(Qt::AlignRight);
     m_licenseKey = new QLineEdit(plate);
-    m_licenseKey->setPlaceholderText(QStringLiteral("NDM-XXXX-XXXX-XXXX"));
+    m_licenseKey->setPlaceholderText(tr("NDM-XXXX-XXXX-XXXX"));
     m_licenseKey->setEchoMode(QLineEdit::Password);
     m_licenseKey->setText(QString());
     auto *licenseRow = new QHBoxLayout;
     licenseRow->addWidget(m_licenseKey, 1);
-    auto *activate = new QPushButton(QStringLiteral("Activate"), plate);
-    auto *remove = new QPushButton(QStringLiteral("Remove"), plate);
+    auto *activate = new QPushButton(tr("Activate"), plate);
+    auto *remove = new QPushButton(tr("Remove"), plate);
     licenseRow->addWidget(activate);
     licenseRow->addWidget(remove);
-    licenseForm->addRow(QStringLiteral("License key"), licenseRow);
+    licenseForm->addRow(tr("License key"), licenseRow);
     m_licenseStatus = new QLabel(m_engine->license()->status(), plate);
     m_licenseStatus->setWordWrap(true);
-    m_licenseStatus->setStyleSheet(QStringLiteral("color:#94a3b8;"));
-    licenseForm->addRow(QStringLiteral("Status"), m_licenseStatus);
+    m_licenseStatus->setObjectName(QStringLiteral("Muted"));
+    licenseForm->addRow(tr("Status"), m_licenseStatus);
     v->addLayout(licenseForm);
     connect(activate, &QPushButton::clicked, this, [this]() {
         m_engine->license()->activate(m_licenseKey->text());
@@ -255,15 +424,33 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
 
     // ---- AI + history -----------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("AI & history"), plate));
-    m_aiRename = new QCheckBox(QStringLiteral("Auto-rename files to clean names on completion"), plate);
+    m_aiRename = new QCheckBox(tr("Auto-rename files to clean names on completion"), plate);
     m_aiRename->setChecked(m_engine->aiRename());
     if (!m_engine->aiAvailable()) {
         m_aiRename->setEnabled(false);
-        m_aiRename->setToolTip(QStringLiteral("Set ANTHROPIC_API_KEY and restart to enable AI features."));
+        m_aiRename->setToolTip(tr("Set ANTHROPIC_API_KEY and restart to enable AI features."));
     }
     v->addWidget(m_aiRename);
 
-    m_errLog = new QCheckBox(QStringLiteral("Save error logs to a file (for troubleshooting)"), plate);
+    m_virusScan = new QCheckBox(tr("Scan finished downloads for malware"), plate);
+    m_virusScan->setChecked(st.value(QLatin1String(kVirusScan), false).toBool());
+    v->addWidget(m_virusScan);
+    m_virusCmd = new QLineEdit(st.value(QLatin1String(kVirusCmd)).toString(), plate);
+    m_virusCmd->setPlaceholderText(VirusScanner::defaultCommandTemplate());
+    m_virusCmd->setToolTip(tr("Command to run, with %1 standing for the downloaded file. "
+                              "Leave empty to use your system's scanner."));
+    v->addWidget(m_virusCmd);
+    {
+        auto *scanNote = new QLabel(plate);
+        scanNote->setObjectName(QStringLiteral("Muted"));
+        scanNote->setWordWrap(true);
+        scanNote->setText(VirusScanner::scannerAvailable()
+            ? tr("Scanner found on this computer.")
+            : tr("No scanner found yet — install ClamAV (or set a command above) to use this."));
+        v->addWidget(scanNote);
+    }
+
+    m_errLog = new QCheckBox(tr("Save error logs to a file (for troubleshooting)"), plate);
     m_errLog->setChecked(st.value(QLatin1String(kErrLog), false).toBool());
     m_errLog->setToolTip(QStringLiteral("Writes warnings/errors to a small log you can export "
                                         "from the gear menu → “Export logs…”."));
@@ -273,7 +460,7 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     if (auto *ok = btns->button(QDialogButtonBox::Ok)) {
         ok->setObjectName(QStringLiteral("Primary"));
-        ok->setText(QStringLiteral("Save"));
+        ok->setText(tr("Save"));
     }
     outer->addWidget(btns);
 
@@ -285,6 +472,11 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     });
     connect(btns, &QDialogButtonBox::accepted, this, [this]() { apply(); accept(); });
     connect(btns, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    // Themes preview live, so cancelling has to undo the preview as well.
+    connect(this, &QDialog::rejected, this, [this]() {
+        if (theme::savedId() != m_themeOnOpen)
+            applyThemePreview(m_themeOnOpen);
+    });
 }
 
 void SettingsDialog::apply()
@@ -312,6 +504,17 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kClipboard), m_clipboard->isChecked());
     s.setValue(QLatin1String(kConfirmStart), m_confirmStart->isChecked());
     s.setValue(QLatin1String(kShowComplete), m_showComplete->isChecked());
+    s.setValue(QLatin1String(kNotify), m_notify->isChecked());
+    s.setValue(QLatin1String(kAutoUpdate), m_autoUpdate->isChecked());
+    s.setValue(QLatin1String(kWhenDone), m_whenDone->currentData().toString());
+    s.setValue(QLatin1String(kDashEnabled), m_dashEnabled->isChecked());
+    s.setValue(QLatin1String(kDashPort), m_dashPort->value());
+    s.setValue(QLatin1String(kDashLan), m_dashLan->isChecked());
+    s.setValue(QLatin1String(kProxyMode), m_proxyMode->currentData().toString());
+    s.setValue(QLatin1String(kProxyHost), m_proxyHost->text().trimmed());
+    s.setValue(QLatin1String(kProxyPort), m_proxyPort->value());
+    s.setValue(QLatin1String(kProxyUser), m_proxyUser->text());
+    s.setValue(QLatin1String(kProxyPass), m_proxyPass->text());
     s.setValue(QLatin1String(kMaxConc), m_maxConc->value());
     s.setValue(QLatin1String(kSpeedKB), m_speedKB->value());
     s.setValue(QLatin1String(kStreamConc), m_streamConc->value());
@@ -322,7 +525,39 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kTorrentUl), m_torrentUlKB->value());
     s.setValue(QLatin1String(kSeedRatio), m_seedRatio->value());
     s.setValue(QLatin1String(kAiRename), m_aiRename->isChecked());
+    s.setValue(QLatin1String(kVirusScan), m_virusScan->isChecked());
+    s.setValue(QLatin1String(kVirusCmd), m_virusCmd->text().trimmed());
     s.setValue(QLatin1String(kErrLog), m_errLog->isChecked());
+    // Appearance: already live-previewed, so this only has to make it stick.
+    const QString themeKey = m_theme->currentData().toString();
+    const bool themeDirty = themeKey != theme::savedId();
+    theme::setSavedId(themeKey);
+    // Language: Qt would need every widget rebuilt to re-translate live, so this
+    // is applied on the next launch and the user is told so.
+    const QString langCode = m_language->currentData().toString();
+    const bool languageChanged = langCode != i18n::savedLanguage();
+    i18n::setSavedLanguage(langCode);
+    s.sync();
+    if (themeDirty) {
+        if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance()))
+            theme::apply(*app);
+        emit themeChanged();
+    }
+    if (languageChanged)
+        QMessageBox::information(this, QStringLiteral("Language"),
+            QStringLiteral("Nexa will switch language the next time you start it."));
+    proxyconfig::applyFromSettings();   // takes effect on the next request
+    emit settingsApplied();
+}
+
+void SettingsDialog::applyThemePreview(const QString &id)
+{
+    if (theme::savedId() == id)
+        return;
+    theme::setSavedId(id);
+    if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance()))
+        theme::apply(*app);
+    emit themeChanged();
 }
 
 } // namespace nexa

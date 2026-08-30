@@ -2,10 +2,12 @@
 #include "web/PublicUrlPolicy.h"
 #include "core/DownloadTask.h"
 #include "core/Database.h"
+#include "core/Portable.h"
 #include "grabber/HlsGrabber.h"
 #include "torrent/TorrentManager.h"
 #include "site/YtDlpGrabber.h"
 #include "site/MegaGrabber.h"
+#include "site/SpotifyGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
 #include "auth/BrowserLogin.h"
@@ -25,10 +27,33 @@
 #include <QRegularExpression>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QUuid>
 #include <climits>
 #include <algorithm>
 
 namespace nexa {
+
+static QString safeBasename(QString name)
+{
+    // Keep only a filename component. This protects IPC/browser suggestions and
+    // server-provided names from escaping the configured download directory.
+    name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    name = QFileInfo(name).fileName().trimmed();
+    for (QChar &c : name) {
+        if (c.unicode() < 0x20 || c == QChar(0x7f) ||
+            c == QLatin1Char(':') || c == QLatin1Char('*') ||
+            c == QLatin1Char('?') || c == QLatin1Char('"') ||
+            c == QLatin1Char('<') || c == QLatin1Char('>') ||
+            c == QLatin1Char('|') || c == QLatin1Char('%') ||
+            c == QLatin1Char('(') || c == QLatin1Char(')') ||
+            c == QLatin1Char('{') || c == QLatin1Char('}') ||
+            c == QLatin1Char(','))
+            c = QLatin1Char('_');
+    }
+    if (name == QLatin1String(".") || name == QLatin1String(".."))
+        name.clear();
+    return name.left(240);
+}
 
 DownloadEngine::DownloadEngine(QObject *parent)
     : QObject(parent)
@@ -38,7 +63,7 @@ DownloadEngine::DownloadEngine(QObject *parent)
     m_limiter = new RateLimiter(this);   // global HTTP speed cap (0 = unlimited)
 
     const QString dataDir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        portable::appDataDir();
     m_db->open(dataDir + QStringLiteral("/nexa.db"));
 
     m_downloadDir =
@@ -84,7 +109,10 @@ DownloadEngine::DownloadEngine(QObject *parent)
         DownloadTask *t = m_tasks.value(id);
         if (!t)
             return;                        // file downloads only
-        m_ai->suggestFilename(t->fileName(), t->url().toString(), QString(),
+        QUrl safeSource = t->url();
+        safeSource.setQuery(QUrlQuery());
+        safeSource.setFragment(QString());
+        m_ai->suggestFilename(t->fileName(), safeSource.toString(), QString(),
                               [this, id](const QString &newName) {
             DownloadTask *t = m_tasks.value(id);
             if (!t || newName.isEmpty() || newName == t->fileName())
@@ -123,10 +151,33 @@ void DownloadEngine::applyLicensePlan(const QString &plan)
 {
     m_licensePlan = (plan == QLatin1String("pro") || plan == QLatin1String("team"))
         ? plan : QStringLiteral("free");
-    m_maxConcurrent = m_licensePlan == QLatin1String("free")
-        ? qMin(3, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
-    m_aiRename = m_aiRenameRequested && m_licensePlan != QLatin1String("free");
+
+    // Entitlements come from the licence server; the plan name is only the
+    // fallback for a build talking to an older backend. Reading them here keeps
+    // every gate in the engine driven by one source.
+    const Entitlements &f = m_license->features();
+    const int cap = f.maxConcurrentDownloads;
+    m_maxConcurrent = cap > 0 ? qMin(cap, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
+    m_aiRename = m_aiRenameRequested && f.aiRename;
+    m_authSiteDownloads = f.authSiteDownloads;
     schedule();
+}
+
+// Does this URL point at a site that needs a logged-in session? Matches the
+// provider list when one is loaded, so adding a site to cloud_providers.json
+// gates it here too without touching this file.
+bool DownloadEngine::isAuthSiteUrl(const QUrl &url) const
+{
+    const QString host = url.host().toLower();
+    if (host.isEmpty())
+        return false;
+    const QStringList sites = m_providers ? m_providers->authSites() : browserlogin::authSites();
+    for (const QString &candidate : sites) {
+        const QString d = candidate.toLower();
+        if (host == d || host.endsWith(QLatin1Char('.') + d))
+            return true;
+    }
+    return false;
 }
 
 // Default every known auth site to "use my logged-in browser" so the user never
@@ -145,6 +196,36 @@ void DownloadEngine::autoEnableBrowserLogins()
     const QHash<QString, QString> profiles = browserlogin::bestProfiles(browser, sites);
     for (const QString &domain : sites)
         m_auth->registerBrowserCookies(domain, browser, profiles.value(domain));
+}
+
+void DownloadEngine::refreshBrowserLoginFor(const QUrl &url)
+{
+    const QString host = url.host().toLower();
+    QString domain;
+    for (const QString &candidate : m_providers->authSites()) {
+        const QString d = candidate.toLower();
+        if ((host == d || host.endsWith(QLatin1Char('.') + d))
+            && d.size() > domain.size()) {
+            domain = d;
+        }
+    }
+    if (domain.isEmpty())
+        return;
+
+    // Never replace an explicit cookies.txt or bearer credential. A missing
+    // credential, or an automatically registered browser credential, is safe to
+    // refresh because the browser may have been opened after Nexa started or the
+    // user may have switched profiles since the previous download.
+    const DomainAuth current = m_auth->resolve(url);
+    if (current.kind != DomainAuth::Kind::None
+        && current.kind != DomainAuth::Kind::BrowserCookies)
+        return;
+
+    const QString browser = browserlogin::detectBrowser();
+    if (browser.isEmpty())
+        return;
+    const QString profile = browserlogin::bestProfileForDomain(browser, domain);
+    m_auth->registerBrowserCookies(domain, browser, profile);
 }
 
 void DownloadEngine::cacheProgress(int id, qint64 done, qint64 total, double bytesPerSec)
@@ -166,6 +247,7 @@ QVector<DownloadEngine::TaskSnapshot> DownloadEngine::snapshot() const
     ids.append(m_grabbers.keys());
     ids.append(m_megaGrabbers.keys());
     ids.append(m_siteVideos.keys());     // yt-dlp video/playlist grabs
+    ids.append(m_spotifyGrabbers.keys()); // Spotify track/album/playlist grabs
     ids.append(m_torrentIds.values());
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
@@ -196,6 +278,7 @@ DownloadEngine::~DownloadEngine()
     qDeleteAll(m_grabbers);        m_grabbers.clear();
     qDeleteAll(m_megaGrabbers);    m_megaGrabbers.clear();
     qDeleteAll(m_siteVideos);     m_siteVideos.clear();
+    qDeleteAll(m_spotifyGrabbers); m_spotifyGrabbers.clear();
     delete m_torrents;             m_torrents = nullptr;
     m_torrentIds.clear();          // prevent allTerminal()/stateOf() null-deref on queued signals
     m_playlistIds.clear();
@@ -231,7 +314,7 @@ QString DownloadEngine::categoryFor(const QString &fileName)
 
 QString DownloadEngine::pathForName(const QString &fileName) const
 {
-    QString name = fileName;
+    QString name = safeBasename(fileName);
     if (name.isEmpty())
         name = QStringLiteral("download");
 
@@ -307,10 +390,30 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 const HeaderList &headers, const QString &suggestedName,
                                 const QString &siteFormat, bool playlist, bool userInitiated,
-                                const QString &audioFormat)
+                                const QString &audioFormat, bool publicNetworkOnly)
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
+
+    constexpr int kMaxTrackedJobs = 10000;
+    const int tracked = m_tasks.size() + m_grabbers.size() + m_siteVideos.size()
+                      + m_megaGrabbers.size() + m_spotifyGrabbers.size()
+                      + m_torrentIds.size() + m_scheduledTimers.size();
+    if (tracked >= kMaxTrackedJobs)
+        return -1;
+
+    // Login-gated course sites (Udemy, Coursera, LinkedIn Learning…) are a paid
+    // feature. Refuse before any work is queued or a row appears, so the user
+    // gets one clear explanation instead of a download that fails later for a
+    // reason that looks like a bug. The server enforces the same rule when it
+    // decides the plan, so editing the cached entitlement locally gains nothing
+    // beyond this client-side convenience check.
+    if (isAuthSiteUrl(url) && !m_authSiteDownloads) {
+        emit downloadBlocked(url,
+            tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
+               "or see nexadownloadmanager.com/pricing.").arg(url.host()));
+        return -1;
+    }
 
     const int id = m_db->nextId();
     // IDM-style: hold an externally-added download for confirmation instead of
@@ -318,6 +421,12 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     // map cleanly onto the held flow); the manual New Download dialog passes
     // userInitiated=true because the user already confirmed there.
     const bool hold = m_confirmBeforeStart && !userInitiated;
+
+    // Browser sessions can be created after Nexa starts. Refresh the automatic
+    // browser credential lazily so an enrolled Udemy course opened later still
+    // uses the current logged-in profile/cookies.
+    if (m_providers)
+        refreshBrowserLoginFor(url);
 
     // Resolve domain-scoped auth for this URL ONCE, into the two forms the
     // download classes already understand: finished yt-dlp CLI flags and
@@ -354,7 +463,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                         });
     if (directFile && YtDlpGrabber::available() && (!driveHttp || browserCookieFallback)) {
         const QString fixedName = suggestedName.isEmpty()
-            ? QString() : QFileInfo(suggestedName).completeBaseName();
+            ? QString() : QFileInfo(safeBasename(suggestedName)).completeBaseName();
         auto *g = new YtDlpGrabber(id, url, m_downloadDir, fixedName, QString(),
                                    headers, authArgs, /*playlist=*/false, this);
         g->setDirectFile(YtDlpGrabber::detectCookieBrowser());
@@ -376,7 +485,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
             : m_downloadDir;
         const QString fixedName = suggestedName.isEmpty()
             ? QString()
-            : QFileInfo(suggestedName).completeBaseName();
+            : QFileInfo(safeBasename(suggestedName)).completeBaseName();
         const QString fmt = YtDlpGrabber::formatForQuality(siteFormat);
         auto *g = new YtDlpGrabber(id, url, videoDir, fixedName, fmt, headers, authArgs,
                                    playlist, this);
@@ -402,6 +511,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         QString out = savePath;
         if (out.isEmpty())
             out = pathForName(QStringLiteral("mega-download.bin"));
+        QDir().mkpath(QFileInfo(out).absolutePath());
         auto *g = new MegaGrabber(id, url, QFileInfo(out).absolutePath(), m_nam, this);
         m_megaGrabbers.insert(id, g);
         connect(g, &MegaGrabber::progress,     this, &DownloadEngine::taskProgress);
@@ -410,6 +520,40 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
         emit taskAdded(id);
         g->start();
+        return id;
+    }
+
+    // Spotify tracks/albums/playlists: the web stream is Widevine-DRM, so we
+    // resolve public metadata and grab an unencrypted 30s preview (p.scdn.co)
+    // or, when yt-dlp is available, a full YouTube audio match tagged with the
+    // Spotify metadata + album art. See SpotifyGrabber.
+    if (SpotifyGrabber::isSpotifyUrl(url)) {
+        const QString audioDir = m_autoCategorize
+            ? QDir(m_downloadDir).filePath(QStringLiteral("Audio"))
+            : m_downloadDir;
+        QDir().mkpath(audioDir);
+        auto *g = new SpotifyGrabber(id, url, audioDir, m_nam, this);
+        g->setAudioFormat(audioFormat.isEmpty() ? QStringLiteral("mp3") : audioFormat);
+        m_spotifyGrabbers.insert(id, g);
+        connect(g, &SpotifyGrabber::progress,     this, &DownloadEngine::taskProgress);
+        connect(g, &SpotifyGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
+        connect(g, &SpotifyGrabber::finished,     this, &DownloadEngine::taskFinished);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
+        emit taskAdded(id);
+        g->start();
+        return id;
+    }
+
+    // Spotify CDN audio streams (audio-ak.spotifycdn.com/…) are Widevine-DRM
+    // encrypted MP4s — downloading them yields an unplayable file (plays a few
+    // seconds of cleartext header, then silence). Reject with a clear error and
+    // point the user at the page URL, which the grabber above can resolve.
+    if (SpotifyGrabber::isSpotifyCdnUrl(url)) {
+        emit taskAdded(id);
+        emit taskStateChanged(id, DownloadState::Error,
+            QStringLiteral("Spotify streams are Widevine-DRM encrypted and cannot be "
+                           "downloaded. Paste the Spotify track/album/playlist link "
+                           "(open.spotify.com/…) instead."));
         return id;
     }
 
@@ -464,6 +608,8 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
             g = new HlsGrabber(id, url, out, merged, this);
         }
         g->setConcurrency(m_streamConcurrency);
+        g->setCredentialScope(m_providers, url.host());
+        g->setPublicNetworkOnly(publicNetworkOnly);
         m_grabbers.insert(id, g);
         connect(g, &HlsGrabber::progress,     this, &DownloadEngine::taskProgress);
         connect(g, &HlsGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
@@ -492,6 +638,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
     t->setRateLimiter(m_limiter);
     t->setCloudProviders(m_providers);
+    t->setPublicNetworkOnly(publicNetworkOnly);
     // Merge domain-scoped auth into the browser headers; SegmentDownloader replays
     // them via its existing setRawHeader loop, with no coupling to the manager.
     HeaderList merged = mergeAuthHeaders(headers, authHeaders);
@@ -502,9 +649,18 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     wireTask(t);
 
     if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
+    // Create the queue record before probing starts. A crash while this task is
+    // queued or in the probe phase must not make the user's download disappear
+    // from the next startup; credentials themselves are intentionally not stored
+    // in SQLite and are reacquired from the auth manager on resume.
+    if (m_db)
+        m_db->saveTask(*t, t->segments());
     emit taskAdded(id);
     m_pending.append(id);   // honour the concurrency limit instead of starting now
     schedule();
+    if (m_pending.contains(id) && m_licensePlan == QLatin1String("free")
+        && m_requestedMaxConcurrent > m_maxConcurrent)
+        emit freeLimitReached(id);   // queued only because of the Free cap
     return id;
 }
 
@@ -519,12 +675,17 @@ void DownloadEngine::startHeld(int id)
     if (m_tasks.contains(id)) {          // plain HTTP/FTP
         m_pending.append(id);
         schedule();
+        if (m_pending.contains(id) && m_licensePlan == QLatin1String("free")
+            && m_requestedMaxConcurrent > m_maxConcurrent)
+            emit freeLimitReached(id);
     } else if (auto *g = m_grabbers.value(id)) {     // HLS
         g->start();
     } else if (auto *m = m_megaGrabbers.value(id)) { // MEGA
         m->start();
     } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp site video
         y->start();
+    } else if (auto *s = m_spotifyGrabbers.value(id)) { // Spotify
+        s->start();
     }
 }
 
@@ -547,6 +708,7 @@ void DownloadEngine::cancelHeld(int id)
     if (auto *g = m_grabbers.take(id))    g->deleteLater();
     if (auto *m = m_megaGrabbers.take(id)) m->deleteLater();
     if (auto *y = m_siteVideos.take(id))  y->deleteLater();
+    if (auto *s = m_spotifyGrabbers.take(id)) s->deleteLater();
     m_playlistIds.remove(id);
 }
 
@@ -557,17 +719,19 @@ void DownloadEngine::setSaveLocation(int id, const QString &folder, const QStrin
         return;
     QDir().mkpath(f);
     if (auto *t = m_tasks.value(id)) {               // HTTP/FTP: full path
-        const QString name = fileName.trimmed().isEmpty()
+        const QString name = safeBasename(fileName).isEmpty()
             ? QFileInfo(t->savePath()).fileName() : fileName.trimmed();
-        t->setSavePath(QDir(f).filePath(name));
+        t->setSavePath(QDir(f).filePath(safeBasename(name)));
     } else if (auto *g = m_grabbers.value(id)) {     // HLS: full path
-        const QString name = fileName.trimmed().isEmpty()
+        const QString name = safeBasename(fileName).isEmpty()
             ? QFileInfo(g->savePath()).fileName() : fileName.trimmed();
-        g->setSavePath(QDir(f).filePath(name));
+        g->setSavePath(QDir(f).filePath(safeBasename(name)));
     } else if (auto *m = m_megaGrabbers.value(id)) { // MEGA: just the dir (files are named internally)
         Q_UNUSED(m);  // MegaGrabber names its own output; ignore folder override for now
     } else if (auto *y = m_siteVideos.value(id)) {   // yt-dlp: redirect the output dir
         y->setOutputDir(f);
+    } else if (auto *s = m_spotifyGrabbers.value(id)) { // Spotify: redirect the output dir
+        s->setOutputDir(f);
     }
 }
 
@@ -636,6 +800,18 @@ qint64 DownloadEngine::speedLimit() const
     return m_limiter ? m_limiter->limit() : 0;
 }
 
+void DownloadEngine::setTaskSpeedLimit(int id, qint64 bytesPerSec)
+{
+    if (DownloadTask *t = m_tasks.value(id))
+        t->setSpeedLimit(bytesPerSec);
+}
+
+qint64 DownloadEngine::taskSpeedLimit(int id) const
+{
+    DownloadTask *t = m_tasks.value(id);
+    return t ? t->speedLimit() : 0;
+}
+
 void DownloadEngine::setTorrentSpeedLimits(int downloadBytesPerSec, int uploadBytesPerSec)
 {
     m_torrentDlLimit = qMax(0, downloadBytesPerSec);
@@ -691,16 +867,33 @@ void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &sa
             return;
         }
         QDir().mkpath(saveDir);
-        const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-                          + QStringLiteral("/nexa-%1.torrent").arg(id);
+        const QString tmp = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                           .filePath(QStringLiteral("nexa-%1.torrent")
+                                     .arg(QUuid::createUuid().toString(QUuid::Id128)));
         QFile f(tmp);
         if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             emit taskStateChanged(id, DownloadState::Error, QStringLiteral("cannot write temp .torrent"));
             m_torrentIds.remove(id);
             return;
         }
-        f.write(data);
+        if (f.write(data) != data.size()) {
+            f.close();
+            QFile::remove(tmp);
+            emit taskStateChanged(id, DownloadState::Error,
+                                  QStringLiteral("cannot write temporary .torrent"));
+            m_torrentIds.remove(id);
+            return;
+        }
+        if (!f.flush()) {
+            f.close();
+            QFile::remove(tmp);
+            emit taskStateChanged(id, DownloadState::Error,
+                                  QStringLiteral("cannot flush temporary .torrent"));
+            m_torrentIds.remove(id);
+            return;
+        }
         f.close();
+        QFile::setPermissions(tmp, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
         if (!m_torrents) {                         // session torn down meanwhile
             m_torrentIds.remove(id);
             return;
@@ -716,6 +909,7 @@ QString DownloadEngine::nameOf(int id) const
     if (auto *g = m_grabbers.value(id)) return g->fileName();
     if (auto *m = m_megaGrabbers.value(id)) return m->fileName();
     if (auto *y = m_siteVideos.value(id)) return y->fileName();
+    if (auto *s = m_spotifyGrabbers.value(id)) return s->fileName();
     if (m_torrents && m_torrents->has(id)) return m_torrents->nameOf(id);
     return QStringLiteral("download");
 }
@@ -727,6 +921,7 @@ DownloadState DownloadEngine::stateOf(int id) const
     if (auto *g = m_grabbers.value(id)) return g->state();
     if (auto *m = m_megaGrabbers.value(id)) return m->state();
     if (auto *y = m_siteVideos.value(id)) return y->state();
+    if (auto *s = m_spotifyGrabbers.value(id)) return s->state();
     if (m_torrents && m_torrents->has(id)) return m_torrents->stateOf(id);
     return DownloadState::Queued;
 }
@@ -738,6 +933,7 @@ QString DownloadEngine::hostOf(int id) const
     else if (auto *g = m_grabbers.value(id)) u = g->url();
     else if (auto *m = m_megaGrabbers.value(id)) u = m->url();
     else if (auto *y = m_siteVideos.value(id)) u = y->url();
+    else if (auto *s = m_spotifyGrabbers.value(id)) u = s->url();
     else if (m_torrents && m_torrents->has(id)) return QStringLiteral("peer swarm");
     const QString h = u.host();
     return h.isEmpty() ? QStringLiteral("local file") : h;
@@ -749,6 +945,7 @@ QString DownloadEngine::savePathOf(int id) const
     if (auto *g = m_grabbers.value(id)) return g->savePath();
     if (auto *m = m_megaGrabbers.value(id)) return m->savePath();
     if (auto *y = m_siteVideos.value(id)) return y->savePath();
+    if (auto *s = m_spotifyGrabbers.value(id)) return s->savePath();
     return QString();
 }
 
@@ -758,6 +955,7 @@ QString DownloadEngine::urlOf(int id) const
     if (auto *g = m_grabbers.value(id)) return g->url().toString();
     if (auto *m = m_megaGrabbers.value(id)) return m->url().toString();
     if (auto *y = m_siteVideos.value(id)) return y->url().toString();
+    if (auto *s = m_spotifyGrabbers.value(id)) return s->url().toString();
     return QString();   // torrents have no single source URL
 }
 
@@ -770,6 +968,7 @@ bool DownloadEngine::isResumable(int id) const
     // scratch (see HlsGrabber / MegaGrabber). Be honest: No.
     if (m_grabbers.contains(id)) return false;
     if (m_megaGrabbers.contains(id)) return false;
+    if (m_spotifyGrabbers.contains(id)) return false;
     // Torrents (libtorrent keeps the piece bitfield) and yt-dlp grabs (--continue
     // partial files / skip already-saved playlist items) resume. Yes.
     return true;
@@ -841,7 +1040,7 @@ void DownloadEngine::reorderQueue(const QList<int> &idsInDisplayOrder)
 bool DownloadEngine::allTerminal() const
 {
     if (m_tasks.isEmpty() && m_grabbers.isEmpty() && m_megaGrabbers.isEmpty() &&
-        m_siteVideos.isEmpty() && m_torrentIds.isEmpty())
+        m_siteVideos.isEmpty() && m_spotifyGrabbers.isEmpty() && m_torrentIds.isEmpty())
         return false;
     auto terminal = [](DownloadState s) {
         return s == DownloadState::Completed || s == DownloadState::Error;
@@ -854,6 +1053,8 @@ bool DownloadEngine::allTerminal() const
         if (!terminal(m->state())) return false;
     for (auto *y : m_siteVideos)
         if (!terminal(y->state())) return false;
+    for (auto *s : m_spotifyGrabbers)
+        if (!terminal(s->state())) return false;
     for (int id : m_torrentIds)
         if (!terminal(m_torrents->stateOf(id))) return false;
     return true;
@@ -871,6 +1072,8 @@ void DownloadEngine::pause(int id)
         m->cancel();
     } else if (auto *y = m_siteVideos.value(id)) {
         y->cancel();
+    } else if (auto *s = m_spotifyGrabbers.value(id)) {
+        s->cancel();
     } else if (m_torrents && m_torrentIds.contains(id)) {
         m_torrents->pause(id);
     }
@@ -886,6 +1089,8 @@ void DownloadEngine::resume(int id)
         g->start();        // streams restart from scratch (no partial resume)
     } else if (auto *m = m_megaGrabbers.value(id)) {
         m->start();        // mega downloads restart from scratch too
+    } else if (auto *s = m_spotifyGrabbers.value(id)) {
+        s->start();        // spotify grabs restart from scratch too
     } else if (auto *y = m_siteVideos.value(id)) {
         y->start();        // yt-dlp resumes its .part files
     } else if (m_torrents && m_torrentIds.contains(id)) {
@@ -928,6 +1133,16 @@ void DownloadEngine::remove(int id, bool deleteFile)
         m->cancel();
         m->deleteLater();
         if (deleteFile && !path.isEmpty())
+            QFile::remove(path);
+        emit taskRemoved(id);
+        return;
+    }
+
+    if (auto *s = m_spotifyGrabbers.take(id)) {
+        const QString path = s->savePath();
+        s->cancel();
+        s->deleteLater();
+        if (deleteFile && !path.isEmpty() && QFileInfo(path).isFile())
             QFile::remove(path);
         emit taskRemoved(id);
         return;
@@ -986,6 +1201,19 @@ void DownloadEngine::loadPersisted()
         wireTask(t);
         emit taskAdded(rec.id);
     }
+    // Scheduled jobs come back too (a job whose time passed while Nexa was
+    // closed starts right away). Headers weren't persisted, so these run without
+    // the original browser cookies.
+    const QVector<ScheduledRecord> jobs = m_db->loadScheduled();
+    for (const ScheduledRecord &rec : jobs) {
+        const QUrl url(rec.url);
+        if (!url.isValid() || m_scheduled.contains(rec.id)) {
+            m_db->removeScheduled(rec.id);
+            continue;
+        }
+        armScheduled(rec.id, url, QDateTime::fromMSecsSinceEpoch(rec.startAtMs), {}, rec.name);
+        emit scheduledAdded(rec.id);
+    }
 }
 
 void DownloadEngine::resumeUnfinished()
@@ -1010,7 +1238,7 @@ QStringList DownloadEngine::expandPattern(const QString &token)
     const int a = aStr.toInt();
     const int b = m.captured(2).toInt();
     const int width = aStr.length();   // preserve zero-padding of the first bound
-    if (a > b || (b - a) > 100000)     // sanity cap
+    if (a > b || (b - a) > 10000)      // bound task expansion from untrusted batches
         return {token};
 
     QStringList out;
@@ -1039,11 +1267,14 @@ static bool isAllowedRemoteScheme(const QUrl &url)
 
 QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &headers)
 {
+    constexpr int kMaxBatchItems = 10000;
     QList<int> ids;
     static const QRegularExpression ws(QStringLiteral("\\s+"));
     const QStringList tokens = text.split(ws, Qt::SkipEmptyParts);
     for (const QString &token : tokens) {
         for (const QString &expanded : expandPattern(token)) {
+            if (ids.size() >= kMaxBatchItems)
+                return ids;
             const QUrl url = QUrl::fromUserInput(expanded);
             if (!url.isValid() || !isAllowedRemoteScheme(url))
                 continue;   // drop file:// and any non-network token per-item
@@ -1076,11 +1307,14 @@ int DownloadEngine::addRemoteDownload(const QUrl &url)
 
 QList<int> DownloadEngine::addRemoteBatch(const QString &text)
 {
+    constexpr int kMaxBatchItems = 10000;
     QList<int> ids;
     static const QRegularExpression whitespace(QStringLiteral("\\s+"));
     const QStringList tokens = text.split(whitespace, Qt::SkipEmptyParts);
     for (const QString &token : tokens) {
         for (const QString &expanded : expandPattern(token)) {
+            if (ids.size() >= kMaxBatchItems)
+                return ids;
             const int id = addRemoteDownload(QUrl::fromUserInput(expanded));
             if (id >= 0)
                 ids.append(id);
@@ -1090,27 +1324,84 @@ QList<int> DownloadEngine::addRemoteBatch(const QString &text)
 }
 
 int DownloadEngine::scheduleDownload(const QUrl &url, const QDateTime &when,
-                                     const HeaderList &headers)
+                                     const HeaderList &headers, const QString &name)
 {
+    if (!url.isValid() || !isAllowedRemoteScheme(url))
+        return -1;
     const qint64 ms = QDateTime::currentDateTime().msecsTo(when);
     if (ms <= 0)
-        return addDownload(url, QString(), headers);   // time already passed
+        return addDownload(url, QString(), headers, name, QString(), false, /*userInitiated=*/true);
 
-    // Reserve an id NOW so the caller gets a real task id (not seconds-until-start)
-    // and the download can be tracked/cancelled before it fires.
-    const int id = m_db->nextId();
-    const int delay = int(qMin<qint64>(ms, INT_MAX));
+    // Reserve an id NOW so the job can be listed/cancelled before it fires.
+    static int fallbackId = 1000000;
+    const int id = m_db ? m_db->nextId() : fallbackId++;
+    if (m_db)
+        m_db->saveScheduled(id, url.toString(), when.toMSecsSinceEpoch(), name);
+    armScheduled(id, url, when, headers, name);
+    emit scheduledAdded(id);
+    return id;
+}
+
+void DownloadEngine::armScheduled(int id, const QUrl &url, const QDateTime &when,
+                                  const HeaderList &headers, const QString &name)
+{
+    m_scheduled.insert(id, ScheduledJob{id, url, when, name});
     auto *timer = new QTimer(this);
     timer->setSingleShot(true);
-    timer->setInterval(delay);
-    connect(timer, &QTimer::timeout, this, [this, id, url, headers, timer]() {
+    // QTimer tops out at ~24 days; wake at most daily and re-check the clock,
+    // which also copes with suspend/resume and clock changes.
+    static constexpr qint64 kMaxWaitMs = 24LL * 3600 * 1000;
+    const qint64 ms = qMax<qint64>(0, QDateTime::currentDateTime().msecsTo(when));
+    timer->setInterval(int(qMin(ms, kMaxWaitMs)));
+    connect(timer, &QTimer::timeout, this, [this, id, url, headers, name, timer]() {
+        if (!m_scheduled.contains(id)) {
+            // Cancelled while this timeout was already queued — drop it silently.
+            timer->deleteLater();
+            m_scheduledTimers.remove(id);
+            return;
+        }
+        const qint64 left = QDateTime::currentDateTime().msecsTo(m_scheduled.value(id).when);
+        if (left > 1000) {
+            timer->start(int(qMin(left, kMaxWaitMs)));
+            return;
+        }
         timer->deleteLater();
         m_scheduledTimers.remove(id);
-        addDownload(url, QString(), headers);
+        m_scheduled.remove(id);
+        if (m_db)
+            m_db->removeScheduled(id);
+        emit scheduledRemoved(id);
+        addDownload(url, QString(), headers, name, QString(), false, /*userInitiated=*/true);
     });
     m_scheduledTimers.insert(id, timer);
     timer->start();
-    return id;
+}
+
+bool DownloadEngine::cancelScheduled(int id)
+{
+    QTimer *timer = m_scheduledTimers.take(id);
+    if (!timer && !m_scheduled.contains(id))
+        return false;
+    if (timer) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    m_scheduled.remove(id);
+    if (m_db)
+        m_db->removeScheduled(id);
+    emit scheduledRemoved(id);
+    return true;
+}
+
+QVector<DownloadEngine::ScheduledJob> DownloadEngine::scheduledJobs() const
+{
+    QVector<ScheduledJob> jobs;
+    jobs.reserve(m_scheduled.size());
+    for (const ScheduledJob &j : m_scheduled)
+        jobs.append(j);
+    std::sort(jobs.begin(), jobs.end(),
+              [](const ScheduledJob &a, const ScheduledJob &b) { return a.when < b.when; });
+    return jobs;
 }
 
 bool DownloadEngine::aiAvailable() const

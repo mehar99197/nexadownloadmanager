@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build \
-            qt6-base-dev libqt6sql6-sqlite \
+            qt6-base-dev libqt6sql6-sqlite qt6-tools-dev qt6-tools-dev-tools \
             libtorrent-rasterbar-dev \
             patchelf file \
             ffmpeg yt-dlp aria2 \
@@ -487,6 +487,39 @@ jobs:
       - name: Generate NSIS installer script
         shell: pwsh
         run: |
+          # Browser-extension auto-install: one config file drives the app, the
+          # .deb and this installer. Chrome-family browsers read an "external
+          # extension" registry entry and install from the store on next start;
+          # Firefox reads an Extensions.Install policy pointing at a signed .xpi.
+          $ids = @{}
+          Get-Content packaging/extension-ids.env | ForEach-Object {
+            if ($_ -match '^\s*([A-Z_]+)\s*=\s*(.*?)\s*$') { $ids[$Matches[1]] = $Matches[2].Trim('"', "'") }
+          }
+          $chromeId  = $ids['NEXA_CHROME_STORE_ID']
+          $edgeId    = $ids['NEXA_EDGE_STORE_ID']
+          $xpiUrl    = $ids['NEXA_FIREFOX_XPI_URL']
+          $chromeUpd = 'https://clients2.google.com/service/update2/crx'
+          $edgeUpd   = 'https://edge.microsoft.com/extensionwebstorebase/v1/crx'
+          $extensionInstallLines = @()
+          $extensionRemoveLines  = @()
+          if ($chromeId -match '^[a-p]{32}$') {
+            foreach ($vendor in @('Google\Chrome', 'Chromium', 'BraveSoftware\Brave-Browser', 'Vivaldi')) {
+              $extensionInstallLines += "  WriteRegStr HKLM `"Software\$vendor\Extensions\$chromeId`" `"update_url`" `"$chromeUpd`""
+              $extensionRemoveLines  += "  DeleteRegKey HKLM `"Software\$vendor\Extensions\$chromeId`""
+            }
+          }
+          if ($edgeId -match '^[a-p]{32}$') {
+            $extensionInstallLines += "  WriteRegStr HKLM `"Software\Microsoft\Edge\Extensions\$edgeId`" `"update_url`" `"$edgeUpd`""
+            $extensionRemoveLines  += "  DeleteRegKey HKLM `"Software\Microsoft\Edge\Extensions\$edgeId`""
+          } elseif ($chromeId -match '^[a-p]{32}$') {
+            $extensionInstallLines += "  WriteRegStr HKLM `"Software\Microsoft\Edge\Extensions\$chromeId`" `"update_url`" `"$chromeUpd`""
+            $extensionRemoveLines  += "  DeleteRegKey HKLM `"Software\Microsoft\Edge\Extensions\$chromeId`""
+          }
+          if ($xpiUrl -like 'https://*') {
+            $extensionInstallLines += "  WriteRegStr HKLM `"Software\Policies\Mozilla\Firefox\Extensions\Install`" `"1`" `"$xpiUrl`""
+            $extensionRemoveLines  += "  DeleteRegValue HKLM `"Software\Policies\Mozilla\Firefox\Extensions\Install`" `"1`""
+          }
+          Write-Host "Extension auto-install lines: $($extensionInstallLines.Count)"
           $lines = @(
             '!include "MUI2.nsh"',
             'Name "Nexa Download Manager"',
@@ -539,6 +572,10 @@ jobs:
             '  WriteRegStr HKLM "Software\Chromium\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
             '  WriteRegStr HKLM "Software\Microsoft\Edge\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
             '  WriteRegStr HKLM "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.nexa.host" "" "$INSTDIR\com.nexa.host.json"',
+            '  ; Hand every Chromium browser and Firefox the extension itself, from its',
+            '  ; store ("external extension" entries / a Firefox install policy). The ids',
+            '  ; come from packaging/extension-ids.env; an empty id emits nothing.'
+          ) + $extensionInstallLines + @(
             '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "NexaDL" "$\"$INSTDIR\nexa.exe$\" --background"',
             '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "DisplayName" "Nexa Download Manager"',
             '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""',
@@ -558,7 +595,8 @@ jobs:
             '  DeleteRegKey HKLM "Software\Google\Chrome\NativeMessagingHosts\com.nexa.host"',
             '  DeleteRegKey HKLM "Software\Chromium\NativeMessagingHosts\com.nexa.host"',
             '  DeleteRegKey HKLM "Software\Microsoft\Edge\NativeMessagingHosts\com.nexa.host"',
-            '  DeleteRegKey HKLM "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.nexa.host"',
+            '  DeleteRegKey HKLM "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.nexa.host"'
+          ) + $extensionRemoveLines + @(
             '  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\NexaDL"',
             '  RMDir /r "$INSTDIR"',
             '  Delete "$DESKTOP\Nexa Download Manager.lnk"',
@@ -613,6 +651,74 @@ jobs:
   # If the build weren't self-contained, ldd would print "not found" and we fail.
   # glibc + libstdc++/libgcc + the GL stack come from the base image by design —
   # those are the libraries you cannot relocate.
+  # ── macOS CI ───────────────────────────────────────────────────────────────
+  # Produces an UNSIGNED .app/.dmg. Gatekeeper will refuse to open it on another
+  # Mac until it is signed and notarised with an Apple Developer ID, which needs
+  # credentials this workflow deliberately does not hold. Treat this artifact as
+  # a developer/preview build, not a public download.
+  macos:
+    name: macOS app bundle (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          brew update
+          brew install qt@6 libtorrent-rasterbar ninja openssl@3 create-dmg || true
+          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
+
+      - name: Configure & build
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix openssl@3)"
+          cmake --build build
+
+      - name: Smoke test
+        run: |
+          test -d build/nexa.app && echo "bundle OK"
+          test -x build/nexa-host && echo "host OK"
+          ./build/nexa.app/Contents/MacOS/nexa --help 2>/dev/null || true
+
+      - name: Run unit tests
+        run: |
+          cmake -B build-tests -G Ninja -DNEXA_BUILD_TESTS=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix openssl@3)"
+          cmake --build build-tests
+          ctest --test-dir build-tests --output-on-failure
+
+      - name: Bundle Qt frameworks + tools
+        run: |
+          set -e
+          # macdeployqt copies the Qt frameworks and plugins into the .app.
+          "$(brew --prefix qt@6)/bin/macdeployqt" build/nexa.app -verbose=1
+          # The native-messaging host lives inside the bundle so one drag installs both.
+          cp build/nexa-host build/nexa.app/Contents/MacOS/nexa-host
+          # yt-dlp + ffmpeg make the video features work without a Homebrew install.
+          curl -sL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" \
+            -o build/nexa.app/Contents/MacOS/yt-dlp
+          chmod +x build/nexa.app/Contents/MacOS/yt-dlp
+          echo "=== bundle contents ==="; ls -la build/nexa.app/Contents/MacOS/
+
+      - name: Create .dmg
+        run: |
+          set -e
+          mkdir -p dmg-staging
+          cp -R build/nexa.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "Nexa Download Manager" -srcfolder dmg-staging \
+            -ov -format UDZO Nexa-macOS.dmg
+          echo "UNSIGNED build - Gatekeeper will block it until signed/notarised." \
+            > Nexa-macOS-README.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexa-macos-dmg-unsigned
+          path: |
+            Nexa-macOS.dmg
+            Nexa-macOS-README.txt
+
   verify-offline:
     name: Verify .deb is self-contained (clean container)
     needs: linux
@@ -670,6 +776,22 @@ jobs:
   quality:
     name: Tests, audits, and extension packages
     runs-on: ubuntu-latest
+    # A real MySQL so the backend integration tests actually run here. Without
+    # it they skip themselves, which would quietly hide regressions in the SQL
+    # (transactions, seat caps, webhook idempotency, timestamp handling).
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_root_password_1234
+          MYSQL_DATABASE: ndm_test
+          MYSQL_USER: ndm
+          MYSQL_PASSWORD: test_password_at_least_16_chars
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_password_1234"
+          --health-interval=10s --health-timeout=5s --health-retries=12
     steps:
       - uses: actions/checkout@v4
       - name: Install C++ dependencies
@@ -684,22 +806,77 @@ jobs:
           ctest --test-dir build-quality --output-on-failure
       - name: Backend tests, syntax, and production dependency audit
         working-directory: ndm-website/backend
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: "3306"
+          MYSQL_USER: ndm
+          MYSQL_PASS: test_password_at_least_16_chars
+          MYSQL_DB: ndm_test
         run: |
           npm ci
           npm test
+          # The integration suites skip themselves when no database is reachable,
+          # which would make a broken service look like a pass. Prove they ran.
+          npm test 2>&1 | tee /tmp/backend-tests.log
+          if grep -qE "^. skipped [1-9]" /tmp/backend-tests.log; then
+            echo "::error::backend integration tests were skipped - the MySQL service is not reachable"
+            exit 1
+          fi
           find src test -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           npm audit --omit=dev --audit-level=high
-      - name: Frontend and admin builds and audits
+      - name: Frontend and admin builds, tests, lint and audits
         run: |
           npm --prefix ndm-website/frontend ci
+          npm --prefix ndm-website/frontend run lint
+          npm --prefix ndm-website/frontend test
           npm --prefix ndm-website/frontend run build
           npm --prefix ndm-website/frontend audit --omit=dev --audit-level=high
           npm --prefix ndm-website/admin ci
+          npm --prefix ndm-website/admin run lint
           npm --prefix ndm-website/admin run build
           npm --prefix ndm-website/admin audit --omit=dev --audit-level=high
+
+      - name: End-to-end (built site, stubbed API)
+        working-directory: ndm-website/frontend
+        run: |
+          # Uses the runner's pre-installed Google Chrome (channel: chrome), so
+          # no ~300 MB browser download. The suite stubs every API call, so it
+          # needs neither the backend nor a database.
+          npx playwright test --reporter=line
+
+      - name: Upload e2e traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: ndm-website/frontend/test-results
+          retention-days: 7
+
+      - name: Static analysis (C++)
+        run: |
+          sudo apt-get install -y cppcheck
+          cppcheck --version
+          # Gates on the checks that find real defects (warning + portability).
+          # "performance" is left OUT of the gate on purpose: its returnByReference
+          # advice is wrong for Qt's implicitly-shared types (QString/QByteArray),
+          # so it would fail the build for idiomatic code. Suppressions cover Qt
+          # macros cppcheck cannot parse and local aggregate structs that are
+          # brace-initialised at every use site.
+          cppcheck --quiet --error-exitcode=1 \
+            --enable=warning,portability \
+            --inline-suppr --library=qt \
+            --suppress=missingIncludeSystem \
+            --suppress=missingInclude \
+            --suppress=unusedFunction \
+            --suppress=unknownMacro \
+            --suppress=uninitMemberVarNoCtor \
+            -DQT_VERSION=0x060500 '-DQT_VERSION_CHECK(a,b,c)=0x060400' \
+            --std=c++17 -I src \
+            src native-host
       - name: Package and validate extensions
         run: |
           ./extension-chromium/package.sh
           ./extension-firefox/build.sh
           unzip -t dist/nexa-chrome.zip
           unzip -t dist/nexa-firefox.zip
+          node tests/ExtensionProviderConfigTest.js && node tests/ExtensionSettingsTest.js

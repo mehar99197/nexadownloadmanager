@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import api, { unwrap } from '../api/client';
+import api from '../api/client';
+import { hasPendingTrial, startTrial } from '../api/trial';
+import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Spinner from '../components/Spinner';
 
 export default function VerifyEmail() {
+  usePageMeta({ title: 'Verify email', description: 'Confirm your Nexa Download Manager account email address.' });
+
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token') || '';
   const [status, setStatus] = useState('pending');
+  const trialPending = hasPendingTrial();
 
   useEffect(() => {
     if (!token) {
@@ -21,6 +26,15 @@ export default function VerifyEmail() {
       try {
         await api.post('/auth/verify-email', { token });
         if (!cancelled) setStatus('success');
+        // A registration that asked for the trial: try now (works if a session
+        // exists), otherwise Dashboard redeems the pending flag after sign-in.
+        if (hasPendingTrial()) {
+          try {
+            await startTrial();
+          } catch {
+            // not signed in yet — ignored
+          }
+        }
       } catch {
         if (!cancelled) setStatus('error');
       }
@@ -71,10 +85,12 @@ export default function VerifyEmail() {
               </div>
               <h1 className="text-2xl font-bold text-white">Email verified</h1>
               <p className="mt-3 text-zinc-400">
-                Your email has been confirmed. You can now sign in to your account.
+                {trialPending
+                  ? 'Your email is confirmed. Sign in and your 7-day Pro trial starts automatically.'
+                  : 'Your email has been confirmed. You can now sign in to your account.'}
               </p>
               <div className="mt-6">
-                <Link to="/login" className="btn btn-primary">
+                <Link to="/login?next=/dashboard" className="btn btn-primary">
                   Sign in
                 </Link>
               </div>

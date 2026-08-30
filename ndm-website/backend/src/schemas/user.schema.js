@@ -20,4 +20,16 @@ const updateProfileSchema = {
     }),
 };
 
-module.exports = { updateProfileSchema };
+// Self-service account deletion is irreversible, so it takes the password AND
+// the literal word DELETE — one proves it is the owner, the other that it is
+// deliberate. Both are checked again on the server, never only in the form.
+const deleteAccountSchema = {
+  body: z
+    .object({
+      password: z.string().min(1),
+      confirm: z.string().trim().refine((v) => v === 'DELETE', { message: 'Type DELETE to confirm' }),
+    })
+    .strict(),
+};
+
+module.exports = { updateProfileSchema, deleteAccountSchema };

@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QSet>
 #include <QPointer>
+#include <QVector>
 #include "core/Types.h"
 
 class QTableWidget;
@@ -12,13 +13,20 @@ class QLineEdit;
 class QPushButton;
 class QSystemTrayIcon;
 class QCloseEvent;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
+class QMimeData;
 
 namespace nexa {
 
 class DownloadEngine;
+class AdService;
+class AdBanner;
 class DownloadDetailsDialog;
 class ClipboardMonitor;
 class UpdateChecker;
+class VirusScanner;
 
 // Main application window: a header + action bar + a table of downloads with
 // live progress/speed and a summary footer, driven entirely by DownloadEngine
@@ -38,9 +46,26 @@ public slots:
     // Bring the window to the foreground (used by the single-instance guard and
     // the IPC "show" command). Safe to call when already visible.
     void showAndRaise();
+    // The extension harvested a page's links: open the link-grabber dialog.
+    void showLinkGrabber(const QString &pageUrl, const QString &pageTitle,
+                         const QVector<nexa::LinkItem> &links, const nexa::HeaderList &headers);
+    // Free plan hit its concurrency cap while adding `id`: nudge (once per session).
+    void onFreeLimitReached(int id);
+    // First-launch setup (folder, extension, test download); also Tools → Setup guide…
+    void showSetupGuide();
+    void promptSmartAdd();           // natural-language "Smart add" (AI)
+    void importDownloads();          // read an IDM / JDownloader / link-list export
+    void promptSpeedLimit(int id);   // per-download speed cap
+
+signals:
+    // Settings were saved; main() re-applies the remote-dashboard configuration.
+    void dashboardSettingsChanged();
 
 protected:
     void closeEvent(QCloseEvent *event) override;   // minimise to tray if present
+    void dragEnterEvent(QDragEnterEvent *event) override;   // links dropped on the window
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private slots:
     void promptAddUrl();
@@ -51,7 +76,14 @@ private slots:
     void openDownloadFolder();
     void onSiteLogins();             // register a cookies.txt for an auth-gated site
     void onSettings();               // open the Preferences dialog
+    void onThemes();                 // open the Themes gallery (live preview)
+    void refreshTheme();             // redraw the parts Nexa paints itself
     void onCheckUpdates();           // manual "Check for updates…"
+    void onExportLogs();             // gear menu: copy the troubleshooting log somewhere
+    void togglePauseSelected();      // Space: pause a running / resume a paused selection
+    void offerInstallUpdate(int id); // the update installer finished downloading
+    void showScheduled();            // list / cancel scheduled downloads
+    void maybeRunWhenDone();         // post-download action once the queue drains
     void setClipboardMonitoring(bool on);   // toggle IDM-style link capture (persisted)
     void onClipboardUrl(const QUrl &url);   // a download-able URL was copied; offer it
     void openDetails(int id);        // open or raise the per-download details plate
@@ -82,7 +114,14 @@ private:
     void setRowStatus(int row, nexa::DownloadState state, const QString &detail);
     void showRowMenu(const QPoint &pos);
     QWidget *buildActionsCell(int id);        // per-row pause/resume + more buttons
+    // Queue URLs / magnets / .torrent paths from a drop or paste. Returns how many
+    // were accepted.
+    int  addDroppedPayload(const QMimeData *mime);
+    static bool payloadLooksDownloadable(const QMimeData *mime);
     void showRowMenuFor(int id, const QPoint &globalPos);   // menu for one task id
+    // Desktop/tray notification (respects the Settings toggle; no-op without a tray).
+    void notifyTray(const QString &title, const QString &body, bool warning = false);
+    void buildMenuBar();             // File / Downloads / View / Tools / Help + shortcuts
 
     DownloadEngine *m_engine;
     QTableWidget   *m_table = nullptr;
@@ -95,6 +134,7 @@ private:
     // Dashboard metric tiles (updated live in updateStats()).
     QLabel *m_metActiveVal = nullptr, *m_metActiveSub = nullptr;
     QLabel *m_metSpeedVal  = nullptr, *m_metSpeedSub  = nullptr;
+    QWidget *m_speedSpark  = nullptr;   // live aggregate-throughput sparkline
     QLabel *m_metDoneVal   = nullptr, *m_metDoneSub   = nullptr;
     QLabel *m_metStoreVal  = nullptr, *m_metStoreSub  = nullptr;
 
@@ -103,6 +143,7 @@ private:
     // Count of downloads that completed during THIS session (metrics "+N").
     int m_completedThisSession = 0;
     QSet<int> m_countedDone;   // ids already counted, so a re-emit doesn't double-count
+    QSet<int> m_errorNotified; // ids whose current error was already announced
     QHash<int, int> m_idToRow;   // task id -> table row
     QHash<int, QString> m_stateDetail;  // last state detail per id (survives sort/rebuild)
 
@@ -114,7 +155,15 @@ private:
     QPointer<QWidget> m_captureToast;                 // at most one toast on screen
     QPointer<QWidget> m_settingsDlg;                  // single non-modal Settings window
     UpdateChecker    *m_updates = nullptr;            // version-check (not auto-install)
+    AdService        *m_ads = nullptr;                // Free-plan promos (no-op when paid)
+    AdBanner         *m_adBanner = nullptr;           // the strip above the download list
+    VirusScanner     *m_scanner = nullptr;            // optional post-download scan
     bool              m_manualUpdateCheck = false;    // menu check vs silent startup check
+    bool              m_upgradeNudged = false;         // free-cap prompt shown this session
+    int               m_pendingUpdateTask = -1;        // engine task downloading the installer
+    bool              m_whenDoneFired = false;         // post-download action ran for this batch
+    bool              m_shutdownThisSession = false;   // Downloads → "Shut down when done"
+    QString           m_pendingUpdateVersion;
 };
 
 } // namespace nexa

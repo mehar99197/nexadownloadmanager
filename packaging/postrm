@@ -2,6 +2,17 @@
 set -e
 
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -r /usr/share/nexa/extension-ids.env ]; then
+        # The script itself is already gone at this point; undo its writes inline.
+        . /usr/share/nexa/extension-ids.env 2>/dev/null || true
+        for id in "${NEXA_CHROME_STORE_ID:-}" "${NEXA_EDGE_STORE_ID:-}"; do
+            [ -n "$id" ] || continue
+            rm -f "/opt/google/chrome/extensions/$id.json" "/usr/share/google-chrome/extensions/$id.json" \
+                  "/usr/share/chromium/extensions/$id.json" "/usr/share/chromium-browser/extensions/$id.json"
+        done
+        rm -f /etc/brave/policies/managed/nexa-extension.json /etc/vivaldi/policies/managed/nexa-extension.json \
+              /etc/opt/edge/policies/managed/nexa-extension.json
+    fi
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q /usr/share/applications || true
     fi

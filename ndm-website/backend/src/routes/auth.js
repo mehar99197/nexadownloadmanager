@@ -10,6 +10,7 @@ const Subscription = require('../models/Subscription');
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { authLimiter } = require('../middleware/rateLimiter');
+const { requireTurnstile } = require('../middleware/turnstile');
 const { ok, fail } = require('../utils/respond');
 
 const {
@@ -22,21 +23,33 @@ const {
   verifyEmailToken, verifyResetToken, generateRefreshToken, hashRefreshToken,
 } = require('../utils/jwt');
 
-const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/email');
+const { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/email');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 
 const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
 
+const REFRESH_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+// Non-httpOnly marker with the same lifetime as the refresh cookie. It holds no
+// secret — it only tells the site "there may be a session, try /user/me", so a
+// visitor who never signed in does not trigger a 401 + refresh on every load.
+const SESSION_HINT_COOKIE = 'ndm_session';
+
 function refreshCookieOptions() {
   return {
     httpOnly: true, sameSite: 'lax', secure: config.isProd,
-    maxAge: 30 * 24 * 60 * 60 * 1000, path: '/api/auth',
+    maxAge: REFRESH_MAX_AGE, path: '/api/auth',
   };
 }
 
+function setSessionHint(res) {
+  res.cookie(SESSION_HINT_COOKIE, '1', {
+    httpOnly: false, sameSite: 'lax', secure: config.isProd, maxAge: REFRESH_MAX_AGE, path: '/',
+  });
+}
+
 router.post(
-  '/register', authLimiter, validate(registerSchema),
+  '/register', authLimiter, requireTurnstile, validate(registerSchema),
   asyncHandler(async (req, res) => {
     const { name, email, password } = req.body;
     const existing = await User.findByEmail(email);
@@ -74,6 +87,7 @@ router.post(
     const { token: refreshToken, hash } = generateRefreshToken();
     await User.update(user.id, { refreshTokenHash: hash });
     res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+    setSessionHint(res);
 
     return ok(res, {
       token,
@@ -92,6 +106,10 @@ router.post(
     const user = await User.findById(Number(payload.sub));
     if (!user) return fail(res, 'INVALID_TOKEN', 'Verification link is invalid or has expired', 400);
     await User.update(user.id, { emailVerified: true });
+    // Best-effort: a mail failure must never make verification look broken.
+    if (!user.email_verified)
+      await sendWelcomeEmail(user).catch((err) =>
+        console.error('[auth] welcome email failed:', err.message));
     return ok(res, { verified: true });
   })
 );
@@ -107,6 +125,7 @@ router.post(
     const { token: rt, hash: newHash } = generateRefreshToken();
     await User.update(user.id, { refreshTokenHash: newHash });
     res.cookie(REFRESH_COOKIE, rt, refreshCookieOptions());
+    setSessionHint(res);
     return ok(res, { token: signAccessToken(user) });
   })
 );
@@ -121,12 +140,13 @@ router.post(
       if (user) await User.update(user.id, { refreshTokenHash: null });
     }
     res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+    res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
     return ok(res, { loggedOut: true });
   })
 );
 
 router.post(
-  '/forgot-password', authLimiter, validate(forgotPasswordSchema),
+  '/forgot-password', authLimiter, requireTurnstile, validate(forgotPasswordSchema),
   asyncHandler(async (req, res) => {
     const { email } = req.body;
     const user = await User.findByEmail(email);
@@ -150,6 +170,7 @@ router.post(
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(password, BCRYPT_COST),
       refreshTokenHash: null,
+      adminRefreshTokenHash: null,
     });
     return ok(res, { reset: true });
   })
