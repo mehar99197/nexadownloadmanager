@@ -33,7 +33,7 @@ bool writeLicenseKey(const QString &key)
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
     credential.UserName = const_cast<wchar_t *>(L"Nexa");
     credential.CredentialBlobSize = DWORD(key.size() * sizeof(char16_t));
-    credential.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<char16_t *>(key.utf16()));
+    credential.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<ushort *>(key.utf16()));
     return CredWriteW(&credential, 0);
 }
 

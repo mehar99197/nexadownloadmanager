@@ -124,7 +124,7 @@ target_link_libraries(nexa-host PRIVATE
 )
 target_include_directories(nexa-host PRIVATE src)
 
-install(TARGETS nexa nexa-host RUNTIME DESTINATION bin)
+install(TARGETS nexa nexa-host RUNTIME DESTINATION bin BUNDLE DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Desktop integration files (Linux). These are installed relative to the
