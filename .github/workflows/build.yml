@@ -665,14 +665,14 @@ jobs:
       - name: Install toolchain
         run: |
           brew update
-          brew install qt@6 libtorrent-rasterbar ninja openssl@3 create-dmg || true
+          brew install qt@6 libtorrent-rasterbar boost ninja openssl@3 create-dmg || true
           echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
 
       - name: Configure & build
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
           cmake --build build
 
       - name: Smoke test
@@ -684,7 +684,7 @@ jobs:
       - name: Run unit tests
         run: |
           cmake -B build-tests -G Ninja -DNEXA_BUILD_TESTS=ON \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
           cmake --build build-tests
           ctest --test-dir build-tests --output-on-failure
 
