@@ -9,6 +9,7 @@ const STAFF_NAV = [
   { to: '/users', label: 'Users', icon: '◍' },
   { to: '/subscriptions', label: 'Subscriptions', icon: '◆' },
   { to: '/reviews', label: 'Reviews', icon: '★' },
+  { to: '/contact', label: 'Contact inbox', icon: '✉' },
   { to: '/releases', label: 'Releases', icon: '⤓' },
   { to: '/ads', label: 'Ads', icon: '◈' },
   { to: '/activity', label: 'Activity log', icon: '◷' },

@@ -82,6 +82,7 @@ async function reset() {
   await query('SET FOREIGN_KEY_CHECKS = 0');
   for (const table of [
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
+    'contact_replies', 'contact_messages',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',
   ]) {
     await query(`TRUNCATE TABLE ${table}`).catch(() => { /* table may not exist yet */ });

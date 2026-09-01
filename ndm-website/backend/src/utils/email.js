@@ -155,6 +155,42 @@ async function sendContactMessage({ name, email, topic, message, userAgent }) {
 }
 
 /**
+ * An admin's reply to a contact message, sent from the support address to the
+ * visitor. Reply-To points at the support inbox (never the noreply sender) so a
+ * customer answering this email lands back in the queue.
+ *
+ * The original message is quoted underneath so a visitor who wrote weeks ago
+ * knows what this is about.
+ */
+async function sendContactReply({ to, name, topic, replyBody, originalMessage, adminName }) {
+  const greeting = name ? `Hi ${name},` : 'Hello,';
+  const subject = `Re: [Nexa support] ${topic || 'your message'}`;
+  const signature = adminName ? `${adminName} — Nexa Download Manager support` : 'Nexa Download Manager support';
+  const quoted = String(originalMessage || '').trim();
+  const text = [
+    greeting,
+    '',
+    replyBody,
+    '',
+    '—',
+    signature,
+    quoted ? '' : null,
+    quoted ? 'Your original message:' : null,
+    quoted ? quoted.split('\n').map((line) => `> ${line}`).join('\n') : null,
+  ].filter((line) => line !== null).join('\n');
+  const html =
+    `<p>${escapeHtml(greeting)}</p>` +
+    `<p>${escapeHtml(replyBody).replace(/\n/g, '<br>')}</p>` +
+    `<p>—<br>${escapeHtml(signature)}</p>` +
+    (quoted
+      ? `<hr><p style="color:#666"><b>Your original message:</b></p>` +
+        `<blockquote style="color:#666;border-left:3px solid #ddd;margin:0;padding-left:12px">` +
+        `${escapeHtml(quoted).replace(/\n/g, '<br>')}</blockquote>`
+      : '');
+  return send({ to, subject, text, html, replyTo: config.supportReplyTo });
+}
+
+/**
  * Invitation onto a Team licence. The link carries a one-time token; the
  * invitee must sign in with THIS address to accept, so a forwarded email
  * cannot hand the seat to somebody else.
@@ -176,6 +212,7 @@ async function sendTeamInviteEmail({ to, ownerName, token }) {
 module.exports = {
   sendTeamInviteEmail,
   sendContactMessage,
+  sendContactReply,
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendLicenseEmail,

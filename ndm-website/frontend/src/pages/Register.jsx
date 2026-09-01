@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
-import { markPendingTrial, startTrial } from '../api/trial';
+import { markPendingTrial, startTrial, clearPendingTrial } from '../api/trial';
 import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
+import GoogleButton, { googleAuthEnabled } from '../components/GoogleButton';
 
 export default function Register() {
   usePageMeta({
@@ -16,7 +17,7 @@ export default function Register() {
     description: 'Create a free Nexa Download Manager account. Every account gets a 7-day Pro trial — no card needed.',
   });
 
-  const { register, isAuthenticated } = useAuth();
+  const { register, loginWithGoogle, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [searchParams] = useSearchParams();
@@ -29,6 +30,7 @@ export default function Register() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState('');
   const [turnstileToken, setTurnstileToken] = useState(null);
   const [turnstileReset, setTurnstileReset] = useState(0);
@@ -76,6 +78,40 @@ export default function Register() {
     }
   };
 
+  /**
+   * "Continue with Google" from the sign-up page. Unlike password registration,
+   * this returns a live session straight away — so a ?trial=1 sign-up can redeem
+   * its Pro trial here and land on the dashboard instead of the login page.
+   */
+  const handleGoogle = async (credential) => {
+    setError('');
+    setGoogleBusy(true);
+    try {
+      await loginWithGoogle(credential);
+      if (wantsTrial) {
+        markPendingTrial();
+        try {
+          const { started } = await startTrial();
+          if (started) clearPendingTrial();
+        } catch {
+          // Dashboard will pick the pending trial up.
+        }
+      }
+      toast.success(wantsTrial ? 'Account ready — your 7-day Pro trial has started.' : 'Account created — welcome to Nexa!');
+      navigate(next, { replace: true });
+    } catch (err) {
+      setError(
+        err?.response?.data?.error?.message ||
+        err?.message ||
+        'Google sign-in failed. Please try again.'
+      );
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
+  const busy = submitting || googleBusy;
+
   return (
     <Section className="auth-section flex min-h-[70vh] items-center">
       <div className="mx-auto w-full max-w-md">
@@ -89,6 +125,17 @@ export default function Register() {
               ? 'Your Pro trial starts the moment you sign in. No card, no auto-charge.'
               : 'Start downloading faster — it’s free.'}
           </p>
+
+          {googleAuthEnabled() && (
+            <div className="mt-7">
+              <GoogleButton onCredential={handleGoogle} onError={setError} disabled={busy} text="signup_with" />
+              <div className="mt-6 flex items-center gap-3" aria-hidden="true">
+                <span className="h-px flex-1 bg-white/10" />
+                <span className="text-[0.7rem] font-bold uppercase tracking-[0.14em] text-slate-500">or</span>
+                <span className="h-px flex-1 bg-white/10" />
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-4" noValidate>
             <Input
@@ -128,8 +175,8 @@ export default function Register() {
 
             <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
 
-            <Button type="submit" className="w-full" disabled={submitting || (turnstileEnabled() && !turnstileToken)}>
-              {submitting ? 'Creating account…' : wantsTrial ? 'Create account & start trial' : 'Create account'}
+            <Button type="submit" className="w-full" disabled={busy || (turnstileEnabled() && !turnstileToken)}>
+              {submitting ? 'Creating account…' : googleBusy ? 'Signing in with Google…' : wantsTrial ? 'Create account & start trial' : 'Create account'}
             </Button>
           </form>
 

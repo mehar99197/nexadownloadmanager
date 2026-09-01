@@ -50,22 +50,48 @@ async function addIndexIfMissing(table, definition) {
   }
 }
 
+// A UNIQUE index can also fail on existing duplicate rows (ER_DUP_ENTRY), which
+// must not be swallowed silently the way a re-run (ER_DUP_KEYNAME) is.
+async function addUniqueIndexIfMissing(table, definition) {
+  try {
+    await execute(`ALTER TABLE ${table} ADD UNIQUE INDEX ${definition}`);
+  } catch (err) {
+    if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+  }
+}
+
+// Drop a NOT NULL constraint once, and only when it is still there. Checking
+// IS_NULLABLE first keeps a boot against an up-to-date database free of the
+// table rebuild that MODIFY COLUMN would otherwise trigger every time.
+async function ensureColumnNullable(table, column, definition) {
+  const rows = await query(
+    `SELECT IS_NULLABLE FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [table, column]
+  );
+  if (!rows.length || String(rows[0].IS_NULLABLE).toUpperCase() === 'YES') return;
+  await execute(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
+}
+
 async function initSchema() {
   await execute(`
     CREATE TABLE IF NOT EXISTS users (
       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
       email VARCHAR(255) NOT NULL UNIQUE,
-      password_hash VARCHAR(255) NOT NULL,
+      password_hash VARCHAR(255) NULL DEFAULT NULL,
       role ENUM('user', 'admin', 'root') NOT NULL DEFAULT 'user',
       email_verified TINYINT(1) NOT NULL DEFAULT 0,
       banned TINYINT(1) NOT NULL DEFAULT 0,
+      google_id VARCHAR(64) NULL DEFAULT NULL,
+      avatar_url VARCHAR(500) NULL DEFAULT NULL,
       refresh_token_hash VARCHAR(255) DEFAULT NULL,
       admin_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL,
       root_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL,
       trial_used TINYINT(1) NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_users_google_id (google_id),
       INDEX idx_email (email),
       INDEX idx_role (role),
       INDEX idx_refresh_token (refresh_token_hash),
@@ -95,6 +121,20 @@ async function initSchema() {
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
+
+  // "Continue with Google". `google_id` is Google's immutable subject claim —
+  // never the email, which a user can change at Google. It is UNIQUE so one
+  // Google account can only ever be linked to one Nexa account.
+  await addColumnIfMissing('users', 'google_id VARCHAR(64) NULL DEFAULT NULL');
+  await addColumnIfMissing('users', 'avatar_url VARCHAR(500) NULL DEFAULT NULL');
+  await addUniqueIndexIfMissing('users', 'uq_users_google_id (google_id)');
+
+  // An account created through Google has no password at all. Storing a random
+  // hash instead would be indistinguishable from a real one, so the column is
+  // nullable and NULL is read as "password sign-in not available for this
+  // account" (routes/auth.js answers PASSWORD_NOT_SET). Such a user can still
+  // adopt a password through the ordinary forgot-password flow.
+  await ensureColumnNullable('users', 'password_hash', 'VARCHAR(255) NULL DEFAULT NULL');
 
   await execute(`
     CREATE TABLE IF NOT EXISTS subscriptions (
@@ -349,6 +389,50 @@ async function initSchema() {
   // to UTC, stores exactly the same instants. Re-running the MODIFY is a no-op.
   await ensureColumnType('ads', 'starts_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
   await ensureColumnType('ads', 'ends_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
+
+  await execute(`
+    CREATE TABLE IF NOT EXISTS contact_messages (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NULL DEFAULT NULL,
+      name VARCHAR(100) NOT NULL DEFAULT '',
+      email VARCHAR(254) NOT NULL,
+      topic VARCHAR(20) NOT NULL DEFAULT 'general',
+      message TEXT NOT NULL,
+      status ENUM('new', 'open', 'replied', 'closed', 'spam') NOT NULL DEFAULT 'new',
+      ip VARCHAR(45) NULL DEFAULT NULL,
+      user_agent VARCHAR(300) NULL DEFAULT NULL,
+      email_delivered TINYINT(1) NOT NULL DEFAULT 0,
+      replied_at DATETIME NULL DEFAULT NULL,
+      replied_by INT UNSIGNED NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_contact_status (status, created_at),
+      INDEX idx_contact_email (email),
+      INDEX idx_contact_created (created_at),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (replied_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // Every reply an admin sends from the panel, kept even after the thread is
+  // closed so the conversation can be read back in full. ON DELETE CASCADE:
+  // deleting a thread takes its replies with it; the author is SET NULL so a
+  // departed admin's account can still be removed.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS contact_replies (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      message_id INT UNSIGNED NOT NULL,
+      admin_user_id INT UNSIGNED NULL DEFAULT NULL,
+      admin_name VARCHAR(255) NOT NULL DEFAULT '',
+      body TEXT NOT NULL,
+      delivered TINYINT(1) NOT NULL DEFAULT 0,
+      delivery_error VARCHAR(255) NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_contact_reply_message (message_id, created_at),
+      FOREIGN KEY (message_id) REFERENCES contact_messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 
   await execute(`
     CREATE TABLE IF NOT EXISTS audit_logs (

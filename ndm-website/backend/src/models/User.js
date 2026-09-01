@@ -11,6 +11,12 @@ const User = {
     return queryOne('SELECT * FROM users WHERE email = ?', [String(email).toLowerCase()]);
   },
 
+  // Google's immutable subject claim, not the email — a user who changes their
+  // Google address must still land on the same Nexa account.
+  async findByGoogleId(googleId) {
+    return queryOne('SELECT * FROM users WHERE google_id = ?', [String(googleId)]);
+  },
+
   async findByRefreshTokenHash(hash) {
     return queryOne('SELECT * FROM users WHERE refresh_token_hash = ?', [hash]);
   },
@@ -38,10 +44,12 @@ const User = {
     await execute('DELETE FROM users WHERE id = ?', [id]);
   },
 
-  async create({ name, email, passwordHash, role, emailVerified }) {
+  async create({ name, email, passwordHash, role, emailVerified, googleId, avatarUrl }) {
     const id = await insert(
-      'INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, ?, ?)',
-      [name, String(email).toLowerCase(), passwordHash, role || 'user', emailVerified ? 1 : 0]
+      `INSERT INTO users (name, email, password_hash, role, email_verified, google_id, avatar_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [name, String(email).toLowerCase(), passwordHash || null, role || 'user',
+       emailVerified ? 1 : 0, googleId || null, avatarUrl || null]
     );
     return User.findById(id);
   },

@@ -10,6 +10,7 @@ const Review = require('../models/Review');
 const Release = require('../models/Release');
 const Ad = require('../models/Ad');
 const AuditLog = require('../models/AuditLog');
+const ContactMessage = require('../models/ContactMessage');
 const config = require('../config/env');
 const { getPool } = require('../config/db');
 
@@ -56,6 +57,11 @@ const {
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
 } = require('../schemas/ad.schema');
+const {
+  contactListQuerySchema, contactIdParamSchema,
+  updateContactStatusSchema, contactReplySchema,
+} = require('../schemas/contact.schema');
+const { sendContactReply } = require('../utils/email');
 
 function monthlyPrice(plan) {
   if (plan === 'pro') return 5;
@@ -177,7 +183,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const [totalUsers, activeSubscriptions, paidSubs, signupAgg,
            pendingReviews, recentPayments, planDistribution,
-           revenueSeries, recentActivity, ads] = await Promise.all([
+           revenueSeries, recentActivity, ads, contact] = await Promise.all([
       User.count(),
       Subscription.countActive(),
       Subscription.findPaidActive(),
@@ -188,6 +194,7 @@ router.get(
       Payment.revenueByMonth(6),
       AuditLog.listRecent(12),
       Ad.stats(),
+      ContactMessage.stats(),
     ]);
 
     const mrr = paidSubs.reduce((sum, s) => sum + monthlyPrice(s.plan), 0);
@@ -204,6 +211,7 @@ router.get(
       revenueSeries,
       recentActivity,
       ads,
+      contact,
       lastUpdated: new Date().toISOString(),
       system: {
         node: process.version,
@@ -695,6 +703,130 @@ router.delete(
     if (!ad) return fail(res, 'NOT_FOUND', 'Ad not found', 404);
     await Ad.remove(id);
     await audit(req, 'ad.deleted', 'ad', id, `Deleted ad "${ad.title}"`);
+    return ok(res, { deleted: true });
+  })
+);
+
+// ---- Contact inbox (messages from the website's contact form) ---------------
+//
+// The form stores every message (routes/contact.js) and this is where they are
+// worked: filtered, read with their reply history, answered by email, and moved
+// through new → open → replied → closed (or marked spam). Every reply is both
+// emailed to the visitor and kept on the thread, so the conversation can be read
+// back later by a different admin.
+
+router.get(
+  '/contact', validate(contactListQuerySchema),
+  asyncHandler(async (req, res) => {
+    const { messages, totalCount } = await ContactMessage.list(req.query);
+    return ok(res, {
+      messages, page: req.query.page, limit: req.query.limit, totalCount,
+      stats: await ContactMessage.stats(),
+    });
+  })
+);
+
+router.get(
+  '/contact/stats',
+  asyncHandler(async (req, res) => ok(res, await ContactMessage.stats()))
+);
+
+// Opening a thread is what marks it read: a 'new' message becomes 'open' so the
+// unread badge reflects what nobody has looked at yet.
+router.get(
+  '/contact/:id', validate(contactIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    let message = await ContactMessage.findById(id);
+    if (!message) return fail(res, 'NOT_FOUND', 'Message not found', 404);
+    if (message.status === 'new') message = await ContactMessage.updateStatus(id, 'open');
+    return ok(res, { message, replies: await ContactMessage.listReplies(id) });
+  })
+);
+
+router.put(
+  '/contact/:id', validate(updateContactStatusSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!(await ContactMessage.findById(id)))
+      return fail(res, 'NOT_FOUND', 'Message not found', 404);
+    const message = await ContactMessage.updateStatus(id, req.body.status);
+    await audit(req, 'contact.status_changed', 'contact_message', id,
+      `Marked contact message ${id} ${req.body.status}`, { status: req.body.status });
+    return ok(res, message);
+  })
+);
+
+/**
+ * POST /contact/:id/reply — email the visitor and record the reply.
+ *
+ * The email is attempted FIRST: a reply that never left the building must not be
+ * shown as sent. A delivery failure answers 502 with the reason and still stores
+ * the reply (marked undelivered) so the text an admin typed is never lost, and
+ * the thread's status is left alone so it stays in the queue.
+ */
+router.post(
+  '/contact/:id/reply', validate(contactReplySchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const message = await ContactMessage.findById(id);
+    if (!message) return fail(res, 'NOT_FOUND', 'Message not found', 404);
+
+    const adminName = (req.admin && req.admin.name) || '';
+    let deliveryError = null;
+    try {
+      await sendContactReply({
+        to: message.email,
+        name: message.name,
+        topic: message.topic,
+        replyBody: req.body.body,
+        originalMessage: message.message,
+        adminName,
+      });
+    } catch (err) {
+      deliveryError = err.message;
+      // eslint-disable-next-line no-console
+      console.error('[admin] contact reply email failed:', err.message);
+    }
+
+    const reply = await ContactMessage.addReply({
+      messageId: id,
+      adminUserId: req.admin && req.admin.id,
+      adminName,
+      body: req.body.body,
+      delivered: !deliveryError,
+      deliveryError,
+    });
+
+    if (deliveryError) {
+      return fail(res, 'EMAIL_SEND_FAILED',
+        'The reply was saved but could not be emailed. Check the SMTP settings and try again.',
+        502, { replyId: reply.id });
+    }
+
+    let updated = await ContactMessage.markReplied(id, req.admin && req.admin.id);
+    if (req.body.close) updated = await ContactMessage.updateStatus(id, 'closed');
+    await audit(req, 'contact.replied', 'contact_message', id,
+      `Replied to contact message ${id} (${message.email})`, { closed: Boolean(req.body.close) });
+
+    return ok(res, {
+      message: updated,
+      reply,
+      replies: await ContactMessage.listReplies(id),
+    }, 201);
+  })
+);
+
+router.delete(
+  '/contact/:id', validate(contactIdParamSchema),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const message = await ContactMessage.findById(id);
+    if (!message) return fail(res, 'NOT_FOUND', 'Message not found', 404);
+    // Replies cascade with the thread (FK ON DELETE CASCADE).
+    await ContactMessage.remove(id);
+    await audit(req, 'contact.deleted', 'contact_message', id,
+      `Deleted contact message ${id} from ${message.email}`);
     return ok(res, { deleted: true });
   })
 );

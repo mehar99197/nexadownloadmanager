@@ -49,10 +49,22 @@ const resetPasswordSchema = {
     .strict(),
 };
 
+// "Continue with Google": the ID token minted by Google Identity Services in the
+// browser. Length is bounded so a bogus multi-megabyte body is rejected before
+// any crypto work; a real Google ID token is well under 4 KB.
+const googleSchema = {
+  body: z
+    .object({
+      credential: z.string().trim().min(20).max(4096),
+    })
+    .strict(),
+};
+
 module.exports = {
   registerSchema,
   loginSchema,
   verifyEmailSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  googleSchema,
 };

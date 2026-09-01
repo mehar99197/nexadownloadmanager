@@ -15,7 +15,7 @@ const { ok, fail } = require('../utils/respond');
 
 const {
   registerSchema, loginSchema, verifyEmailSchema,
-  forgotPasswordSchema, resetPasswordSchema,
+  forgotPasswordSchema, resetPasswordSchema, googleSchema,
 } = require('../schemas/auth.schema');
 
 const {
@@ -24,6 +24,7 @@ const {
 } = require('../utils/jwt');
 
 const { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/email');
+const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 
 const BCRYPT_COST = 12;
@@ -77,6 +78,13 @@ router.post(
     const user = await User.findByEmail(email);
     if (!user) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
 
+    // A Google-created account has no password hash at all. Saying so is not a
+    // disclosure risk (the sign-in page offers both buttons anyway) and it saves
+    // the user guessing at a password that was never set.
+    if (!user.password_hash)
+      return fail(res, 'PASSWORD_NOT_SET',
+        'This account was created with Google. Use “Continue with Google”, or set a password via “Forgot password”.', 409);
+
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
 
@@ -91,6 +99,93 @@ router.post(
 
     return ok(res, {
       token,
+      user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
+    });
+  })
+);
+
+/**
+ * POST /auth/google — "Continue with Google".
+ *
+ * The browser sends the ID token from Google Identity Services; it is verified
+ * against Google's public keys (utils/googleAuth.js) before anything in it is
+ * believed. Three cases follow:
+ *
+ *  1. `google_id` already known  → sign in.
+ *  2. email already registered   → link this Google account to it, then sign in.
+ *     Safe because Google asserts `email_verified` and the address is unique in
+ *     our users table, so this cannot be used to hijack a stranger's account.
+ *  3. nobody matches             → create the account (already verified — Google
+ *     confirmed the address, so no verification email is needed) plus the usual
+ *     free subscription that registration creates, then sign in.
+ *
+ * Turnstile is deliberately NOT applied: Google's own challenge already proves a
+ * human, and there is no anonymous write here to abuse.
+ */
+router.post(
+  '/google', authLimiter, validate(googleSchema),
+  asyncHandler(async (req, res) => {
+    if (!config.isGoogleAuthEnabled)
+      return fail(res, 'GOOGLE_AUTH_DISABLED', 'Google sign-in is not available', 503);
+
+    let identity;
+    try {
+      identity = await verifyGoogleIdToken(req.body.credential);
+    } catch (err) {
+      // The reason is logged for operators but never echoed verbatim: it can
+      // describe our own configuration.
+      // eslint-disable-next-line no-console
+      console.error('[auth] google credential rejected:', err.message);
+      return fail(res, 'GOOGLE_AUTH_FAILED', 'Could not verify that Google sign-in. Please try again.', 401);
+    }
+
+    let user = await User.findByGoogleId(identity.googleId);
+    let created = false;
+
+    if (!user) {
+      const byEmail = await User.findByEmail(identity.email);
+      if (byEmail) {
+        // Link, and take the opportunity to mark the address verified — Google
+        // has just confirmed it. Never overwrite an existing name or password.
+        await User.update(byEmail.id, {
+          googleId: identity.googleId,
+          emailVerified: true,
+          ...(byEmail.avatar_url ? {} : { avatarUrl: identity.picture }),
+        });
+        user = await User.findById(byEmail.id);
+      } else {
+        user = await User.create({
+          name: identity.name,
+          email: identity.email,
+          passwordHash: null,          // password sign-in stays unavailable until set
+          emailVerified: true,
+          googleId: identity.googleId,
+          avatarUrl: identity.picture,
+        });
+        await Subscription.create({
+          userId: user.id, plan: 'free', status: 'active',
+          licenseKey: generateLicenseKey(), seats: planSeats('free'),
+          startDate: new Date(), expiryDate: planExpiry('free'),
+        });
+        created = true;
+        // Best-effort, exactly as in /verify-email: a mail failure must not make
+        // a successful sign-up look broken.
+        await sendWelcomeEmail(user).catch((err) =>
+          console.error('[auth] welcome email failed:', err.message));
+      }
+    }
+
+    if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+
+    const token = signAccessToken(user);
+    const { token: refreshToken, hash } = generateRefreshToken();
+    await User.update(user.id, { refreshTokenHash: hash });
+    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+    setSessionHint(res);
+
+    return ok(res, {
+      token,
+      created,
       user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
     });
   })

@@ -6,6 +6,7 @@ import AdminDashboard from './pages/AdminDashboard.jsx';
 import Users from './pages/Users.jsx';
 import Subscriptions from './pages/Subscriptions.jsx';
 import Reviews from './pages/Reviews.jsx';
+import Contact from './pages/Contact.jsx';
 import Releases from './pages/Releases.jsx';
 import Ads from './pages/Ads.jsx';
 import NotFound from './pages/NotFound.jsx';
@@ -43,6 +44,7 @@ export default function App() {
         <Route path="/users" element={<Users />} />
         <Route path="/subscriptions" element={<Subscriptions />} />
         <Route path="/reviews" element={<Reviews />} />
+        <Route path="/contact" element={<Contact />} />
         <Route path="/releases" element={<Releases />} />
         <Route path="/ads" element={<Ads />} />
         <Route path="/activity" element={<Activity />} />

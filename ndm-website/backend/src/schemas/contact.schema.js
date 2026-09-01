@@ -3,6 +3,7 @@
 const { z } = require('zod');
 
 const TOPICS = ['general', 'bug', 'billing', 'license', 'macos', 'feature', 'other'];
+const STATUSES = ['new', 'open', 'replied', 'closed', 'spam'];
 
 const contactSchema = {
   body: z
@@ -18,4 +19,49 @@ const contactSchema = {
     .strict(),
 };
 
-module.exports = { contactSchema, TOPICS };
+// Admin inbox listing: GET /api/admin/contact
+const contactListQuerySchema = {
+  query: z
+    .object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(200).default(20),
+      status: z.enum(STATUSES).optional(),
+      topic: z.enum(TOPICS).optional(),
+      q: z.string().trim().max(200).optional(),
+    })
+    .strict(),
+};
+
+const contactIdParamSchema = {
+  params: z.object({ id: z.coerce.number().int().positive() }).strict(),
+};
+
+// PUT /api/admin/contact/:id — move a thread through the queue.
+const updateContactStatusSchema = {
+  params: z.object({ id: z.coerce.number().int().positive() }).strict(),
+  body: z.object({ status: z.enum(STATUSES) }).strict(),
+};
+
+// POST /api/admin/contact/:id/reply — the answer emailed to the visitor.
+const contactReplySchema = {
+  params: z.object({ id: z.coerce.number().int().positive() }).strict(),
+  body: z
+    .object({
+      body: z.string().trim().min(2, 'Write a reply first').max(10000),
+      // Default: sending a reply also closes the thread only when asked, so the
+      // usual flow leaves it at 'replied' and visible in the queue.
+      close: z.boolean().optional().default(false),
+    })
+    .strict(),
+};
+
+module.exports = {
+  contactSchema,
+  contactListQuerySchema,
+  contactIdParamSchema,
+  updateContactStatusSchema,
+  contactReplySchema,
+  TOPICS,
+  STATUSES,
+};
+

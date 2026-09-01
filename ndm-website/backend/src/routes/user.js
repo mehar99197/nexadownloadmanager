@@ -25,6 +25,11 @@ function sanitizeUser(user) {
   const {
     password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
   } = user;
+  // The site needs to know whether password sign-in is available for this
+  // account without ever seeing the hash: a Google-created account shows
+  // "Set a password" instead of "Change password".
+  safe.hasPassword = Boolean(password_hash);
+  safe.hasGoogle = Boolean(user.google_id);
   return safe;
 }
 
@@ -80,8 +85,15 @@ router.put(
     const updates = {};
     if (name !== undefined) updates.name = name;
     if (newPassword !== undefined) {
-      const matches = await bcrypt.compare(currentPassword, req.user.password_hash);
-      if (!matches) return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
+      // A Google-created account has no password yet; the session alone is
+      // enough to set the first one. Every account that already has one must
+      // still prove it, so a hijacked tab cannot silently change it.
+      if (req.user.password_hash) {
+        if (!currentPassword)
+          return fail(res, 'VALIDATION_ERROR', 'Current password is required to set a new password', 400);
+        const matches = await bcrypt.compare(currentPassword, req.user.password_hash);
+        if (!matches) return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
+      }
       updates.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
     }
     if (Object.keys(updates).length) await User.update(req.user.id, updates);
@@ -216,8 +228,15 @@ router.delete(
     const user = req.user;
     if (user.role !== 'user')
       return fail(res, 'FORBIDDEN', 'Control-panel accounts are removed by the creator, not from here', 403);
-    const matches = await bcrypt.compare(req.body.password, user.password_hash);
-    if (!matches) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
+    // A Google-created account has no password to check; typing DELETE while
+    // holding a valid session is the whole proof available for it. Every account
+    // that does have a password must still supply it.
+    if (user.password_hash) {
+      if (!req.body.password)
+        return fail(res, 'INVALID_PASSWORD', 'Password is required to delete this account', 400);
+      const matches = await bcrypt.compare(req.body.password, user.password_hash);
+      if (!matches) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
+    }
 
     const subs = await Subscription.findByUserId(user.id);
     for (const s of subs) {

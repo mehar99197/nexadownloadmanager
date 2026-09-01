@@ -91,6 +91,25 @@ export function AuthProvider({ children }) {
     return unwrap(res);
   }, []);
 
+  /**
+   * "Continue with Google". `credential` is the ID token from Google Identity
+   * Services; the backend verifies it against Google's public keys, creates or
+   * links the account, and returns the same session a password login does.
+   * Resolves the user plus `created` so the caller can tell a first sign-up from
+   * a returning sign-in.
+   */
+  const loginWithGoogle = useCallback(
+    async (credential) => {
+      const res = await api.post('/auth/google', { credential });
+      const data = unwrap(res);
+      if (!data?.token) throw new Error('No token returned from Google sign-in.');
+      setToken(data.token);
+      const me = await refreshMe();
+      return { user: me, created: Boolean(data.created) };
+    },
+    [refreshMe]
+  );
+
   const logout = useCallback(async () => {
     try {
       await api.post('/auth/logout');
@@ -107,6 +126,7 @@ export function AuthProvider({ children }) {
     loading,
     isAuthenticated: !!user,
     login,
+    loginWithGoogle,
     register,
     logout,
     refreshMe,

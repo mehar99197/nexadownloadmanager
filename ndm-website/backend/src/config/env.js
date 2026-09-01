@@ -67,6 +67,16 @@ const config = {
   FROM_EMAIL: process.env.FROM_EMAIL || 'noreply@nexadownloadmanager.com',
   // Where the website's contact form delivers. Defaults to FROM_EMAIL.
   SUPPORT_EMAIL: process.env.SUPPORT_EMAIL || '',
+  // Reply-To stamped on support replies so a customer's answer lands in the
+  // support inbox rather than an unattended noreply@ mailbox. Defaults to
+  // SUPPORT_EMAIL, then FROM_EMAIL.
+  SUPPORT_REPLY_TO: process.env.SUPPORT_REPLY_TO || '',
+
+  // Google Sign-In ("Continue with Google"). The client ID is the audience every
+  // ID token must carry; blank = the button is off, and POST /api/auth/google
+  // refuses rather than trusting an unverifiable token. The site's
+  // VITE_GOOGLE_CLIENT_ID must be set in step with this.
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
 
   // Cloudflare Turnstile secret for the anonymous write endpoints (register,
   // password reset, contact, reviews). Blank = the gate is off; the site's
@@ -117,6 +127,11 @@ const config = {
 
 config.isStripeMock = !config.STRIPE_SECRET_KEY;
 config.isEmailMock = !config.SMTP_HOST;
+// "Continue with Google" is only offered when a client ID is configured on both
+// halves; without it the backend has no audience to verify an ID token against.
+config.isGoogleAuthEnabled = Boolean(config.GOOGLE_CLIENT_ID);
+// Effective reply address for outbound support mail.
+config.supportReplyTo = config.SUPPORT_REPLY_TO || config.SUPPORT_EMAIL || config.FROM_EMAIL;
 
 if (config.isProd) {
   const jwtSecrets = [

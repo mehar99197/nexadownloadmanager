@@ -62,6 +62,52 @@ test('contactSchema: honeypot must stay empty, message needs a sentence, unknown
   assert.equal(contactSchema.body.safeParse({ ...good, extra: 1 }).success, false);
 });
 
+test('contact admin schemas: reply needs a body, status is a closed set, ids coerce', () => {
+  const {
+    contactListQuerySchema, contactIdParamSchema, updateContactStatusSchema, contactReplySchema,
+  } = require('../src/schemas/contact.schema');
+
+  // Listing: paging defaults, optional filters, unknown keys rejected.
+  assert.deepEqual(contactListQuerySchema.query.parse({}), { page: 1, limit: 20 });
+  assert.equal(contactListQuerySchema.query.parse({ status: 'replied' }).status, 'replied');
+  assert.equal(contactListQuerySchema.query.safeParse({ status: 'archived' }).success, false);
+  assert.equal(contactListQuerySchema.query.safeParse({ topic: 'sales' }).success, false);
+  assert.equal(contactListQuerySchema.query.safeParse({ limit: 500 }).success, false);
+  assert.equal(contactListQuerySchema.query.safeParse({ nope: 1 }).success, false);
+
+  // Params: the router hands strings over, so coercion matters.
+  assert.deepEqual(contactIdParamSchema.params.parse({ id: '42' }), { id: 42 });
+  assert.equal(contactIdParamSchema.params.safeParse({ id: '0' }).success, false);
+  assert.equal(contactIdParamSchema.params.safeParse({ id: 'abc' }).success, false);
+
+  // Status change.
+  assert.deepEqual(updateContactStatusSchema.body.parse({ status: 'spam' }), { status: 'spam' });
+  assert.equal(updateContactStatusSchema.body.safeParse({ status: 'deleted' }).success, false);
+  assert.equal(updateContactStatusSchema.body.safeParse({}).success, false);
+
+  // Reply: trimmed, non-trivial, `close` defaults to false.
+  const reply = contactReplySchema.body.parse({ body: '  Thanks for writing in.  ' });
+  assert.equal(reply.body, 'Thanks for writing in.');
+  assert.equal(reply.close, false);
+  assert.equal(contactReplySchema.body.parse({ body: 'ok', close: true }).close, true);
+  assert.equal(contactReplySchema.body.safeParse({ body: ' ' }).success, false);
+  assert.equal(contactReplySchema.body.safeParse({ body: 'x'.repeat(10001) }).success, false);
+  assert.equal(contactReplySchema.body.safeParse({ body: 'ok', extra: 1 }).success, false);
+});
+
+test('googleSchema: a bounded credential string, nothing else', () => {
+  const { googleSchema } = require('../src/schemas/auth.schema');
+  const credential = 'a'.repeat(500);
+  assert.deepEqual(googleSchema.body.parse({ credential }), { credential });
+  assert.equal(googleSchema.body.parse({ credential: `  ${credential}  ` }).credential, credential);
+  // Too short to be a JWT, and too long to be worth any crypto work.
+  assert.equal(googleSchema.body.safeParse({ credential: 'short' }).success, false);
+  assert.equal(googleSchema.body.safeParse({ credential: 'a'.repeat(4097) }).success, false);
+  assert.equal(googleSchema.body.safeParse({}).success, false);
+  // .strict(): a caller cannot smuggle its own email past verification.
+  assert.equal(googleSchema.body.safeParse({ credential, email: 'a@b.co' }).success, false);
+});
+
 test('team schemas: invite needs an email, join needs a well-formed token', () => {
   const { inviteSchema, joinSchema, inviteLookupSchema } = require('../src/schemas/team.schema');
   assert.deepEqual(inviteSchema.body.parse({ email: ' Bob@Example.com ' }), { email: 'bob@example.com' });
