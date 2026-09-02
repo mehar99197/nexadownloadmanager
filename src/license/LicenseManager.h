@@ -87,6 +87,10 @@ signals:
     // from a rejected licence: nothing is wrong with the key, the user just has
     // to close the app elsewhere (or buy more seats).
     void seatLimitReached(int seats);
+    // The seat was taken away deliberately (admin "Free seats", or the user
+    // signing this device out from the dashboard) rather than lost to another
+    // machine — a different thing to tell the user, so a different signal.
+    void seatRevoked();
     // Entitlements changed — gates that cache them should re-read.
     void featuresChanged(const Entitlements &features);
 

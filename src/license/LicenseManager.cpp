@@ -419,16 +419,51 @@ void LicenseManager::sendHeartbeat()
             m_activeSeats = object.value(QStringLiteral("activeSeats")).toInt(m_activeSeats);
             return;
         }
-        // Lost the seat (another machine took it while we were offline) or the
-        // licence stopped being valid. Drop to Free and say which.
+        // Every rejection reason has to be handled here. This used to act on
+        // seat_limit alone and silently discard the rest, so a cancelled or
+        // expired licence went on running as Pro until the six-hourly
+        // revalidation happened to notice.
         const QString reason = object.value(QStringLiteral("reason")).toString();
-        if (reason == QLatin1String("seat_limit")) {
-            const int seats = object.value(QStringLiteral("seats")).toInt(m_features.seats);
+        if (reason.isEmpty())
+            return;   // malformed body; a missed beat is harmless, the lease has slack
+
+        const int seats = object.value(QStringLiteral("seats")).toInt(m_features.seats);
+
+        // The seat is gone but the licence is fine, so the key is kept — the user
+        // has nothing to re-enter. Both cases stop the heartbeat: without that
+        // this fires again every five minutes and pops the dialog each time.
+        // Recovery is the next revalidation, or the user re-activating.
+        const bool revoked = reason == QLatin1String("seat_revoked");
+        if (revoked || reason == QLatin1String("seat_limit")) {
+            m_licenseToken.clear();
+            m_heartbeat->stop();
+            // Offline grace must not hand the plan straight back: without this,
+            // pulling the network undoes the revocation for a further 7 days.
+            clearCache();
             setFeaturesForPlan(QStringLiteral("free"));
             setPlan(QStringLiteral("free"),
-                    tr("All %n seat(s) on this license are in use on other devices", nullptr, seats));
-            emit seatLimitReached(seats);
+                    revoked
+                        ? tr("Seat not available on this license — it was freed from your account")
+                        : tr("Seat not available on this license — all %n seat(s) are in use "
+                             "on other devices", nullptr, seats));
+            if (revoked)
+                emit seatRevoked();
+            else
+                emit seatLimitReached(seats);
+            return;
         }
+
+        // not_found / cancelled / expired / invalid: the licence itself stopped
+        // being usable, so the stored key goes with it.
+        credentialstore::removeLicenseKey();
+        clearCache();
+        m_licenseKey.clear();
+        m_licenseToken.clear();
+        m_trial = false;
+        m_expires = QDateTime();
+        m_heartbeat->stop();
+        setFeaturesForPlan(QStringLiteral("free"));
+        setPlan(QStringLiteral("free"), QStringLiteral("License rejected: %1").arg(reason));
     });
 }
 

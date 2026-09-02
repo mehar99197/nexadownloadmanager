@@ -175,6 +175,128 @@ test('backend API', async (t) => {
     void user;
   });
 
+  // -------------------------------------------------------- seat freeing ---
+  // Regression suite for the bug where freeing a seat did nothing: /heartbeat
+  // called the same acquireSeat() as /validate, and since `busy` counts only
+  // OTHER devices, a one-seat licence read "0 busy >= 1 seat" as false and
+  // handed the just-freed device a brand-new lease. The admin action was undone
+  // within five minutes and no client ever downgraded.
+  await t.test('freeing a seat actually frees it', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    const user = await srv.makeUser(api, 'seat');
+    const [sub] = await srv.query('SELECT * FROM subscriptions LIMIT 1');
+    await srv.query("UPDATE subscriptions SET plan = 'pro', seats = 1 WHERE id = ?", [sub.id]);
+    const key = sub.license_key;
+    const deviceA = 'a'.repeat(64);
+    const deviceB = 'b'.repeat(64);
+
+    const validate = (fp) => api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: fp });
+    const heartbeat = (fp) => api.post('/api/license/heartbeat',
+      { license_key: key, device_fingerprint: fp });
+
+    // Driven through the REAL admin endpoint the "Free seats" button calls, not
+    // a hand-written UPDATE — the point of this suite is that the whole chain
+    // works, and a direct UPDATE would keep passing even if the route stopped
+    // marking the seat revoked.
+    const bcrypt = require('bcryptjs');
+    await srv.query(
+      "INSERT INTO users (name, email, password_hash, role, email_verified) VALUES ('Admin', 'seatadmin@example.test', ?, 'admin', 1)",
+      [await bcrypt.hash('admin-password-123', 12)]
+    );
+    const adminApi = srv.client();
+    const adminLogin = await adminApi.post('/api/admin/login',
+      { email: 'seatadmin@example.test', password: 'admin-password-123' });
+    const adminAuth = { token: adminLogin.body.data.token };
+    const freeAllSeats = () =>
+      adminApi.post(`/api/admin/subscriptions/${sub.id}/revoke-device`, {}, adminAuth);
+
+    await t2.test('device A takes the only seat and can beat to hold it', async () => {
+      assert.equal((await validate(deviceA)).body.valid, true);
+      const beat = await heartbeat(deviceA);
+      assert.equal(beat.body.valid, true, 'a held lease renews');
+    });
+
+    await t2.test('device B is refused while A holds the seat', async () => {
+      const res = await validate(deviceB);
+      assert.equal(res.body.valid, false);
+      assert.equal(res.body.reason, 'seat_limit');
+    });
+
+    await t2.test('after freeing, A\'s heartbeat is refused instead of re-taking it', async () => {
+      const freed = await freeAllSeats();
+      assert.equal(freed.status, 200, freed.text);
+      const beat = await heartbeat(deviceA);
+      assert.equal(beat.body.valid, false, 'the freed device must not keep Pro');
+      assert.equal(beat.body.reason, 'seat_revoked');
+      // ...and it must stay refused, not recover on the next beat.
+      assert.equal((await heartbeat(deviceA)).body.reason, 'seat_revoked');
+      const rows = await srv.query(
+        'SELECT lease_expires_at FROM license_activations WHERE device_fingerprint = ?', [deviceA]
+      );
+      assert.equal(rows[0].lease_expires_at, null, 'no lease was handed back');
+    });
+
+    await t2.test('the freed seat is immediately usable by another device', async () => {
+      const res = await validate(deviceB);
+      assert.equal(res.body.valid, true, 'B can now take the seat A gave up');
+      assert.equal(res.body.plan, 'pro');
+    });
+
+    await t2.test('A re-activating is refused while B holds the seat', async () => {
+      const res = await validate(deviceA);
+      assert.equal(res.body.valid, false);
+      assert.equal(res.body.reason, 'seat_limit', 'not seat_revoked — someone else has it now');
+    });
+
+    await t2.test('A regains Pro by re-activating once the seat is free again', async () => {
+      await srv.query('UPDATE license_activations SET lease_expires_at = NULL WHERE device_fingerprint = ?',
+        [deviceB]);
+      const res = await validate(deviceA);
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'pro');
+      const rows = await srv.query(
+        'SELECT revoked_at FROM license_activations WHERE device_fingerprint = ?', [deviceA]
+      );
+      assert.equal(rows[0].revoked_at, null, 're-activation clears the revocation');
+      assert.equal((await heartbeat(deviceA)).body.valid, true, 'and beats normally again');
+    });
+
+    await t2.test('a user freeing a device from their dashboard revokes it too', async () => {
+      // Same guarantee on the self-service path: Dashboard's "Free this seat"
+      // calls DELETE /api/user/devices/:id, which must also stop the freed
+      // machine's heartbeat from quietly taking the seat back.
+      assert.equal((await validate(deviceA)).body.valid, true);
+      const list = await api.get('/api/user/devices', { token: user.token });
+      assert.equal(list.status, 200, list.text);
+      const device = list.body.data.devices.find((d) => d.active);
+      assert.ok(device, 'the live device is listed as holding a seat');
+
+      const freed = await api.del(`/api/user/devices/${device.id}`, { token: user.token });
+      assert.equal(freed.status, 200, freed.text);
+
+      const beat = await heartbeat(deviceA);
+      assert.equal(beat.body.valid, false, 'the freed device must not keep Pro');
+      assert.equal(beat.body.reason, 'seat_revoked');
+      // ...and re-activating still gets it back, since the seat is free.
+      assert.equal((await validate(deviceA)).body.valid, true);
+    });
+
+    await t2.test('a lease that merely lapsed still recovers on a heartbeat', async () => {
+      // The distinction that makes revoked_at necessary: a laptop asleep past
+      // its 15-minute lease must not be treated like a revoked one.
+      await srv.query(
+        'UPDATE license_activations SET lease_expires_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) WHERE device_fingerprint = ?',
+        [deviceA]
+      );
+      const beat = await heartbeat(deviceA);
+      assert.equal(beat.body.valid, true, 'an expired-but-not-revoked lease is retaken');
+    });
+
+    void user;
+  });
+
   // --------------------------------------------------------------- trial ---
   await t.test('the 7-day no-card Pro trial', async (t2) => {
     await srv.reset();

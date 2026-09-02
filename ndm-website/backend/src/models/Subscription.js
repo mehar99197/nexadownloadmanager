@@ -42,7 +42,7 @@ const Subscription = {
    * locked FOR UPDATE, so two clients racing for the last seat cannot both win.
    * The seat count is read with the same NOW() the lease is written against.
    */
-  async acquireSeat(id, deviceFingerprint, { deviceName = null, leaseSeconds } = {}) {
+  async acquireSeat(id, deviceFingerprint, { deviceName = null, leaseSeconds, renewOnly = false } = {}) {
     const ttl = Number(leaseSeconds) > 0 ? Number(leaseSeconds) : SEAT_LEASE_SECONDS;
     const pool = await getPool();
     const connection = await pool.getConnection();
@@ -68,13 +68,30 @@ const Subscription = {
       const busy = Number(busyRows[0].count) || 0;
 
       const [existing] = await connection.execute(
-        `SELECT id, lease_expires_at FROM license_activations
+        `SELECT id, lease_expires_at, revoked_at FROM license_activations
           WHERE subscription_id = ? AND device_fingerprint = ? FOR UPDATE`,
         [id, deviceFingerprint]
       );
       const holdsLease = existing.length
         && existing[0].lease_expires_at
         && new Date(existing[0].lease_expires_at).getTime() > Date.now();
+
+      // A heartbeat may RENEW a lease it already holds; it may not take a fresh
+      // one after the seat was deliberately taken away. Without this, freeing a
+      // seat from the admin panel was undone by the running client's very next
+      // beat: `busy` counts only OTHER devices, so on a one-seat licence the
+      // check below read 0 >= 1 as "a seat is free" and handed the same device a
+      // new 15-minute lease. The admin action was a no-op within five minutes.
+      //
+      // A lease that merely lapsed (a laptop asleep past its 15 minutes) has no
+      // revoked_at and still recovers here, which is the behaviour we want to
+      // keep. Re-activating — the user pasting the key again, or the app calling
+      // /validate on start — clears revoked_at below and takes a seat if one is
+      // free.
+      if (renewOnly && !holdsLease && existing.length && existing[0].revoked_at) {
+        await connection.rollback();
+        return { ok: false, reason: 'seat_revoked', seats, activeSeats: busy };
+      }
 
       // Renewing an unexpired lease always succeeds. Taking a *new* one (first
       // run, or after this device's lease lapsed) needs a free seat.
@@ -88,7 +105,8 @@ const Subscription = {
           `UPDATE license_activations
               SET lease_expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND),
                   last_seen_at = CURRENT_TIMESTAMP,
-                  device_name = COALESCE(?, device_name)
+                  device_name = COALESCE(?, device_name),
+                  revoked_at = NULL
             WHERE id = ?`,
           [ttl, deviceName, existing[0].id]
         );
@@ -122,6 +140,10 @@ const Subscription = {
    * The activation row is kept so the device stays visible in the user's device
    * list and can re-take a seat without re-registering; only the lease is
    * dropped. Idempotent — releasing twice is not an error.
+   *
+   * This is the device handing its OWN seat back on shutdown, so it is
+   * deliberately not a revocation: revoked_at stays clear and the same device
+   * can beat its way back in on the next run without re-activating.
    */
   async releaseSeat(id, deviceFingerprint) {
     const result = await execute(
@@ -157,20 +179,32 @@ const Subscription = {
   /**
    * Release one device by activation id, scoped to its subscription so a user
    * can only ever free a seat on a licence they actually own.
+   *
+   * Unlike releaseSeat() this is somebody taking the seat AWAY from a device
+   * that may still be running, so it stamps revoked_at — that is what stops the
+   * device's next heartbeat from quietly re-taking the seat.
    */
   async releaseSeatById(subscriptionId, activationId) {
     const result = await execute(
-      `UPDATE license_activations SET lease_expires_at = NULL
+      `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
         WHERE id = ? AND subscription_id = ?`,
       [activationId, subscriptionId]
     );
     return (result.affectedRows || 0) > 0;
   },
 
-  /** Drop every lease for a subscription (admin "revoke devices"). */
+  /**
+   * Drop every lease for a subscription (admin "Free seats").
+   *
+   * Stamps revoked_at for the same reason as releaseSeatById: the machines being
+   * freed are typically still running, and a plain lease drop would be undone by
+   * their next heartbeat.
+   */
   async releaseAllSeats(id) {
     const result = await execute(
-      'UPDATE license_activations SET lease_expires_at = NULL WHERE subscription_id = ?', [id]
+      `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
+        WHERE subscription_id = ?`,
+      [id]
     );
     return result.affectedRows || 0;
   },

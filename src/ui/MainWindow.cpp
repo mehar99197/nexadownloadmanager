@@ -811,6 +811,14 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
                "right now.\n\nClose Nexa on another machine, or manage your devices at "
                "nexadownloadmanager.com/dashboard.", nullptr, seats));
     });
+    // Distinct from the above: nobody else took the seat, it was handed back on
+    // purpose from the website, so "close Nexa elsewhere" would be wrong advice.
+    connect(m_engine->license(), &LicenseManager::seatRevoked, this, [this] {
+        QMessageBox::warning(this, tr("Seat not available"),
+            tr("This device's seat was freed from your Nexa account, so it has "
+               "dropped to the Free plan.\n\nEnter your license key again in "
+               "Settings to take a seat back, if one is available."));
+    });
     connect(m_engine, &DownloadEngine::scheduledAdded,   this, [this](int) { updateStats(); });
     connect(m_engine, &DownloadEngine::scheduledRemoved, this, [this](int) { updateStats(); });
     // IDM-style: a held (externally-added) download asks before it starts. Resolve

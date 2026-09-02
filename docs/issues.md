@@ -3,10 +3,11 @@
 **Date:** 2026-09-02
 **Reported by:** product owner
 **Scope:** four reported problems, audited against the source tree at `34a0b8a`
-**Status of this document:** investigation write-up only — **no code was changed** in this pass.
+**Status of this document:** issues 1 and 2 are **fixed**; issues 3 and 4 are written up and open.
 
-Every citation below was read out of the tree, not recalled. Line numbers are from `34a0b8a`;
-re-check them after any refactor.
+Every citation below was read out of the tree, not recalled. Line numbers are from `34a0b8a`,
+i.e. *before* the fixes for issues 1 and 2 — they locate the original defect, so re-check them
+after any refactor.
 
 ---
 
@@ -15,7 +16,7 @@ re-check them after any refactor.
 | # | Issue | Severity | Verdict |
 |---|-------|----------|---------|
 | 1 | App stops responding when a segmented download starts | **Critical** | ✅ **Fixed** — N blocking DNS lookups on the GUI thread, one per segment; now one per host |
-| 2 | Admin "Free seats" does not take Pro away from a running client | **Critical** | Confirmed — root cause found, the admin action is a no-op within 5 minutes |
+| 2 | Admin "Free seats" does not take Pro away from a running client | **Critical** | ✅ **Fixed** — the heartbeat was re-acquiring the seat it had just been denied |
 | 3 | No Pro re-verification per download (asked: every 10 downloads) | **High** | Confirmed missing — and there is no counter to hook it to |
 | 4 | Licensing is trivially bypassable | **Critical** | Confirmed — six working bypasses, the cheapest takes ~10 seconds |
 
@@ -267,7 +268,7 @@ Not the reported hang, but each freezes the UI and should be fixed alongside:
 | Where | What | When it bites |
 |---|---|---|
 | `DownloadTask.cpp:1434, 1459-1497` | Whole-file SHA-256 on the GUI thread — and it runs **even when no expected hash was set** (`m_expectedSha256` is only consulted afterwards at `:1490`) | A second freeze at **100%**, scaling with file size. Pure waste for normal downloads |
-| `DownloadTask.cpp:953`, `SegmentDownloader.cpp:92, 338` | `QFile::resize()` sets the file length but not NTFS's *valid data length*; a segment then writes at a high offset, forcing a synchronous zero-fill of everything before it | Windows / exFAT / NTFS-3G only — a real second cause there |
+| `DownloadTask.cpp:953`, `SegmentDownloader.cpp:92, 338` | `QFile::resize()` sets the file length but not NTFS's *valid data length*; a segment then writes at a high offset, forcing a synchronous zero-fill of everything before it | Windows / exFAT / NTFS-3G only — a real second cause there. **Addressed**: `preallocateFile()` now marks the file sparse via `FSCTL_SET_SPARSE` before resizing, best-effort so FAT32/exFAT simply keep the old behaviour. Trade-off: space is no longer reserved up front, so a full disk surfaces mid-download instead of at preallocation. Unverified — see the note in *Suggested order of work* |
 | `DownloadTask.cpp:1216` | A second `f.resize(total)` with the return value discarded | Silent failure |
 | `Database.cpp:182-206` | Segment table deleted and fully re-inserted on every segment completion, statement re-prepared per row (one transaction, WAL, so no fsync storm) | O(N²) stutter over a download |
 | `DownloadTask.cpp:1059` + `1161-1176` | `launchSegments()` range-iterates `m_workers` while `start()` can synchronously `emit failed` → `clearSegments()` → `m_workers.clear()`, invalidating the iterator mid-loop | Latent use-after-free; can present as a hang or a crash. `clearSegments()`'s own comment documents this hazard for `tryResegment()` but not for this loop |
@@ -299,7 +300,8 @@ Not the reported hang, but each freezes the UI and should be fixed alongside:
 ## Issue 2 — Freeing a seat from the admin panel does not free the seat
 
 **Severity:** Critical (a paid-support action silently does nothing)
-**Status:** ❗ Confirmed — root cause identified
+**Status:** ✅ **Fixed** — see *Fix applied* below. The gap list is kept because
+several contributing items are still open.
 
 ### Requirement
 
@@ -441,29 +443,66 @@ as "I closed it and still can't sign in elsewhere".
 string is `"All %n seat(s) on this license are in use on other devices"`
 (`LicenseManager.cpp:263`, `:429`).
 
-### Required fix
+### Fix applied
+
+**Server — the heartbeat is now renew-only.** `POST /api/license/heartbeat` passes
+`renewOnly: true` to `Subscription.acquireSeat` (`routes/license.js`), and `acquireSeat` refuses a
+device whose seat was deliberately taken away instead of handing it a fresh lease.
+
+Telling "revoked" apart from "merely lapsed" is what makes this safe, so
+`license_activations` gained a **`revoked_at`** column (`config/schema.js`, with an idempotent
+`addColumnIfMissing` migration for existing databases):
+
+- **Deliberate frees stamp it** — `releaseAllSeats` (admin "Free seats") and `releaseSeatById`
+  (the user's own "Free this seat" in the dashboard).
+- **The client's own shutdown release does not** — `releaseSeat` still only drops the lease, so a
+  normal restart beats its way back in without re-activating.
+- **Re-activating clears it** — a successful `/validate` sets `revoked_at = NULL`, which is what
+  makes "paste the key again and you get Pro back if a seat is free" work.
+
+That distinction matters: without it, a laptop that slept past its 15-minute lease would be treated
+exactly like a revoked one and dropped to Free. There is a test for precisely that case.
+
+**Client — every rejection reason is now handled.** `LicenseManager::sendHeartbeat` acted on
+`seat_limit` alone and silently discarded the rest, so a `cancelled` or `expired` licence went on
+running as Pro until the six-hourly revalidation. Now:
+
+- `seat_revoked` / `seat_limit` — keep the stored key (the licence is fine, the seat is not), stop
+  the heartbeat, and **clear the offline cache** so pulling the network cannot replay Pro for
+  another seven days. New `seatRevoked()` signal drives a dialog that says the seat was freed from
+  the account, rather than the misleading "close Nexa on another machine".
+- `not_found` / `cancelled` / `expired` / `invalid` — the licence itself is gone, so the stored key
+  goes with it.
+- An empty/malformed reason is ignored, as before: a missed beat is harmless, the lease has slack.
+
+Stopping the heartbeat in these branches also fixes the dialog re-firing every five minutes.
+
+**Verified** against a real MySQL, driving the **actual admin endpoint** the button calls
+(`POST /api/admin/subscriptions/:id/revoke-device`) rather than a hand-written `UPDATE`:
+device A takes the only seat → B refused → admin frees → **A's heartbeat is refused and no lease is
+handed back** → B takes the seat immediately → A refused while B holds it → A regains Pro by
+re-activating once free → a merely-lapsed lease still recovers → the user-dashboard free revokes
+too. 65/65 integration tests pass, and all four mutations of the fix are caught by the suite.
+
+### Still required
 
 Server, in order of importance:
 
-1. **Make the heartbeat renew-only.** It must extend a lease the device *already holds* and must
-   never acquire a new one. A device whose lease was revoked should be refused, not re-granted.
-   (`routes/license.js:86-107`, `models/Subscription.js:45-117`.)
-2. **Add an explicit revocation marker** that the acquire path honours — e.g. `revoked_at` on
-   `license_activations`, or a seat epoch on `subscriptions` — so a freed seat cannot be silently
-   retaken before the user re-authorises. Requires a migration in `config/schema.js:175-189`.
-3. **Return a distinct `seat_revoked` reason** from both `/heartbeat` and `/validate`, so the client
-   can tell "an admin freed your seat" from "someone else is using it" and show the right message.
+1. ~~Make the heartbeat renew-only.~~ ✅ done.
+2. ~~Add an explicit revocation marker.~~ ✅ done — `revoked_at`.
+3. ~~Return a distinct `seat_revoked` reason.~~ ✅ done (from `/heartbeat`; `/validate` never needs
+   it, since re-activating clears the revocation or hits `seat_limit`).
 4. **Add per-device admin routes** mirroring the user ones, and surface `activeSeats / seats` plus a
    device list in the admin Manage modal.
 
 Client:
 
-5. Handle **every** heartbeat reason, not just `seat_limit` (`LicenseManager.cpp:417-432`).
-6. On `seat_revoked`, drop to Free, **clear the offline cache** so grace cannot replay it, stop the
-   heartbeat, and show the "seat not available on this license" message.
+5. ~~Handle every heartbeat reason.~~ ✅ done.
+6. ~~On `seat_revoked`, drop to Free and clear the offline cache.~~ ✅ done.
 7. Re-apply entitlements when the heartbeat reports a plan change; connect the orphaned
    `featuresChanged` signal so a downgrade actually reverts themes and in-flight paid work.
-8. De-duplicate `seatLimitReached` so the dialog appears once, not every 5 minutes.
+   **Still open** — see Issue 3, which needs the same wiring.
+8. ~~De-duplicate the seat dialog.~~ ✅ done — both branches now stop the heartbeat.
 
 ### Acceptance criteria
 
@@ -768,6 +807,22 @@ that a Free install is capped, that an auth site is refused, or that a tampered 
 only. Nothing exercises `acquireSeat`, `releaseSeat`, `revoke-device` or the heartbeat. Given that
 Issue 2's root cause is a seat-logic bug, this is the gap that let it ship.
 
+**`tools/extract-translations.py` truncates every multi-line `tr()`.** Found while regenerating
+translations for the Issue 2 strings. The extractor does not join adjacent C++ string literals, so a
+call written across lines — which most of the longer user-facing strings are — is extracted as its
+**first fragment only**:
+
+| In the source | Extracted as |
+|---|---|
+| `tr("This license covers %n device(s) at a time, and they are all in use " "right now.\n\n…")` | `This license covers %n device(s) at a time, and they are all in use ` |
+| `tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, " "or see …")` | `Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, ` |
+
+Qt looks up the **full concatenated** string at runtime, so any translation supplied for a truncated
+id would never match and the app would silently fall back to English. This is **pre-existing and
+affects the whole codebase**, not just the new strings, and it has no user impact today only because
+every `translations/*.ts` currently reports `0 translated`. It must be fixed before translation work
+starts, or every long string will be quietly untranslatable.
+
 **User-facing docs are stale.** `ndm-website/frontend/src/pages/docs/DocsLicense.jsx:34, 61` still
 document a `device_mismatch` reason that the backend no longer emits — it was replaced by
 `seat_limit` (`routes/license.js:55-58`).
@@ -776,18 +831,24 @@ document a `device_mismatch` reason that the backend no longer emits — it was 
 
 ## Suggested order of work
 
-1. ~~**Issue 1**~~ — ✅ done. Worth running the New-Download-dialog A/B test once on Windows to
-   confirm in the field, since NTFS zero-fill (listed under *Other main-thread blockers*) is a
-   second, independent cause there.
-2. **Issue 4, Tier 1** — three small, independent changes that close four of the six bypasses,
-   including the 10-second theme one. Highest value per line of code in this document.
-3. **Issue 2, server items 1–3** — making the heartbeat renew-only is a small change that turns the
-   admin panel's existing button from a no-op into the feature it claims to be.
+1. ~~**Issue 1**~~ — ✅ done (blocking DNS), verified on Linux with a mutation-tested regression
+   test. The NTFS zero-fill listed under *Other main-thread blockers* was also addressed by marking
+   the output file sparse on Windows, but that code sits behind `#ifdef Q_OS_WIN`, so it was
+   **neither compiled nor run here** — CI's Windows job is its first compile check, and the
+   New-Download-dialog A/B test on Windows is still needed to confirm it in the field.
+2. ~~**Issue 2, server side**~~ — ✅ done. The admin panel's existing button now does what it
+   claims instead of being undone by the next heartbeat.
+3. **Issue 4, Tier 1** — three small, independent changes that close four of the six bypasses,
+   including the 10-second theme one. Highest value per line of code left in this document.
 4. **Issue 4, Tier 2** — asymmetric token verification. The largest single piece of work here, and
    the one that makes the rest durable.
-5. **Issue 3** — depends on the `featuresChanged` wiring from Issue 2, item 7, so it is cheaper
-   after that lands.
-6. **Issue 2, client items and admin UI**, then Tier 3 hardening.
+5. **Issue 3** — needs the `featuresChanged` wiring listed as Issue 2's remaining client item, so
+   it is cheaper once that lands.
+6. **Issue 2's remaining items** — per-device admin routes and the devices list in the admin UI —
+   then Tier 3 hardening.
+7. **Fix `tools/extract-translations.py`** before any translation work begins, or every long string
+   will be quietly untranslatable.
 
 Add the missing seat and licensing tests alongside whichever item lands first — their absence is
-why two of these four issues reached production.
+why two of these four issues reached production. Issue 2's fix shipped with seven such tests; the
+desktop side still has none.

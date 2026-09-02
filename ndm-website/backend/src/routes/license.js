@@ -90,11 +90,15 @@ router.post(
     const { reason, sub } = await resolveSubscription(license_key);
     if (reason) return invalid(res, reason, sub);
 
+    // renewOnly: a beat keeps a seat this device already holds, but must never
+    // take one back after it was deliberately freed. Re-taking it is what made
+    // the admin panel's "Free seats" button a no-op against a running client.
     const seat = await Subscription.acquireSeat(sub.id, device_fingerprint, {
       deviceName: device_name || null,
+      renewOnly: true,
     });
     if (!seat.ok) {
-      return invalid(res, seat.reason === 'seat_limit' ? 'seat_limit' : seat.reason, sub, {
+      return invalid(res, seat.reason, sub, {
         seats: seat.seats, activeSeats: seat.activeSeats,
       });
     }

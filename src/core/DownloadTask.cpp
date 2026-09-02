@@ -19,6 +19,11 @@
 #include <QCryptographicHash>
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <winioctl.h>   // FSCTL_SET_SPARSE — windows.h does not always pull this in
+#endif
+
 namespace nexa {
 
 static const bool kDebug = qEnvironmentVariableIsSet("NEXA_DEBUG");
@@ -943,12 +948,49 @@ void DownloadTask::onDriveConfirmFinished()
     sendProbe();
 }
 
+#ifdef Q_OS_WIN
+// NTFS tracks a "valid data length" separately from the file length. SetEndOfFile
+// — which is what QFile::resize() calls — moves the length but leaves valid data
+// at zero, so the first write past that point makes the filesystem synchronously
+// zero-fill everything in between, inside the write() call.
+//
+// A segmented download writes at high offsets almost immediately (segment 31
+// starts 31/32 of the way in), so on a multi-gigabyte file that is gigabytes of
+// zeroes written before the first payload byte lands — on this app's single
+// thread, with the window frozen throughout. Marking the file sparse tells NTFS
+// to leave the gaps unallocated and report them as zeroes, which is exactly what
+// a partially-downloaded file wants.
+//
+// Best-effort by design: FAT32 and exFAT have no sparse support and simply
+// refuse, which leaves the previous behaviour rather than failing the download.
+// The trade-off is that space is no longer reserved up front, so a full disk now
+// surfaces as a write error mid-download instead of a failure to preallocate.
+static void markFileSparse(const QString &path)
+{
+    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t *>(path.utf16()),
+                                      GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return;
+    DWORD returned = 0;
+    DeviceIoControl(handle, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr);
+    CloseHandle(handle);
+}
+#endif
+
 bool DownloadTask::preallocateFile()
 {
     QDir().mkpath(QFileInfo(m_savePath).absolutePath());
     QFile f(m_savePath);
     if (!f.open(QIODevice::ReadWrite))
         return false;
+#ifdef Q_OS_WIN
+    // Must happen while the file is still empty — NTFS only converts cleanly
+    // before data is written. Uses its own shared handle, so `f` staying open is
+    // fine. No-op on every other platform: ftruncate() is already sparse there,
+    // and writing at a high offset does not zero-fill.
+    markFileSparse(m_savePath);
+#endif
     if (m_total > 0) {
         if (!f.resize(m_total)) {
             f.close();

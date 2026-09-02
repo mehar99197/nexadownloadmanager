@@ -178,6 +178,12 @@ async function initSchema() {
       device_fingerprint VARCHAR(255) NOT NULL,
       device_name VARCHAR(120) NULL DEFAULT NULL,
       lease_expires_at DATETIME NULL DEFAULT NULL,
+      -- Set when a seat is taken away deliberately (admin "Free seats", or the
+      -- user signing a device out of their dashboard). It is what separates
+      -- "an admin revoked this" from "the lease simply lapsed", so a heartbeat
+      -- can be refused in the first case while a laptop that slept through its
+      -- lease still recovers in the second.
+      revoked_at DATETIME NULL DEFAULT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_license_device (subscription_id, device_fingerprint),
@@ -220,6 +226,7 @@ async function initSchema() {
   // which correctly reads as "not currently in use".
   await addColumnIfMissing('license_activations', 'device_name VARCHAR(120) NULL DEFAULT NULL');
   await addColumnIfMissing('license_activations', 'lease_expires_at DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('license_activations', 'revoked_at DATETIME NULL DEFAULT NULL');
   await addIndexIfMissing('license_activations', 'idx_activation_lease (subscription_id, lease_expires_at)');
 
   await execute(`
