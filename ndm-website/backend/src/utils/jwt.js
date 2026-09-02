@@ -3,6 +3,8 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config/env');
+const licenseKeys = require('../config/licenseKeys');
+const ed25519Jwt = require('./ed25519Jwt');
 
 function basePayload(user) {
   return {
@@ -34,8 +36,15 @@ function signResetToken(user) {
   return jwt.sign({ sub: String(user.id), typ: 'reset' }, config.JWT_SECRET, { expiresIn: '1h' });
 }
 
+// Licence tokens are the one family the desktop app verifies for itself, so
+// they are signed with Ed25519 rather than an HMAC secret: the app ships the
+// public key, which cannot mint a licence. See config/licenseKeys.js, and
+// utils/ed25519Jwt.js for why this does not go through `jsonwebtoken`.
+const LICENSE_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+
 function signLicenseToken(payload) {
-  return jwt.sign({ ...payload, typ: 'license' }, config.LICENSE_JWT_SECRET, { expiresIn: '24h' });
+  return ed25519Jwt.sign({ ...payload, typ: 'license' },
+    licenseKeys.privateKey, LICENSE_TOKEN_TTL_SECONDS);
 }
 
 function verifyTyped(token, secret, type) {
@@ -65,8 +74,16 @@ function verifyResetToken(token) {
   return verifyTyped(token, config.JWT_SECRET, 'reset');
 }
 
+// The licence public key is embedded in every copy of the desktop app, so it is
+// public knowledge. That is safe only because verification accepts exactly one
+// algorithm — see the header comment in utils/ed25519Jwt.js. A verifier that
+// also accepted HS256 would let anyone sign a token using those published key
+// bytes as the HMAC secret.
 function verifyLicense(token) {
-  return verifyTyped(token, config.LICENSE_JWT_SECRET, 'license');
+  const payload = ed25519Jwt.verify(token, licenseKeys.publicKey);
+  if (!payload || payload.typ !== 'license')
+    throw new jwt.JsonWebTokenError('invalid token type');
+  return payload;
 }
 
 function hashRefreshToken(token) {

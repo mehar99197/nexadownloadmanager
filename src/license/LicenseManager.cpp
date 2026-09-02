@@ -1,5 +1,6 @@
 #include "license/LicenseManager.h"
 #include "license/CredentialStore.h"
+#include "license/LicenseToken.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -23,9 +24,12 @@ namespace nexa {
 
 namespace {
 constexpr auto kDeviceSeed     = "license/deviceSeed";
-constexpr auto kCachedPlan     = "license/cachedPlan";
-constexpr auto kCachedExpires  = "license/cachedExpires";
-constexpr auto kCachedAt       = "license/cachedAt";
+// The server's signed token, kept verbatim. Everything the offline path needs
+// (plan, entitlements, issue time, which device it belongs to) is inside it and
+// covered by the signature, so there is nothing left in settings worth editing.
+// The old cachedPlan/cachedExpires/cachedAt trio is deliberately gone: writing
+// `cachedPlan=pro` into this file used to be a complete, permanent bypass.
+constexpr auto kCachedToken    = "license/cachedToken";
 constexpr auto kCachedTrial    = "license/cachedTrial";
 constexpr int  kRevalidateMs   = 6 * 60 * 60 * 1000;   // 6 hours
 // The server holds a seat for 15 minutes past the last heartbeat, so beating
@@ -34,14 +38,27 @@ constexpr int  kHeartbeatMs    = 5 * 60 * 1000;
 
 QString planLabel(const QString &plan) { return plan.toUpper(); }
 
+// The production licence endpoint, fixed at compile time.
+//
+// This is deliberately NOT overridable in a shipped build. When it was read
+// from $NEXA_LICENSE_API_URL, anyone could point the app at a server of their
+// own that answers {"valid":true,"plan":"pro",...} and unlock every
+// client-side gate in about five minutes — no debugger, no patching, no
+// reverse engineering. A developer build (-DNEXA_DEV_BUILD=ON) still honours
+// the override so the backend can be run against localhost.
+constexpr auto kProductionLicenseApi = "https://nexadownloadmanager.com/api/license/validate";
+
 // The licence endpoints are siblings: .../license/validate, /heartbeat, /release.
 // Deriving them from the one configured URL keeps a dev override pointing the
 // whole family at localhost instead of only the validate call.
 QUrl licenseEndpoint(const QString &action)
 {
-    const QUrl base(qEnvironmentVariable(
-        "NEXA_LICENSE_API_URL",
-        QStringLiteral("https://nexadownloadmanager.com/api/license/validate")));
+#ifdef NEXA_DEV_BUILD
+    const QUrl base(qEnvironmentVariable(QStringLiteral("NEXA_LICENSE_API_URL"),
+                                         QLatin1String(kProductionLicenseApi)));
+#else
+    const QUrl base{QLatin1String(kProductionLicenseApi)};
+#endif
     if (action == QLatin1String("validate"))
         return base;
     QUrl url(base);
@@ -53,13 +70,19 @@ QUrl licenseEndpoint(const QString &action)
     return url;
 }
 
-// An endpoint is usable if it is HTTPS, or plainly a developer's loopback and
-// explicitly opted in. Same rule the validate path has always applied.
+// An endpoint is usable if it is HTTPS. A developer build additionally accepts
+// plain HTTP on loopback when explicitly opted in; a shipped build has no such
+// escape hatch, because "run a plain-HTTP server on 127.0.0.1" was otherwise a
+// licence bypass that needed no TLS certificate at all.
 bool endpointAllowed(const QUrl &endpoint)
 {
+#ifdef NEXA_DEV_BUILD
     const bool insecureDevelopment =
         qEnvironmentVariableIntValue("NEXA_ALLOW_INSECURE_LICENSE_API") == 1 &&
         (endpoint.host() == QLatin1String("localhost") || endpoint.host() == QLatin1String("127.0.0.1"));
+#else
+    constexpr bool insecureDevelopment = false;
+#endif
     return endpoint.isValid()
         && (endpoint.scheme() == QLatin1String("https") || insecureDevelopment);
 }
@@ -283,24 +306,64 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
             return;
         }
 
-        const QString plan = object.value(QStringLiteral("plan")).toString();
+        // The plan and entitlements are taken from the SIGNED token, never from
+        // the sibling JSON. That JSON is whatever the other end of the socket
+        // chose to send; the token is something only the licence server can
+        // produce. Reading `plan` from the response body was the flaw that made
+        // a five-minute fake server enough to unlock everything.
         const QString token = object.value(QStringLiteral("token")).toString();
-        if ((plan != QLatin1String("free") && plan != QLatin1String("pro") &&
-             plan != QLatin1String("team")) || token.isEmpty()) {
-            const QString message = QStringLiteral("License response is missing entitlement data");
+        licensetoken::Claims claims;
+        QString tokenError;
+        if (!licensetoken::verify(token, &claims, &tokenError)) {
+            const QString message = QStringLiteral("License response could not be verified");
+            setFeaturesForPlan(QStringLiteral("free"));
+            setPlan(QStringLiteral("free"), message);
+            if (userInitiated)
+                emit activationFinished(false, message);
+            return;
+        }
+        // A token is issued to one machine. Without this check a paid token
+        // could be copied from one install to another and shared freely.
+        if (claims.device != deviceFingerprint()) {
+            const QString message = QStringLiteral("License token was issued to a different device");
+            setFeaturesForPlan(QStringLiteral("free"));
+            setPlan(QStringLiteral("free"), message);
+            if (userInitiated)
+                emit activationFinished(false, message);
+            return;
+        }
+        // …and for the key we actually asked about, so a token minted for one
+        // licence cannot answer for another.
+        if (!claims.licenseKey.isEmpty() && claims.licenseKey != licenseKey) {
+            const QString message = QStringLiteral("License token does not match this key");
+            setFeaturesForPlan(QStringLiteral("free"));
+            setPlan(QStringLiteral("free"), message);
+            if (userInitiated)
+                emit activationFinished(false, message);
+            return;
+        }
+        if (claims.expiresAt <= QDateTime::currentDateTimeUtc()) {
+            const QString message = QStringLiteral("License token has already expired");
+            setFeaturesForPlan(QStringLiteral("free"));
             setPlan(QStringLiteral("free"), message);
             if (userInitiated)
                 emit activationFinished(false, message);
             return;
         }
 
+        const QString plan = claims.plan;
         const bool stored = credentialstore::writeLicenseKey(licenseKey);
         m_licenseKey = licenseKey;
-        m_licenseToken = token;        // never persisted: it expires in 24h anyway
+        m_licenseToken = token;
+        // `trial` and `expires` only shape the status text — the entitlements
+        // they used to imply now come from the token — so they may keep coming
+        // from the response body.
         m_trial = object.value(QStringLiteral("trial")).toBool(false);
         m_expires = QDateTime::fromString(object.value(QStringLiteral("expires")).toString(), Qt::ISODate);
-        applyFeatures(object, plan);
-        cacheEntitlement(plan, m_expires, m_trial);
+        applyFeatures(claims.features, plan);
+        // Display-only, so it may come from the response body.
+        m_activeSeats = object.value(QStringLiteral("activeSeats")).toInt(m_activeSeats);
+        cacheEntitlement(token, m_trial);
         // The seat is ours; keep it by beating until the app closes.
         if (!m_heartbeat->isActive())
             m_heartbeat->start();
@@ -340,17 +403,14 @@ void LicenseManager::setFeaturesForPlan(const QString &plan)
     emit featuresChanged(m_features);
 }
 
-void LicenseManager::applyFeatures(const QJsonObject &object, const QString &plan)
+void LicenseManager::applyFeatures(const QJsonObject &f, const QString &plan)
 {
     // Start from the plan's defaults so a server that omits a key (or an older
-    // server that sends no `features` at all) still yields a coherent set.
+    // server whose token carries no `features` at all) still yields a coherent
+    // set. The plan itself already came from the signed claims.
     setFeaturesForPlan(plan);
-    const QJsonValue raw = object.value(QStringLiteral("features"));
-    if (!raw.isObject()) {
-        m_activeSeats = object.value(QStringLiteral("activeSeats")).toInt(m_activeSeats);
+    if (f.isEmpty())
         return;
-    }
-    const QJsonObject f = raw.toObject();
     Entitlements e = m_features;
     if (f.contains(QStringLiteral("maxConcurrentDownloads")))
         e.maxConcurrentDownloads = qMax(0, f.value(QStringLiteral("maxConcurrentDownloads")).toInt(e.maxConcurrentDownloads));
@@ -374,7 +434,6 @@ void LicenseManager::applyFeatures(const QJsonObject &object, const QString &pla
         e.seats = qMax(1, f.value(QStringLiteral("seats")).toInt(e.seats));
 
     m_features = e;
-    m_activeSeats = object.value(QStringLiteral("activeSeats")).toInt(m_activeSeats);
     emit featuresChanged(m_features);
 }
 
@@ -502,41 +561,44 @@ void LicenseManager::releaseSeat()
     reply->deleteLater();
 }
 
-void LicenseManager::cacheEntitlement(const QString &plan, const QDateTime &expires, bool trial)
+void LicenseManager::cacheEntitlement(const QString &token, bool trial)
 {
     QSettings settings;
-    settings.setValue(QLatin1String(kCachedPlan), plan);
-    settings.setValue(QLatin1String(kCachedExpires),
-                      expires.isValid() ? expires.toUTC().toString(Qt::ISODate) : QString());
-    settings.setValue(QLatin1String(kCachedAt), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    settings.setValue(QLatin1String(kCachedToken), token);
     settings.setValue(QLatin1String(kCachedTrial), trial);
 }
 
 void LicenseManager::applyCachedEntitlement(const QString &offlineReason, bool userInitiated)
 {
     QSettings settings;
-    const QString plan = settings.value(QLatin1String(kCachedPlan)).toString();
-    const QDateTime cachedAt = QDateTime::fromString(
-        settings.value(QLatin1String(kCachedAt)).toString(), Qt::ISODate);
-    const QString expiresRaw = settings.value(QLatin1String(kCachedExpires)).toString();
-    const QDateTime expires = expiresRaw.isEmpty() ? QDateTime()
-                                                   : QDateTime::fromString(expiresRaw, Qt::ISODate);
+    const QString token = settings.value(QLatin1String(kCachedToken)).toString();
     const bool trial = settings.value(QLatin1String(kCachedTrial), false).toBool();
 
+    // Everything the decision rests on is now inside a signature: the plan, the
+    // entitlements, when it was issued, and which machine it was issued to.
+    // Hand-editing this file can no longer produce a paid plan — it can only
+    // produce a token that fails to verify, which lands on Free below.
+    licensetoken::Claims claims;
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    const bool paid = plan == QLatin1String("pro") || plan == QLatin1String("team");
-    // Reject a cache from the future (clock rolled back) as well as a stale one.
-    const bool fresh = cachedAt.isValid() && cachedAt <= now.addSecs(300)
-                       && cachedAt.daysTo(now) <= kOfflineGraceDays;
-    const bool unexpired = !expires.isValid() || expires > now;
+    // The whole decision: a signature that checks out, plus the grace policy in
+    // licensetoken::offlineGraceAllows (paid plan, issued to this device, `iat`
+    // within the window and not in the future). `iat` is the server's own
+    // record of when it last vouched for this install, so the window is
+    // measured against something the user cannot move. A user who rolls the
+    // whole system clock back can still stretch it — that breaks TLS and much
+    // else on their machine, and no offline grace scheme survives it.
+    const bool allowed = licensetoken::verify(token, &claims)
+        && licensetoken::offlineGraceAllows(claims, deviceFingerprint(), now, kOfflineGraceDays);
 
-    if (paid && fresh && unexpired) {
+    if (allowed) {
         m_trial = trial;
-        m_expires = expires;
-        // Offline grace restores the plan's entitlements too, otherwise a paid
-        // user would keep their badge but silently lose themes and Udemy.
-        setFeaturesForPlan(plan);
-        const qint64 days = cachedAt.daysTo(now);
+        m_expires = QDateTime();
+        // Offline grace restores the token's own entitlements, not a guess from
+        // the plan name — so a Team seat count or a server-side feature flip
+        // survives an outage exactly as issued.
+        applyFeatures(claims.features, claims.plan);
+        const QString plan = claims.plan;
+        const qint64 days = claims.issuedAt.daysTo(now);
         const QString when = days <= 0 ? QStringLiteral("today")
                            : QStringLiteral("%1 day%2 ago").arg(days).arg(days == 1 ? QString() : QStringLiteral("s"));
         const QString message = QStringLiteral("%1 active (offline — last verified %2)")

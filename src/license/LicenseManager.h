@@ -98,13 +98,18 @@ private:
     void validate(const QString &licenseKey, bool userInitiated);
     void setPlan(const QString &plan, const QString &status);
     void clearCache();
-    // Remember a server-confirmed entitlement so a network outage doesn't drop a
-    // paying user to Free; applyCachedEntitlement() replays it within the grace window.
-    void cacheEntitlement(const QString &plan, const QDateTime &expires, bool trial);
+    // Remember the server's signed token so a network outage doesn't drop a
+    // paying user to Free; applyCachedEntitlement() replays it within the grace
+    // window. The token is stored rather than a plain "pro" string precisely
+    // because the settings file is user-writable: editing this cache now means
+    // forging an Ed25519 signature.
+    void cacheEntitlement(const QString &token, bool trial);
     void applyCachedEntitlement(const QString &offlineReason, bool userInitiated);
-    // Read the server's `features` object, falling back to the plan's known
-    // defaults for any key it does not send (older server, newer client).
-    void applyFeatures(const QJsonObject &object, const QString &plan);
+    // Read the signed `features` object out of a licence token, falling back to
+    // the plan's known defaults for any key it does not carry (older server,
+    // newer client). Takes the features object itself, not the response body —
+    // entitlements must never be read from unsigned JSON.
+    void applyFeatures(const QJsonObject &features, const QString &plan);
     void setFeaturesForPlan(const QString &plan);
     void sendHeartbeat();
 
