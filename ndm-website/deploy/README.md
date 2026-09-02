@@ -1,52 +1,38 @@
 # Deploying the Nexa website
 
-One VPS, Docker Compose: MySQL, the API, nginx with TLS, the two static builds,
-and a nightly job for backups + trial reminders.
+Hostinger shared hosting (CloudLinux, no root, no systemd, no Docker). The
+site is built **locally** and shipped up with `deploy/build-and-upload.sh`
+(rsync/ssh) — see that script's header comment for exactly what gets synced
+where and what it deliberately never touches on the server.
 
 ## First deploy
 
 ```bash
-git clone <repo> && cd ndm-website
+# On the server, once: create nexa-api/.env by hand (never overwritten by
+# the deploy script) — copy backend/.env.example and fill in real values,
+# see "Secrets" below.
 
-cp backend/.env.example backend/.env
-$EDITOR backend/.env            # see "Secrets" below — production fails fast without them
-
-# Root/app DB passwords are read by compose itself:
-cat >> .env <<'ENV'
-MYSQL_PASS=<same as backend/.env MYSQL_PASS>
-MYSQL_ROOT_PASS=<a different long random password>
-PUBLIC_URL=https://nexadownloadmanager.com
-ENV
-
-# 1. Certificate first — nginx will not start without one.
-docker compose up -d db
-docker run --rm -p 80:80 \
-  -v ndm-website_certbot-conf:/etc/letsencrypt \
-  -v ndm-website_certbot-www:/var/www/certbot \
-  certbot/certbot certonly --standalone \
-  -d nexadownloadmanager.com -d www.nexadownloadmanager.com \
-  --agree-tos -m you@example.com --no-eff-email
-
-# 2. Everything else.
-docker compose up -d --build
-docker compose logs -f api
+# From your machine, from the repo root:
+./deploy/build-and-upload.sh
 ```
 
-`frontend-build` and `admin-build` run once, drop their `dist/` into the shared
-volumes nginx serves, and exit — seeing them "Exited (0)" is correct.
+Then set up the two hPanel Cron Jobs described in "Keepalive" and "Backups"
+below — Hostinger shared hosting only exposes cron via hPanel → Advanced →
+Cron Jobs, there's no `crontab -e` on this account.
 
 ## Secrets
 
 Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
 
-- `JWT_SECRET`, `JWT_ADMIN_SECRET`, `LICENSE_JWT_SECRET` — 32+ chars, all different.
+- `JWT_SECRET`, `JWT_ADMIN_SECRET`, `JWT_ROOT_SECRET`, `LICENSE_JWT_SECRET` — 32+ chars, all different.
   Generate with `openssl rand -base64 48`.
 - `STRIPE_SECRET_KEY` (`sk_live_…`) and `STRIPE_WEBHOOK_SECRET` (`whsec_…`).
 - `SMTP_HOST` (+ `SMTP_USER`/`SMTP_PASS`) — mock email is disabled in production.
 - `CORS_ORIGINS` and `FRONTEND_URL` — HTTPS only.
 - `ADMIN_ALLOWED_IPS` — must actually restrict; empty is refused.
-- `TRUST_PROXY` — set to `1` for the single nginx in front. Getting this wrong
-  breaks rate limiting and the admin IP allowlist, which both read the client IP.
+- `ROOT_ADMIN_EMAIL` — the creator account's address.
+- `TRUST_PROXY` — set to match Hostinger's reverse proxy so rate limiting and
+  the admin IP allowlist see the real client IP instead of 127.0.0.1.
 - `MYSQL_PASS` — 16+ chars, not a default.
 
 ## Stripe webhook
@@ -60,31 +46,57 @@ Stripe's retries cannot double-charge or double-email.
 
 ```bash
 git pull
-docker compose up -d --build      # migrate runs before api serves traffic
+./deploy/build-and-upload.sh
 ```
+
+`build-and-upload.sh` restarts the API for you (via `nexa-api/.api.pid`) once
+the new backend files land. `SKIP_FRONTEND=1` / `SKIP_ADMIN=1` /
+`SKIP_BACKEND=1` deploy a subset — see the script's header for every override.
+
+## Keepalive
+
+`nexa-api/deploy/hostinger/run-api.sh` health-checks the API on loopback and
+(re)starts it if it's down or hung. Add an hPanel Cron Job:
+
+```
+* * * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/deploy/hostinger/run-api.sh >/dev/null 2>&1
+```
+
+`supervisor.sh` is a same-directory fallback loop for a shell that can't
+register cron jobs — it coexists safely with the hPanel job (`run-api.sh` has
+its own lock either way). Logs: `~/domains/nexadownloadmanager.com/logs/api.log`.
 
 ## Backups
 
-The `cron` service runs `backup.sh` nightly into the `backups` volume: a
-`--single-transaction` dump, gzipped, verified non-empty and `gunzip -t`-clean,
-keeping 14 days (`BACKUP_KEEP_DAYS`).
+`nexa-api/deploy/hostinger/daily-maintenance.sh` runs a verified DB dump
+(`backend/src/scripts/backup.sh`) and then the trial-ending reminder emails
+(`backend/src/scripts/sendTrialReminders.js`) — the same two jobs the old
+Docker Compose `cron` service used to run in its own container. Add a second
+hPanel Cron Job:
+
+```
+15 3 * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/deploy/hostinger/daily-maintenance.sh >/dev/null 2>&1
+```
+
+Dumps land in `nexa-api/backups/`, gzipped and `gunzip -t`-verified, pruned
+after `BACKUP_KEEP_DAYS` (default 14). Logs:
+`~/domains/nexadownloadmanager.com/logs/daily-maintenance.log`.
 
 ```bash
-docker compose exec api bash src/scripts/backup.sh /app/backups   # on demand
-docker compose exec api ls -la /app/backups
-docker run --rm -v ndm-website_backups:/b -v "$PWD":/out alpine \
-  cp /b/nexa-YYYYmmdd-HHMM.sql.gz /out/                            # copy one out
+# On demand, over SSH:
+bash ~/domains/nexadownloadmanager.com/nexa-api/src/scripts/backup.sh \
+  ~/domains/nexadownloadmanager.com/nexa-api/backups
 ```
 
 Restore:
 
 ```bash
-gunzip -c nexa-YYYYmmdd-HHMM.sql.gz | \
-  docker compose exec -T db mysql -u root -p"$MYSQL_ROOT_PASS" ndm_prod
+gunzip -c nexa-YYYYmmdd-HHMM.sql.gz | mysql -h HOST -u USER -p DBNAME
 ```
 
 **Copy dumps off this machine.** A backup on the same disk as the database is
-not a backup — sync the volume to object storage or another host.
+not a backup — sync `nexa-api/backups/` to object storage or another host on
+a schedule of its own.
 
 ## Publishing a release
 
@@ -96,5 +108,4 @@ Windows/Linux URLs and their SHA-256, and mark it latest.
 
 ```bash
 curl -fsS https://<domain>/api/health     # {"ok":true,"data":{"status":"up"}}
-docker compose ps                          # api should be "healthy"
 ```

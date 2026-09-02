@@ -68,7 +68,8 @@ npm run dev                   # http://localhost:5174/admin/  (staff)
                               # http://localhost:5174/root/   (creator)
 ```
 Both mounts come from the one dev server; `vite.config.js` serves the same SPA
-shell for `/root` navigations, matching what nginx does in production.
+shell for `/root` navigations, matching what `public_html.htaccess`'s SPA
+fallback does in production.
 
 ## Health check
 ```bash
