@@ -44,6 +44,36 @@ function planExpiry(plan, billingCycle) {
   return d;
 }
 
+/**
+ * The expiry a subscription should carry after an admin moves it between plans,
+ * or `undefined` for "leave the existing date alone".
+ *
+ * The free plan's expiry is deliberately ~100 years out, so carrying a date
+ * across a plan change gets it wrong in both directions: a free → pro grant
+ * kept the far-future date and quietly handed out a permanent Pro licence,
+ * while a pro → free downgrade kept the paid date, so the customer's FREE
+ * licence expired a month later and the desktop app deleted their key.
+ *
+ * A lateral paid move (pro ⇄ team) keeps its date: the customer has already
+ * paid for that period and should not lose or gain time by being switched.
+ */
+function expiryForPlanChange(fromPlan, toPlan, currentExpiry, billingCycle) {
+  if (fromPlan === toPlan) return undefined;
+  if (toPlan === 'free') return planExpiry('free');
+  if (fromPlan === 'free' || !currentExpiry) return planExpiry(toPlan, billingCycle);
+  return undefined;
+}
+
+/**
+ * How long a lapsed paid plan keeps working before it falls back to Free.
+ *
+ * Stripe retries a failed charge for days before giving up, and a renewal
+ * webhook can be delayed or replayed. Downgrading the instant expiry_date
+ * passes would punish customers for our plumbing, so a paid plan is only
+ * considered lapsed once it is this far past its date.
+ */
+const PAID_GRACE_DAYS = 3;
+
 function toTime(value) {
   if (value === null || value === undefined || value === '') return NaN;
   const d = value instanceof Date ? value : new Date(value);
@@ -78,7 +108,26 @@ function isTrialExpired(sub, now = new Date()) {
   return !Number.isNaN(end) && end <= toTime(now);
 }
 
+/**
+ * A PAID plan whose period ended and was never renewed.
+ *
+ * Such a row used to sit there as `active` with a past date, which
+ * /api/license/validate reported as `expired` — and the desktop client DELETES
+ * the key it is told is expired. Falling back to Free instead is both kinder
+ * and more accurate: the person still owns a Free licence, they just stopped
+ * paying for Pro. Trials are excluded; isTrialExpired already owns those.
+ */
+function isPaidPlanLapsed(sub, now = new Date()) {
+  if (!sub || (sub.plan !== 'pro' && sub.plan !== 'team')) return false;
+  if (sub.status !== 'active') return false;
+  if (hasTrial(sub)) return false;
+  const end = toTime(sub.expiry_date);
+  if (Number.isNaN(end)) return false;
+  return end + PAID_GRACE_DAYS * 24 * 60 * 60 * 1000 <= toTime(now);
+}
+
 module.exports = {
-  generateLicenseKey, planSeats, planExpiry, SEAT_LEASE_SECONDS,
-  TRIAL_DAYS, TRIAL_PLAN, trialEndsAt, isTrialActive, isTrialExpired,
+  generateLicenseKey, planSeats, planExpiry, expiryForPlanChange, SEAT_LEASE_SECONDS,
+  TRIAL_DAYS, TRIAL_PLAN, PAID_GRACE_DAYS,
+  trialEndsAt, isTrialActive, isTrialExpired, isPaidPlanLapsed,
 };

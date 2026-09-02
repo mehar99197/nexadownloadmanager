@@ -55,7 +55,7 @@ function hashToken(token) {
 /** The subscription this user owns, if it is a usable Team plan. */
 async function ownedTeam(userId) {
   const active = await Subscription.findActiveByUserId(userId);
-  const sub = await Subscription.expireTrialIfNeeded(active || (await Subscription.findByUserId(userId))[0] || null);
+  const sub = await Subscription.current(active || (await Subscription.findByUserId(userId))[0] || null);
   if (!sub || sub.plan !== 'team') return null;
   return sub;
 }

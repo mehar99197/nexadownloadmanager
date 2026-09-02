@@ -27,6 +27,9 @@ function statusSummary(sub) {
   return {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats,
     trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    // "Active, but it ends on the 3rd" is a state the site has to be able to
+    // show — otherwise a cancellation looks like it did nothing.
+    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
   };
 }
 
@@ -112,11 +115,28 @@ router.post(
   })
 );
 
+/**
+ * Cancel — at the END of the period the customer already paid for.
+ *
+ * This used to cancel on the spot: `stripe.subscriptions.cancel()` plus
+ * `status='cancelled'`, so somebody who cancelled on day 2 of a paid month lost
+ * Pro that second, and the desktop app DELETED their key on the `cancelled`
+ * reason. The confirmation dialog on /billing has always promised the
+ * opposite ("your plan stays active until the end of the period you already
+ * paid for"), which is the behaviour implemented here.
+ *
+ * The row therefore stays `active` with its expiry intact and only carries
+ * `cancel_at_period_end`. What ends it is either Stripe's
+ * customer.subscription.deleted at the period boundary, or — for a plan with no
+ * Stripe subscription behind it — the lazy fallback in
+ * Subscription.expireIfLapsed. Either way the customer lands on Free with a
+ * working key, never on a deleted one.
+ */
 router.post(
   '/cancel', requireAuth,
   asyncHandler(async (req, res) => {
     const subs = await Subscription.findByUserId(req.user.id);
-    const subscription = subs[0];
+    const subscription = await Subscription.current(subs[0] || null);
     if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
     // The free plan never renews; marking it cancelled would only make the
     // desktop app treat the user's (free) licence key as invalid.
@@ -124,13 +144,47 @@ router.post(
       return fail(res, 'NOT_A_PAID_PLAN', 'The free plan has nothing to cancel', 400);
     if (subscription.status !== 'active')
       return fail(res, 'ALREADY_INACTIVE', 'This subscription is not active', 400);
+    if (subscription.cancel_at_period_end)
+      return fail(res, 'ALREADY_CANCELLING', 'This subscription is already set to end', 400);
 
     if (subscription.stripe_subscription_id)
-      await stripe.cancelSubscription(subscription.stripe_subscription_id);
+      await stripe.cancelSubscription(subscription.stripe_subscription_id, { atPeriodEnd: true });
 
-    await Subscription.update(subscription.id, { status: 'cancelled' });
+    await Subscription.update(subscription.id, { cancelAtPeriodEnd: 1 });
     const sub = await Subscription.findById(subscription.id);
-    return ok(res, { plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats });
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.cancel_scheduled', entityType: 'subscription',
+      entityId: sub.id, summary: `${req.user.email} cancelled their ${sub.plan} plan`,
+      metadata: { endsAt: toIso(sub.expiry_date) },
+    });
+    return ok(res, statusSummary(sub));
+  })
+);
+
+// Undo a pending cancellation while the period is still running. Without this
+// the only way back was Stripe's hosted portal, which a trial or an
+// admin-granted plan does not even have.
+router.post(
+  '/resume', requireAuth,
+  asyncHandler(async (req, res) => {
+    const subs = await Subscription.findByUserId(req.user.id);
+    const subscription = await Subscription.current(subs[0] || null);
+    if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    if (!subscription.cancel_at_period_end)
+      return fail(res, 'NOT_CANCELLING', 'This subscription is not scheduled to end', 400);
+    if (subscription.status !== 'active' || subscription.plan === 'free')
+      return fail(res, 'ALREADY_INACTIVE', 'This plan has already ended — subscribe again to restart it', 400);
+
+    if (subscription.stripe_subscription_id)
+      await stripe.resumeSubscription(subscription.stripe_subscription_id);
+
+    await Subscription.update(subscription.id, { cancelAtPeriodEnd: 0 });
+    const sub = await Subscription.findById(subscription.id);
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.cancel_revoked', entityType: 'subscription',
+      entityId: sub.id, summary: `${req.user.email} resumed their ${sub.plan} plan`,
+    });
+    return ok(res, statusSummary(sub));
   })
 );
 
@@ -160,11 +214,10 @@ router.post(
 router.get(
   '/status', requireAuth,
   asyncHandler(async (req, res) => {
-    let sub = await Subscription.findActiveByUserId(req.user.id) ||
-              (await Subscription.findByUserId(req.user.id))[0];
-    if (!sub) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
-    sub = await Subscription.expireTrialIfNeeded(sub);
-    return ok(res, statusSummary(sub));
+    const found = await Subscription.findActiveByUserId(req.user.id) ||
+                  (await Subscription.findByUserId(req.user.id))[0];
+    if (!found) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    return ok(res, statusSummary(await Subscription.current(found)));
   })
 );
 

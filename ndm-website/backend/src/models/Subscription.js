@@ -3,7 +3,7 @@
 const { query, queryOne, insert, execute, getPool, withTransaction } = require('../config/db');
 const {
   generateLicenseKey, planSeats, planExpiry, TRIAL_PLAN, trialEndsAt, isTrialExpired,
-  SEAT_LEASE_SECONDS,
+  isPaidPlanLapsed, SEAT_LEASE_SECONDS,
 } = require('../utils/license');
 
 const Subscription = {
@@ -28,6 +28,15 @@ const Subscription = {
 
   async findByStripeSubscriptionId(id) {
     return queryOne('SELECT * FROM subscriptions WHERE stripe_subscription_id = ?', [id]);
+  },
+
+  // Fallback link for a renewal invoice that names the customer but not the
+  // subscription (older API shapes put the subscription only on the line item).
+  async findByStripeCustomerId(id) {
+    return queryOne(
+      'SELECT * FROM subscriptions WHERE stripe_customer_id = ? ORDER BY created_at DESC LIMIT 1',
+      [id]
+    );
   },
 
   /**
@@ -154,6 +163,58 @@ const Subscription = {
     return { ok: true, released: (result.affectedRows || 0) > 0 };
   },
 
+  /**
+   * How widely a licence has been activated: distinct machines all time, and
+   * how many of those first appeared inside `windowDays`.
+   *
+   * Counts rows rather than live leases on purpose. A leaked key's users take
+   * turns holding the seat, so the live count stays at the limit and looks
+   * healthy; it is the accumulated rows that give it away. Activation rows are
+   * never deleted (releaseSeat only clears the lease), so this is a true
+   * all-time count.
+   */
+  async deviceSpread(id, windowDays = 7) {
+    const days = Math.max(1, Math.min(365, Number(windowDays) || 7));
+    const rows = await query(
+      `SELECT COUNT(*) AS distinctDevices,
+              SUM(created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)) AS newDevicesInWindow
+         FROM license_activations
+        WHERE subscription_id = ?`,
+      [days, id]
+    );
+    const row = rows[0] || {};
+    return {
+      distinctDevices: Number(row.distinctDevices) || 0,
+      newDevicesInWindow: Number(row.newDevicesInWindow) || 0,
+    };
+  },
+
+  /** Record what the sharing check concluded. Never changes `status`. */
+  async recordSharingAssessment(id, { level, reason, distinctDevices }) {
+    await execute(
+      `UPDATE subscriptions
+          SET sharing_level = ?, sharing_reason = ?, sharing_devices = ?,
+              sharing_checked_at = NOW()
+        WHERE id = ?`,
+      [level, reason ? String(reason).slice(0, 255) : null, distinctDevices, id]
+    );
+  },
+
+  /** Licences the sharing check has flagged, worst first — for the admin panel. */
+  async listFlaggedForSharing({ limit = 100 } = {}) {
+    const capped = Math.max(1, Math.min(500, Number(limit) || 100));
+    return query(
+      `SELECT s.id, s.license_key, s.plan, s.status, s.seats,
+              s.sharing_level, s.sharing_devices, s.sharing_reason, s.sharing_checked_at,
+              u.email
+         FROM subscriptions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.sharing_level <> 'ok'
+        ORDER BY FIELD(s.sharing_level, 'suspected', 'watch'), s.sharing_devices DESC
+        LIMIT ${capped}`
+    );
+  },
+
   /** Devices for a subscription, newest lease first, with live/idle state. */
   async listActivations(id) {
     return query(
@@ -236,17 +297,17 @@ const Subscription = {
     await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE id = ?`, vals);
   },
 
-  async updateByUserId(userId, fields) {
-    const sets = [];
-    const vals = [];
-    for (const [k, v] of Object.entries(fields)) {
-      const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
-      sets.push(`${col} = ?`);
-      vals.push(v);
-    }
-    if (sets.length === 0) return;
-    vals.push(userId);
-    await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE user_id = ?`, vals);
+  /**
+   * Update the user's CURRENT subscription — the newest row, which is the one
+   * every read path (`findByUserId()[0]`, `findActiveByUserId`) resolves to.
+   * It used to write to every row the user had, so a second licence issued by
+   * an admin silently moved in lockstep with the first.
+   */
+  async updateCurrentByUserId(userId, fields) {
+    const current = (await Subscription.findByUserId(userId))[0] || null;
+    if (!current) return null;
+    await Subscription.update(current.id, fields);
+    return Subscription.findById(current.id);
   },
 
   async count(filter = {}) {
@@ -305,6 +366,48 @@ const Subscription = {
       `SELECT * FROM subscriptions WHERE user_id IN (${placeholders}) ORDER BY created_at DESC`,
       userIds
     );
+  },
+
+  /**
+   * The row as it should be read RIGHT NOW: lazy trial expiry, then lazy paid
+   * lapse. One call so no route has to remember both, and every read path in
+   * the app agrees on what a subscription currently is.
+   */
+  async current(sub) {
+    return Subscription.expireIfLapsed(await Subscription.expireTrialIfNeeded(sub));
+  },
+
+  /**
+   * A paid plan whose period ended and was never renewed falls back to Free
+   * rather than sitting there as an `active` row with a past date — which
+   * /api/license/validate reported as `expired`, and the desktop client deletes
+   * a key it is told is expired. See utils/license.js#isPaidPlanLapsed for the
+   * grace period that keeps a slow renewal webhook from downgrading anyone.
+   */
+  async expireIfLapsed(sub) {
+    if (!isPaidPlanLapsed(sub)) return sub;
+    await execute(
+      `UPDATE subscriptions
+          SET plan = 'free', status = 'active', seats = ?, expiry_date = ?,
+              cancel_at_period_end = 0
+        WHERE id = ? AND plan IN ('pro', 'team') AND status = 'active'`,
+      [planSeats('free'), planExpiry('free'), sub.id]
+    );
+    return Subscription.findById(sub.id);
+  },
+
+  /**
+   * Retire every OTHER subscription a user holds, so issuing a new licence by
+   * hand cannot leave the previous key still validating. Without this an admin
+   * "upgrade" handed the customer two working licences.
+   */
+  async retireOthers(userId, keepId) {
+    const result = await execute(
+      `UPDATE subscriptions SET status = 'expired', cancel_at_period_end = 0
+        WHERE user_id = ? AND id <> ? AND status <> 'expired'`,
+      [userId, keepId]
+    );
+    return result.affectedRows || 0;
   },
 
   // Lazy trial expiry: when trial_ends_at has passed and the row is not a paid

@@ -109,6 +109,19 @@ export default function Billing() {
   };
 
 
+  const handleResume = async () => {
+    setCancelling(true);
+    try {
+      await api.post('/subscription/resume');
+      toast.success('Subscription resumed — it will renew as usual.');
+      loadData();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not resume the subscription.');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const handleCancel = async () => {
     const sure = await confirm({
       title: 'Cancel your subscription?',
@@ -121,7 +134,7 @@ export default function Billing() {
     setCancelling(true);
     try {
       await api.post('/subscription/cancel');
-      toast.success('Subscription cancelled.');
+      toast.success('Cancelled. Your plan stays active until it expires.');
       loadData();
     } catch (err) {
       const msg =
@@ -172,17 +185,19 @@ export default function Billing() {
                 <span className="text-sm text-zinc-400">Status</span>
                 <span
                   className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${
-                    subStatus.status === 'active'
+                    subStatus.status === 'active' && !subStatus.cancelAtPeriodEnd
                       ? 'bg-emerald-500/15 text-emerald-300'
                       : 'bg-amber-500/15 text-amber-300'
                   }`}
                 >
-                  {subStatus.status}
+                  {subStatus.cancelAtPeriodEnd ? 'Ending' : subStatus.status}
                 </span>
               </div>
               {subStatus.expiryDate && (
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-zinc-400">Expires</span>
+                  <span className="text-sm text-zinc-400">
+                    {subStatus.cancelAtPeriodEnd ? 'Ends' : subStatus.plan === 'free' ? 'Expires' : 'Renews'}
+                  </span>
                   <span className="text-sm text-white">
                     {new Date(subStatus.expiryDate).toLocaleDateString()}
                   </span>
@@ -201,15 +216,29 @@ export default function Billing() {
                   <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
                     {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
                   </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={handleCancel}
-                    disabled={cancelling}
-                    className="border-red-500/30 text-red-300 hover:border-red-500/60"
-                  >
-                    {cancelling ? 'Cancelling…' : 'Cancel Subscription'}
-                  </Button>
+                  {subStatus.cancelAtPeriodEnd ? (
+                    <Button onClick={handleResume} disabled={cancelling}>
+                      {cancelling ? 'Resuming…' : 'Resume subscription'}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      onClick={handleCancel}
+                      disabled={cancelling}
+                      className="border-red-500/30 text-red-300 hover:border-red-500/60"
+                    >
+                      {cancelling ? 'Cancelling…' : 'Cancel Subscription'}
+                    </Button>
+                  )}
                 </div>
+              )}
+              {subStatus.cancelAtPeriodEnd && (
+                <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-xs leading-6 text-amber-200">
+                  Your {subStatus.plan} plan is set to end on{' '}
+                  {subStatus.expiryDate ? new Date(subStatus.expiryDate).toLocaleDateString() : 'its renewal date'}.
+                  Everything keeps working until then, and your account returns to Free afterwards —
+                  nothing is deleted. Change your mind any time before that.
+                </p>
               )}
             </div>
           ) : (
