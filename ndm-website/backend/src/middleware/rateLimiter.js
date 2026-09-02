@@ -2,9 +2,18 @@
 
 const rateLimit = require('express-rate-limit');
 const { fail } = require('../utils/respond');
+const { MySqlRateLimitStore } = require('./rateLimitStore');
 
-function limitReached(req, res) {
-  return fail(res, 'RATE_LIMITED', 'Too many requests, please try again later', 429);
+// express-rate-limit hands the resolved options to the handler. Reading
+// `message` from them is what makes the per-limiter wording below reach the
+// client at all: a custom `handler` replaces the library's own message
+// response, so every limiter used to answer the same generic sentence and the
+// specific ones ("Too many code attempts…") were dead configuration.
+function limitReached(req, res, next, options) {
+  const message = typeof options?.message === 'string' && options.message
+    ? options.message
+    : 'Too many requests, please try again later';
+  return fail(res, 'RATE_LIMITED', message, 429);
 }
 
 const common = {
@@ -26,22 +35,64 @@ function makeLimiter(options) {
   return (req, res, next) => (limitsDisabled() ? next() : limiter(req, res, next));
 }
 
-// Auth endpoints (register/login/forgot/reset): 5 per 15 min.
-const authLimiter = makeLimiter({
+/**
+ * A limiter whose counts live in MySQL, so they survive the restarts the
+ * keepalive cron performs and hold across processes. Reserved for the
+ * security-critical endpoints — see middleware/rateLimitStore.js for why the
+ * high-volume limiters stay in memory.
+ */
+function makeDurableLimiter(name, options) {
+  return makeLimiter({ ...options, store: new MySqlRateLimitStore({ prefix: name }) });
+}
+
+/**
+ * Sign-in attempts are counted per (IP, email), not per IP alone.
+ *
+ * A single per-IP budget of 5 per 15 minutes means one person fat-fingering
+ * their password locks out everybody behind the same office NAT or mobile
+ * carrier. Keying on the address as well keeps the per-account brute-force
+ * budget tight while leaving other people on that IP unaffected; `authIpLimiter`
+ * below still caps the total from one address, so nobody can walk a dictionary
+ * of emails past it either.
+ */
+function loginKey(req) {
+  const email = String(req.body?.email || '').toLowerCase().trim().slice(0, 190);
+  return `${req.ip}|${email}`;
+}
+
+// Register / forgot / reset: 5 per 15 min per address. These carry no shared
+// account identity, so the IP is the only key available.
+const authLimiter = makeDurableLimiter('auth', {
   windowMs: 15 * 60 * 1000,
   max: 5,
 });
 
+// Sign-in: 5 per 15 min per (IP, email) — see loginKey.
+const loginLimiter = makeDurableLimiter('login', {
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: loginKey,
+  message: 'Too many sign-in attempts for this account. Please wait a few minutes.',
+});
+
+// …and a looser ceiling on the address itself, so cycling through emails does
+// not buy an attacker an unlimited number of guesses.
+const authIpLimiter = makeDurableLimiter('auth-ip', {
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: 'Too many sign-in attempts from this network. Please wait a few minutes.',
+});
+
 // License validation (called by the C++ app): 10 per hour per source IP. The
 // fingerprint is untrusted input and must not be the sole rate-limit key.
-const licenseLimiter = makeLimiter({
+const licenseLimiter = makeDurableLimiter('license', {
   windowMs: 60 * 60 * 1000,
   max: 10,
   keyGenerator: (req) => req.ip,
 });
 
 // Admin login: 5 per 15 min.
-const adminLoginLimiter = makeLimiter({
+const adminLoginLimiter = makeDurableLimiter('admin-login', {
   windowMs: 15 * 60 * 1000,
   max: 5,
 });
@@ -77,7 +128,7 @@ const adminRefreshLimiter = makeLimiter({
 });
 
 // Contact form: enough for a real person, useless for a script.
-const contactLimiter = makeLimiter({
+const contactLimiter = makeDurableLimiter('contact', {
   windowMs: 60 * 60 * 1000,
   max: 5,
   message: 'Too many messages from this address. Please try again later.',
@@ -85,7 +136,7 @@ const contactLimiter = makeLimiter({
 
 // Second factor on the control-panel login. A 6-digit code has a million
 // values, so the budget must be tiny: ten attempts per challenge window.
-const twoFactorLimiter = makeLimiter({
+const twoFactorLimiter = makeDurableLimiter('2fa', {
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: 'Too many code attempts. Please wait a few minutes.',
@@ -93,13 +144,15 @@ const twoFactorLimiter = makeLimiter({
 
 // Team invites: a five-seat team never needs more than a handful, while a
 // compromised account must not be able to spam invitations from our domain.
-const teamInviteLimiter = makeLimiter({
+const teamInviteLimiter = makeDurableLimiter('team-invite', {
   windowMs: 60 * 60 * 1000,
   max: 20,
   message: 'Too many invitations sent. Please try again later.',
 });
 
 module.exports = {
-  authLimiter, licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
+  authLimiter, loginLimiter, authIpLimiter,
+  licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter,
+  loginKey,
 };

@@ -10,6 +10,7 @@ const config = require('./config/env');
 const { ok } = require('./utils/respond');
 const asyncHandler = require('./utils/asyncHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
+const { originGuard } = require('./middleware/originGuard');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const User = require('./models/User');
 const Release = require('./models/Release');
@@ -30,6 +31,9 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/api', apiLimiter);
+// Second layer under SameSite=Lax for state-changing requests — see the
+// middleware for why a MISSING Origin is deliberately allowed through.
+app.use('/api', originGuard);
 
 app.get('/api/health', (req, res) => ok(res, { status: 'up' }));
 

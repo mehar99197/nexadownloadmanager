@@ -1,7 +1,7 @@
 'use strict';
 
 const { query, queryOne, insert, execute } = require('../config/db');
-const { MAX_ADS_PER_RESPONSE } = require('../utils/ads');
+const { MAX_ADS_PER_RESPONSE, isServable } = require('../utils/ads');
 
 const Ad = {
   async findById(id) {
@@ -12,23 +12,23 @@ const Ad = {
     return query('SELECT * FROM ads ORDER BY active DESC, weight DESC, created_at DESC');
   },
 
-  // What the desktop app is allowed to see right now: switched on and inside
-  // its schedule. Ordered so the heaviest ad is first, which is also the one a
-  // client that only renders one will show.
+  /**
+   * What the desktop app is allowed to see right now, heaviest first.
+   *
+   * SQL narrows to the placement; `utils/ads.js#isServable` decides whether an
+   * ad is actually live. The window rule used to exist twice — once here as a
+   * WHERE clause and once in that predicate — and only the SQL ever ran, so the
+   * heavily-tested JS copy was free to drift away from real behaviour. The ads
+   * table holds a handful of admin-written promos, so filtering the placement's
+   * rows in JS costs nothing and leaves one rule.
+   */
   async listServable(placement, limit = MAX_ADS_PER_RESPONSE) {
-    // MariaDB does not accept bound parameters for LIMIT, so it is clamped to a
-    // number and interpolated (same as Review/Payment/User listings).
     const cap = Math.min(Math.max(Number(limit) || MAX_ADS_PER_RESPONSE, 1), MAX_ADS_PER_RESPONSE);
-    return query(
-      `SELECT * FROM ads
-        WHERE active = 1
-          AND placement = ?
-          AND (starts_at IS NULL OR starts_at <= UTC_TIMESTAMP())
-          AND (ends_at   IS NULL OR ends_at   >  UTC_TIMESTAMP())
-        ORDER BY weight DESC, id ASC
-        LIMIT ${cap}`,
-      [placement]
+    const rows = await query(
+      'SELECT * FROM ads WHERE placement = ? ORDER BY weight DESC, id ASC', [placement]
     );
+    const now = new Date();
+    return rows.filter((ad) => isServable(ad, now)).slice(0, cap);
   },
 
   async create(fields) {

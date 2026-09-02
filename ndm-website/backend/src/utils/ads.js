@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 // Ad serving rules, kept pure so they can be unit-tested without a database
 // and so the "paid plans never see an ad" decision lives in exactly one place.
 
@@ -12,6 +14,15 @@ const AD_FREE_PLANS = ['pro', 'team'];
 
 // Never hand the client an unbounded list — it rotates through what it gets.
 const MAX_ADS_PER_RESPONSE = 10;
+
+/**
+ * How long an ad's event token stays valid.
+ *
+ * The desktop app refreshes its ads every 30 minutes and rotates through them
+ * for as long as the window is open, so a token has to outlive one refresh
+ * cycle comfortably. Beyond that it is only a replay budget.
+ */
+const AD_EVENT_TOKEN_TTL_SECONDS = 2 * 60 * 60;
 
 function isAdFreePlan(plan) {
   return AD_FREE_PLANS.includes(String(plan || '').toLowerCase());
@@ -32,9 +43,44 @@ function isServable(ad, now = new Date()) {
   return true;
 }
 
+/**
+ * A short-lived token proving THIS server served THIS ad, recently.
+ *
+ * /api/ads/:id/event took anybody's word for an impression or a click, behind
+ * nothing but a per-IP cap — so the counters, and the CTR the admin panel
+ * computes from them, were numbers you could not stand behind the moment you
+ * sold a placement. The token is issued with the ad and echoed back with the
+ * event: an HMAC over the ad id and an expiry, keyed by the licence secret the
+ * server already holds. It proves the reporter was actually served the ad; it
+ * is not a session and identifies nobody.
+ */
+function signAdEventToken(adId, secret, { ttlSeconds = AD_EVENT_TOKEN_TTL_SECONDS, now = Date.now() } = {}) {
+  const expires = Math.floor(now / 1000) + ttlSeconds;
+  const payload = `${adId}.${expires}`;
+  const mac = crypto.createHmac('sha256', String(secret)).update(payload).digest('base64url');
+  return `${expires}.${mac}`;
+}
+
+/** Verify a token against an ad id. Anything malformed, wrong or stale is false. */
+function verifyAdEventToken(token, adId, secret, { now = Date.now() } = {}) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2) return false;
+  const [expiresRaw, mac] = parts;
+  const expires = Number(expiresRaw);
+  if (!Number.isFinite(expires) || expires * 1000 <= now) return false;
+  const expected = crypto
+    .createHmac('sha256', String(secret))
+    .update(`${adId}.${expires}`)
+    .digest('base64url');
+  if (expected.length !== mac.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(mac));
+}
+
 // The shape the desktop app sees. Deliberately narrow: no counters, no
-// scheduling, no author — nothing the client has no business knowing.
-function publicAd(ad) {
+// scheduling, no author — nothing the client has no business knowing. The
+// `token` is the one thing added: the client hands it straight back when it
+// reports an impression or a click.
+function publicAd(ad, { secret } = {}) {
   return {
     id: ad.id,
     title: ad.title,
@@ -44,6 +90,7 @@ function publicAd(ad) {
     ctaLabel: ad.cta_label ?? ad.ctaLabel ?? 'Learn more',
     placement: ad.placement,
     weight: Number(ad.weight ?? 1) || 1,
+    ...(secret ? { token: signAdEventToken(ad.id, secret) } : {}),
   };
 }
 
@@ -78,6 +125,7 @@ function planFromAuthHeader(header, verify) {
 }
 
 module.exports = {
-  AD_PLACEMENTS, AD_FREE_PLANS, MAX_ADS_PER_RESPONSE,
+  AD_PLACEMENTS, AD_FREE_PLANS, MAX_ADS_PER_RESPONSE, AD_EVENT_TOKEN_TTL_SECONDS,
   isAdFreePlan, isServable, publicAd, ctr, planFromAuthHeader,
+  signAdEventToken, verifyAdEventToken,
 };

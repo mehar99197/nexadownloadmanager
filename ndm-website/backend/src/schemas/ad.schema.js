@@ -82,10 +82,17 @@ const serveAdsSchema = {
   query: z.object({ placement: placement.default('app_banner') }).strict(),
 };
 
-// POST /api/ads/:id/event { type }
+// POST /api/ads/:id/event { type, token }
+//
+// `token` is the short-lived proof issued alongside the ad by GET /api/ads. It
+// is optional in the schema so an older desktop build still gets a clean 200
+// rather than a validation error — the route simply does not count it.
 const adEventSchema = {
   params: z.object({ id: adId }).strict(),
-  body: z.object({ type: z.enum(['impression', 'click']) }).strict(),
+  body: z.object({
+    type: z.enum(['impression', 'click']),
+    token: z.string().trim().max(200).optional(),
+  }).strict(),
 };
 
 module.exports = {

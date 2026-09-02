@@ -42,6 +42,23 @@ async function ensureColumnDefinition(table, column, expectedColumnType, definit
   await execute(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
 }
 
+/**
+ * Is this index already on the table?
+ *
+ * Used to skip the one-off de-duplication passes below. They exist only to
+ * clear the way for a UNIQUE index on a database that predates it, so once the
+ * index is there the duplicates they delete cannot exist — and re-running a
+ * self-join DELETE over payments/releases on every single boot is pure waste.
+ */
+async function indexExists(table, indexName) {
+  const rows = await query(
+    `SELECT 1 FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ? LIMIT 1`,
+    [table, indexName]
+  );
+  return rows.length > 0;
+}
+
 async function addIndexIfMissing(table, definition) {
   try {
     await execute(`ALTER TABLE ${table} ADD INDEX ${definition}`);
@@ -149,6 +166,7 @@ async function initSchema() {
       expiry_date DATETIME NULL DEFAULT NULL,
       trial_ends_at DATETIME NULL DEFAULT NULL,
       trial_reminder_sent_at DATETIME NULL DEFAULT NULL,
+      cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0,
       stripe_subscription_id VARCHAR(255) DEFAULT NULL,
       stripe_customer_id VARCHAR(255) DEFAULT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -162,14 +180,31 @@ async function initSchema() {
   `);
 
   // TIMESTAMP overflows in 2038, while free licenses intentionally live far
-  // into the future. Keep this column compatible with that policy on existing DBs.
-  await execute('ALTER TABLE subscriptions MODIFY COLUMN expiry_date DATETIME NULL');
+  // into the future. Keep this column compatible with that policy on existing
+  // DBs — but only when it is not already DATETIME: an unconditional MODIFY
+  // rebuilt the whole subscriptions table on every single process start.
+  await ensureColumnType('subscriptions', 'expiry_date', 'datetime', 'DATETIME NULL DEFAULT NULL');
 
   // Existing databases: end of the no-card Pro trial (NULL = not a trial).
   await addColumnIfMissing('subscriptions', 'trial_ends_at DATETIME NULL DEFAULT NULL');
   // Existing databases: stamped when the "trial ending" email went out, so the
   // nightly job can never mail the same person twice.
   await addColumnIfMissing('subscriptions', 'trial_reminder_sent_at DATETIME NULL DEFAULT NULL');
+  // Cancelling stops the RENEWAL, not the plan: the customer keeps what they
+  // paid for until expiry_date, and this flag is what the site reads to say
+  // "ends on the 3rd" instead of pretending nothing happened.
+  await addColumnIfMissing('subscriptions', 'cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0');
+  // Key-sharing detection. Seats cap how many machines run at once, not how
+  // many people hold the key, so a leaked key looks perfectly normal to seat
+  // enforcement while quietly accumulating activation rows. These record what
+  // the check last concluded, so an admin can review rather than the server
+  // silently punishing someone whose fingerprint changed for innocent reasons.
+  // See utils/licenseAbuse.js.
+  await addColumnIfMissing('subscriptions',
+    "sharing_level ENUM('ok','watch','suspected') NOT NULL DEFAULT 'ok'");
+  await addColumnIfMissing('subscriptions', 'sharing_devices INT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('subscriptions', 'sharing_checked_at DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('subscriptions', 'sharing_reason VARCHAR(255) NULL DEFAULT NULL');
 
   await execute(`
     CREATE TABLE IF NOT EXISTS license_activations (
@@ -246,17 +281,22 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
-  await execute(`
-    DELETE p1 FROM payments p1
-    JOIN payments p2
-      ON p1.stripe_payment_id IS NOT NULL
-     AND p1.stripe_payment_id = p2.stripe_payment_id
-     AND p1.id > p2.id
-  `);
-  try {
-    await execute('ALTER TABLE payments ADD UNIQUE INDEX uq_payments_stripe_id (stripe_payment_id)');
-  } catch (err) {
-    if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+  // One payment row per Stripe payment id. The DELETE only clears duplicates a
+  // database from before the index could still be carrying, so it is skipped
+  // entirely once the index exists.
+  if (!(await indexExists('payments', 'uq_payments_stripe_id'))) {
+    await execute(`
+      DELETE p1 FROM payments p1
+      JOIN payments p2
+        ON p1.stripe_payment_id IS NOT NULL
+       AND p1.stripe_payment_id = p2.stripe_payment_id
+       AND p1.id > p2.id
+    `);
+    try {
+      await execute('ALTER TABLE payments ADD UNIQUE INDEX uq_payments_stripe_id (stripe_payment_id)');
+    } catch (err) {
+      if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+    }
   }
 
   await execute(`
@@ -352,18 +392,20 @@ async function initSchema() {
   // One row per version. The catalog once held three "0.1.0" rows, which the
   // public changelog listed three times. Keep, per version, the row marked
   // latest, else the one with downloads, else the newest; then enforce it.
-  await execute(`
-    DELETE r1 FROM releases r1
-    JOIN releases r2
-      ON r1.version = r2.version AND r1.id <> r2.id
-     AND (r2.is_latest > r1.is_latest
-          OR (r2.is_latest = r1.is_latest AND r2.download_count > r1.download_count)
-          OR (r2.is_latest = r1.is_latest AND r2.download_count = r1.download_count AND r2.id > r1.id))
-  `);
-  try {
-    await execute('ALTER TABLE releases ADD UNIQUE INDEX uq_releases_version (version)');
-  } catch (err) {
-    if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+  if (!(await indexExists('releases', 'uq_releases_version'))) {
+    await execute(`
+      DELETE r1 FROM releases r1
+      JOIN releases r2
+        ON r1.version = r2.version AND r1.id <> r2.id
+       AND (r2.is_latest > r1.is_latest
+            OR (r2.is_latest = r1.is_latest AND r2.download_count > r1.download_count)
+            OR (r2.is_latest = r1.is_latest AND r2.download_count = r1.download_count AND r2.id > r1.id))
+    `);
+    try {
+      await execute('ALTER TABLE releases ADD UNIQUE INDEX uq_releases_version (version)');
+    } catch (err) {
+      if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+    }
   }
 
   await execute(`
@@ -438,6 +480,19 @@ async function initSchema() {
       INDEX idx_contact_reply_message (message_id, created_at),
       FOREIGN KEY (message_id) REFERENCES contact_messages(id) ON DELETE CASCADE,
       FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // Rate-limit counters that survive a restart. The keepalive cron restarts the
+  // API whenever it looks hung, and an in-memory counter handed every attacker
+  // a fresh budget each time. Only the security-critical limiters use this —
+  // see middleware/rateLimitStore.js.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      id VARCHAR(191) NOT NULL PRIMARY KEY,
+      hits INT UNSIGNED NOT NULL DEFAULT 0,
+      expires_at DATETIME NOT NULL,
+      INDEX idx_rate_limit_expiry (expires_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 

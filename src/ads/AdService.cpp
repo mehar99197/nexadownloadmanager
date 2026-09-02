@@ -127,13 +127,26 @@ void AdService::applyPlan(const QString &plan)
     fetch();
 }
 
+// The production ad endpoint, fixed at compile time — see the matching comment
+// in LicenseManager.cpp. This one mattered as much as the licence URL: the
+// reply is trusted to say `adFree`, so pointing it at your own server that
+// answers {"ok":true,"data":{"adFree":true}} removed the ads outright. Only a
+// developer build (-DNEXA_DEV_BUILD=ON) reads the override.
 QUrl AdService::endpoint(const QString &path) const
 {
+#ifdef NEXA_DEV_BUILD
     const QString base = qEnvironmentVariable(
-        "NEXA_ADS_API_URL", QStringLiteral("https://nexadownloadmanager.com/api/ads"));
+        QStringLiteral("NEXA_ADS_API_URL"), QStringLiteral("https://nexadownloadmanager.com/api/ads"));
+#else
+    const QString base = QStringLiteral("https://nexadownloadmanager.com/api/ads");
+#endif
     QUrl url(base + path);
+#ifdef NEXA_DEV_BUILD
     const bool insecureDevelopment = qEnvironmentVariableIntValue("NEXA_ALLOW_INSECURE_LICENSE_API") == 1 &&
         (url.host() == QLatin1String("localhost") || url.host() == QLatin1String("127.0.0.1"));
+#else
+    constexpr bool insecureDevelopment = false;
+#endif
     if (!url.isValid() || (url.scheme() != QLatin1String("https") && !insecureDevelopment))
         return QUrl();
     return url;
@@ -199,6 +212,7 @@ void AdService::fetch()
             ad.targetUrl = object.value(QStringLiteral("targetUrl")).toString().trimmed();
             ad.ctaLabel  = object.value(QStringLiteral("ctaLabel")).toString().trimmed();
             ad.weight    = qBound(1, object.value(QStringLiteral("weight")).toInt(1), 100);
+            ad.eventToken = object.value(QStringLiteral("token")).toString();
             if (ad.id <= 0 || ad.title.isEmpty() || !isHttpsUrl(ad.targetUrl))
                 continue;
             if (!ad.imageUrl.isEmpty() && !isHttpsUrl(ad.imageUrl))
@@ -222,11 +236,12 @@ void AdService::fetch()
     });
 }
 
-void AdService::reportImpression() { report(QStringLiteral("impression"), current().id); }
-void AdService::reportClick()      { report(QStringLiteral("click"), current().id); }
+void AdService::reportImpression() { report(QStringLiteral("impression"), current()); }
+void AdService::reportClick()      { report(QStringLiteral("click"), current()); }
 
-void AdService::report(const QString &type, int adId)
+void AdService::report(const QString &type, const Ad &ad)
 {
+    const int adId = ad.id;
     if (m_adFree || adId <= 0)
         return;
     const QUrl url = endpoint(QStringLiteral("/%1/event").arg(adId));
@@ -241,9 +256,12 @@ void AdService::report(const QString &type, int adId)
     if (!token.isEmpty())
         request.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
 
-    const QByteArray payload = QJsonDocument(QJsonObject{
-        {QStringLiteral("type"), type},
-    }).toJson(QJsonDocument::Compact);
+    QJsonObject body{{QStringLiteral("type"), type}};
+    // The server counts nothing without this; an ad served by an older build
+    // simply has none, and the report is a harmless no-op.
+    if (!ad.eventToken.isEmpty())
+        body.insert(QStringLiteral("token"), ad.eventToken);
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
     QNetworkReply *reply = m_network->post(request, payload);
     // Fire and forget: counting is the server's problem, not the user's.
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);

@@ -12,6 +12,17 @@ function intOrDefault(raw, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+// '' → '' (off) · '2' → 2 (hop count) · 'true'/'false' → boolean ·
+// anything else (an address, a subnet, 'loopback', a comma list) → unchanged.
+function trustProxy(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) return '';
+  if (/^\d+$/.test(value)) return Number(value);
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}
+
 function bool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   return String(value).toLowerCase() === 'true';
@@ -91,6 +102,11 @@ const config = {
   STATS_MIN_USERS: intOrDefault(process.env.STATS_MIN_USERS, 50),
   STATS_MIN_DOWNLOADS: intOrDefault(process.env.STATS_MIN_DOWNLOADS, 100),
 
+  // HMAC key for the short-lived tokens that make an ad impression or click
+  // countable (utils/ads.js). Falls back to LICENSE_JWT_SECRET so an existing
+  // deployment needs no new config; set it separately to rotate independently.
+  AD_EVENT_SECRET: process.env.AD_EVENT_SECRET || '',
+
   // Key for the admin/root TOTP secrets at rest (AES-256-GCM). Falls back to
   // JWT_ADMIN_SECRET so an existing deployment gains 2FA without new config;
   // set it separately if you ever want to rotate JWT secrets independently.
@@ -104,7 +120,15 @@ const config = {
   // AND a match against this value, so a stray UPDATE on the users table is not
   // by itself enough to mint a root admin.
   ROOT_ADMIN_EMAIL: String(process.env.ROOT_ADMIN_EMAIL || '').toLowerCase().trim(),
-  TRUST_PROXY: process.env.TRUST_PROXY || '',
+  // Express accepts a hop COUNT (number), a boolean, or a list of proxy
+  // addresses/subnets (string). Everything from a .env file arrives as a
+  // string, and a bare "1" — the most natural thing to write — is then parsed
+  // as an ADDRESS (0.0.0.1) rather than a hop count. It does not fail loudly:
+  // it silently trusts nothing, so req.ip stays the reverse proxy's address and
+  // both the admin IP allowlist and per-IP rate limiting key off the wrong
+  // client. Coercing a numeric value to a real number makes it mean what
+  // everybody intends: trust that many hops.
+  TRUST_PROXY: trustProxy(process.env.TRUST_PROXY),
   CORS_ORIGINS: csv(process.env.CORS_ORIGINS, [
     'http://localhost:5173',
     'http://localhost:5174',
@@ -132,6 +156,8 @@ config.isEmailMock = !config.SMTP_HOST;
 config.isGoogleAuthEnabled = Boolean(config.GOOGLE_CLIENT_ID);
 // Effective reply address for outbound support mail.
 config.supportReplyTo = config.SUPPORT_REPLY_TO || config.SUPPORT_EMAIL || config.FROM_EMAIL;
+// Effective key for ad event tokens.
+config.adEventSecret = config.AD_EVENT_SECRET || config.LICENSE_JWT_SECRET;
 
 if (config.isProd) {
   const jwtSecrets = [

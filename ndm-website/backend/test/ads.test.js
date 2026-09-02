@@ -239,3 +239,43 @@ test('a token signed with the wrong secret cannot buy ad-free', () => {
   const wrongType = jwt.sign({ plan: 'pro', typ: 'access' }, process.env.LICENSE_JWT_SECRET);
   assert.equal(planFromAuthHeader(`Bearer ${wrongType}`, verifyLicense), 'free');
 });
+
+/* ----------------------------------------------------- event tokens ------- */
+
+const { signAdEventToken, verifyAdEventToken } = require('../src/utils/ads');
+
+test('an ad event only counts with a token this server issued for that ad', () => {
+  const secret = 'a-licence-signing-secret';
+  const token = signAdEventToken(42, secret);
+
+  assert.equal(verifyAdEventToken(token, 42, secret), true);
+  // Bound to the ad, so one served ad's token cannot inflate another.
+  assert.equal(verifyAdEventToken(token, 43, secret), false);
+  // Bound to our key, so nobody can mint their own.
+  assert.equal(verifyAdEventToken(token, 42, 'another-secret'), false);
+  // Anything malformed or absent fails closed, counting nothing.
+  assert.equal(verifyAdEventToken('', 42, secret), false);
+  assert.equal(verifyAdEventToken(undefined, 42, secret), false);
+  assert.equal(verifyAdEventToken('garbage', 42, secret), false);
+  assert.equal(verifyAdEventToken('9999999999.short', 42, secret), false);
+});
+
+test('an ad event token expires', () => {
+  const secret = 'a-licence-signing-secret';
+  const now = Date.parse('2026-09-02T10:00:00.000Z');
+  const token = signAdEventToken(7, secret, { ttlSeconds: 60, now });
+
+  assert.equal(verifyAdEventToken(token, 7, secret, { now: now + 59_000 }), true);
+  assert.equal(verifyAdEventToken(token, 7, secret, { now: now + 61_000 }), false);
+});
+
+test('publicAd carries the token only when a secret is supplied', () => {
+  const row = { id: 5, title: 'x', target_url: 'https://e.test', placement: 'app_banner', weight: 1 };
+  assert.equal('token' in publicAd(row), false);
+  assert.equal(typeof publicAd(row, { secret: 'k' }).token, 'string');
+  // Still no counters, schedule or authorship — the shape stays narrow.
+  assert.deepEqual(
+    Object.keys(publicAd(row, { secret: 'k' })).sort(),
+    ['body', 'ctaLabel', 'id', 'imageUrl', 'placement', 'targetUrl', 'title', 'token', 'weight']
+  );
+});

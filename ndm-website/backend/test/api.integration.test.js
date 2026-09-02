@@ -160,7 +160,12 @@ test('backend API', async (t) => {
       assert.equal(res.body.reason, 'seat_limit');
     });
 
-    await t2.test('an expired subscription reports expired', async () => {
+    // A period that runs out is no longer reported as `expired`: the desktop
+    // client DELETES a key it is told is expired, so a renewal webhook arriving
+    // late used to cost the customer their licence outright. A lapsed plan
+    // falls back to Free instead — see Subscription.expireIfLapsed — and only a
+    // deliberately stopped licence still reports `expired`.
+    await t2.test('a plan just past its date keeps working through the grace period', async () => {
       await srv.query(
         "UPDATE subscriptions SET expiry_date = DATE_SUB(NOW(), INTERVAL 1 DAY), plan = 'pro' WHERE id = ?",
         [sub.id]
@@ -168,8 +173,30 @@ test('backend API', async (t) => {
       const res = await api.post('/api/license/validate', {
         license_key: key, device_fingerprint: fingerprint,
       });
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'pro');
+    });
+
+    await t2.test('past the grace period it falls back to Free, key intact', async () => {
+      await srv.query(
+        "UPDATE subscriptions SET expiry_date = DATE_SUB(NOW(), INTERVAL 10 DAY), plan = 'pro' WHERE id = ?",
+        [sub.id]
+      );
+      const res = await api.post('/api/license/validate', {
+        license_key: key, device_fingerprint: fingerprint,
+      });
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'free');
+    });
+
+    await t2.test('a licence stopped on purpose still reports expired', async () => {
+      await srv.query("UPDATE subscriptions SET status = 'expired' WHERE id = ?", [sub.id]);
+      const res = await api.post('/api/license/validate', {
+        license_key: key, device_fingerprint: fingerprint,
+      });
       assert.equal(res.body.valid, false);
       assert.equal(res.body.reason, 'expired');
+      await srv.query("UPDATE subscriptions SET status = 'active' WHERE id = ?", [sub.id]);
     });
 
     void user;
@@ -457,9 +484,12 @@ test('backend API', async (t) => {
       assert.equal(res.body.data.ads.length, 1);
       const ad = res.body.data.ads[0];
       assert.equal(ad.title, 'Go Pro');
-      // Counters, schedule and authorship must never reach the client.
+      // Counters, schedule and authorship must never reach the client. `token`
+      // is the one addition: the proof the client hands back when it reports an
+      // impression or a click (utils/ads.js#signAdEventToken).
       assert.deepEqual(Object.keys(ad).sort(),
-        ['body', 'ctaLabel', 'id', 'imageUrl', 'placement', 'targetUrl', 'title', 'weight']);
+        ['body', 'ctaLabel', 'id', 'imageUrl', 'placement', 'targetUrl', 'title', 'token', 'weight']);
+      assert.ok(ad.token);
     });
 
     for (const plan of ['pro', 'team']) {
@@ -487,17 +517,33 @@ test('backend API', async (t) => {
       assert.equal(res.body.data.ads.length, 1);
     });
 
+    // The event token comes back with the ad; without it nothing is counted, so
+    // the counters (and the CTR the panel computes) cannot be run up by
+    // anything that was never served the ad.
+    const eventToken = async () =>
+      (await api.get('/api/ads?placement=app_banner')).body.data.ads[0].token;
+
     await t2.test('impressions and clicks are counted, once each', async () => {
-      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'impression' })).body.data.counted, true);
-      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'click' })).body.data.counted, true);
+      const token = await eventToken();
+      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'impression', token })).body.data.counted, true);
+      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'click', token })).body.data.counted, true);
       const [row] = await srv.query('SELECT impressions, clicks FROM ads WHERE id = ?', [adId]);
       assert.equal(row.impressions, 1);
       assert.equal(row.clicks, 1);
     });
 
+    await t2.test('an event with no token counts nothing', async () => {
+      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression' });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.data.counted, false);
+      const [row] = await srv.query('SELECT impressions FROM ads WHERE id = ?', [adId]);
+      assert.equal(row.impressions, 1, 'unchanged');
+    });
+
     await t2.test('a paid licence reporting an event counts nothing', async () => {
+      const eventTok = await eventToken();
       const token = signLicenseToken({ sub: 'NDM-AAAA-BBBB-CCCC', plan: 'pro', device: 'd' });
-      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression' },
+      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression', token: eventTok },
         { headers: { authorization: `Bearer ${token}` } });
       assert.equal(res.body.data.counted, false);
       const [row] = await srv.query('SELECT impressions FROM ads WHERE id = ?', [adId]);
@@ -505,7 +551,7 @@ test('backend API', async (t) => {
     });
 
     await t2.test('an unknown ad id is not an error', async () => {
-      const res = await api.post('/api/ads/999999/event', { type: 'click' });
+      const res = await api.post('/api/ads/999999/event', { type: 'click', token: 'whatever' });
       assert.equal(res.status, 200);
       assert.equal(res.body.data.counted, false);
     });
@@ -562,6 +608,8 @@ test('backend API', async (t) => {
       assert.equal(ad.impressions, 1);
       assert.equal(ad.clicks, 1);
       assert.equal(ad.ctr, 100);
+      // The counters the client never sees are exactly the ones the panel does.
+      assert.equal('token' in ad, false);
       const stats = await api.get('/api/admin/ads/stats', auth);
       assert.equal(stats.body.data.total, 1);
       assert.equal(stats.body.data.active, 1);

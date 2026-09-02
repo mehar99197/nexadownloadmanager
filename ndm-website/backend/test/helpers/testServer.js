@@ -81,6 +81,9 @@ async function stop() {
 async function reset() {
   await query('SET FOREIGN_KEY_CHECKS = 0');
   for (const table of [
+    // rate_limits is durable now (middleware/rateLimitStore.js), so leftovers
+    // from an earlier run would otherwise start a suite already throttled.
+    'rate_limits',
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
     'contact_replies', 'contact_messages',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',
