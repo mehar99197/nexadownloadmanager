@@ -9,8 +9,11 @@
 #   bash src/scripts/backup.sh /app/backups
 #   node src/scripts/sendTrialReminders.js
 #
-# Runs from an hPanel Cron Job once a day, e.g. at 03:15 server time:
-#   15 3 * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/deploy/hostinger/daily-maintenance.sh >/dev/null 2>&1
+# Deployed by hand to the top level of the domain, a sibling of run-api.sh
+# and supervisor.sh (NOT inside nexa-api/ — build-and-upload.sh deliberately
+# doesn't manage any of these three, see its header comment). Runs from an
+# hPanel Cron Job once a day, e.g. at 03:15 server time:
+#   15 3 * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/daily-maintenance.sh >/dev/null 2>&1
 #
 # (Hostinger shared hosting only exposes cron via hPanel -> Advanced -> Cron
 # Jobs; there is no crontab -e in this shell — same reason run-api.sh's

@@ -20,7 +20,7 @@
 #   nexa-api/.run-api.lock      (the keepalive's flock file; deleting it breaks single-instance)
 #   nexa-api/logs/              (runtime logs)
 #   nexa-api/uploads/           (admin-uploaded release installers; RELEASE_UPLOAD_DIR default)
-#   nexa-api/backups/           (nightly DB dumps written by deploy/hostinger/daily-maintenance.sh)
+#   nexa-api/backups/           (nightly DB dumps written by daily-maintenance.sh)
 #   nexa-api/.daily-maintenance.lock  (that script's flock file; deleting it breaks single-instance)
 #
 # Process model on the server (owned by the keepalive deploy step, not here):
@@ -32,9 +32,11 @@
 #   sites on this account run their own node processes, so a broad pkill would
 #   either miss it or kill the wrong site.)
 #
-#   nexa-api/deploy/hostinger/daily-maintenance.sh runs once a day from an
-#   hPanel Cron Job — a nightly DB backup + trial-reminder emails, replacing
-#   the two jobs the old docker-compose.yml "cron" service used to run.
+#   ~/domains/nexadownloadmanager.com/daily-maintenance.sh (top level, a
+#   sibling of run-api.sh/supervisor.sh, deployed by hand like they are) runs
+#   once a day from an hPanel Cron Job — a nightly DB backup + trial-reminder
+#   emails, replacing the two jobs the old docker-compose.yml "cron" service
+#   used to run.
 #
 # Usage (from the repo root):
 #   ./deploy/build-and-upload.sh

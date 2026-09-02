@@ -55,11 +55,14 @@ the new backend files land. `SKIP_FRONTEND=1` / `SKIP_ADMIN=1` /
 
 ## Keepalive
 
-`nexa-api/deploy/hostinger/run-api.sh` health-checks the API on loopback and
-(re)starts it if it's down or hung. Add an hPanel Cron Job:
+`run-api.sh` health-checks the API on loopback and (re)starts it if it's
+down or hung. It lives at the top level of the domain (a sibling of
+`nexa-api/`, not inside it — `build-and-upload.sh` deliberately doesn't
+manage it or `supervisor.sh`/`daily-maintenance.sh`, see its header comment).
+Add an hPanel Cron Job:
 
 ```
-* * * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/deploy/hostinger/run-api.sh >/dev/null 2>&1
+* * * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/run-api.sh >/dev/null 2>&1
 ```
 
 `supervisor.sh` is a same-directory fallback loop for a shell that can't
@@ -68,14 +71,14 @@ its own lock either way). Logs: `~/domains/nexadownloadmanager.com/logs/api.log`
 
 ## Backups
 
-`nexa-api/deploy/hostinger/daily-maintenance.sh` runs a verified DB dump
+`daily-maintenance.sh` (same top-level location as `run-api.sh`) runs a verified DB dump
 (`backend/src/scripts/backup.sh`) and then the trial-ending reminder emails
 (`backend/src/scripts/sendTrialReminders.js`) — the same two jobs the old
 Docker Compose `cron` service used to run in its own container. Add a second
 hPanel Cron Job:
 
 ```
-15 3 * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/deploy/hostinger/daily-maintenance.sh >/dev/null 2>&1
+15 3 * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/daily-maintenance.sh >/dev/null 2>&1
 ```
 
 Dumps land in `nexa-api/backups/`, gzipped and `gunzip -t`-verified, pruned
