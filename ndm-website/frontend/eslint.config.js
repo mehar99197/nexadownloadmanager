@@ -25,6 +25,9 @@ const browserGlobals = {
   performance: 'readonly',
   IntersectionObserver: 'readonly',
   ResizeObserver: 'readonly',
+  MutationObserver: 'readonly',
+  Event: 'readonly',
+  HTMLDivElement: 'readonly',
 };
 
 // Config and test files run in Node (or the Vitest/Playwright runner), not the

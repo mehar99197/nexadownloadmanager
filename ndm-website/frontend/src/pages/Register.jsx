@@ -87,17 +87,31 @@ export default function Register() {
     setError('');
     setGoogleBusy(true);
     try {
-      await loginWithGoogle(credential);
+      // Google signs an EXISTING user straight in, so this page cannot assume it
+      // created anything — `created` is what tells the two apart.
+      const { created } = await loginWithGoogle(credential);
+      let trialStarted = false;
       if (wantsTrial) {
         markPendingTrial();
         try {
           const { started } = await startTrial();
-          if (started) clearPendingTrial();
+          if (started) {
+            clearPendingTrial();
+            trialStarted = true;
+          }
         } catch {
           // Dashboard will pick the pending trial up.
         }
       }
-      toast.success(wantsTrial ? 'Account ready — your 7-day Pro trial has started.' : 'Account created — welcome to Nexa!');
+      toast.success(
+        trialStarted
+          ? (created
+            ? 'Account ready — your 7-day Pro trial has started.'
+            : 'Welcome back — your 7-day Pro trial has started.')
+          : (created
+            ? 'Account created — welcome to Nexa!'
+            : 'Welcome back — signed in with Google.')
+      );
       navigate(next, { replace: true });
     } catch (err) {
       setError(
@@ -128,12 +142,13 @@ export default function Register() {
 
           {googleAuthEnabled() && (
             <div className="mt-7">
-              <GoogleButton onCredential={handleGoogle} onError={setError} disabled={busy} text="signup_with" />
-              <div className="mt-6 flex items-center gap-3" aria-hidden="true">
-                <span className="h-px flex-1 bg-white/10" />
-                <span className="text-[0.7rem] font-bold uppercase tracking-[0.14em] text-slate-500">or</span>
-                <span className="h-px flex-1 bg-white/10" />
-              </div>
+              <GoogleButton
+                onCredential={handleGoogle}
+                onError={setError}
+                disabled={busy}
+                text="signup_with"
+                fallback="Google sign-up could not load. Create your account with the form below."
+              />
             </div>
           )}
 
@@ -176,7 +191,7 @@ export default function Register() {
             <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
 
             <Button type="submit" className="w-full" disabled={busy || (turnstileEnabled() && !turnstileToken)}>
-              {submitting ? 'Creating account…' : googleBusy ? 'Signing in with Google…' : wantsTrial ? 'Create account & start trial' : 'Create account'}
+              {submitting ? 'Creating account…' : googleBusy ? 'Continuing with Google…' : wantsTrial ? 'Create account & start trial' : 'Create account'}
             </Button>
           </form>
 
