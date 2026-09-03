@@ -20,7 +20,16 @@ const { requireAdmin, ipWhitelist } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
 const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
-const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
+const { thresholds: sharingThresholdsFor, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
+const { recentRejections } = require('../utils/tokenAbuse');
+
+// Shown alongside the flagged list so an admin can see what the numbers mean
+// rather than having to guess why a licence was flagged.
+const sharingThresholds = {
+  windowDays: SHARING_WINDOW_DAYS,
+  perSeat: sharingThresholdsFor(1),
+};
+const { generateLicenseKey, planSeats, planExpiry, expiryForPlanChange } = require('../utils/license');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
 const { ctr } = require('../utils/ads');
@@ -53,6 +62,7 @@ const {
   updateUserSchema, updateReviewSchema, updateSubscriptionSchema,
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
+  idParamSchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -103,7 +113,10 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    if (!user || user.role !== 'admin')
+    // A Google-created account has NO password hash. bcrypt.compare against
+    // null throws, so an account promoted to admin that way answered 500 to
+    // every sign-in attempt instead of a plain rejection.
+    if (!user || user.role !== 'admin' || !user.password_hash)
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
@@ -273,10 +286,16 @@ router.post(
   })
 );
 
+// Exports are capped so one click cannot pull the whole users table into
+// memory. The cap is shared with /subscriptions/export and reported back, so
+// the panel can say the file is truncated instead of silently losing rows.
+const EXPORT_MAX = 5000;
+
 router.get(
   '/users/export',
   asyncHandler(async (req, res) => {
     const users = await User.listAll({
+      limit: EXPORT_MAX,
       q: req.query.q,
       role: req.query.role,
       banned: req.query.banned === undefined ? undefined : req.query.banned === 'true',
@@ -316,7 +335,7 @@ router.get(
 );
 
 router.get(
-  '/users/:id/details',
+  '/users/:id/details', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
@@ -348,8 +367,16 @@ router.put(
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
       if (currentSubscription) {
         // An explicit admin plan change ends any running trial so lazy trial
-        // expiry cannot silently undo it later.
-        await Subscription.updateByUserId(user.id, { plan, seats: planSeats(plan), trialEndsAt: null });
+        // expiry cannot silently undo it later, and moves the expiry date with
+        // the plan (see expiryForPlanChange — free's is ~100 years out, so
+        // carrying it across a change is wrong in both directions).
+        const implied = expiryForPlanChange(
+          currentSubscription.plan, plan, currentSubscription.expiry_date
+        );
+        await Subscription.updateCurrentByUserId(user.id, {
+          plan, seats: planSeats(plan), trialEndsAt: null,
+          ...(implied === undefined ? {} : { expiryDate: implied }),
+        });
       } else {
         await Subscription.create({
           userId: user.id,
@@ -387,7 +414,7 @@ router.post(
 );
 
 router.post(
-  '/users/:id/revoke-sessions',
+  '/users/:id/revoke-sessions', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
@@ -407,10 +434,71 @@ router.get(
   })
 );
 
+// Licence tokens that arrived but did not verify, bucketed by hour and reason.
+//
+// A genuine client never produces one: it holds a token this server signed and
+// replaces it every five minutes. So `bad_signature` and `bad_algorithm` counts
+// are people constructing tokens by hand — the visible trace of somebody
+// testing a crack against the API. `expired` is separated out because a client
+// with a skewed clock or a long sleep generates those honestly.
+router.get(
+  '/security/token-rejections',
+  asyncHandler(async (req, res) => {
+    return ok(res, await recentRejections({ hours: req.query.hours }));
+  })
+);
+
+// Lift a sharing suspension — the customer is believed, or the flag was wrong.
+//
+// This also marks the licence exempt from AUTOMATIC suspension, because the
+// device history that triggered it does not go away: without that, the next new
+// device would re-suspend the licence and the decision made here would last
+// minutes. Flagging continues, so a licence that genuinely keeps spreading
+// still comes back to this queue for a person to look at again.
+router.post(
+  '/subscriptions/:id/sharing/clear',
+  asyncHandler(async (req, res) => {
+    const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
+    if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    await audit(req, 'subscription.sharing.clear', 'subscription', req.params.id,
+      'Lifted sharing suspension and exempted from automatic re-suspension');
+    return ok(res, { cleared: true });
+  })
+);
+
+// Put a licence back under automatic enforcement after it was exempted.
+router.post(
+  '/subscriptions/:id/sharing/resume',
+  asyncHandler(async (req, res) => {
+    const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
+    if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    await audit(req, 'subscription.sharing.resume', 'subscription', req.params.id,
+      'Returned licence to automatic sharing enforcement');
+    return ok(res, { resumed: true });
+  })
+);
+
+// Licences that look shared, worst first.
+//
+// This is a review queue, not an enforcement action: nothing here has been
+// suspended. A key with far more distinct devices than seats has very probably
+// leaked, but the honest reasons (a customer who reimages machines, a fleet of
+// VMs from one template) look identical from here, so a person decides. To act
+// on one, use the existing "Free seats" control or cancel the subscription.
+router.get(
+  '/subscriptions/flagged',
+  asyncHandler(async (req, res) => {
+    const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
+    return ok(res, { subscriptions, thresholds: sharingThresholds });
+  })
+);
+
 router.get(
   '/subscriptions/export',
   asyncHandler(async (req, res) => {
-    const { subscriptions } = await Subscription.list({ page: 1, limit: 200, status: req.query.status, plan: req.query.plan, q: req.query.q });
+    const { subscriptions } = await Subscription.list({
+      page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
+    });
     return ok(res, subscriptions);
   })
 );
@@ -430,7 +518,14 @@ router.post(
       startDate: new Date(),
       expiryDate: req.body.expiryDate ? new Date(req.body.expiryDate) : planExpiry(plan),
     });
-    await audit(req, 'subscription.created', 'subscription', subscription.id, `Created ${plan} subscription for ${user.email}`, { userId: user.id, plan });
+    // The previous licence key must stop working, or the customer walks away
+    // holding two that both validate — every read path only ever sees the
+    // newest row, so the old one was invisible here but live at /api/license.
+    const retired = await Subscription.retireOthers(user.id, subscription.id);
+    await audit(req, 'subscription.created', 'subscription', subscription.id,
+      `Created ${plan} subscription for ${user.email}`
+        + (retired ? ` (retired ${retired} earlier licence(s))` : ''),
+      { userId: user.id, plan, retired });
     return ok(res, subscription, 201);
   })
 );
@@ -442,7 +537,7 @@ router.put(
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
 
-    const { plan, status, seats } = req.body;
+    const { plan, status, seats, expiryDate } = req.body;
     const updates = {};
     if (plan !== undefined) updates.plan = plan;
     if (status !== undefined) updates.status = status;
@@ -450,6 +545,13 @@ router.put(
     if (plan !== undefined && seats === undefined) updates.seats = planSeats(plan);
     // See PUT /users/:id — an explicit plan change ends a running trial.
     if (plan !== undefined) updates.trialEndsAt = null;
+    // An explicit expiry always wins over the one a plan change implies — that
+    // is the point of being able to set it.
+    if (plan !== undefined) {
+      const implied = expiryForPlanChange(subscription.plan, plan, subscription.expiry_date);
+      if (implied !== undefined) updates.expiryDate = implied;
+    }
+    if (expiryDate !== undefined) updates.expiryDate = expiryDate;
     await Subscription.update(id, updates);
     const fresh = await Subscription.findById(id);
     await audit(req, 'subscription.updated', 'subscription', id, `Updated subscription ${id}`, req.body);
@@ -458,7 +560,7 @@ router.put(
 );
 
 router.post(
-  '/subscriptions/:id/revoke-device',
+  '/subscriptions/:id/revoke-device', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
@@ -637,7 +739,7 @@ router.delete(
 );
 
 router.delete(
-  '/releases/:id',
+  '/releases/:id', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const release = await Release.findById(id);

@@ -205,6 +205,19 @@ async function initSchema() {
   await addColumnIfMissing('subscriptions', 'sharing_devices INT UNSIGNED NOT NULL DEFAULT 0');
   await addColumnIfMissing('subscriptions', 'sharing_checked_at DATETIME NULL DEFAULT NULL');
   await addColumnIfMissing('subscriptions', 'sharing_reason VARCHAR(255) NULL DEFAULT NULL');
+  // Set when the sharing check suspended a licence on its own. Deliberately a
+  // separate column rather than a `status` value: `status` reaching 'cancelled'
+  // or 'expired' makes the desktop client DELETE the stored key, which would
+  // turn a reversible anti-piracy measure into a support problem for anyone
+  // caught by a false positive. Suspension instead presents as `seat_limit`,
+  // which the client treats as "close Nexa elsewhere" and keeps the key.
+  await addColumnIfMissing('subscriptions', 'sharing_suspended_at DATETIME NULL DEFAULT NULL');
+  // Set when an admin lifts a suspension. The device history that triggered it
+  // does not go away, so without this the very next new device would re-suspend
+  // the licence and the admin's decision would last minutes. Flagging continues
+  // — the licence still appears in the review queue if it keeps spreading — but
+  // the server stops acting on its own for this one.
+  await addColumnIfMissing('subscriptions', 'sharing_exempt TINYINT(1) NOT NULL DEFAULT 0');
 
   await execute(`
     CREATE TABLE IF NOT EXISTS license_activations (
@@ -487,6 +500,19 @@ async function initSchema() {
   // API whenever it looks hung, and an in-memory counter handed every attacker
   // a fresh budget each time. Only the security-critical limiters use this —
   // see middleware/rateLimitStore.js.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS license_token_rejections (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      -- Hourly buckets, not one row per rejection: a row per rejection would
+      -- let anyone grow this table without limit by sending garbage in a loop.
+      bucket_hour DATETIME NOT NULL,
+      reason VARCHAR(32) NOT NULL,
+      count INT UNSIGNED NOT NULL DEFAULT 0,
+      UNIQUE KEY uq_bucket_reason (bucket_hour, reason),
+      INDEX idx_token_rejection_bucket (bucket_hour)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   await execute(`
     CREATE TABLE IF NOT EXISTS rate_limits (
       id VARCHAR(191) NOT NULL PRIMARY KEY,

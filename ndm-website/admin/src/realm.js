@@ -15,7 +15,6 @@ const path = typeof window === 'undefined' ? '/admin' : window.location.pathname
 // creator panel.
 export const IS_ROOT = path === '/root' || path.startsWith('/root/');
 
-export const REALM = IS_ROOT ? 'root' : 'admin';
 export const BASENAME = IS_ROOT ? '/root' : '/admin';
 
 /** API namespace for this realm's session endpoints: login / refresh / logout / me. */

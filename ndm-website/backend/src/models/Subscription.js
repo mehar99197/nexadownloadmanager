@@ -189,6 +189,60 @@ const Subscription = {
     };
   },
 
+  /**
+   * Suspend a licence the sharing check judged beyond argument.
+   *
+   * Deliberately does NOT touch `status`. Setting it to 'cancelled' or
+   * 'expired' would make the desktop client delete the stored key, turning a
+   * reversible measure into a permanent one for anybody caught by a false
+   * positive — and those two reasons are reserved for something a person
+   * decided. The licence instead answers `seat_limit`, which the client already
+   * treats as "close Nexa on another machine" and keeps the key for.
+   *
+   * Idempotent: re-suspending an already-suspended licence does not move the
+   * timestamp, so the record keeps saying when it actually started.
+   */
+  async suspendForSharing(id, reason) {
+    const result = await execute(
+      `UPDATE subscriptions
+          SET sharing_suspended_at = NOW(), sharing_level = 'suspected',
+              sharing_reason = ?, sharing_checked_at = NOW()
+        WHERE id = ? AND sharing_suspended_at IS NULL`,
+      [reason ? String(reason).slice(0, 255) : null, id]
+    );
+    return { suspended: (result.affectedRows || 0) > 0 };
+  },
+
+  /**
+   * Lift a sharing suspension (an admin deciding it was wrong, or the customer
+   * being believed). Also resets the verdict to 'ok' so the same evidence does
+   * not immediately re-suspend on the next new device — the device history is
+   * still there, and without this reset the licence would bounce straight back.
+   */
+  async clearSharingSuspension(id) {
+    const result = await execute(
+      `UPDATE subscriptions
+          SET sharing_suspended_at = NULL, sharing_level = 'ok',
+              sharing_reason = NULL, sharing_checked_at = NOW(),
+              sharing_exempt = 1
+        WHERE id = ?`,
+      [id]
+    );
+    return { cleared: (result.affectedRows || 0) > 0 };
+  },
+
+  /**
+   * Put a licence back under automatic enforcement after it was exempted.
+   * The counterpart to clearSharingSuspension, for when a customer turns out
+   * to have been sharing after all.
+   */
+  async resumeSharingEnforcement(id) {
+    const result = await execute(
+      'UPDATE subscriptions SET sharing_exempt = 0 WHERE id = ?', [id]
+    );
+    return { resumed: (result.affectedRows || 0) > 0 };
+  },
+
   /** Record what the sharing check concluded. Never changes `status`. */
   async recordSharingAssessment(id, { level, reason, distinctDevices }) {
     await execute(
@@ -206,10 +260,11 @@ const Subscription = {
     return query(
       `SELECT s.id, s.license_key, s.plan, s.status, s.seats,
               s.sharing_level, s.sharing_devices, s.sharing_reason, s.sharing_checked_at,
+              s.sharing_suspended_at, s.sharing_exempt,
               u.email
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
-        WHERE s.sharing_level <> 'ok'
+        WHERE s.sharing_level <> 'ok' OR s.sharing_suspended_at IS NOT NULL
         ORDER BY FIELD(s.sharing_level, 'suspected', 'watch'), s.sharing_devices DESC
         LIMIT ${capped}`
     );

@@ -9,7 +9,7 @@ const Subscription = require('../models/Subscription');
 
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
-const { authLimiter } = require('../middleware/rateLimiter');
+const { authLimiter, loginLimiter, authIpLimiter } = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
 const { ok, fail } = require('../utils/respond');
 
@@ -72,7 +72,10 @@ router.post(
 );
 
 router.post(
-  '/login', authLimiter, validate(loginSchema),
+  // Counted per (IP, email) so one person mistyping their password cannot lock
+  // out an entire office NAT, with a looser per-IP ceiling behind it so cycling
+  // through addresses is not a way around that. See middleware/rateLimiter.js.
+  '/login', authIpLimiter, loginLimiter, validate(loginSchema),
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);

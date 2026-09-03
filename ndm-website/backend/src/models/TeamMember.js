@@ -106,11 +106,6 @@ const TeamMember = {
     );
     return (result.affectedRows || 0) > 0;
   },
-
-  async removeByUserId(userId) {
-    const result = await execute('DELETE FROM team_members WHERE user_id = ?', [userId]);
-    return result.affectedRows || 0;
-  },
 };
 
 module.exports = TeamMember;

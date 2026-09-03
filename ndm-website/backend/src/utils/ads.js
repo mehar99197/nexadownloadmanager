@@ -112,14 +112,23 @@ function ctr(ad) {
 // would mean an outage silently turning ads off for everyone; failing to
 // 'free' means the worst case is an ad shown to somebody who should not see
 // one, which the client's own paid-plan check then suppresses.
-function planFromAuthHeader(header, verify) {
+// `onRejected` is called with the verification error when a bearer token was
+// present but unusable. It exists so the caller can count forgery attempts —
+// a real client never sends a token this server did not sign — without this
+// function's fail-to-'free' behaviour changing in any way. A throw from the
+// callback is swallowed for the same reason: telemetry must never be able to
+// turn ads on for somebody who paid not to see them.
+function planFromAuthHeader(header, verify, onRejected) {
   const value = String(header || '');
   if (!/^bearer\s+\S/i.test(value)) return 'free';
   try {
     const payload = verify(value.replace(/^bearer\s+/i, '').trim());
     const plan = payload && payload.plan;
     return typeof plan === 'string' && plan ? plan : 'free';
-  } catch {
+  } catch (err) {
+    if (typeof onRejected === 'function') {
+      try { onRejected(err); } catch { /* never let telemetry break the gate */ }
+    }
     return 'free';
   }
 }

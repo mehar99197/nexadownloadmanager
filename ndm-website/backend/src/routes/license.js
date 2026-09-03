@@ -11,7 +11,8 @@ const {
 } = require('../schemas/license.schema');
 const { signLicenseToken } = require('../utils/jwt');
 const { isTrialActive, SEAT_LEASE_SECONDS } = require('../utils/license');
-const { assessSharing, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
+const { assessSharing, autoSuspendReason, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
+const config = require('../config/env');
 const { entitlementsFor } = require('../config/plans');
 
 // LITERAL response shape consumed by the C++ app — never the envelope.
@@ -49,6 +50,15 @@ async function resolveSubscription(licenseKey) {
   if (sub.status === 'cancelled') return { reason: 'cancelled', sub };
   if (sub.status === 'expired') return { reason: 'expired', sub };
   if (sub.status !== 'active') return { reason: 'invalid', sub };
+  // A licence the sharing check suspended answers exactly like a full one.
+  //
+  // Two reasons it is `seat_limit` and not a reason of its own. Practically:
+  // the desktop client already handles it well — it keeps the stored key, stops
+  // beating, and tells the user to close Nexa elsewhere — whereas `cancelled`
+  // or `expired` would make it delete the key, which is not something to do to
+  // someone a heuristic merely suspects. And a distinct reason would teach
+  // whoever is sharing the key exactly what was detected and what to change.
+  if (sub.sharing_suspended_at) return { reason: 'seat_limit', sub };
   return { reason: null, sub };
 }
 
@@ -88,6 +98,33 @@ router.post(
         const spread = await Subscription.deviceSpread(sub.id, SHARING_WINDOW_DAYS);
         const verdict = assessSharing({ seats: seat.seats, ...spread });
         await Subscription.recordSharingAssessment(sub.id, verdict);
+
+        // Suspending is a much higher bar than flagging — see
+        // autoSuspendReason(). `sharing_exempt` is an admin having already
+        // looked at this licence and decided it is fine; the server does not
+        // get to overrule that, though flagging above still records what it
+        // sees so a licence that keeps spreading resurfaces for review.
+        if (config.LICENSE_AUTO_SUSPEND && !sub.sharing_exempt) {
+          const reason = autoSuspendReason({ seats: seat.seats, ...spread });
+          if (reason) {
+            const { suspended } = await Subscription.suspendForSharing(sub.id, reason);
+            // Hand back the seat acquireSeat() just granted. The licence is
+            // suspended, so the lease serves nothing — and on a one-seat
+            // licence it would block the rightful owner for a further fifteen
+            // minutes after an admin lifts the suspension, which turns a
+            // reversible action into one that visibly is not.
+            await Subscription.releaseSeat(sub.id, device_fingerprint);
+            if (suspended) {
+              console.warn(
+                `[SECURITY] licence ${license_key} auto-suspended for sharing: ${reason}`
+              );
+            }
+            // Take effect on this very request rather than the next one.
+            return invalid(res, 'seat_limit', sub, {
+              seats: seat.seats, activeSeats: seat.activeSeats,
+            });
+          }
+        }
       } catch (err) {
         req.log?.warn?.({ err, subscriptionId: sub.id }, 'sharing assessment failed');
       }
@@ -113,9 +150,18 @@ router.post(
   })
 );
 
-// Keeps this device's seat alive. Cheaper than /validate (no token minting) and
-// on the general API limiter, because a 5-minute heartbeat would otherwise eat
-// the strict licence limiter's hourly budget.
+// Keeps this device's seat alive, and re-issues the licence token.
+//
+// Re-issuing here is what lets the token be short-lived. It used to live 24
+// hours because /validate — which runs every six hours on the client — was the
+// only thing that minted one, so a captured token stayed usable for a day after
+// the licence behind it was revoked. A beat already resolves the subscription
+// and renews the seat, i.e. it has just done every authorisation check minting
+// requires, so handing back a fresh token costs one Ed25519 signature and drops
+// that window to the token's TTL.
+//
+// Still on the general API limiter rather than the strict licence one: a
+// 5-minute beat would eat that budget, and the work here is cheap.
 router.post(
   '/heartbeat', apiLimiter, validate(heartbeatSchema),
   asyncHandler(async (req, res) => {
@@ -135,8 +181,17 @@ router.post(
         seats: seat.seats, activeSeats: seat.activeSeats,
       });
     }
+    const features = entitlementsFor(sub.plan);
     return res.json({
       valid: true, plan: sub.plan, trial: isTrialActive(sub),
+      // Same claims as /validate, so the client can simply replace the token it
+      // holds. Entitlements are re-derived from the CURRENT plan, which means a
+      // mid-session downgrade reaches the client on the next beat rather than
+      // waiting for the six-hourly revalidation.
+      token: signLicenseToken({
+        sub: license_key, plan: sub.plan, device: device_fingerprint, features,
+      }),
+      features,
       seats: seat.seats, activeSeats: seat.activeSeats,
       leaseSeconds: seat.leaseSeconds,
     });

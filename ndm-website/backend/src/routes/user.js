@@ -39,11 +39,11 @@ function toIso(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-// Current subscription with lazy trial expiry applied.
+// Current subscription, with lazy trial expiry and lazy paid lapse applied.
 async function findUserSubscription(userId) {
   const active = await Subscription.findActiveByUserId(userId);
   const sub = active || (await Subscription.findByUserId(userId))[0] || null;
-  return Subscription.expireTrialIfNeeded(sub);
+  return Subscription.current(sub);
 }
 
 function subscriptionSummary(sub) {
@@ -52,6 +52,7 @@ function subscriptionSummary(sub) {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
     seats: sub.seats, licenseKey: sub.license_key,
     trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
   };
 }
 
@@ -241,7 +242,9 @@ router.delete(
     const subs = await Subscription.findByUserId(user.id);
     for (const s of subs) {
       if (s.stripe_subscription_id && s.status === 'active') {
-        try { await stripe.cancelSubscription(s.stripe_subscription_id); }
+        // Immediate, unlike /subscription/cancel: the account is going away,
+        // so there is no remaining period to hand back to anybody.
+        try { await stripe.cancelSubscription(s.stripe_subscription_id, { atPeriodEnd: false }); }
         catch (err) {
           // eslint-disable-next-line no-console
           console.error('[user] stripe cancel on delete failed:', err.message);

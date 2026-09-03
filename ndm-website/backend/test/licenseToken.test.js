@@ -111,3 +111,19 @@ test('a signature of the wrong length is refused', () => {
   const short = Buffer.alloc(32).toString('base64url');
   assert.throws(() => verifyLicense(`${header}.${body}.${short}`), /signature length/);
 });
+
+test('licence tokens are short-lived, matching the seat lease', () => {
+  // A long-lived token means a revoked licence keeps working on plan-gated
+  // endpoints until it lapses. It was 24h; /heartbeat re-issues every 5 minutes
+  // now, so there is no reason for it to outlive the lease it represents.
+  const { SEAT_LEASE_SECONDS } = require('../src/utils/license');
+  const claims = verifyLicense(signLicenseToken(CLAIMS));
+  const lifetime = claims.exp - claims.iat;
+
+  assert.ok(lifetime > 0, 'a token has a positive lifetime');
+  assert.ok(lifetime <= SEAT_LEASE_SECONDS,
+    `token lifetime ${lifetime}s must not exceed the ${SEAT_LEASE_SECONDS}s seat lease`);
+  // Three 5-minute beats of slack: enough that one or two dropped requests on a
+  // flaky connection do not leave a paying user without a valid token.
+  assert.ok(lifetime >= 10 * 60, `token lifetime ${lifetime}s leaves too little slack`);
+});

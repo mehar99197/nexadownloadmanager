@@ -26,21 +26,37 @@ Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
 
 - `JWT_SECRET`, `JWT_ADMIN_SECRET`, `JWT_ROOT_SECRET`, `LICENSE_JWT_SECRET` — 32+ chars, all different.
   Generate with `openssl rand -base64 48`.
+- `LICENSE_JWT_PRIVATE_KEY` — the Ed25519 key that signs licence tokens, from
+  `npm run license:keygen`. Its public half lives in `packaging/license-public-key.txt`
+  and is compiled into the desktop app, which verifies every token itself. Rotating this
+  requires shipping the desktop update with the new public key **first**.
 - `STRIPE_SECRET_KEY` (`sk_live_…`) and `STRIPE_WEBHOOK_SECRET` (`whsec_…`).
 - `SMTP_HOST` (+ `SMTP_USER`/`SMTP_PASS`) — mock email is disabled in production.
 - `CORS_ORIGINS` and `FRONTEND_URL` — HTTPS only.
 - `ADMIN_ALLOWED_IPS` — must actually restrict; empty is refused.
 - `ROOT_ADMIN_EMAIL` — the creator account's address.
 - `TRUST_PROXY` — set to match Hostinger's reverse proxy so rate limiting and
-  the admin IP allowlist see the real client IP instead of 127.0.0.1.
+  the admin IP allowlist see the real client IP instead of 127.0.0.1. A plain
+  number is a hop count (`TRUST_PROXY=1` trusts one proxy); anything else is
+  read as an address, subnet or `loopback`.
 - `MYSQL_PASS` — 16+ chars, not a default.
+- `AD_EVENT_SECRET` — optional; blank reuses `LICENSE_JWT_SECRET`. Keys the
+  short-lived tokens that make an ad impression or click countable.
 
 ## Stripe webhook
 
 Point it at `https://<domain>/api/webhooks/stripe` for
-`checkout.session.completed`, `customer.subscription.deleted` and
-`invoice.payment_failed`. Events are recorded in `stripe_webhook_events`, so
-Stripe's retries cannot double-charge or double-email.
+`checkout.session.completed`, `invoice.payment_succeeded` (or `invoice.paid` on
+a newer API version — either is accepted), `invoice.payment_failed`,
+`customer.subscription.updated`, `customer.subscription.deleted` and
+`charge.refunded`. Events are recorded in
+`stripe_webhook_events`, so Stripe's retries cannot double-charge or
+double-email.
+
+`invoice.payment_succeeded` is what extends `expiry_date` on every renewal.
+**Without it subscribed customers lose access after one billing period while
+still being charged**, so check it is ticked in the Stripe dashboard for any
+endpoint created before this was added.
 
 ## Updating
 

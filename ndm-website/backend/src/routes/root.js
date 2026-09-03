@@ -76,7 +76,9 @@ router.post(
     const user = await User.findByEmail(email);
     // isRootUser (not `role === 'root'`) so a row whose email no longer matches
     // ROOT_ADMIN_EMAIL cannot sign in here.
-    if (!isRootUser(user))
+    // A password-less (Google-created) row cannot sign in here: bcrypt.compare
+    // against null throws, which would answer 500 rather than rejecting.
+    if (!isRootUser(user) || !user.password_hash)
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);

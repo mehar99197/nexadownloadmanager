@@ -40,7 +40,17 @@ function signResetToken(user) {
 // they are signed with Ed25519 rather than an HMAC secret: the app ships the
 // public key, which cannot mint a licence. See config/licenseKeys.js, and
 // utils/ed25519Jwt.js for why this does not go through `jsonwebtoken`.
-const LICENSE_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+// Matches SEAT_LEASE_SECONDS deliberately: the token represents a held seat, so
+// it should not outlive one. The desktop app beats every 5 minutes and gets a
+// fresh token each time, giving three beats of slack before a token lapses —
+// the same tolerance the lease itself has for a flaky connection.
+//
+// It was 24 hours, which meant a token captured from a revoked licence stayed
+// usable on plan-gated endpoints for a day. Shortening it was only possible
+// once /heartbeat started re-issuing tokens; without that the client, which
+// re-validates every six hours, would have spent most of its time holding an
+// expired one.
+const LICENSE_TOKEN_TTL_SECONDS = 15 * 60;
 
 function signLicenseToken(payload) {
   return ed25519Jwt.sign({ ...payload, typ: 'license' },

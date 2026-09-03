@@ -9,6 +9,7 @@ const { adsLimiter } = require('../middleware/rateLimiter');
 const { serveAdsSchema, adEventSchema } = require('../schemas/ad.schema');
 const config = require('../config/env');
 const { verifyLicense } = require('../utils/jwt');
+const { recordRejection, classifyRejection } = require('../utils/tokenAbuse');
 const {
   isAdFreePlan, publicAd, planFromAuthHeader, verifyAdEventToken,
 } = require('../utils/ads');
@@ -24,7 +25,12 @@ const AD_EVENT_SECRET = config.adEventSecret;
 // the app also hides its banner on a paid plan, but the entitlement is decided
 // here so a client bug can never leak an ad to somebody who paid not to see one.
 function planFromLicenseHeader(req) {
-  return planFromAuthHeader(req.get('authorization'), verifyLicense);
+  return planFromAuthHeader(req.get('authorization'), verifyLicense, (err) => {
+    // Fire-and-forget: a token that does not verify is a signal worth counting
+    // (see utils/tokenAbuse.js), but waiting on the write would put a database
+    // round-trip in front of every ad request.
+    void recordRejection(classifyRejection(err));
+  });
 }
 
 // GET /api/ads?placement=app_banner

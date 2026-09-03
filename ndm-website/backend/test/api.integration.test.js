@@ -202,6 +202,110 @@ test('backend API', async (t) => {
     void user;
   });
 
+  // ------------------------------------------------- sharing suspension ---
+  // Auto-suspension is the only place this system acts against a paying
+  // customer with no human in the loop, so the whole chain gets driven for
+  // real: a leaked key gets cut off, the cut-off is indistinguishable from a
+  // full licence, the key SURVIVES it, and an admin can undo it and have that
+  // decision stick.
+  await t.test('a leaked key is auto-suspended, and an admin can undo it', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    await srv.makeUser(api, 'sharing');
+    const [sub] = await srv.query('SELECT * FROM subscriptions LIMIT 1');
+    await srv.query("UPDATE subscriptions SET plan = 'pro', seats = 1 WHERE id = ?", [sub.id]);
+    const key = sub.license_key;
+
+    const validate = (fp) => api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: fp });
+    const device = (n) => String(n).padStart(64, '0');
+
+    const bcrypt = require('bcryptjs');
+    await srv.query(
+      "INSERT INTO users (name, email, password_hash, role, email_verified) VALUES ('Admin', 'shareadmin@example.test', ?, 'admin', 1)",
+      [await bcrypt.hash('admin-password-123', 12)]
+    );
+    const adminApi = srv.client();
+    const adminLogin = await adminApi.post('/api/admin/login',
+      { email: 'shareadmin@example.test', password: 'admin-password-123' });
+    const adminAuth = { token: adminLogin.body.data.token };
+
+    await t2.test('a handful of devices is completely normal', async () => {
+      for (let i = 1; i <= 5; i += 1) {
+        // Each device frees its seat, exactly as a real client does on exit.
+        assert.equal((await validate(device(i))).body.valid, true, `device ${i}`);
+        await api.post('/api/license/release',
+          { license_key: key, device_fingerprint: device(i) });
+      }
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.sharing_suspended_at, null, 'nobody is suspended for five machines');
+    });
+
+    await t2.test('a key spreading across many machines gets cut off', async () => {
+      let cutOffAt = null;
+      for (let i = 6; i <= 60 && cutOffAt === null; i += 1) {
+        const res = await validate(device(i));
+        if (!res.body.valid) cutOffAt = i;
+        else {
+          await api.post('/api/license/release',
+            { license_key: key, device_fingerprint: device(i) });
+        }
+      }
+      assert.ok(cutOffAt, 'the licence must eventually be suspended');
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.ok(row.sharing_suspended_at, 'and it is recorded as a sharing suspension');
+      assert.equal(row.sharing_level, 'suspected');
+      assert.ok(row.sharing_reason, 'with a reason an admin can read');
+    });
+
+    await t2.test('the cut-off looks like a full licence, and keeps the key alive', async () => {
+      const res = await validate(device(1));
+      assert.equal(res.body.valid, false);
+      // `seat_limit` is what the desktop client keeps its stored key for.
+      // `cancelled`/`expired` would make it DELETE the key, which is not
+      // something to do to somebody a heuristic merely suspects.
+      assert.equal(res.body.reason, 'seat_limit');
+
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.status, 'active', 'status is untouched — this is reversible');
+      assert.ok(row.license_key, 'the key itself still exists');
+    });
+
+    await t2.test('it shows up in the admin review queue', async () => {
+      const res = await adminApi.get('/api/admin/subscriptions/flagged', adminAuth);
+      assert.equal(res.status, 200, res.text);
+      const found = res.body.data.subscriptions.find((s) => String(s.id) === String(sub.id));
+      assert.ok(found, 'the suspended licence is listed for review');
+      assert.ok(found.sharing_suspended_at);
+    });
+
+    await t2.test('an admin can lift it, and the licence works again', async () => {
+      const res = await adminApi.post(
+        `/api/admin/subscriptions/${sub.id}/sharing/clear`, {}, adminAuth);
+      assert.equal(res.status, 200, res.text);
+      assert.equal((await validate(device(1))).body.valid, true, 'the customer is back');
+    });
+
+    await t2.test('lifting it sticks — the next new device does not re-suspend', async () => {
+      // The device history that triggered the suspension is still there, so
+      // without the exemption the admin's decision would last one activation.
+      await api.post('/api/license/release',
+        { license_key: key, device_fingerprint: device(1) });
+      const res = await validate(device(99));
+      assert.equal(res.body.valid, true, 'the admin decision survives a new device');
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.sharing_suspended_at, null);
+    });
+
+    await t2.test('an admin can put it back under enforcement', async () => {
+      const res = await adminApi.post(
+        `/api/admin/subscriptions/${sub.id}/sharing/resume`, {}, adminAuth);
+      assert.equal(res.status, 200, res.text);
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(Number(row.sharing_exempt), 0);
+    });
+  });
+
   // -------------------------------------------------------- seat freeing ---
   // Regression suite for the bug where freeing a seat did nothing: /heartbeat
   // called the same acquireSeat() as /validate, and since `busy` counts only
@@ -243,6 +347,25 @@ test('backend API', async (t) => {
       assert.equal((await validate(deviceA)).body.valid, true);
       const beat = await heartbeat(deviceA);
       assert.equal(beat.body.valid, true, 'a held lease renews');
+    });
+
+    await t2.test('a heartbeat re-issues a usable, device-bound licence token', async () => {
+      // This is what lets the token be short-lived. Without it the client, which
+      // re-validates only every six hours, would hold an expired token for most
+      // of its session — so a regression here shows up as paying users seeing
+      // ads, not as an obvious failure.
+      const { verifyLicense } = require('../src/utils/jwt');
+      const beat = await heartbeat(deviceA);
+      assert.ok(beat.body.token, 'the beat carries a token');
+
+      const claims = verifyLicense(beat.body.token);
+      assert.equal(claims.device, deviceA, 'bound to the beating device');
+      assert.equal(claims.plan, beat.body.plan, 'and agrees with the plan it reports');
+      assert.ok(claims.features, 'entitlements ride inside the signature');
+
+      const lifetime = claims.exp - claims.iat;
+      assert.ok(lifetime <= 15 * 60 && lifetime > 0,
+        `token should be short-lived, got ${lifetime}s`);
     });
 
     await t2.test('device B is refused while A holds the seat', async () => {

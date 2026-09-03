@@ -1,7 +1,6 @@
 import axios from 'axios';
 import { AUTH_NS } from '../realm.js';
 
-export const ADMIN_TOKEN_KEY = 'ndm_admin_token';
 let adminAccessToken = null;
 let refreshPromise = null;
 

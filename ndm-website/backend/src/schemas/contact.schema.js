@@ -12,8 +12,9 @@ const contactSchema = {
       email: z.string().trim().toLowerCase().email().max(254),
       topic: z.enum(TOPICS).default('general'),
       message: z.string().trim().min(10, 'Please write at least a sentence').max(5000),
-      // Honeypot: real browsers leave it empty; a bot that fills every field
-      // gets a polite 200 and nothing is sent.
+      // Honeypot: real browsers leave it empty. A bot that fills every field
+      // fails validation here (400 VALIDATION_ERROR) and nothing is stored or
+      // sent — the message never reaches the handler.
       website: z.string().max(0).optional().default(''),
     })
     .strict(),

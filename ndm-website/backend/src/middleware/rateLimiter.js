@@ -105,6 +105,16 @@ const adsLimiter = makeLimiter({
   max: 120,
 });
 
+// Every call here costs real money at Anthropic, so this is deliberately the
+// tightest limiter in the file and it counts in MySQL — an attacker who found a
+// way to spend our API budget would otherwise get a fresh allowance every time
+// the keepalive cron restarted the process. Sized for the honest case: a batch
+// of finished downloads being renamed, not a loop.
+const aiLimiter = makeDurableLimiter('ai', {
+  windowMs: 60 * 60 * 1000,
+  max: 120,
+});
+
 // Generous global limiter mounted on /api.
 const apiLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
@@ -153,6 +163,6 @@ const teamInviteLimiter = makeDurableLimiter('team-invite', {
 module.exports = {
   authLimiter, loginLimiter, authIpLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
-  adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter,
+  adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
   loginKey,
 };

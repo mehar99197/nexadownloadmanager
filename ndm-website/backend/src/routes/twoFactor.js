@@ -148,7 +148,9 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
     asyncHandler(async (req, res) => {
       if (!req.admin.totp_enabled)
         return fail(res, 'NOT_ENABLED', 'Two-factor authentication is not on', 400);
-      const passwordOk = await bcrypt.compare(req.body.password, req.admin.password_hash);
+      // Same null-hash guard as the realm logins: compare() throws on null.
+      const passwordOk = Boolean(req.admin.password_hash)
+        && await bcrypt.compare(req.body.password, req.admin.password_hash);
       if (!passwordOk) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
       const result = checkCode(req.admin, req.body.code);
       if (!result.ok) return fail(res, 'INVALID_CODE', 'That code is not valid', 400);

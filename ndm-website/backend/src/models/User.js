@@ -103,7 +103,9 @@ const User = {
     return { users: rows, totalCount: total ? total.cnt : 0 };
   },
 
-  async listAll({ q, role, banned, emailVerified } = {}) {
+  // `limit` is not optional in practice: this feeds the CSV export, and an
+  // uncapped SELECT over every user is a memory event waiting for growth.
+  async listAll({ q, role, banned, emailVerified, limit = 5000 } = {}) {
     const where = [];
     const vals = [];
     if (q) {
@@ -114,9 +116,10 @@ const User = {
     if (banned !== undefined) { where.push('banned = ?'); vals.push(banned ? 1 : 0); }
     if (emailVerified !== undefined) { where.push('email_verified = ?'); vals.push(emailVerified ? 1 : 0); }
     const w = where.length ? ' WHERE ' + where.join(' AND ') : '';
+    const cap = Math.min(50000, Math.max(1, Number(limit) || 5000));
     return query(
       `SELECT id, name, email, role, email_verified, banned, created_at, updated_at
-       FROM users${w} ORDER BY created_at DESC`,
+       FROM users${w} ORDER BY created_at DESC LIMIT ${cap}`,
       vals
     );
   },

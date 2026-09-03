@@ -68,6 +68,19 @@ const config = {
   JWT_ROOT_SECRET: NODE_ENV === 'production' ? requiredSecret('JWT_ROOT_SECRET')
     : process.env.JWT_ROOT_SECRET || 'dev_root_secret',
 
+  // Suspend a licence automatically when the sharing evidence is beyond
+  // argument (utils/licenseAbuse.js#autoSuspendReason). A kill switch, not a
+  // tuning knob: if it ever misfires on real customers, set this to false and
+  // the flagging stays on while the suspending stops.
+  LICENSE_AUTO_SUSPEND: bool(process.env.LICENSE_AUTO_SUSPEND, true),
+
+  // Powers the desktop app's AI helpers, which are proxied through this server
+  // so the `aiRename` entitlement is enforced somewhere the client cannot
+  // patch. Unset simply disables the feature — the app falls back to leaving
+  // filenames alone, exactly as it did before the proxy existed.
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  AI_MODEL: process.env.AI_MODEL || 'claude-haiku-4-5',
+
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
 

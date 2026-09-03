@@ -64,6 +64,11 @@ const updateSubscriptionSchema = {
       plan: z.enum(['free', 'pro', 'team']).optional(),
       status: z.enum(['active', 'expired', 'cancelled']).optional(),
       seats: z.coerce.number().int().min(1).max(100).optional(),
+      // Support has to be able to correct an expiry by hand: extending a
+      // customer whose renewal webhook went missing, or honouring a refund.
+      // Absent leaves it alone; a plan change without one still recomputes it.
+      expiryDate: z.string().trim().datetime({ offset: true })
+        .transform((v) => new Date(v)).optional(),
     })
     .strict()
     .refine((d) => Object.keys(d).length > 0, { message: 'No fields to update' }),
