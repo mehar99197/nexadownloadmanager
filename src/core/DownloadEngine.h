@@ -140,7 +140,8 @@ public:
     int    torrentDownloadLimit() const { return m_torrentDlLimit; }
     int    torrentUploadLimit() const { return m_torrentUlLimit; }
 
-    // AI helpers (require $ANTHROPIC_API_KEY). aiAvailable() reflects key presence.
+    // AI helpers. These run server-side and are entitlement-gated, so
+    // aiAvailable() reflects whether this install holds a licence token.
     bool aiAvailable() const;
     void setAiRename(bool on);
     bool aiRename() const { return m_aiRename; }

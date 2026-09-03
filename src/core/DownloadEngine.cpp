@@ -71,8 +71,10 @@ DownloadEngine::DownloadEngine(QObject *parent)
     if (m_downloadDir.isEmpty())
         m_downloadDir = QDir::homePath() + QStringLiteral("/Downloads");
 
-    m_ai = new AiClient(this);
+    // The licence manager first: AiClient authenticates with the token it
+    // holds, since the AI helpers are server-side and entitlement-gated.
     m_license = new LicenseManager(this);
+    m_ai = new AiClient(m_license, this);
     connect(m_license, &LicenseManager::entitlementChanged,
             this, &DownloadEngine::applyLicensePlan);
 
@@ -155,7 +157,14 @@ void DownloadEngine::applyLicensePlan(const QString &plan)
     // Entitlements come from the licence server; the plan name is only the
     // fallback for a build talking to an older backend. Reading them here keeps
     // every gate in the engine driven by one source.
-    const Entitlements &f = m_license->features();
+    //
+    // Deliberately the *verified* read, not the cheap cached features(): this
+    // seeds the engine's own m_authSiteDownloads / m_aiRename / cap, which other
+    // gates then trust, so those cached flags are themselves guard-derived and
+    // fold to Free if the licence state was tampered with. It also lives in a
+    // different translation unit from verifiedFeatures(), so it is one more,
+    // differently-shaped place the check has to be defeated.
+    const Entitlements f = m_license->verifiedFeatures();
     const int cap = f.maxConcurrentDownloads;
     m_maxConcurrent = cap > 0 ? qMin(cap, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
     m_aiRename = m_aiRenameRequested && f.aiRename;
@@ -405,10 +414,23 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     // Login-gated course sites (Udemy, Coursera, LinkedIn Learning…) are a paid
     // feature. Refuse before any work is queued or a row appears, so the user
     // gets one clear explanation instead of a download that fails later for a
-    // reason that looks like a bug. The server enforces the same rule when it
-    // decides the plan, so editing the cached entitlement locally gains nothing
-    // beyond this client-side convenience check.
-    if (isAuthSiteUrl(url) && !m_authSiteDownloads) {
+    // reason that looks like a bug.
+    //
+    // Be honest about what this is: a purely client-side gate. The server
+    // decides the *plan*, but it is never consulted at download time — the
+    // download goes straight to the course site with the user's own cookies.
+    // A patched build will always be able to pass this check. It is kept
+    // because it is the honest behaviour for an unmodified client, not because
+    // it is unbreakable. Anything that must be unforgeable has to be something
+    // the client cannot compute alone.
+    // Deliberately a second, independent read. m_authSiteDownloads is the
+    // cached copy every other gate uses; verifiedFeatures() re-runs the
+    // Ed25519 check against the token itself. They live in different
+    // translation units and fail differently, so getting past this needs both
+    // a patched bool here and a defeated signature there, not one edit.
+    const bool authSitesAllowed = m_authSiteDownloads
+        && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
+    if (isAuthSiteUrl(url) && !authSitesAllowed) {
         emit downloadBlocked(url,
             tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
                "or see nexadownloadmanager.com/pricing.").arg(url.host()));
@@ -1290,6 +1312,25 @@ int DownloadEngine::addRemoteDownload(const QUrl &url)
 {
     if (!isPublicHttpUrl(url))
         return -1;
+
+    // The same paid gate addDownload() applies. This path builds its own task
+    // rather than going through addDownload(), so without repeating the check
+    // the phone-remote dashboard was a complete way around it: a Free install
+    // could queue a Udemy download from its own web API with no licence
+    // tampering whatsoever.
+    // Deliberately a second, independent read. m_authSiteDownloads is the
+    // cached copy every other gate uses; verifiedFeatures() re-runs the
+    // Ed25519 check against the token itself. They live in different
+    // translation units and fail differently, so getting past this needs both
+    // a patched bool here and a defeated signature there, not one edit.
+    const bool authSitesAllowed = m_authSiteDownloads
+        && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
+    if (isAuthSiteUrl(url) && !authSitesAllowed) {
+        emit downloadBlocked(url,
+            tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
+               "or see nexadownloadmanager.com/pricing.").arg(url.host()));
+        return -1;
+    }
 
     const int id = m_db->nextId();
     auto *task = new DownloadTask(id, url, resolveSavePath(url, QString()), m_nam, m_db, this);

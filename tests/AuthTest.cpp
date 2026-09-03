@@ -10,6 +10,7 @@
 #include <QTemporaryDir>
 #include <QNetworkRequest>
 #include <QFile>
+#include <QDebug>
 #include <QDateTime>
 #include <QtGlobal>
 #include <cstdio>
@@ -25,7 +26,12 @@ static int g_fail = 0, g_pass = 0;
 static QString writeFile(const QString &path, const QString &contents)
 {
     QFile f(path);
-    f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+    // Checked rather than ignored: a fixture that silently fails to write
+    // makes the assertion that follows fail for the wrong reason.
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "FAIL: could not write fixture" << path << f.errorString();
+        return path;
+    }
     f.write(contents.toUtf8());
     f.close();
     return path;

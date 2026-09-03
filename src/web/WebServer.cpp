@@ -469,7 +469,7 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         }
         m_lastAiMs = nowMs;
         if (!m_engine->aiAvailable()) {
-            sendJson(sock, 400, R"({"ok":false,"error":"AI not configured; set ANTHROPIC_API_KEY"})");
+            sendJson(sock, 400, R"({"ok":false,"error":"AI needs an active Pro or Team license"})");
             return;
         }
         QString text;

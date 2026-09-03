@@ -27,6 +27,7 @@
 #include <QSettings>
 #include <QClipboard>
 #include <QApplication>
+#include <QStandardItemModel>
 #include "license/LicenseManager.h"
 
 namespace nexa {
@@ -176,9 +177,26 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     themeRow->addWidget(m_theme, 1);
     themeRow->addWidget(themeBrowse);
     gen->addRow(tr("Appearance"), themeRow);
+    // Paid themes stay visible but unselectable — the same upsell the gallery
+    // makes, without the dropdown handing them over for free. Until this ran,
+    // picking any of the 64 paid themes here needed no licence at all.
+    refreshThemeEntitlement();
+    if (LicenseManager *license = m_engine->license()) {
+        connect(license, &LicenseManager::featuresChanged, this,
+                [this](const Entitlements &) { refreshThemeEntitlement(); });
+    }
     // The combo previews live too — a theme you cannot see is hard to choose.
     connect(m_theme, &QComboBox::currentIndexChanged, this, [this](int) {
-        applyThemePreview(m_theme->currentData().toString());
+        const QString id = m_theme->currentData().toString();
+        // Belt and braces: disabled items cannot normally be reached with the
+        // mouse, but keyboard navigation and setCurrentIndex() can still land
+        // on one. A locked theme must never be applied, not even as a preview.
+        if (!allowsTheme(id)) {
+            const QSignalBlocker block(m_theme);
+            m_theme->setCurrentIndex(qMax(0, m_theme->findData(theme::savedId())));
+            return;
+        }
+        applyThemePreview(id);
     });
     connect(themeBrowse, &QPushButton::clicked, this, [this]() {
         ThemeGalleryDialog dlg(this);
@@ -428,7 +446,7 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_aiRename->setChecked(m_engine->aiRename());
     if (!m_engine->aiAvailable()) {
         m_aiRename->setEnabled(false);
-        m_aiRename->setToolTip(tr("Set ANTHROPIC_API_KEY and restart to enable AI features."));
+        m_aiRename->setToolTip(tr("AI features need an active Pro or Team license."));
     }
     v->addWidget(m_aiRename);
 
@@ -558,6 +576,61 @@ void SettingsDialog::applyThemePreview(const QString &id)
     if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance()))
         theme::apply(*app);
     emit themeChanged();
+}
+
+bool SettingsDialog::allowsTheme(const QString &id) const
+{
+    const LicenseManager *license = m_engine ? m_engine->license() : nullptr;
+    // No licence manager at all (tests, or a partially built engine) is the
+    // fail-closed case everywhere else in the app, so it is here too: only the
+    // themes every install gets.
+    if (!license)
+        return Entitlements{}.allowsTheme(id);
+    return license->allowsTheme(id);
+}
+
+void SettingsDialog::refreshThemeEntitlement()
+{
+    if (!m_theme)
+        return;
+
+    // QComboBox's default model is a QStandardItemModel, which is what lets an
+    // individual row be disabled. If that ever stops being true the themes are
+    // left selectable rather than silently unguarded, so fall back to hiding
+    // the paid ones entirely instead.
+    auto *model = qobject_cast<QStandardItemModel *>(m_theme->model());
+
+    for (int i = 0; i < m_theme->count(); ++i) {
+        const QString id = m_theme->itemData(i).toString();
+        const bool allowed = allowsTheme(id);
+        if (model && model->item(i))
+            model->item(i)->setEnabled(allowed);
+        m_theme->setItemData(i, allowed
+                                    ? QVariant()
+                                    : QVariant(tr("Included with Pro — upgrade to use this theme")),
+                             Qt::ToolTipRole);
+    }
+
+    // A theme that is no longer licensed must not stay in force: a lapsed or
+    // downgraded subscription would otherwise keep painting the app in a paid
+    // look until the user happened to change it.
+    const QString current = theme::savedId();
+    if (!allowsTheme(current)) {
+        QString fallback;
+        for (int i = 0; i < m_theme->count() && fallback.isEmpty(); ++i) {
+            const QString id = m_theme->itemData(i).toString();
+            if (allowsTheme(id))
+                fallback = id;
+        }
+        if (!fallback.isEmpty()) {
+            const QSignalBlocker block(m_theme);
+            m_theme->setCurrentIndex(qMax(0, m_theme->findData(fallback)));
+            applyThemePreview(fallback);
+        }
+    } else {
+        const QSignalBlocker block(m_theme);
+        m_theme->setCurrentIndex(qMax(0, m_theme->findData(current)));
+    }
 }
 
 } // namespace nexa

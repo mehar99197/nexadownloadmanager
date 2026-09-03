@@ -1881,8 +1881,8 @@ void MainWindow::promptSmartAdd()
 {
     if (!m_engine->aiAvailable()) {
         QMessageBox::information(this, QStringLiteral("Smart add"),
-            QStringLiteral("Smart add needs an Anthropic API key.\n\nSet ANTHROPIC_API_KEY in your "
-                           "environment and restart Nexa."));
+            QStringLiteral("Smart add needs an active Pro or Team license.\n\nIt runs on Nexa's "
+                           "servers, so it is unavailable on the Free plan."));
         return;
     }
     if (m_engine->licensePlan() == QLatin1String("free")) {

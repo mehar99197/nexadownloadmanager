@@ -1,6 +1,8 @@
 #include "license/LicenseManager.h"
 #include "license/CredentialStore.h"
 #include "license/LicenseToken.h"
+#include "license/KeyIntegrity.h"
+#include "license/Guard.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -35,6 +37,16 @@ constexpr int  kRevalidateMs   = 6 * 60 * 60 * 1000;   // 6 hours
 // The server holds a seat for 15 minutes past the last heartbeat, so beating
 // every 5 leaves room for two dropped requests before a seat is lost.
 constexpr int  kHeartbeatMs    = 5 * 60 * 1000;
+// How far a machine's clock may disagree with the server's before a freshly
+// minted licence token is treated as stale. Generous because the cost of being
+// strict is refusing to activate a genuine paying customer, while the cost of
+// being lenient is nil — the server re-checks expiry whenever the token is
+// actually used for anything.
+constexpr int  kClockSkewToleranceSecs = 30 * 60;
+// How often the cached entitlements are re-derived from the signed token.
+// Short enough that a patched-in "pro" does not survive usefully, long enough
+// that the signature check is nowhere near a hot path.
+constexpr int  kEntitlementRecheckMs = 60 * 1000;
 
 QString planLabel(const QString &plan) { return plan.toUpper(); }
 
@@ -54,8 +66,11 @@ constexpr auto kProductionLicenseApi = "https://nexadownloadmanager.com/api/lice
 QUrl licenseEndpoint(const QString &action)
 {
 #ifdef NEXA_DEV_BUILD
-    const QUrl base(qEnvironmentVariable(QStringLiteral("NEXA_LICENSE_API_URL"),
-                                         QLatin1String(kProductionLicenseApi)));
+    // qEnvironmentVariable takes a const char* name, not a QString — passing a
+    // QStringLiteral here does not compile. It went unnoticed because nothing
+    // built this branch: it only exists under NEXA_DEV_BUILD.
+    const QUrl base(qEnvironmentVariable("NEXA_LICENSE_API_URL",
+                                         QString::fromLatin1(kProductionLicenseApi)));
 #else
     const QUrl base{QLatin1String(kProductionLicenseApi)};
 #endif
@@ -107,6 +122,17 @@ LicenseManager::LicenseManager(QObject *parent)
     m_heartbeat = new QTimer(this);
     m_heartbeat->setInterval(kHeartbeatMs);
     connect(m_heartbeat, &QTimer::timeout, this, &LicenseManager::sendHeartbeat);
+
+    // Re-derive entitlements from the signed token on a short cycle. Everything
+    // in the UI reads the cached struct for speed, and this is what stops that
+    // struct from being a single durable place to patch: whatever it is set to,
+    // it goes back to what the signature says within a minute. Runs always,
+    // including on Free, so the code path is not something that only exists on
+    // paid installs.
+    m_recheck = new QTimer(this);
+    m_recheck->setInterval(kEntitlementRecheckMs);
+    connect(m_recheck, &QTimer::timeout, this, &LicenseManager::recheckEntitlements);
+    m_recheck->start();
 }
 
 // The MAC of the first real wired/wireless interface, lowercased. Virtual,
@@ -342,7 +368,13 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
                 emit activationFinished(false, message);
             return;
         }
-        if (claims.expiresAt <= QDateTime::currentDateTimeUtc()) {
+        // Tolerant on purpose. Tokens live 15 minutes, so a machine whose clock
+        // is a few minutes fast would otherwise see every freshly minted token
+        // as already expired and never activate at all. This check is hygiene
+        // against an obviously stale replay — the server is what actually
+        // enforces expiry when the token is used, and it applies its own skew
+        // allowance there.
+        if (claims.expiresAt.addSecs(kClockSkewToleranceSecs) <= QDateTime::currentDateTimeUtc()) {
             const QString message = QStringLiteral("License token has already expired");
             setFeaturesForPlan(QStringLiteral("free"));
             setPlan(QStringLiteral("free"), message);
@@ -476,6 +508,7 @@ void LicenseManager::sendHeartbeat()
         const QJsonObject object = QJsonDocument::fromJson(response).object();
         if (object.value(QStringLiteral("valid")).toBool()) {
             m_activeSeats = object.value(QStringLiteral("activeSeats")).toInt(m_activeSeats);
+            adoptRefreshedToken(object.value(QStringLiteral("token")).toString());
             return;
         }
         // Every rejection reason has to be handled here. This used to act on
@@ -524,6 +557,280 @@ void LicenseManager::sendHeartbeat()
         setFeaturesForPlan(QStringLiteral("free"));
         setPlan(QStringLiteral("free"), QStringLiteral("License rejected: %1").arg(reason));
     });
+}
+
+// Derive plan and entitlements from a signature, not from stored state.
+//
+// Order matters: the live token first, then the cached one under the offline
+// grace policy. Both are verified against the compiled-in public key, so this
+// function's answer cannot be improved by editing settings, and a patched
+// binary cannot improve it without defeating Ed25519.
+bool LicenseManager::deriveFromToken(QString *plan, Entitlements *features) const
+{
+    auto accept = [&](const licensetoken::Claims &claims) {
+        if (plan)
+            *plan = claims.plan;
+        if (features) {
+            // Mirrors applyFeatures()' merge, but writes to the caller's copy
+            // so this stays free of side effects and safe to call anywhere.
+            Entitlements derived;
+            const bool paid = claims.plan == QLatin1String("pro")
+                              || claims.plan == QLatin1String("team");
+            if (paid) {
+                derived.maxConcurrentDownloads = 0;
+                derived.themes = QStringLiteral("all");
+                derived.authSiteDownloads = true;
+                derived.aiRename = true;
+                derived.adFree = true;
+                derived.seats = claims.plan == QLatin1String("team") ? 5 : 1;
+            }
+            const QJsonObject f = claims.features;
+            if (f.contains(QStringLiteral("maxConcurrentDownloads")))
+                derived.maxConcurrentDownloads =
+                    qMax(0, f.value(QStringLiteral("maxConcurrentDownloads")).toInt(derived.maxConcurrentDownloads));
+            if (f.value(QStringLiteral("themes")).isString())
+                derived.themes = f.value(QStringLiteral("themes")).toString();
+            if (f.value(QStringLiteral("freeThemes")).isArray()) {
+                QStringList ids;
+                for (const QJsonValue &v : f.value(QStringLiteral("freeThemes")).toArray())
+                    if (v.isString()) ids << v.toString();
+                if (!ids.isEmpty())
+                    derived.freeThemes = ids;
+            }
+            if (f.contains(QStringLiteral("authSiteDownloads")))
+                derived.authSiteDownloads = f.value(QStringLiteral("authSiteDownloads")).toBool(derived.authSiteDownloads);
+            if (f.contains(QStringLiteral("aiRename")))
+                derived.aiRename = f.value(QStringLiteral("aiRename")).toBool(derived.aiRename);
+            if (f.contains(QStringLiteral("adFree")))
+                derived.adFree = f.value(QStringLiteral("adFree")).toBool(derived.adFree);
+            if (f.contains(QStringLiteral("seats")))
+                derived.seats = qMax(1, f.value(QStringLiteral("seats")).toInt(derived.seats));
+            *features = derived;
+        }
+        return true;
+    };
+
+    // If the compiled-in public key is not the one this build shipped with,
+    // every signature below would be checked against an attacker's key and
+    // would happily pass. Refusing here degrades the install to Free quietly —
+    // no dialog, no crash, no message naming the check — because a loud failure
+    // is a signpost to whoever is looking for it.
+    if (!licensetoken::publicKeyIntact())
+        return false;
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+
+    licensetoken::Claims live;
+    if (!m_licenseToken.isEmpty()
+        && licensetoken::verify(m_licenseToken, &live)
+        && live.device == deviceFingerprint()
+        && live.expiresAt.addSecs(kClockSkewToleranceSecs) > now) {
+        return accept(live);
+    }
+
+    // Offline: the cached token still speaks for this install inside the grace
+    // window. Without this branch a re-derivation would drop a paying customer
+    // to Free the moment their connection went away.
+    QSettings settings;
+    licensetoken::Claims cached;
+    const QString stored = settings.value(QLatin1String(kCachedToken)).toString();
+    if (!stored.isEmpty()
+        && licensetoken::verify(stored, &cached)
+        && licensetoken::offlineGraceAllows(cached, deviceFingerprint(), now, kOfflineGraceDays)) {
+        return accept(cached);
+    }
+
+    return false;
+}
+
+// --- Redundant re-verifications behind the guard -----------------------------
+//
+// Each of these re-derives one fact from the signed token independently. They
+// overlap with deriveFromToken and with each other ON PURPOSE: the guard
+// combines them so that patching the one obvious gate leaves the rest standing,
+// and none of them can be tricked by editing settings or overwriting a cached
+// struct, because each re-runs Ed25519 verification against the compiled-in key.
+
+bool LicenseManager::isPaidPlan(const QString &plan)
+{
+    return plan == QLatin1String("pro") || plan == QLatin1String("team");
+}
+
+bool LicenseManager::liveTokenGrantsPaid() const
+{
+    if (m_licenseToken.isEmpty())
+        return false;
+    licensetoken::Claims c;
+    if (!licensetoken::verify(m_licenseToken, &c))
+        return false;
+    if (c.device != deviceFingerprint())
+        return false;
+    if (c.expiresAt.addSecs(kClockSkewToleranceSecs) <= QDateTime::currentDateTimeUtc())
+        return false;
+    return isPaidPlan(c.plan);
+}
+
+bool LicenseManager::cachedTokenGrantsPaidInGrace() const
+{
+    QSettings settings;
+    const QString stored = settings.value(QLatin1String(kCachedToken)).toString();
+    if (stored.isEmpty())
+        return false;
+    licensetoken::Claims c;
+    if (!licensetoken::verify(stored, &c))
+        return false;
+    return licensetoken::offlineGraceAllows(
+        c, deviceFingerprint(), QDateTime::currentDateTimeUtc(), kOfflineGraceDays);
+}
+
+bool LicenseManager::hasSignedPaidGrant() const
+{
+    const QString fingerprint = deviceFingerprint();
+    const auto grantsPaid = [&](const QString &token) {
+        if (token.isEmpty())
+            return false;
+        licensetoken::Claims c;
+        if (!licensetoken::verify(token, &c))
+            return false;
+        if (c.device != fingerprint)
+            return false;
+        return isPaidPlan(c.plan);
+    };
+    if (grantsPaid(m_licenseToken))
+        return true;
+    QSettings settings;
+    return grantsPaid(settings.value(QLatin1String(kCachedToken)).toString());
+}
+
+// The expensive gate. This is what unlocking a paid feature has to get past, so
+// it does three things at once: re-derives the entitlements from the signature
+// (deriveFromToken), re-confirms that answer through the guard's independent,
+// obfuscated, per-release-rotated checks, and trips a sticky tamper canary if
+// the in-memory plan claims paid while no signature backs it.
+//
+// For every legitimate input the return value is exactly what deriveFromToken
+// alone would produce (GuardTest and OfflineGraceTest both hold this). The only
+// additions are behavioural on a *patched* install: the canary latches and
+// scattered reads fold to Free.
+Entitlements LicenseManager::verifiedFeatures() const
+{
+    QString plan;
+    Entitlements derived;                       // Free by default — fails closed
+    const bool derivedOk = deriveFromToken(&plan, &derived);
+    const bool derivedPaid = derivedOk && isPaidPlan(plan);
+
+    // The guard's five independent checks. Side-effect free, so the seed-chosen
+    // order the guard runs them in never changes the answer.
+    guard::Checks checks = {
+        [] { return licensetoken::publicKeyIntact(); },
+        [this] { return liveTokenGrantsPaid(); },
+        [this] { return cachedTokenGrantsPaidInGrace(); },
+        [this] { return isPaidPlan(m_plan); },
+        [this] { return hasSignedPaidGrant(); },
+    };
+    const guard::Result g = guard::evaluate(checks);
+    if (g.tamper)
+        m_tamperObserved = true;                // sticky for the session
+
+    // derivedPaid implies g.paid (both rest on the same signatures and key
+    // check), so for a real paid user this is simply derivedPaid && !tampered.
+    const bool paidConfirmed = derivedPaid && g.paid && !m_tamperObserved;
+    if (paidConfirmed)
+        return derived;                         // the paid entitlements
+
+    // Not confirmed paid: preserve a valid FREE token's own entitlements (custom
+    // freeThemes and the like), else the Free defaults. A tampered install lands
+    // here too, on Free — degrade only, never anything destructive.
+    if (derivedOk && !derivedPaid)
+        return derived;
+    return Entitlements();
+}
+
+// Re-derive the cached entitlements from the signature, quietly.
+//
+// This is what makes overwriting m_features a temporary win rather than a
+// permanent one: whatever it was set to, a minute later it is whatever the
+// token actually says. It never *raises* the plan on its own — an install with
+// no valid token lands on Free, which is where it belongs.
+void LicenseManager::recheckEntitlements()
+{
+    QString plan = QStringLiteral("free");
+    Entitlements ignore;            // Free defaults
+    deriveFromToken(&plan, &ignore);
+
+    // Go through the guarded read, not deriveFromToken directly: it maintains the
+    // tamper canary and returns Free-folded entitlements when the in-memory paid
+    // state is not backed by a signature. For an untampered install this is the
+    // same struct deriveFromToken produced.
+    const Entitlements derived = verifiedFeatures();
+    // Once tamper has been observed, the plan drops to Free too, so the cheap
+    // features() copy the UI reads and the plan gates all reflect it.
+    if (m_tamperObserved)
+        plan = QStringLiteral("free");
+
+    const bool sameFeatures =
+        derived.maxConcurrentDownloads == m_features.maxConcurrentDownloads
+        && derived.themes == m_features.themes
+        && derived.freeThemes == m_features.freeThemes
+        && derived.authSiteDownloads == m_features.authSiteDownloads
+        && derived.aiRename == m_features.aiRename
+        && derived.adFree == m_features.adFree
+        && derived.seats == m_features.seats;
+    if (sameFeatures && plan == m_plan)
+        return;                     // the common case: nothing to say
+
+    m_features = derived;
+    emit featuresChanged(m_features);
+    if (plan != m_plan) {
+        // Only ever downgrade from here. Raising the plan is something a server
+        // response does, with a status message to match.
+        const bool derivedIsPaid = plan == QLatin1String("pro") || plan == QLatin1String("team");
+        if (!derivedIsPaid)
+            setPlan(plan, tr("Free plan"));
+    }
+}
+
+// Take a token the heartbeat handed back.
+//
+// Licence tokens are short-lived (15 minutes, matching the seat lease), so this
+// is what keeps a running app in possession of a valid one. It is held to the
+// same standard as a token from /validate — verified, and bound to this device
+// — because "it arrived on the heartbeat" is not evidence of anything; the
+// heartbeat response is as forgeable as any other.
+//
+// A refused or absent token is not an error: an older server simply does not
+// send one, and the token already held stays in place until it lapses.
+void LicenseManager::adoptRefreshedToken(const QString &token)
+{
+    if (token.isEmpty())
+        return;
+
+    licensetoken::Claims claims;
+    if (!licensetoken::verify(token, &claims))
+        return;
+    if (claims.device != deviceFingerprint())
+        return;
+    if (!m_licenseKey.isEmpty() && !claims.licenseKey.isEmpty()
+        && claims.licenseKey != m_licenseKey)
+        return;
+
+    m_licenseToken = token;
+
+    // A beat is the server vouching for this install right now, so it also
+    // refreshes the offline-grace window — a user online all week then gets the
+    // full 7 days from when they actually went offline, not from whenever the
+    // six-hourly revalidation last happened to run.
+    cacheEntitlement(token, m_trial);
+
+    // A plan change (an admin downgrade, a lapsed subscription) reaches the
+    // client here rather than waiting for the next revalidation. Only act when
+    // it actually changed, so a beat does not churn signals every 5 minutes.
+    if (claims.plan != m_plan) {
+        applyFeatures(claims.features, claims.plan);
+        setPlan(claims.plan, claims.plan == QLatin1String("free")
+                                 ? tr("Free plan")
+                                 : QStringLiteral("%1 license active").arg(planLabel(claims.plan)));
+    }
 }
 
 // Best-effort synchronous release so a seat frees the moment the app closes

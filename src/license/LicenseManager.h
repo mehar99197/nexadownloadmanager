@@ -63,7 +63,24 @@ public:
 
     // What this install may do. Always populated — Free defaults until the
     // server says otherwise, so callers never have to null-check.
+    //
+    // This is the cached copy, kept because the UI reads it constantly (every
+    // theme card asks about itself). It is re-derived from the signed token
+    // every kEntitlementRecheckMs, so overwriting it in memory buys at most
+    // that long. Anything deciding something expensive should ask
+    // verifiedFeatures() instead.
     const Entitlements &features() const { return m_features; }
+
+    // Entitlements derived from the signed token *right now*, ignoring the
+    // cached struct entirely.
+    //
+    // The point is that this and features() fail differently: features() is a
+    // plain struct that a patched binary can overwrite, while this re-runs
+    // Ed25519 verification against the compiled-in public key. Gates on the
+    // expensive paths use this, so unlocking them means defeating a signature
+    // rather than flipping a bool — and the two paths have to be defeated
+    // separately, in different translation units.
+    Entitlements verifiedFeatures() const;
     bool allowsTheme(const QString &id) const { return m_features.allowsTheme(id); }
     bool allowsAuthSites() const { return m_features.authSiteDownloads; }
 
@@ -112,6 +129,32 @@ private:
     void applyFeatures(const QJsonObject &features, const QString &plan);
     void setFeaturesForPlan(const QString &plan);
     void sendHeartbeat();
+    // Replace the held token with a fresher one from a heartbeat, after
+    // verifying it exactly as strictly as one from /validate.
+    void adoptRefreshedToken(const QString &token);
+    // Derive plan + entitlements from the signed token — the live one, or the
+    // cached one if it is still inside the offline grace window. False means
+    // there is nothing valid to derive from, i.e. Free.
+    bool deriveFromToken(QString *plan, Entitlements *features) const;
+
+    // Redundant, deliberately differently-shaped re-verifications, used by the
+    // guard behind verifiedFeatures(). Each re-derives ground truth from the
+    // signed token on its own, so they cannot be defeated by one patch — see
+    // src/license/Guard.h. Kept small and side-effect free.
+    static bool isPaidPlan(const QString &plan);
+    // A valid, device-bound, UNEXPIRED paid token is held right now.
+    bool liveTokenGrantsPaid() const;
+    // The cached token still grants a paid plan inside the offline-grace window.
+    bool cachedTokenGrantsPaidInGrace() const;
+    // A validly-signed, device-bound paid token EXISTS — ignoring expiry and the
+    // grace window. True for a real customer whose grace has merely lapsed;
+    // false for an in-memory "paid" state no signature backs. This is the line
+    // between a slow network and a patched binary, so the tamper canary keys on
+    // it and never on the grace window (which a legitimate user crosses).
+    bool hasSignedPaidGrant() const;
+    // Periodic re-derivation, so a one-shot overwrite of m_features does not
+    // last. Applies quietly: no signals unless something actually changed.
+    void recheckEntitlements();
 
     QNetworkAccessManager *m_network = nullptr;
     QNetworkReply *m_reply = nullptr;
@@ -122,10 +165,23 @@ private:
     bool m_trial = false;
     QDateTime m_expires;
     QTimer *m_revalidate = nullptr;   // re-checks every few hours so a trial ends on time
+    QTimer *m_recheck = nullptr;      // re-derives entitlements from the token
     QTimer *m_heartbeat = nullptr;    // keeps this machine's seat lease alive
     QNetworkReply *m_heartbeatReply = nullptr;
     Entitlements m_features;          // Free by default — see the struct comment
     int m_activeSeats = 0;
+
+    // Tamper canary. Set once the guard sees the in-memory plan claim paid while
+    // no signature backs it — the signature of a patched binary, never of a
+    // legitimate user (whose paid state is always backed by a token, online or
+    // in grace, and whose lapsed grace is downgraded cleanly before this could
+    // fire). Once set it is sticky for the session and folds every entitlement
+    // read to Free, so patching one gate does not hold: a distant, differently
+    // shaped check trips this and the whole install quietly drops to Free. It
+    // never bricks anything and never touches stored data — degrade only.
+    // `mutable` because verifiedFeatures() is const but is the natural place to
+    // observe tampering.
+    mutable bool m_tamperObserved = false;
 };
 
 } // namespace nexa

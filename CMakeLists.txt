@@ -38,6 +38,8 @@ add_executable(nexa
     resources.qrc
     src/main.cpp
     src/license/LicenseToken.cpp
+    src/license/KeyIntegrity.cpp
+    src/license/Guard.cpp
     src/core/Database.cpp
     src/core/RateLimiter.cpp
     src/core/UpdateChecker.cpp
@@ -145,8 +147,15 @@ if(NEXA_LICENSE_PUBLIC_KEY)
             "Ed25519 public key); got ${NEXA_LICENSE_KEY_LENGTH} characters: "
             "${NEXA_LICENSE_PUBLIC_KEY}")
     endif()
+    # A digest of the key, kept in a different translation unit (KeyIntegrity.cpp)
+    # so that swapping the embedded public key for an attacker's own — much
+    # cheaper than defeating Ed25519, and invisible to the verifier itself —
+    # requires a second, separate edit. Derived here from the same value that is
+    # compiled in, so the two can never disagree by accident.
+    string(SHA256 NEXA_LICENSE_KEY_DIGEST "${NEXA_LICENSE_PUBLIC_KEY}")
     target_compile_definitions(nexa PRIVATE
-        NEXA_LICENSE_PUBLIC_KEY="${NEXA_LICENSE_PUBLIC_KEY}")
+        NEXA_LICENSE_PUBLIC_KEY="${NEXA_LICENSE_PUBLIC_KEY}"
+        NEXA_LICENSE_KEY_DIGEST="${NEXA_LICENSE_KEY_DIGEST}")
     message(STATUS "Licence tokens verified against key ${NEXA_LICENSE_PUBLIC_KEY}")
 elseif(NEXA_DEV_BUILD)
     message(WARNING
@@ -161,6 +170,80 @@ else()
         "  For local work only: cmake -B build -DNEXA_DEV_BUILD=ON\n"
         "Without this the binary would trust the development key that is committed "
         "to this repository, and licence tokens could be forged by anyone.")
+endif()
+
+# --- Licence-check obfuscation + per-release rotation -------------------------
+#
+# The guard behind verifiedFeatures() (src/license/Guard.cpp) combines several
+# independent, redundant checks. Two build knobs shape how it compiles:
+#
+#   NEXA_OBFUSCATE_LICENSE  — flatten the guard's control flow, wrap its branches
+#     in opaque predicates and carry its booleans masked, so the "is this paid?"
+#     decision is not one readable branch to find and flip. ON for shipping
+#     builds, OFF for dev and every test target (which then compile the plain,
+#     debuggable, identical-in-result path — GuardTest proves the two agree).
+#
+#   NEXA_CHECK_ROTATION_SEED — a compile-time seed that permutes the check order,
+#     the opaque-predicate constants and the masks. Derived from PROJECT_VERSION
+#     so every release compiles the guard into a DIFFERENT shape: a byte patch
+#     crafted for one build lands on differently arranged code in the next.
+#     Override with -DNEXA_CHECK_ROTATION_SEED=0x... to rotate out of band.
+#
+# Neither is a barrier on its own (nothing client-side is). They raise the price
+# of reading and patching the gate, which is the point once the value that
+# matters lives on the server.
+option(NEXA_OBFUSCATE_LICENSE "Obfuscate the licence guard's control flow in shipping builds" ON)
+
+set(NEXA_CHECK_ROTATION_SEED "" CACHE STRING
+    "32-bit hex seed (0x...) for licence-check rotation; empty = derive from version")
+if(NOT NEXA_CHECK_ROTATION_SEED)
+    string(SHA256 NEXA_ROTATION_HASH "nexa-license-guard-${PROJECT_VERSION}")
+    string(SUBSTRING "${NEXA_ROTATION_HASH}" 0 8 NEXA_ROTATION_HEX)
+    set(NEXA_CHECK_ROTATION_SEED "0x${NEXA_ROTATION_HEX}u")
+endif()
+# The seed is a plain compile-time constant with no runtime cost; it is compiled
+# into every build (dev included) so a given source + seed is reproducible.
+target_compile_definitions(nexa PRIVATE
+    NEXA_CHECK_ROTATION_SEED=${NEXA_CHECK_ROTATION_SEED})
+message(STATUS "Licence-check rotation seed: ${NEXA_CHECK_ROTATION_SEED}")
+
+# The obfuscated shape is applied to the shipping executable only, and never to a
+# developer build (which must stay debuggable) — the same reasoning as the symbol
+# stripping below. Announced when skipped so "I built RelWithDebInfo" does not
+# quietly ship the readable guard.
+if(NEXA_OBFUSCATE_LICENSE AND NOT NEXA_DEV_BUILD
+   AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
+    target_compile_definitions(nexa PRIVATE NEXA_OBFUSCATE_LICENSE)
+    message(STATUS "Licence guard obfuscation on")
+
+    # Optional machine-level control-flow flattening via an Obfuscator-LLVM
+    # toolchain, applied to the licence sources only. Strictly opt-in and
+    # feature-detected: it is a no-op on a stock GCC/Clang/MSVC (the flag check
+    # simply fails and nothing is added), so the default build is untouched. The
+    # portable, always-on obfuscation is the source-level one above; this is a
+    # bonus when a capable toolchain is present.
+    option(NEXA_LLVM_OBFUSCATION "Apply OLLVM control-flow flattening to licence sources (needs an OLLVM toolchain)" OFF)
+    if(NEXA_LLVM_OBFUSCATION)
+        include(CheckCXXSourceCompiles)
+        set(CMAKE_REQUIRED_FLAGS "-mllvm -fla")
+        check_cxx_source_compiles("int main(){return 0;}" NEXA_OLLVM_FLA_OK)
+        unset(CMAKE_REQUIRED_FLAGS)
+        if(NEXA_OLLVM_FLA_OK)
+            set_source_files_properties(
+                src/license/Guard.cpp
+                src/license/LicenseToken.cpp
+                src/license/KeyIntegrity.cpp
+                src/license/LicenseManager.cpp
+                PROPERTIES COMPILE_OPTIONS "-mllvm;-fla;-mllvm;-bcf;-mllvm;-sub")
+            message(STATUS "OLLVM control-flow flattening applied to licence sources")
+        else()
+            message(STATUS "NEXA_LLVM_OBFUSCATION requested but the toolchain has no -fla; skipping")
+        endif()
+    endif()
+elseif(NEXA_OBFUSCATE_LICENSE AND NOT NEXA_DEV_BUILD)
+    message(WARNING
+        "Licence guard obfuscation is OFF because CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}. "
+        "Build with -DCMAKE_BUILD_TYPE=Release for anything you ship.")
 endif()
 
 # On Windows, build the GUI as a windows-subsystem (GUI) app so launching it does
@@ -330,6 +413,8 @@ if(NEXA_BUILD_TESTS)
         src/auth/CloudProviders.cpp
         src/license/LicenseManager.cpp
         src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
         src/license/CredentialStore.cpp
         src/web/PublicUrlPolicy.cpp
         resources.qrc
@@ -370,6 +455,39 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_license_token_test PRIVATE src)
     target_link_libraries(nexa_license_token_test PRIVATE Qt6::Core OpenSSL::Crypto)
 
+    # Drives the real LicenseManager against a real socket to prove offline
+    # grace still works for a paying customer. NEXA_DEV_BUILD so the endpoint
+    # can be pointed at a local fake server; no NEXA_LICENSE_PUBLIC_KEY so the
+    # test can mint tokens with the published development key.
+    add_executable(nexa_offline_grace_test
+        tests/OfflineGraceTest.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_offline_grace_test PRIVATE src)
+    target_compile_definitions(nexa_offline_grace_test PRIVATE NEXA_DEV_BUILD)
+    target_link_libraries(nexa_offline_grace_test PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+
+    # The licence guard, compiled BOTH ways from the same source, each asserting
+    # the same results. No Qt: the guard depends only on the standard library.
+    #   nexa_guard_test      — the plain, debuggable path (what dev/test builds use)
+    #   nexa_guard_obf_test  — the flattened/opaque/masked path a release ships,
+    #                          proving the obfuscation never changes the answer.
+    add_executable(nexa_guard_test
+        tests/GuardTest.cpp
+        src/license/Guard.cpp)
+    target_include_directories(nexa_guard_test PRIVATE src)
+
+    add_executable(nexa_guard_obf_test
+        tests/GuardTest.cpp
+        src/license/Guard.cpp)
+    target_include_directories(nexa_guard_obf_test PRIVATE src)
+    target_compile_definitions(nexa_guard_obf_test PRIVATE NEXA_OBFUSCATE_LICENSE)
+
     enable_testing()
     add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
     add_test(NAME extension_installer COMMAND nexa_extension_installer_test)
@@ -383,6 +501,9 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)
+    add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
+    add_test(NAME guard COMMAND nexa_guard_test)
+    add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()
 
 # ===========================================================================
