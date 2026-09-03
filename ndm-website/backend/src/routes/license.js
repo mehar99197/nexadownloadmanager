@@ -177,7 +177,13 @@ router.post(
       renewOnly: true,
     });
     if (!seat.ok) {
-      return invalid(res, seat.reason, sub, {
+      // seat_unknown_device means this machine never activated — it went
+      // straight to beating. Answer `seat_limit`, the one rejection the client
+      // keeps its stored key for: a genuine client cannot reach this, and a
+      // modified one is sent back through /validate, where the sharing
+      // assessment it was avoiding actually runs.
+      const wire = seat.reason === 'seat_unknown_device' ? 'seat_limit' : seat.reason;
+      return invalid(res, wire, sub, {
         seats: seat.seats, activeSeats: seat.activeSeats,
       });
     }

@@ -7,13 +7,10 @@ const adId = z.coerce.number().int().positive('Invalid id');
 
 // Ad links are opened in the user's own browser and images are fetched by the
 // desktop client, so both are restricted to HTTPS. An admin account is not a
-// licence to point the app at http:// or javascript: URLs.
-const httpsUrl = z
-  .string()
-  .trim()
-  .max(500)
-  .url('Must be a URL')
-  .refine((v) => v.toLowerCase().startsWith('https://'), 'Must start with https://');
+// licence to point the app at http:// or javascript: URLs. Shared with the
+// release artifact URLs, which had grown the same rule with a hole in it —
+// see schemas/common.js.
+const { httpsUrl } = require('./common');
 
 // An ISO datetime, or an explicit clear. The `.optional()` sits OUTSIDE the
 // transform on purpose: an absent key must stay absent so a partial update

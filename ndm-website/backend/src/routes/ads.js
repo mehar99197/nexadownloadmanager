@@ -11,7 +11,7 @@ const config = require('../config/env');
 const { verifyLicense } = require('../utils/jwt');
 const { recordRejection, classifyRejection } = require('../utils/tokenAbuse');
 const {
-  isAdFreePlan, publicAd, planFromAuthHeader, verifyAdEventToken,
+  isAdFreePlan, publicAd, planFromAuthHeader, readAdEventToken,
 } = require('../utils/ads');
 const { ok } = require('../utils/respond');
 
@@ -64,8 +64,16 @@ router.post(
     if (isAdFreePlan(planFromLicenseHeader(req)))
       return ok(res, { counted: false });
     const id = Number(req.params.id);
-    if (!verifyAdEventToken(req.body.token, id, AD_EVENT_SECRET))
+    const token = readAdEventToken(req.body.token, id, AD_EVENT_SECRET);
+    if (!token.ok)
       return ok(res, { counted: false, reason: 'invalid_token' });
+    // The signature says the token is ours and current; the nonce budget says
+    // it has not already reported more than the client it was issued to
+    // plausibly could. Without the second half a captured token could be
+    // replayed for the rest of its life, once per curl call, and both counters
+    // — and therefore the CTR the admin panel reports — meant nothing.
+    if (!(await Ad.claimEventNonce(token.nonce, req.body.type, token.expiresAt)))
+      return ok(res, { counted: false, reason: 'rate_limited' });
     const affected = req.body.type === 'click'
       ? await Ad.recordClick(id)
       : await Ad.recordImpression(id);

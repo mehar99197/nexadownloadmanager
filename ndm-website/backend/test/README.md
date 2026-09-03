@@ -53,3 +53,9 @@ loopback admin allowlist) and truncates all tables between suites.
   **not** set it, so the real limits are still tested. The flag is ignored when
   `NODE_ENV=production`.
 - The test database is wiped by `srv.reset()`. Never point these at real data.
+- **Run one integration suite at a time.** They all share the one database and
+  each calls `srv.reset()`, which truncates every table — so two suites in
+  parallel delete each other's rows mid-test and fail in scattered, misleading
+  ways (a token 401ing immediately after a successful login is the usual
+  symptom). `npm test` passes `--test-concurrency=1` and is safe; what is not
+  safe is starting a second `node --test` run while one is still going.

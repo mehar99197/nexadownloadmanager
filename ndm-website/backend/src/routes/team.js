@@ -155,7 +155,7 @@ router.post(
     const member = await TeamMember.create({
       subscriptionId: sub.id, email, tokenHash: hash, invitedBy: req.user.id,
     });
-    await sendTeamInviteEmail({ to: email, ownerName: req.user.name, token });
+    await sendTeamInviteEmail({ to: email, ownerName: req.user.name, ownerEmail: req.user.email, token });
     await AuditLog.create({
       adminUserId: null, action: 'team.invited', entityType: 'subscription', entityId: sub.id,
       summary: `${req.user.email} invited ${email} to their team`, metadata: { memberId: member.id },
@@ -176,7 +176,9 @@ router.post(
       return fail(res, 'ALREADY_ACCEPTED', 'That person has already joined', 400);
     const { token, hash } = newInviteToken();
     await TeamMember.rotateToken(member.id, hash);
-    await sendTeamInviteEmail({ to: member.email, ownerName: req.user.name, token });
+    await sendTeamInviteEmail({
+      to: member.email, ownerName: req.user.name, ownerEmail: req.user.email, token,
+    });
     return ok(res, { sent: true });
   })
 );
@@ -192,9 +194,19 @@ router.delete(
     await TeamMember.remove(member.id, sub.id);
     await AuditLog.create({
       adminUserId: null, action: 'team.member_removed', entityType: 'subscription', entityId: sub.id,
-      summary: `${req.user.email} removed ${member.email} from their team`,
+      summary: `${req.user.email} removed ${member.email} from their team`.slice(0, 255),
     });
-    return ok(res, { removed: true });
+    // Removing somebody from the roster does NOT take the licence key off their
+    // machine: they were handed the owner's real key (memberPayload), and no
+    // activation row records which person created it, so the server cannot tell
+    // their install from the owner's. The only thing that actually revokes
+    // their access is a new key — POST /api/user/license/rotate — so say so
+    // rather than letting the owner believe the roster edit was enough.
+    return ok(res, {
+      removed: true,
+      keyStillValid: true,
+      rotateHint: 'They still have the licence key. Rotate it to cut off their access.',
+    });
   })
 );
 

@@ -30,7 +30,9 @@ Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
   `npm run license:keygen`. Its public half lives in `packaging/license-public-key.txt`
   and is compiled into the desktop app, which verifies every token itself. Rotating this
   requires shipping the desktop update with the new public key **first**.
-- `STRIPE_SECRET_KEY` (`sk_live_…`) and `STRIPE_WEBHOOK_SECRET` (`whsec_…`).
+- `STRIPE_SECRET_KEY` (`sk_live_…`) and `STRIPE_WEBHOOK_SECRET` (`whsec_…`) — optional:
+  blank runs the site with billing disabled (see the next section); a key is
+  refused without its webhook secret.
 - `SMTP_HOST` (+ `SMTP_USER`/`SMTP_PASS`) — mock email is disabled in production.
 - `CORS_ORIGINS` and `FRONTEND_URL` — HTTPS only.
 - `ADMIN_ALLOWED_IPS` — must actually restrict; empty is refused.
@@ -42,25 +44,37 @@ Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
 - `MYSQL_PASS` — 16+ chars, not a default.
 - `AD_EVENT_SECRET` — optional; blank reuses `LICENSE_JWT_SECRET`. Keys the
   short-lived tokens that make an ad impression or click countable.
+- `TURNSTILE_SECRET_KEY` — optional; blank turns the bot gate off. Pair it with
+  the frontend's build-time `VITE_TURNSTILE_SITE_KEY`; both come from one
+  Turnstile widget in the Cloudflare dashboard, and neither half works alone.
+  `TURNSTILE_FAIL_CLOSED=true` refuses the gated endpoints while Cloudflare is
+  unreachable instead of letting visitors through.
 
 ## Going to production (cutover from development mode)
 
-A live billing box **must** run `NODE_ENV=production`. In development mode the
-fail-closed checks in `config/env.js` are off (dev secrets and HTTP origins are
-tolerated) **and Stripe runs in MOCK mode** — `config.isStripeMock` is true
-whenever `STRIPE_SECRET_KEY` is blank, so `constructEvent` is `JSON.parse` and
-**no real payment is ever processed or verified**. `[server] Stripe: MOCK mode`
-in `logs/api.log` is the tell.
+**The production checks no longer depend on `NODE_ENV` alone.** Any deployment
+whose `FRONTEND_URL` is a public address is treated as public by
+`config/deployment.js`, and `config/env.js` then enforces the whole production
+checklist regardless of `NODE_ENV`. The live box ran for weeks as
+`NODE_ENV=development` on the real domain — dev secrets tolerated, Stripe in
+mock mode accepting unsigned webhooks, cookies without `Secure`, stack traces in
+500s — and nothing refused. Now it refuses, and the log lists **every** missing
+item at once so the `.env` is fixed in one edit.
 
-Do the cutover as one deliberate change, because production is fail-closed: a
-missing or weak value makes the API refuse to boot (loudly, in the log) rather
-than serve insecurely. `env.js` is the checklist — it enforces every item below.
+**Stripe is no longer required to go live.** With no `STRIPE_SECRET_KEY` a
+public deployment runs with billing **disabled**: checkout, the billing portal
+and the webhook answer `503 BILLING_UNAVAILABLE`, `/api/health` reports
+`billing: "disabled"`, and everything else (accounts, trials, free licences,
+admin-granted plans, the desktop app) works. Mock mode — `constructEvent` as
+`JSON.parse`, the dev-only `/mock-complete` route — now exists **only** on a
+local, non-production deployment. So the cutover has two independent halves:
 
-1. **Gather first (never paste secrets into chat, tickets or commits):**
-   - Stripe **live** secret `sk_live_…` and the webhook signing secret `whsec_…`
-     (Stripe Dashboard → Developers).
-   - The admin IP(s) for `ADMIN_ALLOWED_IPS` (empty is refused in production).
-   - Real SMTP credentials (mock email is disabled in production).
+### Half 1 — harden the box (do this now, no Stripe needed)
+
+1. **Gather:** the admin IP(s) for `ADMIN_ALLOWED_IPS`, and SMTP credentials
+   (Hostinger: `smtp.hostinger.com`, port 465, a real mailbox). Mock email is
+   refused on a public box because it writes verification links, reset tokens
+   and licence keys into a log file instead of sending them.
 
 2. **Generate four strong, distinct secrets** — rotating these logs everyone out
    once, which is expected at a cutover:
@@ -73,29 +87,58 @@ than serve insecurely. `env.js` is the checklist — it enforces every item belo
    Ed25519 licence tokens and its public half is compiled into the desktop app.
    Do **not** regenerate it here, or every installed client rejects every token.
 
-3. **Edit `nexa-api/.env` on the server** (over SSH or hPanel — the deploy never
-   touches it). Back it up first (`cp .env .env.bak-$(date +%F)`), then set:
-   `NODE_ENV=production`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, the four
-   secrets from step 2, `ADMIN_ALLOWED_IPS` (+`ROOT_ALLOWED_IPS` if used),
-   HTTPS-only `CORS_ORIGINS`/`FRONTEND_URL`/`PUBLIC_API_URL`, and `SMTP_*`.
-   Confirm `TRUST_PROXY` matches Hostinger's proxy and `MYSQL_PASS` is a real
-   16+ char password.
-
-4. **Wire the Stripe webhook** as in the next section — and confirm
-   `invoice.payment_succeeded` is ticked, or renewals will not extend access.
-
-5. **Restart and verify:**
+3. **Check what the server .env looks like right now** — this prints only key
+   names, lengths and whether a value is a known dev default, never a value:
    ```bash
-   bash ~/domains/nexadownloadmanager.com/run-api.sh
-   tail -n 40 ~/domains/nexadownloadmanager.com/logs/api.log
-   # want: "listening on 127.0.0.1:3001 (production)" and NO "Stripe: MOCK mode"
-   curl -fsS https://nexadownloadmanager.com/api/health
+   ssh -p 65002 u941499432@145.79.30.42 'cd domains/nexadownloadmanager.com/nexa-api && \
+     for k in NODE_ENV TRUST_PROXY ADMIN_ALLOWED_IPS ROOT_ADMIN_EMAIL FRONTEND_URL SMTP_HOST \
+              STRIPE_SECRET_KEY JWT_SECRET JWT_ADMIN_SECRET JWT_ROOT_SECRET LICENSE_JWT_SECRET MYSQL_PASS; do \
+       v=$(grep -E "^$k=" .env | tail -1 | cut -d= -f2- | tr -d "\""); \
+       case "$v" in dev_*|change_me*|ndm_secret) f=" DEV-DEFAULT";; "") f=" BLANK";; *) f="";; esac; \
+       echo "$k: len=${#v}$f"; done'
    ```
-   Then run one real end-to-end test payment in Stripe live mode.
 
-**Rollback:** if the API refuses to boot, the log names the exact failed check —
-fix that one variable and the keepalive restarts within a minute. To revert
-entirely, restore the `.env.bak-…` you made in step 3.
+4. **Edit `nexa-api/.env` on the server** (over SSH or hPanel — the deploy never
+   touches it). Back it up first (`cp .env .env.bak-$(date +%F)`), then set:
+   `NODE_ENV=production`, the four secrets from step 2, `ADMIN_ALLOWED_IPS`
+   (+`ROOT_ALLOWED_IPS` if used), `TRUST_PROXY=1` (the PHP shim is exactly one
+   hop), HTTPS-only `CORS_ORIGINS`/`FRONTEND_URL`/`PUBLIC_API_URL`, `SMTP_*`,
+   `ROOT_ADMIN_EMAIL`, and a real 16+ character `MYSQL_PASS`. Leave
+   `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` blank until Half 2.
+
+5. **Deploy this backend, restart and verify:**
+   ```bash
+   ./deploy/build-and-upload.sh            # from the repo root, on your machine
+   ssh -p 65002 u941499432@145.79.30.42 'tail -n 40 ~/domains/nexadownloadmanager.com/logs/api.log'
+   # want: "production checks ON" and "Stripe: DISABLED", no WARNING lines
+   curl -fsS https://nexadownloadmanager.com/api/health
+   # want: {"ok":true,"data":{"status":"up","billing":"disabled"}}
+   ```
+   If the API refuses to boot, the log lists every failing variable under
+   `[config] Refusing to start`; fix them all and the keepalive restarts within
+   a minute. To revert entirely, restore the `.env.bak-…` from step 4.
+
+6. **Take the production signing key off your development machine.** The
+   local `backend/.env` must not carry `LICENSE_JWT_PRIVATE_KEY` at all: with
+   it unset a local server signs with the built-in dev seed, which development
+   builds of the desktop app (`-DNEXA_DEV_BUILD=ON`) trust. `server.js` warns at
+   boot while a local deployment still holds the shipped key. The server's
+   `.env` is the one place that key belongs — and note the nightly backup is a
+   **database** dump, it does not include `.env`. Before deleting the local
+   copy, put the key in a password manager or another offline secure store:
+   losing every copy would force a key rotation and a desktop release.
+
+### Half 2 — turn payments on (when the Stripe account is ready)
+
+1. Get the **live** secret `sk_live_…` and the webhook signing secret `whsec_…`
+   (Stripe Dashboard → Developers). Never paste them into chat, tickets or commits.
+2. Set both in `nexa-api/.env`. A key without its webhook secret is refused.
+3. **Wire the Stripe webhook** as in the next section — and confirm
+   `invoice.payment_succeeded` is ticked, or renewals will not extend access.
+4. Remove the temporary `api/webhooks/stripe` deny rule from
+   `public_html/.htaccess` (see the comment there) so Stripe can deliver.
+5. Restart, check the log says `Stripe: LIVE`, and run one real end-to-end
+   test payment in live mode.
 
 ## Stripe webhook
 
@@ -111,6 +154,32 @@ double-email.
 **Without it subscribed customers lose access after one billing period while
 still being charged**, so check it is ticked in the Stripe dashboard for any
 endpoint created before this was added.
+
+## The .htaccess is a separate upload
+
+`build-and-upload.sh` deliberately never touches `public_html/.htaccess` — it is
+the routing file, and a half-finished sync of it takes the whole site down. When
+`deploy/hostinger/public_html.htaccess` changes in the repo, ship it by hand and
+keep a copy of what was there:
+
+```bash
+ssh -p 65002 u941499432@145.79.30.42 \
+  'cd ~/domains/nexadownloadmanager.com && mkdir -p htaccess-backups &&
+   cp -a public_html/.htaccess htaccess-backups/htaccess.bak-$(date +%F-%H%M)'
+
+rsync -e 'ssh -p 65002' -av ndm-website/deploy/hostinger/public_html.htaccess \
+  u941499432@145.79.30.42:domains/nexadownloadmanager.com/public_html/.htaccess
+```
+
+The backup lives OUTSIDE `public_html` on purpose: the frontend sync runs with
+`--delete-after` and only protects the exact name `.htaccess`, so a
+`.htaccess.bak-…` beside it is deleted by the next deploy.
+
+That file now carries the **Content-Security-Policy** for the site and both
+panels. Its `script-src` has no `'unsafe-inline'`, which is the whole value of
+it — so after any change, `curl -sI` for the header and then open `/`, `/admin`
+and `/root` in a browser and check the console for "Refused to load". A CSP that
+blocks a bundle returns a perfectly good 200 to curl and a blank page to users.
 
 ## Updating
 

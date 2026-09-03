@@ -75,16 +75,30 @@ function totpAt(secretBase32, when = Date.now()) {
 /**
  * Constant-time check of a 6-digit code, accepting one step of clock drift
  * either way (the usual ±30 s allowance).
+ *
+ * Returns WHICH step matched, not just that one did. A TOTP code is valid for
+ * its whole 30-second step and this verifier accepts a step either side, so a
+ * code shoulder-surfed, phished or read out of a proxy log stays usable for up
+ * to 90 seconds — long enough to be replayed by hand. Recording the step lets
+ * the caller refuse a step it has already accepted, which is the standard
+ * RFC 6238 §5.2 requirement ("the verifier MUST NOT accept the second attempt")
+ * and cannot be done from a boolean.
  */
-function verifyTotp(secretBase32, code, { when = Date.now(), window = 1 } = {}) {
+function matchTotp(secretBase32, code, { when = Date.now(), window = 1 } = {}) {
   const given = String(code || '').replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(given)) return false;
+  if (!/^\d{6}$/.test(given)) return { ok: false, step: null };
   const counter = Math.floor(when / 1000 / STEP_SECONDS);
   for (let i = -window; i <= window; i += 1) {
     const expected = hotp(secretBase32, counter + i);
-    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given))) return true;
+    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given)))
+      return { ok: true, step: counter + i };
   }
-  return false;
+  return { ok: false, step: null };
+}
+
+/** Boolean form, for callers with no replay state to keep (enrolment). */
+function verifyTotp(secretBase32, code, options = {}) {
+  return matchTotp(secretBase32, code, options).ok;
 }
 
 function otpauthUrl({ secret, account, issuer = ISSUER }) {
@@ -158,7 +172,7 @@ function consumeRecoveryCode(hashes, code) {
 }
 
 module.exports = {
-  generateSecret, totpAt, verifyTotp, otpauthUrl,
+  generateSecret, totpAt, verifyTotp, matchTotp, otpauthUrl,
   encryptSecret, decryptSecret,
   generateRecoveryCodes, consumeRecoveryCode, hashRecoveryCode,
   base32Encode, base32Decode, STEP_SECONDS, DIGITS, ISSUER, RECOVERY_COUNT,

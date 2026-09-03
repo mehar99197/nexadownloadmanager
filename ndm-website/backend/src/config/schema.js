@@ -131,6 +131,13 @@ async function initSchema() {
   await addColumnIfMissing('users', 'root_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL');
   await addIndexIfMissing('users', 'idx_root_refresh_token (root_refresh_token_hash)');
 
+  // Session generation. Every access token carries the value it was minted
+  // with; middleware/auth.js refuses a token whose copy is stale. Bumping this
+  // is what actually ENDS a session — before it existed, "revoke sessions", a
+  // password change and a password reset only cleared the refresh-token hash,
+  // so the 7-day bearer token in an attacker's hands kept working for a week.
+  await addColumnIfMissing('users', 'token_version INT UNSIGNED NOT NULL DEFAULT 0');
+
   // Control-panel two-factor auth. The TOTP secret is AES-GCM encrypted
   // (utils/totp.js); `totp_enabled` flips only after a first code verifies, so
   // a half-finished setup never locks anyone out. Recovery codes are stored as
@@ -138,6 +145,10 @@ async function initSchema() {
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
+  // The last TOTP step this account successfully used. A monotonic high-water
+  // mark, so the same six digits cannot be presented twice inside their
+  // 90-second validity window (RFC 6238 §5.2). See routes/twoFactor.js.
+  await addColumnIfMissing('users', 'totp_last_step BIGINT UNSIGNED NULL DEFAULT NULL');
 
   // "Continue with Google". `google_id` is Google's immutable subject claim —
   // never the email, which a user can change at Google. It is UNIQUE so one
@@ -149,8 +160,10 @@ async function initSchema() {
   // An account created through Google has no password at all. Storing a random
   // hash instead would be indistinguishable from a real one, so the column is
   // nullable and NULL is read as "password sign-in not available for this
-  // account" (routes/auth.js answers PASSWORD_NOT_SET). Such a user can still
-  // adopt a password through the ordinary forgot-password flow.
+  // account". Sign-in still answers the generic INVALID_CREDENTIALS for it —
+  // a distinct code would tell any passer-by that the address is registered —
+  // after a dummy bcrypt compare so the two branches take the same time. Such a
+  // user adopts a password through the ordinary forgot-password flow.
   await ensureColumnNullable('users', 'password_hash', 'VARCHAR(255) NULL DEFAULT NULL');
 
   await execute(`
@@ -451,6 +464,27 @@ async function initSchema() {
   // to UTC, stores exactly the same instants. Re-running the MODIFY is a no-op.
   await ensureColumnType('ads', 'starts_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
   await ensureColumnType('ads', 'ends_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
+
+  // What each ad-event token has already been allowed to report.
+  //
+  // The token's signature proves the server served that ad recently; on its own
+  // it did not stop the SAME token being presented over and over for the whole
+  // of its life, so a loop of curl calls moved the impression and click
+  // counters the admin panel computes a CTR from. One row per (nonce, event
+  // type) records how many events that token has spent and when, which is what
+  // models/Ad.js#claimEventNonce enforces its budget against. Rows live for one
+  // token TTL and are pruned opportunistically.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS ad_event_nonces (
+      nonce VARCHAR(64) NOT NULL,
+      event_type VARCHAR(16) NOT NULL,
+      events INT UNSIGNED NOT NULL DEFAULT 1,
+      last_at DATETIME NOT NULL,
+      expires_at DATETIME NOT NULL,
+      PRIMARY KEY (nonce, event_type),
+      INDEX idx_ad_event_nonce_expiry (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 
   await execute(`
     CREATE TABLE IF NOT EXISTS contact_messages (

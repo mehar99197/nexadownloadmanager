@@ -39,10 +39,26 @@ test('backend API', async (t) => {
       assert.match(rows[0].license_key, /^NDM(-[A-Z0-9]{4}){3}$/);
     });
 
-    await t2.test('rejects a duplicate email', async () => {
+    await t2.test('a duplicate email is answered exactly like a new one', async () => {
+      // Registration must not be a membership oracle. The reply to an address
+      // that already has an account is byte-identical to the reply for a fresh
+      // one — same status, same envelope — and no second account is created;
+      // the real owner is told in their own inbox instead.
       const res = await api.post('/api/auth/register', { name: 'Again', email, password });
-      assert.equal(res.status >= 400, true);
-      assert.equal(res.body.ok, false);
+      assert.equal(res.status, 201, res.text);
+      assert.equal(res.body.ok, true);
+      assert.doesNotMatch(JSON.stringify(res.body).toLowerCase(), /exist|already|taken|duplicate/);
+      // Byte-identical, not merely "both 201". Returning `{userId}` on the
+      // real-registration branch alone made the PRESENCE of that field the
+      // oracle the equal status codes were supposed to remove.
+      const fresh = await api.post('/api/auth/register',
+        { name: 'Fresh', email: `fresh-${Date.now()}@example.test`, password });
+      assert.deepEqual(res.body, fresh.body);
+      const users = await srv.query('SELECT id FROM users WHERE email = ?', [email]);
+      assert.equal(users.length, 1);
+      const subs = await srv.query(
+        'SELECT s.id FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?', [email]);
+      assert.equal(subs.length, 1, 'no second subscription for an address that already had one');
     });
 
     await t2.test('rejects the wrong password without leaking which field was wrong', async () => {

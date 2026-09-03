@@ -42,7 +42,7 @@ const ADMIN_REFRESH_PATH = '/api/admin';
 
 function adminRefreshCookieOptions() {
   return {
-    httpOnly: true, sameSite: 'lax', secure: config.isProd,
+    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
     maxAge: 8 * 60 * 60 * 1000, path: ADMIN_REFRESH_PATH,
   };
 }
@@ -62,7 +62,7 @@ const {
   updateUserSchema, updateReviewSchema, updateSubscriptionSchema,
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
-  idParamSchema,
+  idParamSchema, deleteUserSchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -72,6 +72,7 @@ const {
   updateContactStatusSchema, contactReplySchema,
 } = require('../schemas/contact.schema');
 const { sendContactReply } = require('../utils/email');
+const { stripSensitive } = require('../utils/sanitize');
 
 function monthlyPrice(plan) {
   if (plan === 'pro') return 5;
@@ -79,11 +80,11 @@ function monthlyPrice(plan) {
   return 0;
 }
 
-function safeUser(user) {
-  if (!user) return null;
-  const { password_hash, refresh_token_hash, admin_refresh_token_hash, ...safe } = user;
-  return safe;
-}
+// Never hand-roll this list again: /users/:id/details reads the row with
+// SELECT *, so anything missed here reaches a staff admin — including, when it
+// stripped only these three hashes, the creator's TOTP secret and recovery
+// hashes. utils/sanitize.js is the single definition.
+const safeUser = stripSensitive;
 
 /**
  * A staff admin may only act on ordinary customer accounts. Banning, resetting
@@ -229,7 +230,7 @@ router.get(
       system: {
         node: process.version,
         environment: config.NODE_ENV,
-        stripe: config.isStripeMock ? 'mock' : 'live',
+        stripe: config.stripeMode,
         email: config.isEmailMock ? 'mock' : 'live',
       },
     });
@@ -245,7 +246,7 @@ router.get(
     return ok(res, {
       database: 'connected',
       latencyMs: Date.now() - started,
-      stripe: config.isStripeMock ? 'mock' : 'configured',
+      stripe: config.stripeMode,
       email: config.isEmailMock ? 'mock' : 'configured',
       uptimeSeconds: Math.round(process.uptime()),
       node: process.version,
@@ -397,17 +398,62 @@ router.put(
   })
 );
 
+/**
+ * DELETE /admin/users/:id — erase a customer account and everything it owns.
+ *
+ * Irreversible, and the only admin action that destroys data rather than
+ * changing it, so it is fenced three ways:
+ *
+ *  - `blockedStaffTarget` keeps staff to `role:'user'` accounts. A staff admin
+ *    cannot delete a colleague or the creator; only the root console can reach
+ *    those, and a root token passing through here keeps its own reach.
+ *  - the body must repeat the target's exact address, so a mis-clicked row
+ *    cannot destroy an account.
+ *  - the audit row is written BEFORE the delete, because
+ *    `audit_logs.admin_user_id` is ON DELETE SET NULL and the record has to
+ *    outlive the cascade.
+ *
+ * The cascade is the schema's, not this route's: subscriptions, payments,
+ * reviews and (through subscriptions) licence activations and team rows are
+ * ON DELETE CASCADE, while audit logs, ads and contact messages are
+ * ON DELETE SET NULL so the history of what was done survives the person.
+ */
+router.delete(
+  '/users/:id', validate(deleteUserSchema),
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(Number(req.params.id));
+    if (!user) return fail(res, 'NOT_FOUND', 'Account not found', 404);
+    // Self BEFORE the staff-target gate. A staff admin's own row is a
+    // control-panel account, so blockedStaffTarget would answer "only the
+    // creator can modify a control-panel account" — true, but useless advice
+    // for someone who has just tried to delete themselves.
+    if (user.id === (req.admin && req.admin.id))
+      return fail(res, 'SELF_LOCKOUT', 'You cannot delete your own account', 400);
+    // A creator account is never deletable over the API, whoever is asking —
+    // including the creator's own console.
+    if (user.role === 'root')
+      return fail(res, 'FORBIDDEN', 'A creator account cannot be deleted over the API', 403);
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    if (String(user.email).toLowerCase() !== req.body.confirmEmail)
+      return fail(res, 'CONFIRM_MISMATCH', 'The confirmation email does not match this account', 400);
+
+    await audit(req, 'user.deleted', 'user', user.id,
+      `Deleted account ${user.email} and all of its data`, { email: user.email, role: user.role });
+    await User.remove(user.id);
+    return ok(res, { deleted: true });
+  })
+);
+
 router.post(
   '/users/:id/reset-password', validate(resetUserPasswordSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    await User.update(user.id, {
-      passwordHash: await bcrypt.hash(req.body.password, 12),
-      refreshTokenHash: null,
-      adminRefreshTokenHash: null,
-    });
+    await User.update(user.id, { passwordHash: await bcrypt.hash(req.body.password, 12) });
+    // Ends every live session, not just the refresh cookies — see
+    // User.revokeSessions.
+    await User.revokeSessions(user.id);
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
   })
@@ -419,7 +465,7 @@ router.post(
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
+    await User.revokeSessions(user.id);
     await audit(req, 'user.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
     return ok(res, { revoked: true });
   })

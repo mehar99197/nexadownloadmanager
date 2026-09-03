@@ -11,6 +11,11 @@ function basePayload(user) {
     sub: String(user.id),
     email: user.email,
     role: user.role,
+    // Session generation — see User.revokeSessions. A token whose `tv` no
+    // longer matches the stored users.token_version is refused by
+    // middleware/auth.js, which is what makes a password change, a reset or an
+    // admin revocation take effect immediately instead of in up to seven days.
+    tv: Number(user.token_version) || 0,
   };
 }
 
@@ -32,8 +37,16 @@ function signEmailToken(user) {
   return jwt.sign({ sub: String(user.id), typ: 'verify-email' }, config.JWT_SECRET, { expiresIn: '1h' });
 }
 
+// Carries the session generation so the link is SINGLE USE: completing a reset
+// bumps token_version, which makes this token — and any other reset link
+// outstanding for the account — stop verifying. Without it a reset link stayed
+// usable for its full hour, so anyone who read the mail once could keep
+// changing the password after the owner had already used it.
 function signResetToken(user) {
-  return jwt.sign({ sub: String(user.id), typ: 'reset' }, config.JWT_SECRET, { expiresIn: '1h' });
+  return jwt.sign(
+    { sub: String(user.id), typ: 'reset', tv: Number(user.token_version) || 0 },
+    config.JWT_SECRET, { expiresIn: '1h' }
+  );
 }
 
 // Licence tokens are the one family the desktop app verifies for itself, so

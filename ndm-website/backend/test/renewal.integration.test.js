@@ -38,7 +38,14 @@ function checkoutEvent({ id, email, plan = 'pro', billingCycle = 'monthly' }) {
   };
 }
 
-function renewalEvent({ id, periodEnd, interval = 'month', amount = 500 }) {
+// `periodStart` is a parameter rather than `new Date()` read inside, because
+// the idempotency test re-sends an event and StripeEvent.claim compares a hash
+// of the exact bytes. Reading the clock here made the "same" event differ
+// whenever the two builds landed either side of a second boundary, so that
+// test failed on timing alone — the ledger was correctly reporting a payload
+// that really had changed. A Stripe retry re-delivers identical bytes, so the
+// test has to as well.
+function renewalEvent({ id, periodEnd, interval = 'month', amount = 500, periodStart = new Date() }) {
   return {
     id, type: 'invoice.payment_succeeded',
     data: {
@@ -48,7 +55,7 @@ function renewalEvent({ id, periodEnd, interval = 'month', amount = 500 }) {
         payment_intent: `pi_${id}`, currency: 'usd', amount_paid: amount,
         lines: {
           data: [{
-            period: { start: seconds(new Date()), end: seconds(periodEnd) },
+            period: { start: seconds(periodStart), end: seconds(periodEnd) },
             price: { recurring: { interval } },
           }],
         },
@@ -98,9 +105,13 @@ test('subscription renewals', async (t) => {
     assert.equal(res.body.plan, 'free');
   });
 
+  // Built once so the retry below is byte-for-byte the same delivery.
+  const firstRenewalPeriodEnd = daysFromNow(30);
+  const firstRenewal = renewalEvent({ id: 'evt_renewal_1', periodEnd: firstRenewalPeriodEnd });
+
   await t.test('a paid renewal pushes the expiry to the period Stripe billed', async () => {
-    const periodEnd = daysFromNow(30);
-    const res = await sendEvent(api, renewalEvent({ id: 'evt_renewal_1', periodEnd }));
+    const periodEnd = firstRenewalPeriodEnd;
+    const res = await sendEvent(api, firstRenewal);
     assert.equal(res.status, 200);
     assert.equal(res.body.received, true);
 
@@ -122,7 +133,8 @@ test('subscription renewals', async (t) => {
 
   await t.test('the renewal is recorded as a payment, exactly once', async () => {
     // Stripe retries deliveries; the event ledger must make the second a no-op.
-    const again = await sendEvent(api, renewalEvent({ id: 'evt_renewal_1', periodEnd: daysFromNow(30) }));
+    // The very same payload, as a real retry would be.
+    const again = await sendEvent(api, firstRenewal);
     assert.equal(again.status, 200);
     assert.equal(again.body.duplicate, true);
 

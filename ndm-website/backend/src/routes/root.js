@@ -22,6 +22,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireRoot, rootIpWhitelist, isRootUser } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
+const { stripSensitive } = require('../utils/sanitize');
 const { signRootToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const {
@@ -37,7 +38,7 @@ const BCRYPT_COST = 12;
 
 function rootRefreshCookieOptions() {
   return {
-    httpOnly: true, sameSite: 'lax', secure: config.isProd,
+    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
     maxAge: 4 * 60 * 60 * 1000, path: ROOT_REFRESH_PATH,
   };
 }
@@ -52,13 +53,9 @@ function rootIdentity(user) {
   return { id: String(user.id), name: user.name, email: user.email, role: user.role };
 }
 
-function safeUser(user) {
-  if (!user) return null;
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
-  } = user;
-  return safe;
-}
+// Shared with the staff panel — see utils/sanitize.js for why this is not a
+// per-file destructure any more.
+const safeUser = stripSensitive;
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
@@ -219,13 +216,11 @@ router.put(
     if (name !== undefined) updates.name = name;
     if (banned !== undefined) updates.banned = banned;
     if (role !== undefined) updates.role = role;
-    // Banning or demoting must also kill the live session; verifyAdminToken
-    // re-reads the role on every request, so the bearer token dies with it.
-    if (banned === true || role === 'user') {
-      updates.adminRefreshTokenHash = null;
-      updates.refreshTokenHash = null;
-    }
     await User.update(user.id, updates);
+    // Banning or demoting must also kill the live session. verifyAdminToken
+    // re-reads the role on every request, so a demoted admin's panel token dies
+    // on its own; revokeSessions is what also ends their ordinary user tokens.
+    if (banned === true || role === 'user') await User.revokeSessions(user.id);
 
     const fresh = await User.findById(user.id);
     await audit(req, 'admin.updated', 'user', user.id, `Updated staff admin ${fresh.email}`, req.body);
@@ -238,10 +233,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
-    await User.update(user.id, {
-      passwordHash: await bcrypt.hash(req.body.password, BCRYPT_COST),
-      refreshTokenHash: null, adminRefreshTokenHash: null,
-    });
+    await User.update(user.id, { passwordHash: await bcrypt.hash(req.body.password, BCRYPT_COST) });
+    await User.revokeSessions(user.id);
     await audit(req, 'admin.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
   })
@@ -252,7 +245,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
-    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
+    await User.revokeSessions(user.id);
     await audit(req, 'admin.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
     return ok(res, { revoked: true });
   })
@@ -266,10 +259,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
-    await User.update(user.id, {
-      totpEnabled: 0, totpSecret: null, totpRecovery: null,
-      refreshTokenHash: null, adminRefreshTokenHash: null,
-    });
+    await User.update(user.id, { totpEnabled: 0, totpSecret: null, totpRecovery: null });
+    await User.revokeSessions(user.id);
     await audit(req, 'admin.2fa_reset', 'user', user.id, `Reset two-factor authentication for ${user.email}`);
     return ok(res, { reset: true });
   })

@@ -44,6 +44,29 @@ const User = {
     await execute('DELETE FROM users WHERE id = ?', [id]);
   },
 
+  /**
+   * End every live session for this account.
+   *
+   * Incremented in SQL rather than read-modify-written, so two concurrent
+   * revocations cannot land on the same number. Clearing the three refresh
+   * hashes at the same time is what stops a new token being minted from a
+   * cookie; the bump is what kills the access tokens already out there.
+   * Returns the new value.
+   */
+  async revokeSessions(id) {
+    await execute(
+      `UPDATE users
+          SET token_version = token_version + 1,
+              refresh_token_hash = NULL,
+              admin_refresh_token_hash = NULL,
+              root_refresh_token_hash = NULL
+        WHERE id = ?`,
+      [id]
+    );
+    const row = await queryOne('SELECT token_version FROM users WHERE id = ?', [id]);
+    return row ? Number(row.token_version) || 0 : 0;
+  },
+
   async create({ name, email, passwordHash, role, emailVerified, googleId, avatarUrl }) {
     const id = await insert(
       `INSERT INTO users (name, email, password_hash, role, email_verified, google_id, avatar_url)

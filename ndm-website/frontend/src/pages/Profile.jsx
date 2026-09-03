@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
-import api, { unwrap } from '../api/client';
+import api, { unwrap, setAccessToken } from '../api/client';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -213,11 +213,17 @@ export default function Profile() {
     }
     setChangingPassword(true);
     try {
-      await api.put('/user/profile', {
+      const res = await api.put('/user/profile', {
         currentPassword,
         newPassword,
       });
-      toast.success('Password changed.');
+      // Changing the password ends every session on the account, including this
+      // one. The server hands back a token on the new generation so the tab you
+      // are typing in stays signed in; without adopting it, the very next
+      // request 401s and the user is bounced to the login page.
+      const fresh = res?.data?.data?.token;
+      if (fresh) setAccessToken(fresh);
+      toast.success('Password changed. Any other devices have been signed out.');
       setCurrentPassword('');
       setNewPassword('');
     } catch (err) {

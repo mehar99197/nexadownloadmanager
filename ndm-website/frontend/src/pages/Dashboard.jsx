@@ -28,8 +28,11 @@ function StatCard({ label, value, icon }) {
   );
 }
 
-function LicenseCard({ license }) {
+function LicenseCard({ license, onRotated }) {
   const [copied, setCopied] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const toast = useToast();
+  const confirm = useConfirm();
 
   const handleCopy = async () => {
     if (!license?.licenseKey) return;
@@ -37,6 +40,37 @@ function LicenseCard({ license }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // The only way to take a key back. Removing somebody from a team does not do
+  // it — they were given the owner's real key, and nothing on the server ties a
+  // machine to the person who activated it — so a key that has leaked, to an
+  // ex-colleague or anywhere else, stays valid until it is replaced.
+  const handleRotate = async () => {
+    const sure = await confirm({
+      title: 'Replace this license key?',
+      message: 'The current key stops working immediately and every machine using it '
+        + 'drops to Free. You will need to paste the new key into Nexa on each of your own '
+        + 'machines. Do this if the key has been shared or you have removed someone from your team.',
+      confirmLabel: 'Replace key',
+      danger: true,
+    });
+    if (!sure) return;
+    setRotating(true);
+    try {
+      const res = unwrap(await api.post('/user/license/rotate'));
+      toast.success(res.devicesRevoked
+        ? `New key issued. ${res.devicesRevoked} device(s) signed out.`
+        : 'New key issued.');
+      onRotated?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not issue a new key.');
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const canRotate = Boolean(license) && !license.viaTeam && license.plan && license.plan !== 'free'
+    && license.status === 'active';
 
   if (!license) {
     return (
@@ -77,6 +111,17 @@ function LicenseCard({ license }) {
         Paste this key in the app under Settings &rarr; License.{' '}
         <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
       </p>
+      {canRotate && (
+        <div className="mt-4 border-t border-white/5 pt-4">
+          <Button variant="ghost" onClick={handleRotate} disabled={rotating}>
+            {rotating ? 'Replacing…' : 'Replace key'}
+          </Button>
+          <p className="mt-2 text-xs text-slate-500">
+            Issues a new key and signs every machine out of the old one. Use this if the key
+            has been shared, or after removing someone from your team.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }
@@ -244,7 +289,11 @@ function TeamCard({ onChanged }) {
       title: pending ? 'Withdraw this invitation?' : `Remove ${member.name || member.email}?`,
       message: pending
         ? `${member.email} will no longer be able to accept.`
-        : 'They lose access to the team licence key; the app on their machine returns to Free at its next check.',
+        // Deliberately blunt: this used to promise that their app "returns to
+        // Free at its next check", which is not true. They were given the
+        // owner's real licence key and it keeps working until it is replaced.
+        : 'They stop appearing on your team, but the licence key they already have keeps working. '
+          + 'To actually cut off their access, use “Replace key” on your License card afterwards.',
       confirmLabel: pending ? 'Withdraw' : 'Remove',
       danger: true,
     });
@@ -252,7 +301,8 @@ function TeamCard({ onChanged }) {
     setBusyId(member.id);
     try {
       await api.delete(`/team/members/${member.id}`);
-      toast.success(pending ? 'Invitation withdrawn.' : `${member.email} removed from the team.`);
+      if (pending) toast.success('Invitation withdrawn.');
+      else toast.success(`${member.email} removed. Replace your license key to revoke the copy they have.`);
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.error?.message || 'Could not remove that person.');
@@ -530,7 +580,7 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} />}
+        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} onRotated={loadLicense} />}
         <DevicesCard />
         <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
       </div>

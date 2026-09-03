@@ -38,9 +38,19 @@ router.get(
   asyncHandler(async (req, res) => ok(res, PLANS))
 );
 
+// A hardened deployment without Stripe keys runs with billing DISABLED (see
+// config/env.js#stripeMode). The site keeps working — accounts, trials, the
+// free licence, admin-granted plans — but nothing can be bought until live keys
+// are configured, and this says so instead of pretending.
+function billingUnavailable(res) {
+  return fail(res, 'BILLING_UNAVAILABLE',
+    'Payments are not available on this site yet. Please check back soon.', 503);
+}
+
 router.post(
   '/checkout', requireAuth, validate(checkoutSchema),
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const { plan, billingCycle, couponCode } = req.body;
     // Reject a bad code here rather than silently charging full price.
     if (couponCode) {
@@ -60,6 +70,7 @@ router.post(
 router.post(
   '/coupon', requireAuth, validate(couponSchema),
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const promo = await stripe.findPromotionCode(req.body.couponCode);
     if (!promo) return fail(res, 'INVALID_COUPON', 'That code is not valid', 400);
     return ok(res, { code: promo.code, percentOff: promo.percentOff ?? null,
@@ -72,6 +83,7 @@ router.post(
 router.post(
   '/portal', requireAuth,
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const sub = (await Subscription.findByUserId(req.user.id))[0] || null;
     if (!sub || !sub.stripe_customer_id)
       return ok(res, { url: null, reason: 'no_stripe_customer' });
@@ -86,8 +98,11 @@ router.post(
 router.post(
   '/mock-complete', requireAuth, validate(mockCompleteSchema),
   asyncHandler(async (req, res) => {
-    if (!config.isStripeMock || config.isProd)
-      return fail(res, 'NOT_AVAILABLE', 'Mock billing is only available in development', 404);
+    // isStripeMock is only ever true for a LOCAL, non-production deployment —
+    // config/env.js picks 'disabled', not 'mock', for a public box without
+    // keys — so this single check is the whole gate.
+    if (!config.isStripeMock)
+      return fail(res, 'NOT_AVAILABLE', 'Mock billing is only available in local development', 404);
     const { plan, billingCycle } = req.body;
     const existing = (await Subscription.findByUserId(req.user.id))[0] || null;
     const mockPaymentId = `mock_${req.user.id}_${plan}_${billingCycle}`;
@@ -196,6 +211,12 @@ router.post(
     const result = await Subscription.startTrial(req.user.id);
     if (!result.ok) {
       if (result.reason === 'not_found') return fail(res, 'NOT_FOUND', 'Account not found', 404);
+      // Distinct from "you already used your trial": this licence was stopped
+      // by a person, and a trial must not quietly undo that. Saying so sends
+      // the customer to support instead of leaving them retrying a button.
+      if (result.reason === 'subscription_stopped')
+        return fail(res, 'SUBSCRIPTION_STOPPED',
+          'This account\u2019s licence was stopped. Please contact support.', 403);
       return fail(res, 'TRIAL_UNAVAILABLE', 'A free trial is not available for this account', 400);
     }
     const trialEndsAt = toIso(result.subscription.trial_ends_at);

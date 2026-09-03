@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const config = require('../config/env');
 const { fail } = require('../utils/respond');
 const { MySqlRateLimitStore } = require('./rateLimitStore');
 
@@ -25,10 +26,11 @@ const common = {
 // Integration tests drive hundreds of requests from one address, which the real
 // limits would (correctly) block. RATE_LIMIT_DISABLED lifts them so the tests
 // exercise the routes; the limiter suite sets it back to "0" to assert the real
-// behaviour. It is honoured ONLY outside production, so it can never weaken a
-// live deployment.
+// behaviour. It is honoured ONLY on a local, non-production deployment
+// (config.allowRateLimitBypass), so it can never weaken a live box — not even
+// one mistakenly running with NODE_ENV=development.
 const limitsDisabled = () =>
-  process.env.NODE_ENV !== 'production' && process.env.RATE_LIMIT_DISABLED === '1';
+  config.allowRateLimitBypass && process.env.RATE_LIMIT_DISABLED === '1';
 
 function makeLimiter(options) {
   const limiter = rateLimit({ ...common, ...options });
@@ -160,8 +162,18 @@ const teamInviteLimiter = makeDurableLimiter('team-invite', {
   message: 'Too many invitations sent. Please try again later.',
 });
 
+// Rotating a licence key invalidates every installed copy of it, so it is
+// deliberately awkward to do by accident or in a loop — but it must stay
+// reachable the moment a key leaks. Durable, because it is a security action
+// and a process restart must not hand out a fresh budget.
+const licenseRotateLimiter = makeDurableLimiter('license-rotate', {
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 5,
+  message: 'Too many licence key rotations today. Please try again tomorrow.',
+});
+
 module.exports = {
-  authLimiter, loginLimiter, authIpLimiter,
+  authLimiter, loginLimiter, authIpLimiter, licenseRotateLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
   loginKey,

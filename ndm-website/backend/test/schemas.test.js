@@ -137,3 +137,27 @@ test('deleteAccountSchema demands the password and the literal word DELETE', () 
   assert.equal(deleteAccountSchema.body.safeParse({ password: '', confirm: 'DELETE' }).success, false);
   assert.equal(deleteAccountSchema.body.safeParse({ password: 'pw', confirm: 'DELETE', extra: 1 }).success, false);
 });
+
+test('release artifact URLs are https, like ad links always were', () => {
+  // These become an installer download. The desktop updater refuses anything
+  // but https itself, but the site's own /download/:os redirects a visitor
+  // straight at whatever is stored — so an http: value here is a plaintext
+  // installer download, and a javascript: one is stored XSS in the admin panel.
+  // `z.string().url()`, which is what guarded this, accepts both.
+  const { createReleaseSchema, updateReleaseSchema } = require('../src/schemas/admin.schema');
+  const body = (windowsUrl) => ({ version: '1.2.3', windowsUrl });
+
+  assert.equal(createReleaseSchema.body.safeParse(body('https://cdn.example.com/nexa.exe')).success, true);
+  for (const bad of ['http://cdn.example.com/nexa.exe', 'javascript:alert(1)',
+    'data:text/html,<script>1</script>', 'file:///etc/passwd', 'not a url'])
+    assert.equal(createReleaseSchema.body.safeParse(body(bad)).success, false, bad);
+
+  // Editing an existing release is the same gate — it was the second copy.
+  assert.equal(updateReleaseSchema.body.safeParse({ linuxUrl: 'http://x.example/n.deb' }).success, false);
+  assert.equal(updateReleaseSchema.body.safeParse({ linuxUrl: 'https://x.example/n.deb' }).success, true);
+
+  // Capped at the column width, so validation cannot pass a value the INSERT
+  // then rejects.
+  assert.equal(createReleaseSchema.body.safeParse(
+    body(`https://x.example/${'a'.repeat(600)}`)).success, false);
+});

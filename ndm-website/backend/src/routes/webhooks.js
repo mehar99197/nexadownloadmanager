@@ -2,6 +2,7 @@
 
 const router = require('express').Router();
 
+const config = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
 const stripe = require('../utils/stripe');
 const { sendLicenseEmail, sendReceiptEmail } = require('../utils/email');
@@ -131,7 +132,32 @@ async function handleInvoicePaid(obj) {
   }).catch((err) => console.error('[webhook] renewal receipt email failed:', err.message));
 }
 
+// `checkout.session.completed` fires when the customer finishes the flow, NOT
+// when the money arrives. With a delayed payment method enabled in the Stripe
+// dashboard — ACH direct debit, SEPA, BACS, some bank redirects — the session
+// completes with `payment_status: 'unpaid'` and settles (or fails) days later.
+// Granting on completion alone hands out a paid licence for a debit that may
+// never clear, and Stripe's own guidance is to wait for
+// checkout.session.async_payment_succeeded. `no_payment_required` is the
+// zero-amount case (a 100% coupon), which is genuinely paid up.
+const SETTLED_PAYMENT_STATUS = new Set(['paid', 'no_payment_required']);
+
+function isSettled(obj) {
+  // Older API versions and our own mock events omit the field entirely; a
+  // session that never mentions a payment status is the classic card flow,
+  // which only completes once the charge succeeded.
+  const status = obj && obj.payment_status;
+  return status === undefined || status === null || SETTLED_PAYMENT_STATUS.has(String(status));
+}
+
 async function handleCheckoutCompleted(obj, eventId) {
+  if (!isSettled(obj)) {
+    console.warn(
+      `[webhook] checkout session ${obj && obj.id} completed but payment_status=${obj.payment_status};`
+      + ' waiting for checkout.session.async_payment_succeeded'
+    );
+    return;
+  }
   const user = await resolveUser(obj);
   if (!user) throw new Error('checkout.session.completed has no matching user');
 
@@ -386,6 +412,15 @@ async function handlePaymentFailed(obj) {
 router.post(
   '/stripe',
   asyncHandler(async (req, res) => {
+    // No Stripe key means no webhook secret means nothing here can be
+    // verified. Refuse before touching the body: the alternative, "mock" mode,
+    // would grant a paid plan to anybody who POSTs a JSON event, and used to
+    // be exactly what a public box without live keys ran. env.js now never
+    // selects mock mode for a public deployment; this is the belt to that
+    // pair of braces.
+    if (config.isBillingDisabled)
+      return res.status(503).json({ received: false, error: 'billing_disabled' });
+
     let event;
     try { event = stripe.constructEvent(req.body, req.headers['stripe-signature']); }
     catch (err) { return res.status(400).json({ received: false, error: 'invalid_signature' }); }
@@ -406,6 +441,16 @@ router.post(
       const obj = (event.data && event.data.object) || {};
       switch (event.type) {
         case 'checkout.session.completed': await handleCheckoutCompleted(obj, event.id); break;
+        // The delayed-payment settlement of the session above. Same handler:
+        // by this point payment_status is 'paid', so isSettled() lets it
+        // through and the grant happens exactly once, on the money arriving.
+        case 'checkout.session.async_payment_succeeded':
+          await handleCheckoutCompleted(obj, event.id); break;
+        // The debit bounced. Nothing was ever granted (completed returned
+        // early), so there is nothing to undo — record it and move on.
+        case 'checkout.session.async_payment_failed':
+          console.warn(`[webhook] delayed payment failed for checkout session ${obj && obj.id}`);
+          break;
         case 'customer.subscription.deleted': await handleSubscriptionDeleted(obj); break;
         // Plan switches and cancellations made in Stripe's own billing portal,
         // which /billing links to — they reach us nowhere else.

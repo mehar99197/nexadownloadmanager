@@ -33,6 +33,10 @@ export default function Users() {
   const [createForm, setCreateForm] = useState(EMPTY_CREATE);
   const [resetTarget, setResetTarget] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
+  // Deletion is the one action here that destroys data, so it gets its own
+  // modal and its own typed confirmation rather than a yes/no dialog.
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -123,6 +127,31 @@ export default function Users() {
     }
   };
 
+  // The typed address must match exactly — the same guard the creator's Danger
+  // Zone uses, and the same one the API enforces independently, so a mis-clicked
+  // row cannot erase a customer.
+  const deleteMatches = Boolean(deleteTarget)
+    && deleteConfirm.trim().toLowerCase() === String(deleteTarget.email).toLowerCase();
+
+  const deleteUser = async () => {
+    if (!deleteMatches) return;
+    setSaving(true);
+    setError('');
+    try {
+      await unwrap(api.delete(`/admin/users/${deleteTarget.id}`, {
+        data: { confirmEmail: deleteConfirm.trim().toLowerCase() },
+      }));
+      setDeleteTarget(null);
+      setDeleteConfirm('');
+      setDetails(null);
+      await loadUsers();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to delete this account.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const revokeSessions = async (user) => {
     const sure = await confirm({
       title: `Revoke all sessions for ${user.email}?`,
@@ -190,7 +219,7 @@ export default function Users() {
       <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
 
       <Modal open={Boolean(editing)} onClose={() => !saving && setEditing(null)} title={editing ? `Manage ${editing.name}` : 'Manage user'} footer={(<><Button variant="ghost" onClick={() => setEditing(null)} disabled={saving}>Cancel</Button><Button onClick={saveUser} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</Button></>)}>
-        {editing && <div className="space-y-5"><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-4"><p className="font-semibold text-admin-text">{editing.email}</p><p className="mt-1 text-xs text-admin-muted">User ID #{editing.id}</p></div><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Account banned</span><span className="mt-1 block text-xs text-admin-muted">Banned users cannot sign in.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.banned} onChange={(event) => setForm((current) => ({ ...current, banned: event.target.checked }))} /></label><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Email verified</span><span className="mt-1 block text-xs text-admin-muted">Override verification for support cases.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.emailVerified} onChange={(event) => setForm((current) => ({ ...current, emailVerified: event.target.checked }))} /></label><div className="block"><span className="admin-label">Role</span><p className="admin-input !cursor-default capitalize text-admin-muted">{editing.role}</p><p className="mt-1 text-xs text-admin-faint">Roles are managed by the creator in the root console.</p></div><label className="block"><span className="admin-label">Subscription plan</span><select className="admin-input" value={form.plan} onChange={(event) => setForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><div className="flex flex-wrap gap-2 border-t border-admin-border pt-4"><Button variant="secondary" size="sm" onClick={() => { setEditing(null); setResetTarget(editing); }}>Reset password</Button><Button variant="ghost" size="sm" onClick={() => revokeSessions(editing)}>Revoke sessions</Button></div></div>}
+        {editing && <div className="space-y-5"><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-4"><p className="font-semibold text-admin-text">{editing.email}</p><p className="mt-1 text-xs text-admin-muted">User ID #{editing.id}</p></div><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Account banned</span><span className="mt-1 block text-xs text-admin-muted">Banned users cannot sign in.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.banned} onChange={(event) => setForm((current) => ({ ...current, banned: event.target.checked }))} /></label><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Email verified</span><span className="mt-1 block text-xs text-admin-muted">Override verification for support cases.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.emailVerified} onChange={(event) => setForm((current) => ({ ...current, emailVerified: event.target.checked }))} /></label><div className="block"><span className="admin-label">Role</span><p className="admin-input !cursor-default capitalize text-admin-muted">{editing.role}</p><p className="mt-1 text-xs text-admin-faint">Roles are managed by the creator in the root console.</p></div><label className="block"><span className="admin-label">Subscription plan</span><select className="admin-input" value={form.plan} onChange={(event) => setForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><div className="flex flex-wrap gap-2 border-t border-admin-border pt-4"><Button variant="secondary" size="sm" onClick={() => { setEditing(null); setResetTarget(editing); }}>Reset password</Button><Button variant="ghost" size="sm" onClick={() => revokeSessions(editing)}>Revoke sessions</Button></div>{editing.role === 'user' && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/5 p-4"><p className="text-sm font-semibold text-admin-danger">Delete account</p><p className="mt-1 text-xs text-admin-muted">Permanently erases this account with its subscriptions, payments, reviews and licence activations. This cannot be undone — ban the account instead if you only need to stop them signing in.</p><Button variant="danger" size="sm" className="mt-3" onClick={() => { setDeleteConfirm(''); setDeleteTarget(editing); setEditing(null); }}>Delete account</Button></div>}</div>}
       </Modal>
 
       <Modal open={Boolean(details)} onClose={() => setDetails(null)} title={details?.user ? `User details: ${details.user.name}` : 'User details'} size="lg">
@@ -198,6 +227,14 @@ export default function Users() {
       </Modal>
 
       <Modal open={createOpen} onClose={() => !saving && setCreateOpen(false)} title="Create user" footer={(<><Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button><Button onClick={createUser} disabled={saving || !createForm.name || !createForm.email || createForm.password.length < 8}>{saving ? 'Creating...' : 'Create user'}</Button></>)}><div className="space-y-4"><Input label="Name" name="newName" value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} /><Input label="Email" name="newEmail" type="email" value={createForm.email} onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))} /><Input label="Temporary password" name="newPassword" type="password" hint="At least 8 characters" value={createForm.password} onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))} /><label className="block"><span className="admin-label">Plan</span><select className="admin-input" value={createForm.plan} onChange={(event) => setCreateForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><p className="text-xs text-admin-faint">New accounts are always created as ordinary users. Staff admins are created by the creator in the root console.</p></div></Modal>
+
+      <Modal open={Boolean(deleteTarget)} onClose={() => !saving && setDeleteTarget(null)} title={`Delete ${deleteTarget?.email || 'account'}`} footer={(<><Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={saving}>Cancel</Button><Button variant="danger" onClick={deleteUser} disabled={saving || !deleteMatches}>{saving ? 'Deleting...' : 'Delete permanently'}</Button></>)}>
+        <div className="space-y-4">
+          <p className="text-sm leading-6 text-admin-muted">This erases <span className="font-semibold text-admin-text">{deleteTarget?.email}</span> and everything the account owns: its subscriptions and licence keys, payment records, reviews and every activated device. Admin activity remains in the audit log.</p>
+          <p className="text-sm leading-6 text-admin-muted">There is no undo and no export step. If you only want to stop them signing in, cancel and use <span className="font-semibold text-admin-text">Account banned</span> instead.</p>
+          <Input label="Type the account email to confirm" name="deleteConfirm" autoComplete="off" value={deleteConfirm} onChange={(event) => setDeleteConfirm(event.target.value)} hint={deleteTarget?.email} />
+        </div>
+      </Modal>
 
       <Modal open={Boolean(resetTarget)} onClose={() => !saving && setResetTarget(null)} title={`Reset password: ${resetTarget?.name || ''}`} footer={(<><Button variant="ghost" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button><Button onClick={resetUserPassword} disabled={saving || resetPassword.length < 8}>{saving ? 'Resetting...' : 'Reset password'}</Button></>)}><Input label="New password" name="resetPassword" type="password" hint="At least 8 characters. Existing sessions will be revoked." value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></Modal>
     </div>

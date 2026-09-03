@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import api from '../api/client';
 import { useToast } from '../components/Toast';
 import Section from '../components/Section';
 import Card from '../components/Card';
@@ -22,6 +23,24 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState('');
+  // Set when the server refuses a sign-in because the address is unverified.
+  // Without an offer to re-send, that refusal is a dead end: the original link
+  // expires after an hour and there is no signed-in page to ask from.
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [resending, setResending] = useState(false);
+
+  const resendVerification = async () => {
+    setResending(true);
+    try {
+      await api.post('/auth/resend-verification', { email });
+      toast.success('If that address needs verifying, a new link is on its way.');
+      setNeedsVerification(false);
+    } catch {
+      toast.error('Could not send the link. Please try again in a moment.');
+    } finally {
+      setResending(false);
+    }
+  };
 
   // Where to go after signing in. Only same-site paths are honoured, so a
   // crafted link cannot bounce a visitor to another origin.
@@ -37,6 +56,7 @@ export default function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setNeedsVerification(false);
     setSubmitting(true);
     try {
       await login(email, password);
@@ -47,6 +67,7 @@ export default function Login() {
         err?.response?.data?.error?.message ||
         err?.message ||
         'Login failed. Please try again.';
+      setNeedsVerification(err?.response?.data?.error?.code === 'EMAIL_NOT_VERIFIED');
       setError(msg);
     } finally {
       setSubmitting(false);
@@ -116,6 +137,30 @@ export default function Login() {
             {error && (
                 <div className="rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-3 text-sm text-red-200">
                 {error}
+                {needsVerification && (
+                  <button
+                    type="button"
+                    onClick={resendVerification}
+                    disabled={resending || !email}
+                    className="mt-2 block font-semibold text-red-100 underline underline-offset-2 hover:text-white disabled:opacity-60"
+                  >
+                    {resending ? 'Sending…' : 'Send me a new verification link'}
+                  </button>
+                )}
+                {/*
+                  The server deliberately cannot tell us that THIS address was
+                  created with Google — a distinct answer for an address that
+                  exists is a membership oracle for anyone who types one. So the
+                  hint is given here, unconditionally, after any failed sign-in:
+                  it helps the person who needs it and confirms nothing to
+                  anyone else.
+                */}
+                {!needsVerification && (
+                  <p className="mt-2 text-xs text-red-200/80">
+                    Created your account with Google? Use “Continue with Google” below.
+                    Never set a password? Use “Forgot password”.
+                  </p>
+                )}
               </div>
             )}
 

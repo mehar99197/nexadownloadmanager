@@ -102,6 +102,28 @@ const Subscription = {
         return { ok: false, reason: 'seat_revoked', seats, activeSeats: busy };
       }
 
+      // A heartbeat may not REGISTER a machine either. Refusing a revoked row
+      // above but falling through to the INSERT below when there was no row at
+      // all left the larger hole: a client that simply never calls /validate
+      // could take a seat and collect a signed licence token from /heartbeat,
+      // on the general API limiter instead of the strict licence one — and,
+      // far worse, /validate is the ONLY place the key-sharing assessment and
+      // auto-suspend run (routes/license.js). A key posted on a forum and used
+      // by 500 people leaves 500 activation rows, and that all-time count is
+      // the one signal seat limits cannot see; beating straight past
+      // /validate meant the rows were still written but nothing ever read
+      // them. Enforcement that a modified client can skip by choosing a
+      // different endpoint is not enforcement.
+      //
+      // A legitimate client always has a row here: LicenseManager only starts
+      // its heartbeat after a /validate that succeeded (which creates the row),
+      // and nothing ever deletes one — releaseSeat and the admin's "free seat"
+      // both keep the row and clear the lease.
+      if (renewOnly && !existing.length) {
+        await connection.rollback();
+        return { ok: false, reason: 'seat_unknown_device', seats, activeSeats: busy };
+      }
+
       // Renewing an unexpired lease always succeeds. Taking a *new* one (first
       // run, or after this device's lease lapsed) needs a free seat.
       if (!holdsLease && busy >= seats) {
@@ -268,6 +290,65 @@ const Subscription = {
         ORDER BY FIELD(s.sharing_level, 'suspected', 'watch'), s.sharing_devices DESC
         LIMIT ${capped}`
     );
+  },
+
+  /**
+   * Issue a brand-new licence key for a subscription and cut every machine
+   * currently using the old one loose.
+   *
+   * This is the remedy the product was missing. A Team member is handed the
+   * OWNER's real licence key (routes/team.js#memberPayload), and removing them
+   * from the roster does nothing to the copy already sitting in their desktop
+   * app — nothing links an activation row back to the member who created it,
+   * because /license/validate authenticates a key and a device, not a person.
+   * So "remove from team" was cosmetic: the removed member kept a working Pro
+   * seat for as long as the plan lived. The same is true of a key that leaked
+   * any other way.
+   *
+   * Both halves have to happen together. A new key alone leaves the old
+   * devices holding live leases against this subscription until they lapse; a
+   * seat sweep alone lets them re-activate with the key they still have.
+   * Activation ROWS are kept (only revoked + unleased) because they are the
+   * all-time device history the sharing check reads — deleting them would
+   * quietly launder a shared key's record.
+   */
+  async rotateLicenseKey(id) {
+    return withTransaction(async (connection) => {
+      const [rows] = await connection.execute(
+        'SELECT id, license_key FROM subscriptions WHERE id = ? FOR UPDATE', [id]
+      );
+      if (!rows.length) return { ok: false, reason: 'not_found' };
+
+      // The unique index on license_key makes a collision a failed INSERT
+      // rather than a silent overwrite; retrying a few times covers it without
+      // pretending 128 bits of randomness needs a loop.
+      let licenseKey = null;
+      for (let attempt = 0; attempt < 5 && !licenseKey; attempt += 1) {
+        const candidate = generateLicenseKey();
+        const [clash] = await connection.execute(
+          'SELECT id FROM subscriptions WHERE license_key = ?', [candidate]
+        );
+        if (!clash.length) licenseKey = candidate;
+      }
+      if (!licenseKey) return { ok: false, reason: 'key_generation_failed' };
+
+      await connection.execute(
+        'UPDATE subscriptions SET license_key = ? WHERE id = ?', [licenseKey, id]
+      );
+      // revoked_at, not just a cleared lease: a machine still running with the
+      // old key would otherwise renew straight through its next heartbeat.
+      const [freed] = await connection.execute(
+        `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
+          WHERE subscription_id = ?`,
+        [id]
+      );
+      return {
+        ok: true,
+        licenseKey,
+        previousKey: rows[0].license_key,
+        devicesRevoked: freed.affectedRows || 0,
+      };
+    });
   },
 
   /** Devices for a subscription, newest lease first, with live/idle state. */
@@ -497,6 +578,17 @@ const Subscription = {
       if (current && (current.plan === 'pro' || current.plan === 'team') &&
           current.status === 'active' && !current.trial_ends_at)
         return { ok: false, reason: 'paid_plan' };
+
+      // `cancelled` and `expired` are the two states somebody CHOSE — an admin
+      // stopping a licence, or a cancellation. Nothing that merely runs out
+      // ever lands here (Subscription.current downgrades a lapsed plan to
+      // free/active instead), so a row in one of these states is an
+      // administrative decision. The trial used to overwrite it in place,
+      // reusing the same subscription id and the same licence key, which turned
+      // "stop this licence" into "seven days of Pro on the very key that was
+      // stopped".
+      if (current && (current.status === 'cancelled' || current.status === 'expired'))
+        return { ok: false, reason: 'subscription_stopped' };
 
       const endsAt = trialEndsAt(now);
       let id;

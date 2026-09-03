@@ -7,7 +7,11 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, fail } = require('../utils/respond');
 const validate = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
+const { licenseRotateLimiter } = require('../middleware/rateLimiter');
+const { sendLicenseEmail } = require('../utils/email');
 const { updateProfileSchema, deleteAccountSchema } = require('../schemas/user.schema');
+const config = require('../config/env');
+const { signAccessToken, generateRefreshToken } = require('../utils/jwt');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
@@ -16,15 +20,19 @@ const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
+const { stripSensitive } = require('../utils/sanitize');
 
 const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
 const SESSION_HINT_COOKIE = 'ndm_session';
 
 function sanitizeUser(user) {
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
-  } = user;
+  // stripSensitive() removes every credential column, including the ones this
+  // used to miss (totp_secret, totp_recovery, token_version) — a user reading
+  // their own profile has no business seeing their own TOTP seed either, since
+  // an XSS or a leaked response body would then be a second factor.
+  const safe = stripSensitive(user);
+  const password_hash = user.password_hash;
   // The site needs to know whether password sign-in is available for this
   // account without ever seeing the hash: a Google-created account shows
   // "Set a password" instead of "Change password".
@@ -98,14 +106,41 @@ router.put(
       updates.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
     }
     if (Object.keys(updates).length) await User.update(req.user.id, updates);
+    // Changing a password is how somebody responds to "I think another person
+    // is in my account", so every OTHER session has to end. The caller keeps
+    // working: they are issued a token on the new generation below.
+    let token;
+    if (newPassword !== undefined) {
+      await User.revokeSessions(req.user.id);
+      const { token: refreshToken, hash } = generateRefreshToken();
+      await User.update(req.user.id, { refreshTokenHash: hash });
+      res.cookie(REFRESH_COOKIE, refreshToken, {
+        httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
+        maxAge: 30 * 24 * 60 * 60 * 1000, path: '/api/auth',
+      });
+      token = signAccessToken(await User.findById(req.user.id));
+    }
     const user = await User.findById(req.user.id);
-    return ok(res, { user: sanitizeUser(user) });
+    return ok(res, { user: sanitizeUser(user), ...(token ? { token } : {}) });
   })
 );
 
+/**
+ * The licence key for this account.
+ *
+ * Gated on a verified address. The key is the product: handing one to an
+ * address nobody has proved they own means a sign-up form with a stranger's
+ * email yields a working licence. requireAuth already refuses an unverified
+ * account while EMAIL_VERIFICATION_REQUIRED is on, so this is the second lock
+ * on the same door — and the one that still holds if that setting is ever
+ * turned off.
+ */
 router.get(
   '/license', requireAuth,
   asyncHandler(async (req, res) => {
+    if (!req.user.email_verified)
+      return fail(res, 'EMAIL_NOT_VERIFIED',
+        'Verify your email address to receive your license key', 403, { canResend: true });
     const sub = await findUserSubscription(req.user.id);
     // A team member on the Free plan gets the team's key here, so the
     // dashboard shows the key that actually unlocks the app for them.
@@ -124,6 +159,52 @@ router.get(
     return ok(res, {
       licenseKey: sub.license_key, plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
       trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at), viaTeam: false,
+    });
+  })
+);
+
+/**
+ * POST /user/license/rotate — issue a new licence key and cut every machine
+ * using the old one loose.
+ *
+ * Without this there was no way to take a leaked key back. Removing somebody
+ * from a Team plan left them holding the owner's real key (they are handed it
+ * by design — it is what unlocks the app for them), and no activation row
+ * records WHO created it, so nothing on the server could tell that member's
+ * machine from the owner's. "Remove member" was a roster edit and nothing more.
+ *
+ * Only the owner of a paid subscription may rotate: a team member's key is not
+ * theirs to invalidate, and a Free key is not worth the support call.
+ */
+router.post(
+  '/license/rotate', requireAuth, licenseRotateLimiter,
+  asyncHandler(async (req, res) => {
+    const sub = await findUserSubscription(req.user.id);
+    if (!sub) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    if (sub.plan === 'free')
+      return fail(res, 'NOT_ROTATABLE', 'Only a paid licence key can be rotated', 400);
+    if (sub.status !== 'active')
+      return fail(res, 'NOT_ROTATABLE', 'This licence is not active', 400);
+
+    const result = await Subscription.rotateLicenseKey(sub.id);
+    if (!result.ok) return fail(res, 'ROTATE_FAILED', 'Could not issue a new licence key', 500);
+
+    await AuditLog.create({
+      adminUserId: null, action: 'license.rotated', entityType: 'subscription', entityId: sub.id,
+      summary: `${req.user.email} rotated their ${sub.plan} licence key`.slice(0, 255),
+      metadata: { devicesRevoked: result.devicesRevoked },
+    });
+    // Best-effort, like every other outbound mail: the key is already rotated
+    // and is on screen in the response, so a mail failure must not report the
+    // rotation as failed and invite a second one.
+    await sendLicenseEmail(req.user, result.licenseKey, sub.plan).catch((err) =>
+      // eslint-disable-next-line no-console
+      console.error('[user] licence rotation email failed:', err.message));
+
+    return ok(res, {
+      licenseKey: result.licenseKey,
+      plan: sub.plan,
+      devicesRevoked: result.devicesRevoked,
     });
   })
 );

@@ -56,12 +56,32 @@ function verifyChallenge(token, { secret, realm }) {
 
 /**
  * Check a TOTP code or a recovery code against the user's stored secret.
- * Returns { ok, usedRecovery, remaining } — the caller persists `remaining`
- * when a recovery code was consumed.
+ *
+ * Returns { ok, usedRecovery, remaining, step }. The caller persists
+ * `remaining` when a recovery code was consumed — and this now also burns the
+ * TOTP step it accepted, so the same six digits cannot be presented twice.
+ *
+ * Without that, a code stayed usable for its own 30-second step plus the drift
+ * step either side: whoever read it over a shoulder, out of a phishing page or
+ * from a logged request body had up to 90 seconds to use it a second time,
+ * which is exactly the window a real-time phishing proxy operates in. A
+ * recovery code was already single-use; the authenticator code was not.
+ *
+ * `totp_last_step` is a monotonic high-water mark rather than a set of spent
+ * codes: steps only move forward, so `step <= totp_last_step` rejects both the
+ * replay and any attempt to walk backwards into the drift window.
  */
-function checkCode(user, code) {
+async function checkCode(user, code) {
   const secret = totp.decryptSecret(user.totp_secret);
-  if (secret && totp.verifyTotp(secret, code)) return { ok: true, usedRecovery: false };
+  if (secret) {
+    const match = totp.matchTotp(secret, code);
+    if (match.ok) {
+      const lastStep = Number(user.totp_last_step) || 0;
+      if (match.step <= lastStep) return { ok: false, replayed: true };
+      await User.update(user.id, { totpLastStep: match.step });
+      return { ok: true, usedRecovery: false, step: match.step };
+    }
+  }
   const remaining = totp.consumeRecoveryCode(parseRecovery(user.totp_recovery), code);
   if (remaining) return { ok: true, usedRecovery: true, remaining };
   return { ok: false };
@@ -100,8 +120,16 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
         return fail(res, 'INVALID_CHALLENGE', 'Sign in again — the code prompt has expired', 401);
       if (!user.totp_enabled) return fail(res, 'NOT_ENABLED', 'Two-factor authentication is not enabled', 400);
 
-      const result = checkCode(user, req.body.code);
-      if (!result.ok) return fail(res, 'INVALID_CODE', 'That code is not valid', 401);
+      const result = await checkCode(user, req.body.code);
+      if (!result.ok) {
+        if (result.replayed) {
+          await audit(req, `${realm}.code_replayed`, user,
+            `${user.email} presented an already-used two-factor code`);
+          return fail(res, 'CODE_ALREADY_USED',
+            'That code has already been used. Wait for your app to show the next one.', 401);
+        }
+        return fail(res, 'INVALID_CODE', 'That code is not valid', 401);
+      }
       if (result.usedRecovery) {
         await User.update(user.id, { totpRecovery: JSON.stringify(result.remaining) });
         await audit(req, `${realm}.recovery_code_used`, user,
@@ -119,7 +147,9 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
       if (req.admin.totp_enabled)
         return fail(res, 'ALREADY_ENABLED', 'Two-factor authentication is already on. Turn it off first to re-enrol.', 400);
       const secret = totp.generateSecret();
-      await User.update(req.admin.id, { totpSecret: totp.encryptSecret(secret), totpRecovery: null });
+      await User.update(req.admin.id, {
+        totpSecret: totp.encryptSecret(secret), totpRecovery: null, totpLastStep: null,
+      });
       return ok(res, {
         secret,
         otpauthUrl: totp.otpauthUrl({ secret, account: req.admin.email, issuer: `Nexa ${realm === 'root' ? 'Root' : 'Admin'}` }),
@@ -134,10 +164,15 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
         return fail(res, 'ALREADY_ENABLED', 'Two-factor authentication is already on', 400);
       const secret = totp.decryptSecret(req.admin.totp_secret);
       if (!secret) return fail(res, 'NOT_SET_UP', 'Start the setup first', 400);
-      if (!totp.verifyTotp(secret, req.body.code))
+      const match = totp.matchTotp(secret, req.body.code);
+      if (!match.ok)
         return fail(res, 'INVALID_CODE', 'That code is not valid — check the time on your phone and try again', 400);
       const { codes, hashes } = totp.generateRecoveryCodes();
-      await User.update(req.admin.id, { totpEnabled: 1, totpRecovery: JSON.stringify(hashes) });
+      // totpLastStep in the same write: the code that turned 2FA on is spent,
+      // so it cannot be turned straight back around at /2fa/disable.
+      await User.update(req.admin.id, {
+        totpEnabled: 1, totpRecovery: JSON.stringify(hashes), totpLastStep: match.step,
+      });
       await audit(req, `${realm}.2fa_enabled`, req.admin, `${req.admin.email} turned on two-factor authentication`);
       return ok(res, { enabled: true, recoveryCodes: codes });
     })
@@ -152,9 +187,15 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
       const passwordOk = Boolean(req.admin.password_hash)
         && await bcrypt.compare(req.body.password, req.admin.password_hash);
       if (!passwordOk) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
-      const result = checkCode(req.admin, req.body.code);
-      if (!result.ok) return fail(res, 'INVALID_CODE', 'That code is not valid', 400);
-      await User.update(req.admin.id, { totpEnabled: 0, totpSecret: null, totpRecovery: null });
+      const result = await checkCode(req.admin, req.body.code);
+      if (!result.ok)
+        return fail(res, result.replayed ? 'CODE_ALREADY_USED' : 'INVALID_CODE',
+          result.replayed
+            ? 'That code has already been used. Wait for your app to show the next one.'
+            : 'That code is not valid', 400);
+      await User.update(req.admin.id, {
+        totpEnabled: 0, totpSecret: null, totpRecovery: null, totpLastStep: null,
+      });
       await audit(req, `${realm}.2fa_disabled`, req.admin, `${req.admin.email} turned off two-factor authentication`);
       return ok(res, { enabled: false });
     })

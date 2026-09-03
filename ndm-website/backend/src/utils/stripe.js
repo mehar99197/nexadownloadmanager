@@ -2,13 +2,44 @@
 
 const config = require('../config/env');
 
-// Same function names in mock + real mode so route handlers are agnostic.
+// Same function names in every mode so route handlers are agnostic.
+//
+// Three modes, decided in config/env.js#stripeMode:
+//   live     — the real Stripe client, signatures verified.
+//   mock     — LOCAL development only. constructEvent is JSON.parse, so an
+//              unsigned POST is a "webhook"; that is fine on a laptop and
+//              catastrophic on a public box, which is why env.js never picks
+//              this mode for one.
+//   disabled — a hardened deployment with no STRIPE_SECRET_KEY. Nothing is
+//              pretended: every billing operation throws a 503 the routes
+//              (and the error handler) turn into BILLING_UNAVAILABLE, and the
+//              webhook is refused outright.
 let impl;
 
-if (config.isStripeMock) {
-  // ── MOCK ──────────────────────────────────────────────────
+function billingUnavailable() {
+  throw Object.assign(new Error('Billing is not configured on this server'), {
+    status: 503, code: 'BILLING_UNAVAILABLE',
+  });
+}
+
+if (config.isBillingDisabled) {
+  // ── DISABLED ──────────────────────────────────────────────
+  impl = {
+    mock: false,
+    disabled: true,
+    async createCheckoutSession() { return billingUnavailable(); },
+    // "Nothing to manage" is the truthful answer; the route already handles it.
+    async createPortalSession() { return { url: null }; },
+    async findPromotionCode() { return null; },
+    constructEvent() { return billingUnavailable(); },
+    async cancelSubscription() { return billingUnavailable(); },
+    async resumeSubscription() { return billingUnavailable(); },
+  };
+} else if (config.isStripeMock) {
+  // ── MOCK (local development only) ─────────────────────────
   impl = {
     mock: true,
+    disabled: false,
     async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode }) {
       void user;
       void cancelUrl;
@@ -52,6 +83,7 @@ if (config.isStripeMock) {
 
   impl = {
     mock: false,
+    disabled: false,
     async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode }) {
       const catalog = PLANS[plan];
       // A bad code must not silently become "no discount": the route validates

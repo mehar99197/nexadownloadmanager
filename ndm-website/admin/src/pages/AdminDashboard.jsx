@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api, { unwrap } from '../api/client.js';
+import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import StatCard from '../components/StatCard.jsx';
 import BarChart from '../components/BarChart.jsx';
 import Badge from '../components/Badge.jsx';
@@ -26,6 +27,7 @@ function ActivityFeed({ items }) {
 }
 
 export default function AdminDashboard() {
+  const { admin } = useAdminAuth();
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -55,8 +57,27 @@ export default function AdminDashboard() {
   const plans = stats?.planDistribution || [];
   const maxPlan = Math.max(...plans.map((item) => Number(item.count) || 0), 1);
 
+  // A control panel that can ban users, issue licences and delete accounts,
+  // reached with a password alone, is one phished password away from all of
+  // that. Nagging is the right amount of pressure here: forcing enrolment at
+  // login would lock the sole operator out of production if anything about the
+  // flow went wrong, and this account is the only way back in.
+  // Strictly `=== false`: when GET /me fails the context falls back to
+  // { authenticated: true } with no flag at all, and "we could not ask" must
+  // not render as "it is off".
+  const needsTwoFactor = admin?.twoFactorEnabled === false;
+
   return (
     <div className="space-y-6">
+      {needsTwoFactor && (
+        <div className="flex flex-col gap-3 rounded-xl border border-admin-warning/30 bg-admin-warning/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-admin-warning">Two-factor authentication is off</p>
+            <p className="mt-1 text-xs text-admin-muted">This account can ban users, issue licences and delete accounts, and a password is currently the only thing in the way.</p>
+          </div>
+          <Link to="/security"><Button size="sm">Turn on 2FA</Button></Link>
+        </div>
+      )}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Operational overview</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Command center</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-admin-muted">A live view of growth, revenue, user health, moderation, releases, and the services powering NexaDownloadManager.</p></div>
         <div className="flex flex-wrap gap-2"><Link to="/users" className="btn-admin-secondary">Manage users</Link><Link to="/releases" className="btn-admin-primary">Publish release</Link><Button variant="secondary" onClick={loadDashboard} disabled={loading}>{loading ? 'Refreshing...' : 'Refresh data'}</Button></div>
@@ -74,7 +95,7 @@ export default function AdminDashboard() {
       <section className="admin-card flex flex-wrap items-center gap-3 !p-4">
         <span className="mr-1 text-xs font-bold uppercase tracking-[0.16em] text-admin-faint">Service health</span>
         <HealthPill label="Database" value={health?.database || 'checking'} />
-        <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' ? 'warning' : 'success'} />
+        <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' || health?.stripe === 'disabled' ? 'warning' : 'success'} />
         <HealthPill label="Email" value={health?.email || stats?.system?.email || 'checking'} tone={health?.email === 'mock' ? 'warning' : 'success'} />
         <span className="ml-auto text-xs text-admin-faint">{health ? `${health.latencyMs}ms response · ${Math.floor((health.uptimeSeconds || 0) / 60)}m uptime` : 'Connecting...'}</span>
       </section>

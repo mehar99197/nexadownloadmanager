@@ -12,15 +12,15 @@
 // pair and prints both halves in the form each side needs.
 
 // Loaded directly rather than via config/env.js: this module is pulled in by
-// utils/jwt.js, which some scripts reach before env.js, and without dotenv here
-// the private key in .env would be invisible and the fixed development key
-// would be used instead — silently, and in a way that only shows up as clients
-// rejecting every token.
-require('dotenv').config();
+// utils/jwt.js, which some scripts reach before env.js. config/deployment.js
+// runs dotenv, so the private key in .env is visible here; without that the
+// fixed development key would be used instead — silently, and in a way that
+// only shows up as clients rejecting every token.
+const deployment = require('./deployment');
 
 const crypto = require('crypto');
-
-const NODE_ENV = process.env.NODE_ENV || 'development';
+const fs = require('fs');
+const path = require('path');
 
 // DER wrappers for a bare Ed25519 key. RFC 8410 fixes both prefixes, so a raw
 // 32-byte key can be turned into something crypto.createPrivateKey accepts
@@ -64,9 +64,12 @@ function loadPrivateKey() {
     return key;
   }
 
-  if (NODE_ENV === 'production') {
+  // Production, or any public deployment (see config/deployment.js): the fixed
+  // development seed below is committed to this repository, so a public box
+  // signing with it would let anybody mint licences and update feeds.
+  if (deployment.isHardened) {
     throw new Error(
-      '[config] LICENSE_JWT_PRIVATE_KEY is required when NODE_ENV=production. '
+      '[config] LICENSE_JWT_PRIVATE_KEY is required when NODE_ENV=production or the deployment is public. '
       + 'Generate one with `npm run license:keygen`, keep the private half in the '
       + 'server environment, and compile the public half into the desktop app.'
     );
@@ -81,11 +84,34 @@ function loadPrivateKey() {
 
 const privateKey = loadPrivateKey();
 const publicKey = crypto.createPublicKey(privateKey);
+const publicKeyHex = rawPublicKeyHex(publicKey);
+
+// The public half of the key release builds of the desktop app trust, as
+// committed in this monorepo. Null outside the monorepo layout.
+const SHIPPED_PUBLIC_KEY_FILE = path.join(__dirname, '..', '..', '..', '..', 'packaging', 'license-public-key.txt');
+
+/**
+ * Is the key this process signs with the one compiled into shipped builds?
+ *
+ * On the production server the answer must be yes. On a developer's machine it
+ * must be no: that key also signs the update feed every install downloads and
+ * runs, and a laptop has no business holding it. server.js warns when a local
+ * deployment answers yes. Never throws — a missing file just means "unknown".
+ */
+function holdsShippedKey() {
+  try {
+    const shipped = fs.readFileSync(SHIPPED_PUBLIC_KEY_FILE, 'utf8').trim().toLowerCase();
+    return Boolean(shipped) && shipped === publicKeyHex;
+  } catch {
+    return false;
+  }
+}
 
 module.exports = {
   privateKey,
   publicKey,
-  publicKeyHex: rawPublicKeyHex(publicKey),
+  publicKeyHex,
   rawPublicKeyHex,
   privateKeyFromSeed,
+  holdsShippedKey,
 };
