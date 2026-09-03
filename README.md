@@ -62,7 +62,7 @@ media-stream grabbing, and more. C++ / Qt 6.
   `dl_98237.bin` into `Quarterly Earnings Report.bin` on completion; **Smart
   Add** takes a natural-language request ("grab these two files tonight at
   2am") and extracts the URLs + schedule. Available in the GUI, CLI (`--ai`),
-  and dashboard (`POST /api/ai`); enabled when `ANTHROPIC_API_KEY` is set.
+  and dashboard (`POST /api/ai`); requires an active Pro or Team licence.
   *Verified end-to-end against a mock API: both rename and NL-command paths.*
 - **Free plan is ad-supported, paid plans are not** — one sponsored strip above
   the download list on Free, managed by the site admin (`/admin/ads`: create,
@@ -190,18 +190,21 @@ nexa [--max=N] [--no-categorize] [--batch] [--resume-all]
   pattern            e.g. "http://host/file[1-20].jpg" expands to 20 downloads
 ```
 
-### AI features (optional)
+### AI features (Pro / Team)
 
-Set an Anthropic API key to enable smart-rename and Smart Add:
+Smart-rename and Smart Add run on Nexa's servers and need an active Pro or Team
+licence — there is no API key to configure on this side:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 ./build/nexa --ai-rename                       # auto-rename on completion
 ./build/nexa --ai "download the linux iso and the release notes at 2am"
 ```
 
-Uses Claude Haiku by default (override with `NEXA_AI_MODEL`). Without a key, the
-AI buttons/flags are inert and everything else works unchanged.
+They used to call Anthropic directly from the app using `$ANTHROPIC_API_KEY`.
+That key is now server-side only (`ANTHROPIC_API_KEY` in the backend
+environment), which is what makes the entitlement real rather than a local
+switch. On the Free plan, or with no licence token held, the AI buttons and
+flags are inert and everything else works unchanged.
 
 ### Remote dashboard
 
