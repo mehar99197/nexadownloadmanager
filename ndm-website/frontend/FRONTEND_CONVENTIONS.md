@@ -187,12 +187,42 @@ consistent. (Tailwind v4 auto-generates utilities from the tokens, e.g.
 Use surface tokens via CSS vars when you need them directly, e.g.
 `bg-[var(--color-surface-2)]`, `border-[var(--color-surface-border)]`.
 
+**The ink ramp — pick a tone, don't pick a hex.** Hand-written CSS uses
+`--color-ink-1` (strongest body text) through `--color-ink-4` (faintest meta),
+plus `--color-ink-brand` for brand-coloured text on the light theme. All of
+them flip with the theme, which is the point: the one-off hexes they replaced
+were dark-theme values that stayed dark on white — `.page-intro p` sat at
+2.4:1 there. In markup prefer the Tailwind utilities that already match the
+ramp (`text-white`, `text-slate-300/400/500`, `text-brand-300`) over a new
+shade. `.hero-console` deliberately re-pins the dark ramp in both themes: it
+is a picture of the desktop app, which is dark.
+
+**The radius scale.** `--radius-1` (0.5rem) → `--radius-5` (1.75rem), plus
+`--radius-pill`. Steps 1–3 are exactly Tailwind's `rounded-lg` / `rounded-xl` /
+`rounded-2xl` and `--radius-pill` is exactly `rounded-full`, so utility markup
+and hand-written CSS land on the same computed values. Don't add a sixth step
+or an arbitrary `rounded-[…]`; reach for the nearest existing one.
+
+Keep type at **12px (`text-xs` / `0.75rem`) or larger** — that is the floor for
+body copy, and it applies to badges and captions too. Reserve `uppercase` for
+genuinely short labels; a phrase set in caps is slower to read than one in
+sentence case.
+
 **Reusable component classes** (in `index.css`)
 - `.container-x` — centered max-width horizontal container.
 - `.section` — standard vertical section padding (`Section` applies it).
 - `.card` — themed card surface (or use `<Card>`).
-- `.btn`, `.btn-primary`, `.btn-ghost` — buttons (or use `<Button>`).
+- `.btn`, `.btn-primary`, `.btn-ghost`, `.btn-soft` — buttons (or use
+  `<Button>`, which covers primary/ghost). Three weights on purpose: one
+  `.btn-primary` per view is the page's call to action, `.btn-soft` is the
+  brand-tinted step down used by the persistent navbar, `.btn-ghost` is
+  neutral. Two gradient buttons on one screen compete and neither wins.
 - `.text-gradient` — indigo→violet gradient text for headings/brand accents.
+
+Element resets (`a`, `button`, `input`, `textarea`) live in `@layer base`.
+Keep them there — unlayered rules outrank *every* `@layer components` class,
+and an unlayered `a { color: inherit }` silently beat `.btn-primary`'s own
+colour on every button rendered as a link.
 
 Prefer the components; drop to raw classes only for layout/one-offs.
 

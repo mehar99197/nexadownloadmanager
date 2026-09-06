@@ -28,7 +28,27 @@
 
   --color-muted: #97a4bc;
   --color-nav-bg: rgba(4, 6, 13, 0.78);
-  --radius-xl2: 1.35rem;
+
+  /* One text ramp and one radius scale.
+     The page had grown 14 hand-picked text hexes and a dozen corner radii —
+     each one defensible alone, but together they read as assembled rather
+     than designed, and a few (.page-intro p) never got a light-theme value
+     at all and dropped to 2.4:1 on white. Everything hand-written below
+     picks from these; Tailwind's own rounded-lg / -xl / -2xl already land on
+     --radius-1 / -2 / -3, so utility markup stays on the scale for free. */
+  --color-ink-1: #eef2ff;
+  --color-ink-2: #c8d5ee;
+  --color-ink-3: #93a8c8;
+  --color-ink-4: #71809d;
+
+  --radius-1: 0.5rem;
+  --radius-2: 0.75rem;
+  --radius-3: 1rem;
+  --radius-4: 1.35rem;
+  --radius-5: 1.75rem;
+  /* Tailwind's own rounded-full, so a pill written in CSS and a pill
+     written as a utility are literally the same computed value. */
+  --radius-pill: calc(infinity * 1px);
   --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-display: "Sora", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
@@ -54,6 +74,15 @@
 
   --color-muted: #5b6480;
   --color-nav-bg: rgba(255, 255, 255, 0.82);
+
+  /* The ink ramp, inverted. --color-ink-1 doubles as "strongest text" here,
+     so it matches --color-white rather than sitting a shade off it. */
+  --color-ink-1: #0d1123;
+  --color-ink-2: #303a56;
+  --color-ink-3: #4d5773;
+  --color-ink-4: #626c88;
+  /* Brand-coloured text on white: the eyebrow and the soft button share it. */
+  --color-ink-brand: #4a3c9e;
 
   /* "Strongest text" in the design system. */
   --color-white: #0d1123;
@@ -81,7 +110,7 @@
     radial-gradient(circle at 8% -10%, rgba(138, 92, 246, 0.09), transparent 32rem),
     radial-gradient(circle at 92% 9%, rgba(43, 199, 255, 0.06), transparent 28rem),
     var(--color-surface-0);
-  color: #141a2c;
+  color: var(--color-ink-1);
 }
 
 /* The grid overlay is tuned for a dark ground; soften it on light. */
@@ -116,7 +145,7 @@ body {
     radial-gradient(circle at 8% -10%, rgba(138, 92, 246, 0.16), transparent 32rem),
     radial-gradient(circle at 92% 9%, rgba(43, 199, 255, 0.08), transparent 28rem),
     var(--color-surface-0);
-  color: #eef2ff;
+  color: var(--color-ink-1);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -153,7 +182,7 @@ body::before {
 
 *::-webkit-scrollbar-thumb {
   background: #33446b;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 *::selection {
@@ -161,15 +190,23 @@ body::before {
   background: rgba(126, 108, 255, 0.55);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
+/* These are element resets, so they belong in @layer base. Unlayered they
+   outranked every @layer components rule, and `a { color: inherit }` was
+   quietly winning over .btn-primary's `color: #fff` on every button rendered
+   as a link — which is all of them built with <Button to=...>. Invisible on
+   dark (it inherited #eef2ff, near enough to white), but on the light theme
+   the hero CTA was painting near-black text on the violet gradient at 3.7:1. */
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
 
-button,
-input,
-textarea {
-  font: inherit;
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
 }
 
 @layer components {
@@ -218,7 +255,7 @@ textarea {
   }
 
   .brand-lockup img {
-    border-radius: 0.82rem;
+    border-radius: var(--radius-2);
     filter: drop-shadow(0 0 18px rgba(139, 92, 246, 0.32));
   }
 
@@ -253,7 +290,7 @@ textarea {
     overflow: hidden;
     background: linear-gradient(145deg, rgba(20, 28, 47, 0.92), rgba(9, 13, 23, 0.92));
     border: 1px solid rgba(91, 116, 171, 0.34);
-    border-radius: var(--radius-xl2);
+    border-radius: var(--radius-4);
     padding: 1.5rem;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 24px 55px -34px rgba(0, 0, 0, 0.95);
   }
@@ -285,7 +322,7 @@ textarea {
     min-height: 2.75rem;
     padding: 0.72rem 1.15rem;
     border: 1px solid transparent;
-    border-radius: 0.8rem;
+    border-radius: var(--radius-2);
     cursor: pointer;
     font-size: 0.92rem;
     font-weight: 700;
@@ -319,7 +356,7 @@ textarea {
   }
 
   .btn-ghost {
-    color: #d7e3fa;
+    color: var(--color-ink-2);
     background: rgba(17, 24, 39, 0.65);
     border-color: rgba(99, 126, 187, 0.42);
   }
@@ -329,6 +366,23 @@ textarea {
     border-color: rgba(157, 125, 255, 0.8);
     background: rgba(29, 39, 66, 0.86);
     box-shadow: 0 10px 28px -18px rgba(110, 95, 255, 0.8);
+  }
+
+  /* Between ghost and primary. The navbar's Register used .btn-primary, so
+     the persistent header carried the same gradient as the hero's "Download
+     free" and the two competed on every scroll position. This keeps Register
+     obviously the stronger of the two header actions without matching the
+     page's one primary call to action. */
+  .btn-soft {
+    color: var(--color-brand-300);
+    background: rgba(108, 92, 231, 0.16);
+    border-color: rgba(148, 113, 255, 0.42);
+  }
+
+  .btn-soft:hover:not(:disabled) {
+    color: #fff;
+    background: rgba(121, 94, 242, 0.34);
+    border-color: rgba(157, 125, 255, 0.75);
   }
 
   .text-gradient {
@@ -342,12 +396,12 @@ textarea {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    color: #b9c9eb;
+    color: var(--color-ink-2);
     background: rgba(94, 91, 198, 0.14);
     border: 1px solid rgba(148, 113, 255, 0.34);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     padding: 0.45rem 0.75rem;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 750;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -356,7 +410,7 @@ textarea {
   .eyebrow-dot {
     width: 0.4rem;
     height: 0.4rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: #4bd6ff;
     box-shadow: 0 0 14px #4bd6ff;
   }
@@ -385,7 +439,7 @@ textarea {
 
   .page-intro p {
     margin-top: 1rem;
-    color: #9ba9c3;
+    color: var(--color-ink-3);
     font-size: 1rem;
     line-height: 1.7;
   }
@@ -397,10 +451,10 @@ textarea {
   .input-field {
     width: 100%;
     border: 1px solid rgba(90, 116, 168, 0.46);
-    border-radius: 0.82rem;
+    border-radius: var(--radius-2);
     background: rgba(11, 16, 28, 0.86);
     padding: 0.8rem 0.9rem;
-    color: #eef2ff;
+    color: var(--color-ink-1);
     outline: none;
     transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
   }
@@ -431,7 +485,7 @@ textarea {
     height: 40rem;
     content: "";
     border: 1px solid rgba(113, 104, 255, 0.14);
-    border-radius: 50%;
+    border-radius: var(--radius-pill);
     box-shadow: 0 0 0 4rem rgba(113, 104, 255, 0.025), 0 0 0 8rem rgba(113, 104, 255, 0.02);
   }
 
@@ -440,7 +494,7 @@ textarea {
     min-height: 25rem;
     padding: 1.1rem;
     border: 1px solid rgba(112, 131, 193, 0.42);
-    border-radius: 1.7rem;
+    border-radius: var(--radius-5);
     background: linear-gradient(145deg, rgba(25, 34, 58, 0.92), rgba(8, 12, 21, 0.98));
     box-shadow: 0 35px 70px -35px rgba(91, 78, 238, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     transform: rotate(1.5deg);
@@ -471,7 +525,7 @@ textarea {
   .console-dots span {
     width: 0.45rem;
     height: 0.45rem;
-    border-radius: 50%;
+    border-radius: var(--radius-pill);
     background: #586786;
   }
 
@@ -483,21 +537,23 @@ textarea {
     background: #36caff;
   }
 
+  /* Sentence case, not uppercase: 17 characters of all-caps is a phrase
+     being read, not a label being scanned. Caps stay for the short ones
+     (.eyebrow, the stat labels). */
   .console-status {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    color: #93a8c8;
-    font-size: 0.65rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    color: var(--color-ink-3);
+    font-size: 0.75rem;
+    letter-spacing: 0.01em;
   }
 
   .console-status::before {
     width: 0.38rem;
     height: 0.38rem;
     content: "";
-    border-radius: 50%;
+    border-radius: var(--radius-pill);
     background: #45dfc1;
     box-shadow: 0 0 12px #45dfc1;
   }
@@ -512,7 +568,7 @@ textarea {
   .console-heading img {
     width: 2.6rem;
     height: 2.6rem;
-    border-radius: 0.78rem;
+    border-radius: var(--radius-2);
   }
 
   .console-heading p:first-child {
@@ -523,15 +579,15 @@ textarea {
 
   .console-heading p:last-child {
     margin-top: 0.2rem;
-    color: #8291ac;
-    font-size: 0.7rem;
+    color: var(--color-ink-3);
+    font-size: 0.75rem;
   }
 
   .download-row {
     margin-top: 1.35rem;
     padding: 0.9rem;
     border: 1px solid rgba(92, 118, 174, 0.22);
-    border-radius: 0.95rem;
+    border-radius: var(--radius-3);
     background: rgba(7, 11, 19, 0.55);
   }
 
@@ -548,27 +604,27 @@ textarea {
   }
 
   .download-row-top {
-    color: #e5ebfa;
-    font-size: 0.73rem;
+    color: var(--color-ink-1);
+    font-size: 0.75rem;
     font-weight: 650;
   }
 
   .download-row-top span:last-child {
-    color: #58d5ff;
+    color: var(--color-brand-300);
     font-variant-numeric: tabular-nums;
   }
 
   .download-row-bottom {
     margin-top: 0.62rem;
-    color: #71809d;
-    font-size: 0.62rem;
+    color: var(--color-ink-4);
+    font-size: 0.75rem;
   }
 
   .progress-track {
     height: 0.3rem;
     margin-top: 0.62rem;
     overflow: hidden;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: #202b44;
   }
 
@@ -582,7 +638,7 @@ textarea {
 
   .stat-strip {
     border: 1px solid rgba(93, 117, 170, 0.35);
-    border-radius: 1.2rem;
+    border-radius: var(--radius-4);
     background: rgba(13, 19, 32, 0.82);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
@@ -651,7 +707,7 @@ textarea {
     height: 2.9rem;
     color: #70d8ff;
     border: 1px solid rgba(104, 137, 207, 0.34);
-    border-radius: 0.9rem;
+    border-radius: var(--radius-3);
     background: linear-gradient(145deg, rgba(149, 102, 244, 0.22), rgba(44, 199, 255, 0.08));
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 28px -20px rgba(49, 200, 255, 0.85);
   }
@@ -688,7 +744,7 @@ textarea {
 }
 
 :root[data-theme='light'] .btn-ghost {
-  color: #2a3350;
+  color: var(--color-ink-2);
   background: #ffffff;
   border-color: var(--color-surface-border);
 }
@@ -700,13 +756,13 @@ textarea {
 }
 
 :root[data-theme='light'] .eyebrow {
-  color: #4a3c9e;
+  color: var(--color-ink-brand);
   background: rgba(108, 92, 231, 0.09);
   border-color: rgba(108, 92, 231, 0.28);
 }
 
 :root[data-theme='light'] .input-field {
-  color: #141a2c;
+  color: var(--color-ink-1);
   background: #ffffff;
   border-color: var(--color-surface-border);
 }
@@ -743,10 +799,32 @@ textarea {
   border-color: rgba(108, 92, 231, 0.22);
 }
 
+/* The ink ramp flips with the theme, but .hero-console must not: it is a
+   screenshot of Nexa, which is dark in both themes. Re-pin the dark values
+   for that subtree only. */
+:root[data-theme='light'] .hero-console {
+  --color-ink-1: #eef2ff;
+  --color-ink-2: #c8d5ee;
+  --color-ink-3: #93a8c8;
+  --color-ink-4: #71809d;
+}
+
+:root[data-theme='light'] .btn-soft {
+  color: var(--color-ink-brand);
+  background: rgba(108, 92, 231, 0.12);
+  border-color: rgba(108, 92, 231, 0.35);
+}
+
+:root[data-theme='light'] .btn-soft:hover {
+  color: #fff;
+  background: #6c5ce7;
+  border-color: #6c5ce7;
+}
+
 /* .brand-name is plain text (no background-clip), so it only needs a colour —
    giving it a gradient would paint a filled box behind the word. */
 :root[data-theme='light'] .brand-name {
-  color: #101736;
+  color: var(--color-ink-1);
 }
 
 /* .brand-product IS clipped gradient text; darken its stops for white. */
