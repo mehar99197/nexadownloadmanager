@@ -273,7 +273,7 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/register` | `authLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
 | POST | `/login` | `authLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
-| POST | `/forgot-password` | `authLimiter`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email |
+| POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
 | POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
@@ -639,6 +639,33 @@ hashes; a code is removed when used).
   side — up to 90 seconds, which is exactly the window a real-time phishing
   proxy works in. Enrolment burns its step too, so the code that switched 2FA on
   cannot be turned round on `/2fa/disable`; setup and disable clear the mark.
+
+### Reserved identities — `utils/reservedEmail.js`
+
+The creator's address identifies the creator, and nothing else. Two rules,
+closing two different gaps:
+
+- **`isReservedEmail(email)`** — matches `ROOT_ADMIN_EMAIL`, and works when no
+  row exists. The unique index on `users.email` is what stops a second account
+  today, so registration on that address fails only because the creator's row is
+  sitting there; delete it (an accident, an older restore) and the address
+  becomes claimable by whoever registers first. Enforced in `POST /auth/register`
+  (**silently** — same `201 {ok:true,data:{}}` as any other sign-up, because a
+  distinct error would point a stranger at the administrator's address),
+  `POST /auth/google`, and `POST /admin/users` (a plain `400 RESERVED_ADDRESS`;
+  the caller is already authenticated there).
+- **`isControlPanelAccount(user)`** — `role` is `admin` or `root`. The public
+  auth surface may not write to such a row: `POST /auth/google` will not link a
+  second credential to it, and `POST /auth/forgot-password` will not mint a
+  reset link for it (answering `sent:true` as always, so the refusal itself
+  reveals nothing). `POST /auth/reset-password` re-checks at redemption, so a
+  link minted before the account was promoted still cannot be spent.
+
+Why the reset rule matters: `/admin/login` and `/root/login` verify the **same**
+`password_hash` that the customer reset flow rewrites, so leaving it open makes
+read access to one mailbox worth the panel password. Creator recovery is
+`npm run create-root` on the server, which updates the existing row — something
+you must already be on the box to do.
 
 ### What never leaves the server — `utils/sanitize.js`
 

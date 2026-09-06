@@ -73,6 +73,7 @@ const {
 } = require('../schemas/contact.schema');
 const { sendContactReply } = require('../utils/email');
 const { stripSensitive } = require('../utils/sanitize');
+const { isReservedEmail } = require('../utils/reservedEmail');
 
 function monthlyPrice(plan) {
   if (plan === 'pro') return 5;
@@ -265,6 +266,14 @@ router.post(
   '/users', validate(createAdminUserSchema),
   asyncHandler(async (req, res) => {
     const { name, email, password, plan } = req.body;
+    // The creator's address is reserved for the creator. This panel only ever
+    // mints ordinary customers, so handing one that address would either
+    // collide with the creator's row or — if that row is missing — quietly
+    // take over the address the /root gate is keyed to. Plain error: an admin
+    // is already authenticated, so there is nothing to hide from them.
+    if (isReservedEmail(email))
+      return fail(res, 'RESERVED_ADDRESS',
+        'That address is reserved for the creator account and cannot be used for a customer.', 400);
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
     const user = await User.create({
       name,

@@ -561,5 +561,109 @@ test('hardening', async (t) => {
     assert.equal(suicide.body.error.code, 'SELF_LOCKOUT');
   });
 
+  await t.test('the creator address is reserved and never becomes a customer', async () => {
+    await srv.reset();
+    const config = require('../src/config/env');
+    const reserved = config.ROOT_ADMIN_EMAIL;
+    assert.ok(reserved, 'the test harness must configure ROOT_ADMIN_EMAIL');
+
+    // The gap this closes is the one where the creator's row is NOT there —
+    // deleted, or restored from a dump that predates it. The unique index does
+    // the work while the row exists; nothing did once it was gone.
+    assert.equal(
+      (await srv.query('SELECT id FROM users WHERE email = ?', [reserved])).length, 0,
+      'no creator row for this case');
+
+    const fresh = srv.client();
+    const reg = await fresh.post('/api/auth/register',
+      { name: 'Impostor', email: reserved, password: 'a-strong-password' });
+
+    // Refused — but answered exactly like an ordinary sign-up, because a
+    // distinct error would point a stranger at the administrator's address.
+    assert.equal(reg.status, 201, reg.text);
+    assert.deepEqual(reg.body, { ok: true, data: {} });
+    assert.equal(
+      (await srv.query('SELECT id FROM users WHERE email = ?', [reserved])).length, 0,
+      'the reserved address must not become an account');
+    assert.equal((await srv.query('SELECT id FROM subscriptions')).length, 0);
+
+    // Indistinguishable from a genuine registration, field for field.
+    const control = await fresh.post('/api/auth/register',
+      { name: 'Normal', email: 'ordinary@example.test', password: 'a-strong-password' });
+    assert.deepEqual(reg.body, control.body);
+    assert.equal(reg.status, control.status);
+
+    // With the creator's row actually present — the normal state — the answer
+    // is still the same, and still creates nothing.
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Owner', ?, '$2a$12$notarealhashnotarealhashnotarealhashnotarealha', 'root', 1)`,
+      [reserved]);
+    const again = await fresh.post('/api/auth/register',
+      { name: 'Impostor', email: reserved, password: 'a-strong-password' });
+    assert.equal(again.status, 201, again.text);
+    assert.deepEqual(again.body, control.body);
+    assert.equal(
+      (await srv.query('SELECT id FROM users WHERE email = ?', [reserved])).length, 1,
+      'still exactly one row: the creator\u2019s');
+    await srv.query('DELETE FROM users WHERE email = ?', [reserved]);
+
+    // The admin panel cannot hand it out either — there the caller is already
+    // authenticated, so it says why.
+    const bcrypt = require('bcryptjs');
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Staff', 'reserver@example.test', ?, 'admin', 1)`,
+      [await bcrypt.hash('staff-password-123', 12)]
+    );
+    const staff = srv.client();
+    const token = (await staff.post('/api/admin/login',
+      { email: 'reserver@example.test', password: 'staff-password-123' })).body.data.token;
+    const made = await staff.post('/api/admin/users',
+      { name: 'Impostor', email: reserved, password: 'a-strong-password', plan: 'free' }, { token });
+    assert.equal(made.status, 400, made.text);
+    assert.equal(made.body.error.code, 'RESERVED_ADDRESS');
+    assert.equal((await srv.query('SELECT id FROM users WHERE email = ?', [reserved])).length, 0);
+  });
+
+  await t.test('the customer site is not a recovery channel for a panel account', async () => {
+    await srv.reset();
+    const bcrypt = require('bcryptjs');
+    const original = await bcrypt.hash('the-real-admin-password', 12);
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Staff', 'panel@example.test', ?, 'admin', 1)`, [original]);
+    const [admin] = await srv.query('SELECT id FROM users WHERE email = ?', ['panel@example.test']);
+
+    // /admin/login and /root/login check the SAME hash this flow would rewrite,
+    // so a mailbox would otherwise be worth the panel password.
+    const asked = await api.post('/api/auth/forgot-password', { email: 'panel@example.test' });
+    assert.equal(asked.status, 200, asked.text);
+    // Constant answer, so the refusal itself does not mark the address out.
+    const decoy = await api.post('/api/auth/forgot-password', { email: 'nobody@example.test' });
+    assert.deepEqual(asked.body, decoy.body);
+
+    // And a link minted before the rule existed still cannot be redeemed.
+    const { signResetToken } = require('../src/utils/jwt');
+    const stolen = signResetToken(await require('../src/models/User').findById(admin.id));
+    const used = await api.post('/api/auth/reset-password',
+      { token: stolen, password: 'attacker-chosen-password' });
+    assert.equal(used.status, 400, used.text);
+    assert.equal(used.body.error.code, 'INVALID_TOKEN');
+
+    const [after] = await srv.query('SELECT password_hash FROM users WHERE id = ?', [admin.id]);
+    assert.equal(after.password_hash, original, 'the panel password must be untouched');
+    assert.equal(await bcrypt.compare('the-real-admin-password', after.password_hash), true);
+
+    // An ordinary customer's reset still works — this is a fence, not a wall.
+    const normal = await srv.makeUser(api, 'resettable');
+    const ok1 = await api.post('/api/auth/forgot-password', { email: normal.email });
+    assert.equal(ok1.status, 200);
+    const [row] = await srv.query('SELECT id FROM users WHERE email = ?', [normal.email]);
+    const good = signResetToken(await require('../src/models/User').findById(row.id));
+    const done = await api.post('/api/auth/reset-password', { token: good, password: 'a-new-password-99' });
+    assert.equal(done.status, 200, done.text);
+  });
+
   await srv.stop();
 });

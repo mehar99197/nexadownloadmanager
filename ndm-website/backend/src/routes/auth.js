@@ -27,6 +27,7 @@ const {
 const {
   sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail, sendAccountExistsEmail,
 } = require('../utils/email');
+const { isReservedEmail, isControlPanelAccount } = require('../utils/reservedEmail');
 const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 
@@ -99,10 +100,39 @@ router.post(
     // consumes it: the site navigates to /login on any success.
     const existing = await User.findByEmail(email);
     if (existing) {
-      await sendAccountExistsEmail(existing).catch((err) =>
+      // …but not to a control-panel account. That mail tells the reader to sign
+      // in or use "Forgot password", and neither is true for a staff or creator
+      // row: the panels have their own login and the reset flow now refuses
+      // them. Sending advice that cannot work is worse than sending nothing, so
+      // this is logged for the operator instead. The RESPONSE is unchanged, so
+      // the distinction stays invisible from outside.
+      if (isControlPanelAccount(existing)) {
         // eslint-disable-next-line no-console
-        console.error('[auth] account-exists notice failed:', err.message));
+        console.warn('[SECURITY] registration attempted on a control-panel address');
+      } else {
+        // Not awaited, for the same reason as the reset mail below: this
+        // branch sends one and the control-panel branch above sends none, so
+        // waiting would make "which kind of account is this?" a stopwatch
+        // question even though the bodies are identical.
+        void sendAccountExistsEmail(existing).catch((err) =>
+          // eslint-disable-next-line no-console
+          console.error('[auth] account-exists notice failed:', err.message));
+      }
       return ok(res, {}, 201);   // identical to the success body below
+    }
+
+    // The creator's address is reserved and cannot become a customer account.
+    // Normally the creator's own row already occupies it and the branch above
+    // handles this; reaching here means that row is gone, and a reserved
+    // address must not be claimable by whoever registers first.
+    //
+    // Answered exactly like every other branch — same status, same empty body,
+    // and the bcrypt above has already been paid — because a distinct error
+    // here would point a stranger straight at the administrator's address.
+    if (isReservedEmail(email)) {
+      // eslint-disable-next-line no-console
+      console.warn('[SECURITY] registration attempted on the reserved creator address');
+      return ok(res, {}, 201);
     }
 
     const user = await User.create({ name, email, passwordHash, emailVerified: false });
@@ -121,7 +151,7 @@ router.post(
     // failed is simply stuck. (Harmless while email ran in mock mode, which
     // never throws; real SMTP does.)
     const verifyToken = signEmailToken(user);
-    await sendVerificationEmail(user, verifyToken).catch((err) =>
+    void sendVerificationEmail(user, verifyToken).catch((err) =>
       // eslint-disable-next-line no-console
       console.error('[auth] verification email failed:', err.message));
     return ok(res, {}, 201);
@@ -217,6 +247,23 @@ router.post(
 
     if (!user) {
       const byEmail = await User.findByEmail(identity.email);
+
+      // The public sign-in flow may not create or modify a control-panel
+      // identity. Linking would attach a second, self-service credential to an
+      // account that signs in at /admin or /root — and would mark it verified
+      // and possibly clear its password on the way. Whoever holds the mailbox
+      // has proved nothing about the panel; the panels have their own login.
+      //
+      // Nothing is being hidden here: reaching this point means Google has just
+      // confirmed the caller controls that address, so a plain answer costs
+      // nothing and a vague one would only waste the creator's time.
+      if (isReservedEmail(identity.email) || isControlPanelAccount(byEmail)) {
+        // eslint-disable-next-line no-console
+        console.warn('[SECURITY] google sign-in refused for a reserved/control-panel address');
+        return fail(res, 'RESERVED_ADDRESS',
+          'This address belongs to a control-panel account. Sign in at the admin console instead.', 403);
+      }
+
       if (byEmail) {
         // Link, and take the opportunity to mark the address verified — Google
         // has just confirmed it. Never overwrite an existing name.
@@ -312,13 +359,22 @@ router.post(
  * or not it is already verified: this is an unauthenticated endpoint, so any
  * difference in the reply turns it into a way to test which addresses have
  * accounts. Behind the same limiter as register/forgot.
+ *
+ * "The same" includes how long it takes. Every anonymous endpoint in this file
+ * that sends mail on one branch and not another starts the send WITHOUT
+ * awaiting it, because an SMTP round trip is seconds and the branch that skips
+ * it answers in milliseconds — a difference a stopwatch reads as easily as an
+ * error code would. Their outcome was already swallowed, so there was never
+ * anything to wait for.
  */
 router.post(
   '/resend-verification', authLimiter, requireTurnstile, validate(resendVerificationSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findByEmail(req.body.email);
     if (user && !user.email_verified && !user.banned) {
-      await sendVerificationEmail(user, signEmailToken(user)).catch((err) =>
+      // Not awaited: only this branch sends anything, so waiting for SMTP made
+      // the response time the very yes/no the identical body withholds.
+      void sendVerificationEmail(user, signEmailToken(user)).catch((err) =>
         // eslint-disable-next-line no-console
         console.error('[auth] resend verification email failed:', err.message));
     }
@@ -370,6 +426,21 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email } = req.body;
     const user = await User.findByEmail(email);
+    // A control-panel account is not recoverable through the customer site.
+    // /admin/login and /root/login check the SAME password_hash this flow
+    // rewrites, so leaving it open turns read access to one mailbox into the
+    // panel password. Recovery for the creator is `npm run create-root` on the
+    // server, which updates the existing row — deliberately something you must
+    // already be on the box to do.
+    //
+    // Silent, because this endpoint's whole design is a constant answer: it
+    // returns `sent: true` for addresses that do not exist, and singling this
+    // one out would mark it as the interesting address.
+    if (isControlPanelAccount(user)) {
+      // eslint-disable-next-line no-console
+      console.warn('[SECURITY] password reset refused for a control-panel account');
+      return ok(res, { sent: true });
+    }
     if (user) {
       const resetToken = signResetToken(user);
       // Swallowing the failure is what keeps this endpoint's answer constant.
@@ -377,7 +448,15 @@ router.post(
       // never reveals who has an account — but an SMTP error thrown from here
       // would answer 500 for exactly the addresses that DO exist, handing back
       // the enumeration oracle the constant answer was hiding.
-      await sendPasswordResetEmail(user, resetToken).catch((err) =>
+      // Started, deliberately NOT awaited. The constant `sent: true` above is
+      // only half of a constant answer: awaiting the SMTP round trip made this
+      // endpoint take ~3 s for an address that HAS an account and ~3 ms for one
+      // that does not, which is the same yes/no the body refuses to give,
+      // readable with a stopwatch. Measured on production before this changed.
+      //
+      // Nothing is lost by not waiting: the outcome was already swallowed (see
+      // above), so there was never anything to do with the result.
+      void sendPasswordResetEmail(user, resetToken).catch((err) =>
         // eslint-disable-next-line no-console
         console.error('[auth] password reset email failed:', err.message));
     }
@@ -399,6 +478,14 @@ router.post(
     // same link — or with an older one still inside its hour — fails here.
     if ((Number(payload.tv) || 0) !== (Number(user.token_version) || 0))
       return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
+    // Checked again at redemption, not only at issue: a link minted before the
+    // rule above existed — or before the account was promoted to staff — must
+    // not still rewrite a control-panel password an hour later.
+    if (isControlPanelAccount(user)) {
+      // eslint-disable-next-line no-console
+      console.warn('[SECURITY] reset link redemption refused for a control-panel account');
+      return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
+    }
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(password, BCRYPT_COST),
       // Receiving this link is itself proof the person reads that inbox, which

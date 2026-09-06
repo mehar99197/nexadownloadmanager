@@ -30,6 +30,10 @@ process.env.STATS_MIN_USERS = process.env.STATS_MIN_USERS || '0';
 process.env.STATS_MIN_DOWNLOADS = process.env.STATS_MIN_DOWNLOADS || '0';
 // Loopback so the admin IP allowlist lets the tests through.
 process.env.ADMIN_ALLOWED_IPS = process.env.ADMIN_ALLOWED_IPS || '127.0.0.1,::1,::ffff:127.0.0.1';
+// The creator's address. It is what `requireRoot` matches on and what
+// utils/reservedEmail.js keeps out of the public sign-up flow, so the suites
+// need a known value to assert against.
+process.env.ROOT_ADMIN_EMAIL = process.env.ROOT_ADMIN_EMAIL || 'creator@example.test';
 
 const app = require('../../src/app');
 const { getPool, query } = require('../../src/config/db');
