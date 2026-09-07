@@ -22,7 +22,6 @@ const COLS = [
       { to: '/faq', label: 'FAQ' },
       { to: '/about', label: 'About' },
       { to: '/contact', label: 'Contact' },
-      { href: GITHUB_URL, label: 'GitHub' },
     ],
   },
   {
@@ -84,23 +83,12 @@ export default function Footer() {
             <ul className="space-y-2" aria-labelledby={`footer-${col.title.toLowerCase()}`}>
               {col.links.map((l) => (
                 <li key={l.label}>
-                  {l.href ? (
-                    <a
-                      href={l.href}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sm text-slate-400 transition hover:text-brand-300"
-                    >
-                      {l.label}
-                    </a>
-                  ) : (
-                    <Link
-                      to={l.to}
-                      className="text-sm text-slate-400 transition hover:text-brand-300"
-                    >
-                      {l.label}
-                    </Link>
-                  )}
+                  <Link
+                    to={l.to}
+                    className="text-sm text-slate-400 transition hover:text-brand-300"
+                  >
+                    {l.label}
+                  </Link>
                 </li>
               ))}
             </ul>

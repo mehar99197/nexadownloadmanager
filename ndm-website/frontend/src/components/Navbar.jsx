@@ -46,7 +46,7 @@ export default function Navbar() {
 
   const linkClass = ({ isActive }) =>
     `relative text-sm font-semibold transition-colors ${
-      isActive ? 'text-white after:absolute after:-bottom-[1.3rem] after:left-1/2 after:h-0.5 after:w-5 after:-translate-x-1/2 after:rounded-full after:bg-gradient-to-r after:from-accent-400 after:to-brand-400 after:shadow-[0_0_12px_rgba(53,201,255,0.7)]' : 'text-slate-400 hover:text-white'
+      isActive ? 'text-white after:absolute after:-bottom-[1.3rem] after:left-0 after:right-0 after:h-px after:rounded-full after:bg-gradient-to-r after:from-accent-400 after:to-brand-400 after:shadow-[0_0_6px_rgba(53,201,255,0.35)]' : 'text-slate-400 hover:text-white'
     }`;
 
   const onLogout = async () => {
