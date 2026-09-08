@@ -197,11 +197,39 @@ ramp (`text-white`, `text-slate-300/400/500`, `text-brand-300`) over a new
 shade. `.hero-console` deliberately re-pins the dark ramp in both themes: it
 is a picture of the desktop app, which is dark.
 
+**Three traps this palette sets, all of them measured and all of them silent:**
+
+1. **`text-white` is not white on the light theme.** `--color-white` is
+   redefined to near-black there, because the design uses it to mean "strongest
+   text". That is right on the page ground and wrong on anything brand-coloured:
+   `text-white` on a gradient chip painted `#0d1123` at 2.33:1. On a brand
+   surface set no colour at all and inherit `#fff` from `.btn-primary` /
+   `.on-brand`.
+2. **A dark island in the light theme must re-pin *every* token it uses, not
+   just the ink ramp.** `.hero-console` re-pinned `--color-ink-*` only, so its
+   percentages, its "Live" chip and its throughput line kept painting
+   light-theme greys and blues on a near-black panel — 2.3–3.1:1.
+3. **The status ramp flips too.** `emerald/amber/red` `100–300` are text tints
+   and have light-theme values; `400/500` are the fills and borders those
+   labels sit on and keep their own colour. Forgetting the first half left the
+   compare table's ticks at 1.45:1 and "Delete my account" at 1.37:1 on white.
+
+**Gradients that carry text are measured across the band, not at the stops.**
+`.btn-primary` and `.on-brand` share one gradient whose worst point clears
+4.5:1 against white; the decorative `from-accent-500 to-brand-500` pair does
+not (4.09:1 falling to 3.13:1) and may tint a surface but must never sit under
+a label.
+
 **The radius scale.** `--radius-1` (0.5rem) → `--radius-5` (1.75rem), plus
 `--radius-pill`. Steps 1–3 are exactly Tailwind's `rounded-lg` / `rounded-xl` /
 `rounded-2xl` and `--radius-pill` is exactly `rounded-full`, so utility markup
 and hand-written CSS land on the same computed values. Don't add a sixth step
 or an arbitrary `rounded-[…]`; reach for the nearest existing one.
+
+**Data tables need `<caption>`, `scope="col"` and `<th scope="row">`.** Without
+them a matrix is read as a flat run of cells with nothing naming the row or the
+column. And a label belongs in `sr-only` text, never in `aria-label` on a bare
+`<span>` — that has no role to hang a name on, so browsers drop it.
 
 Keep type at **12px (`text-xs` / `0.75rem`) or larger** — that is the floor for
 body copy, and it applies to badges and captions too. Reserve `uppercase` for
@@ -217,6 +245,7 @@ sentence case.
   `.btn-primary` per view is the page's call to action, `.btn-soft` is the
   brand-tinted step down used by the persistent navbar, `.btn-ghost` is
   neutral. Two gradient buttons on one screen compete and neither wins.
+- `.on-brand` — white text on the brand gradient, for badges and active pills.
 - `.text-gradient` — indigo→violet gradient text for headings/brand accents.
 
 Element resets (`a`, `button`, `input`, `textarea`) live in `@layer base`.

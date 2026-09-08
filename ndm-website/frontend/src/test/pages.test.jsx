@@ -8,6 +8,8 @@ import { AuthProvider } from '../context/AuthContext';
 import { ToastProvider } from '../components/Toast';
 import Home from '../pages/Home';
 import Download from '../pages/Download';
+import Compare from '../pages/Compare';
+import Input from '../components/Input';
 
 // The API client is the only thing these pages touch that we do not own.
 vi.mock('../api/client', () => {
@@ -170,5 +172,64 @@ describe('Pricing promotion code', () => {
     await userEvent.click(screen.getByRole('button', { name: /apply/i }));
 
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/not valid/i));
+  });
+});
+
+describe('Compare — the feature matrix is a real table', () => {
+  it('associates every cell with a product and a feature', () => {
+    renderPage(<Compare />);
+
+    // Without these a screen reader reads 80 loose "Yes"/"—" cells with nothing
+    // saying which product or which row they belong to.
+    const table = screen.getByRole('table', {
+      name: /Feature comparison of Nexa Download Manager/i,
+    });
+    const colHeaders = screen.getAllByRole('columnheader');
+    expect(colHeaders.map((h) => h.getAttribute('scope'))).toEqual(
+      colHeaders.map(() => 'col')
+    );
+    expect(colHeaders.map((h) => h.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('IDM')])
+    );
+
+    const rowHeaders = screen.getAllByRole('rowheader');
+    expect(rowHeaders.length).toBeGreaterThan(10);
+    expect(rowHeaders.every((h) => h.getAttribute('scope') === 'row')).toBe(true);
+    expect(table.querySelector('caption')).not.toBeNull();
+  });
+
+  it('announces an absent feature as "No", not as an em dash', () => {
+    renderPage(<Compare />);
+
+    // aria-label on a role-less <span> is dropped by browsers, so the previous
+    // markup announced these cells as "—" or as nothing at all.
+    const linux = screen.getByRole('rowheader', { name: 'Linux' }).closest('tr');
+    expect(linux.textContent).toContain('No');
+    expect(linux.querySelector('[aria-label]')).toBeNull();
+  });
+});
+
+describe('Input — a rejected field says so', () => {
+  it('marks the field invalid and points at the message', () => {
+    render(<Input label="Email" name="email" error="That address is not valid." />);
+
+    const field = screen.getByLabelText('Email');
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    // The red ring alone is not an announcement: the message has to be the
+    // field's description or a screen reader never reads it.
+    const describedBy = field.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy)).toHaveTextContent(
+      'That address is not valid.'
+    );
+  });
+
+  it('describes the field by its hint when there is no error', () => {
+    render(<Input label="Password" name="password" hint="At least 8 characters" />);
+
+    const field = screen.getByLabelText('Password');
+    expect(field).not.toHaveAttribute('aria-invalid');
+    const describedBy = field.getAttribute('aria-describedby');
+    expect(document.getElementById(describedBy)).toHaveTextContent('At least 8 characters');
   });
 });

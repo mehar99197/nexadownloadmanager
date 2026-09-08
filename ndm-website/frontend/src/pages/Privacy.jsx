@@ -134,16 +134,17 @@ export default function Privacy() {
         <Block title="4. What the extension can access and why">
           <div className="mt-3 overflow-x-auto rounded-xl border border-white/5">
             <table className="w-full text-left text-sm">
+              <caption className="sr-only">Browser extension permissions and why each one is needed</caption>
               <thead>
                 <tr className="surface-inset !border-x-0 !border-t-0 border-b border-white/10 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3 font-semibold">Permission</th>
-                  <th className="px-4 py-3 font-semibold">Why it&apos;s needed</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">Permission</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">Why it&apos;s needed</th>
                 </tr>
               </thead>
               <tbody>
                 {PERMISSIONS.map((p) => (
                   <tr key={p.name} className="border-b border-white/5 align-top last:border-0">
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-brand-100">{p.name}</td>
+                    <th scope="row" className="whitespace-nowrap px-4 py-3 text-left font-mono text-xs font-normal text-brand-100">{p.name}</th>
                     <td className="px-4 py-3 leading-6 text-slate-400">{p.why}</td>
                   </tr>
                 ))}

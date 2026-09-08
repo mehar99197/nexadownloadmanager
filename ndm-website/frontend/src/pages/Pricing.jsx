@@ -87,7 +87,7 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
   return (
     <Card className={`relative flex flex-col !p-7 ${highlight ? '!overflow-visible border-accent-400/60 shadow-[0_0_44px_-16px_rgba(150,92,244,0.72)]' : ''}`}>
       {highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 badge-on-brand text-xs font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 on-brand px-4 py-1 text-xs font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
           Most popular
         </span>
       )}
@@ -274,14 +274,20 @@ export default function Pricing() {
                   type="button"
                   className={`rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
                     billingCycle === c
-                      ? 'bg-gradient-to-r from-accent-500 to-brand-500 text-white shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
+                      ? 'on-brand shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
                       : 'text-slate-400 hover:text-white'
                   }`}
                   onClick={() => setBillingCycle(c)}
                 >
                   {c}
+                  {/* No text-white on the active chip: the light theme redefines
+                      --color-white to near-black ("strongest text"), so on a
+                      brand-coloured surface that utility paints the opposite of
+                      what it says. .on-brand already sets #fff — inherit it. */}
                   {c === 'yearly' && plans.pro?.monthly && plans.pro?.yearly && (
-                    <span className="ml-1.5 rounded bg-brand-400/15 px-1.5 py-0.5 text-xs text-brand-300">
+                    <span className={`ml-1.5 rounded px-1.5 py-0.5 text-xs ${
+                      billingCycle === c ? 'bg-black/20' : 'bg-brand-400/15 text-brand-300'
+                    }`}>
                       Save {Math.round(((plans.pro.monthly * 12 - plans.pro.yearly) / (plans.pro.monthly * 12)) * 100)}%
                     </span>
                   )}

@@ -184,7 +184,7 @@ export default function Reviews() {
                   type="button"
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                     filter === String(star)
-                      ? 'bg-gradient-to-r from-accent-500 to-brand-500 text-white'
+                      ? 'on-brand'
                       : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
                   }`}
                   onClick={() => handleFilter(String(star))}
@@ -202,7 +202,7 @@ export default function Reviews() {
               (data.reviews || []).map((r) => (
                 <Card key={r.id} className="card-hover !p-6">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-brand-500)]/15 text-sm font-bold text-[var(--color-brand-400)]">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-brand-500)]/15 text-sm font-bold text-brand-300">
                       {(r.userName || 'U')[0].toUpperCase()}
                     </div>
                     <div>

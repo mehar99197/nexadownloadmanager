@@ -39,7 +39,16 @@
   --color-ink-1: #eef2ff;
   --color-ink-2: #c8d5ee;
   --color-ink-3: #93a8c8;
-  --color-ink-4: #71809d;
+  /* The bottom rung reached only 4.35:1 on a .card and Tailwind's stock
+     slate-500 only 3.64:1 — and slate-500 is what 45 hints, captions and
+     footnotes across the site are written in, so the whole tertiary tier sat
+     under AA on the dark theme. Both are pinned to one value that clears 4.5:1
+     against the lightest card, the footer and the page ground. */
+  --color-ink-4: #8494ad;
+  --color-slate-500: #8494ad;
+  /* zinc-500 is the same tier written a different way (About's fact labels,
+     Reviews' counts, Profile's "Member since"), and failed identically. */
+  --color-zinc-500: #8494ad;
 
   --radius-1: 0.5rem;
   --radius-2: 0.75rem;
@@ -103,6 +112,20 @@
   --color-brand-200: #24408f;
   --color-brand-300: #1f56b8;
   --color-accent-300: #6b3bc4;
+
+  /* The status ramp was the one family this block never inverted, so every
+     success/warning/danger label kept its dark-theme tint and washed out on
+     white: the compare table's ticks and "Partial" chips at ~1.3:1, "Delete my
+     account" at 1.37:1, the dashboard's seat pill at 1.30:1. Only the 100-300
+     tints are remapped — they are used exclusively as TEXT; 400/500 are the
+     fills and borders those labels sit on, and must keep their own colour. */
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-red-100: #7f1d1d;
+  --color-red-200: #991b1b;
+  --color-red-300: #b91c1c;
 }
 
 :root[data-theme='light'] body {
@@ -345,9 +368,15 @@ body::before {
     opacity: 0.5;
   }
 
+  /* White text over the old stops measured 2.67:1 / 4.47:1 / 1.92:1 — the site's
+     primary call to action failed AA at every point along its own gradient, and
+     worst of all at the bright cyan end. The hue path (violet -> indigo -> blue)
+     is kept; every stop is deepened until the whole visible band clears 4.5:1
+     with white, measured at 1% steps rather than only at the stops. The glow
+     below is decorative and stays on the original neons. */
   .btn-primary {
     color: #fff;
-    background: linear-gradient(110deg, #c082ff 0%, #795ef2 47%, #35c9ff 125%);
+    background: linear-gradient(110deg, #9257cf 0%, #6343f2 47%, #1f7fb8 125%);
     box-shadow: 0 12px 30px -12px rgba(121, 94, 242, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.28);
   }
 
@@ -719,6 +748,16 @@ body::before {
   .badge-on-brand {
     color: #fff;
   }
+
+  /* `from-accent-500 to-brand-500` is a decorative tint: white sits on it at
+     4.09:1 falling to 3.13:1, so the "Most popular" badge and every active
+     pill built from it were under AA. Anything that carries white text uses
+     this instead — the same measured gradient as .btn-primary, so the two
+     never drift apart. */
+  .on-brand {
+    color: #fff;
+    background-image: linear-gradient(110deg, #9257cf 0%, #6343f2 47%, #1f7fb8 125%);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -801,11 +840,19 @@ body::before {
 /* The ink ramp flips with the theme, but .hero-console must not: it is a
    screenshot of Nexa, which is dark in both themes. Re-pin the dark values
    for that subtree only. */
+/* The hero console stays dark on the light theme, so every token the light
+   theme inverts has to be inverted back inside it — not just the ink ramp.
+   Missing the rest left the percentages, the "Live" chip and the throughput
+   line painting light-theme greys and blues on a near-black panel: 2.3-3.1:1. */
 :root[data-theme='light'] .hero-console {
   --color-ink-1: #eef2ff;
   --color-ink-2: #c8d5ee;
   --color-ink-3: #93a8c8;
-  --color-ink-4: #71809d;
+  --color-ink-4: #8494ad;
+  --color-slate-500: #8494ad;
+  --color-zinc-500: #8494ad;
+  --color-brand-300: #63dcff;
+  --color-emerald-300: #6ee7b7;
 }
 
 :root[data-theme='light'] .btn-soft {

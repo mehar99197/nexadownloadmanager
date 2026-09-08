@@ -135,7 +135,10 @@ export default function Login() {
             />
 
             {error && (
-                <div className="rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-3 text-sm text-red-200">
+              // role=alert, so a failed sign-in is spoken. Focus stays on the
+              // submit button after a rejected POST, and nothing else on the
+              // page changes, so without this the form silently does nothing.
+              <div role="alert" className="rounded-[var(--radius-2)] border border-red-400/25 bg-red-400/10 px-4 py-3 text-sm text-red-200">
                 {error}
                 {needsVerification && (
                   <button
@@ -164,14 +167,12 @@ export default function Login() {
               </div>
             )}
 
-            <div className="flex items-center justify-between">
-              <Link
-                to="/forgot-password"
-                className="text-sm font-medium text-brand-300 hover:text-brand-200 hover:underline"
-              >
-                Forgot password?
-              </Link>
-            </div>
+            <Link
+              to="/forgot-password"
+              className="block text-sm font-medium text-brand-300 hover:text-brand-200 hover:underline"
+            >
+              Forgot password?
+            </Link>
 
             <Button type="submit" className="w-full" disabled={busy}>
               {submitting ? 'Signing in…' : googleBusy ? 'Signing in with Google…' : 'Sign in'}
