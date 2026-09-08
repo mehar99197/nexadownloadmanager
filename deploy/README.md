@@ -114,6 +114,47 @@ ssh hostinger 'cd ~/domains/nexadownloadmanager.com/public_html \
   && grep -rl "index-<oldhash>" . || echo "unreferenced — safe to remove"'
 ```
 
+## Email deliverability
+
+Measured 2026-09-08: the control-panel sign-in alert reached the creator's
+mailbox and Gmail filed it under **Spam** ("similar to messages that were
+identified as spam in the past"). Every transactional mail this site sends has
+the same problem — verification links, password resets, licence keys, receipts.
+
+The cause is the From address, not the content:
+
+| | Today | Why it matters |
+|---|---|---|
+| `FROM_EMAIL` | `nexadownloadmanager@gmail.com` | a free consumer account with no service sending reputation |
+| Links in the mail | `nexadownloadmanager.com` | From-domain ≠ link-domain is the classic phishing fingerprint |
+| Domain SPF | `v=spf1 include:_spf.mail.hostinger.com ~all` | authorises **Hostinger**, and does not apply to mail sent from gmail.com at all |
+| Domain DKIM | none found on `default`/`google`/`hostinger`/`mail`/`selector1`/`selector2`/`dkim`/`k1`/`s1` | nothing signs mail as this domain |
+| Domain DMARC | `v=DMARC1; p=none` | monitoring only, no policy |
+| Domain MX | `mx1/mx2.hostinger.com` | a mailbox on the domain is already possible |
+
+`config/env.js` warns about the From/site mismatch at every boot (a warning, not
+a `problems` entry — filtered mail still leaves a working site, so it must not
+refuse to start).
+
+**The fix, in hPanel — none of it is code:**
+
+1. Create a mailbox on the domain, e.g. `noreply@nexadownloadmanager.com`.
+   The MX records already point at Hostinger.
+2. Point the API at it in `nexa-api/.env`, then restart:
+   `SMTP_HOST=smtp.hostinger.com`, `SMTP_PORT=465`,
+   `SMTP_USER=noreply@nexadownloadmanager.com`, `SMTP_PASS=<its password>`,
+   `FROM_EMAIL=noreply@nexadownloadmanager.com`.
+   The boot warning above goes away on its own when this is right.
+3. Turn **DKIM on for the domain** in hPanel's email settings. This is the one
+   with the largest effect and it is currently absent entirely.
+4. Only once 1–3 are live and mail is landing in the inbox, tighten DMARC from
+   `p=none` to `p=quarantine`. Doing it before DKIM exists would quarantine the
+   site's own mail.
+
+Verify afterwards by sending one to a Gmail address and opening
+**Show original**: SPF, DKIM and DMARC must all read `PASS`, and the signing
+domain must be `nexadownloadmanager.com`.
+
 ## Still to configure
 
 These are live-key decisions, not code:

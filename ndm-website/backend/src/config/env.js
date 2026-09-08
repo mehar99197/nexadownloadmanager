@@ -255,6 +255,43 @@ if (isHardened) {
     problems.push('MYSQL_PASS must be a non-default password of at least 16 characters');
 }
 
+/**
+ * Not fatal, and deliberately so: everything in `problems` above stops the
+ * server, and mail that is merely *filtered* still leaves a working site. But
+ * it fails silently and permanently, which is worse in its own way — nobody
+ * finds out until a customer says the verification link never came.
+ *
+ * The signal is the From address. A message that links to nexadownloadmanager.com
+ * but arrives From a @gmail.com consumer address is the exact shape of a
+ * phishing mail, and it is the shape Gmail files under Spam — the site's own
+ * SPF/DKIM/DMARC records do not apply to it at all, because the mail is not
+ * from that domain. Every transactional mail is affected the same way:
+ * verification, password reset, licence key, receipt, and the control-panel
+ * sign-in alert whose whole job is to be seen.
+ *
+ * Compared on the registrable domain, so mail.example.com sending for
+ * example.com is fine. Wrapped because a malformed FRONTEND_URL must not turn
+ * a warning into a boot failure.
+ */
+if (isHardened && !config.isEmailMock) {
+  try {
+    const lastTwo = (host) => String(host || '').toLowerCase().split('.').slice(-2).join('.');
+    const fromDomain = lastTwo((config.FROM_EMAIL.split('@')[1] || ''));
+    const siteDomain = lastTwo(new URL(FRONTEND_URL).hostname);
+    if (fromDomain && siteDomain && fromDomain !== siteDomain) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[config] FROM_EMAIL (${config.FROM_EMAIL}) is not on the site's own domain (${siteDomain}).\n`
+        + '[config] Mail that links to one domain but is sent from another reads as phishing and gets\n'
+        + '[config] filtered — the domain\u2019s SPF/DKIM/DMARC cannot vouch for it. Send from a mailbox\n'
+        + `[config] on ${siteDomain} instead (see ndm-website/deploy/README.md, "Email deliverability").`
+      );
+    }
+  } catch {
+    /* a FRONTEND_URL this malformed is already reported by the checks above */
+  }
+}
+
 if (problems.length) {
   const why = isProd
     ? 'NODE_ENV=production'
