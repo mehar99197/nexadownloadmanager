@@ -26,6 +26,7 @@ const {
 
 const {
   sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail, sendAccountExistsEmail,
+  sendControlPanelSignInAttemptEmail,
 } = require('../utils/email');
 const {
   isReservedEmail, isControlPanelAccount, CONTROL_PANEL_MESSAGE,
@@ -209,18 +210,33 @@ router.post(
     // allowlist and no second factor, and PUT /user/profile then rewrote that
     // very hash: the customer site was a way to *set* the panel password.
     //
-    // Deliberately AFTER the password compare. Refusing on the address alone
-    // would answer differently for the administrator's address than for every
-    // other one, handing a stranger a definitive "this is the admin" oracle —
-    // the single address worth attacking. Reaching this line means the caller
-    // has already produced the correct password, so naming the reason tells
-    // them nothing they did not already know, and it is the difference between
-    // the owner understanding what happened and the owner reporting their own
-    // password as broken. Same reasoning as the Google branch below.
+    // Refused with the ORDINARY `INVALID_CREDENTIALS`, identical to a wrong
+    // password — same code, same message, same status, same one bcrypt of work
+    // before it. A named refusal here would be worse than the hole it closes:
+    // credential-stuffing a leaked password against this form would answer
+    // "wrong password" for thousands of ordinary addresses and "this one is the
+    // administrator" for exactly one, which is the single address on the site
+    // worth attacking, given away for free. That the caller already holds the
+    // password is not a reason to confirm anything — a reused password from an
+    // unrelated breach is exactly how they would be holding it.
+    //
+    // /admin/login and /root/login have always answered a *customer's* correct
+    // credentials with the same flat `INVALID_CREDENTIALS`. This is that rule,
+    // pointed the other way, so neither door reports what lives behind the
+    // other.
+    //
+    // The person entitled to the explanation gets it in their own inbox, where
+    // nobody else can read it — the same trade registration makes with
+    // sendAccountExistsEmail. Not awaited, like every other conditional send in
+    // this file: an SMTP round trip on one branch and not the other is the same
+    // yes/no answer, read with a stopwatch.
     if (isControlPanelAccount(user)) {
       // eslint-disable-next-line no-console
       console.warn('[SECURITY] customer sign-in refused for a control-panel account');
-      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
+      void sendControlPanelSignInAttemptEmail(user).catch((err) =>
+        // eslint-disable-next-line no-console
+        console.error('[auth] control-panel sign-in notice failed:', err.message));
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
 
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
@@ -290,9 +306,14 @@ router.post(
       // and possibly clear its password on the way. Whoever holds the mailbox
       // has proved nothing about the panel; the panels have their own login.
       //
-      // Nothing is being hidden here: reaching this point means Google has just
-      // confirmed the caller controls that address, so a plain answer costs
-      // nothing and a vague one would only waste the creator's time.
+      // This branch NAMES the reason where the password form deliberately does
+      // not, and the difference is who is asking. A password proves only that
+      // somebody, somewhere, once typed it — it travels in breach dumps, so
+      // confirming "that address is the administrator" to whoever produced one
+      // is a real disclosure. Google has just confirmed the caller reads that
+      // mailbox, which is the same mailbox the password form's refusal is
+      // explained in. There is nobody left to hide it from, and a vague answer
+      // would only waste the creator's time.
       if (isReservedEmail(identity.email) || isControlPanelAccount(byEmail)) {
         // eslint-disable-next-line no-console
         console.warn('[SECURITY] google sign-in refused for a reserved/control-panel address');
@@ -440,7 +461,14 @@ router.post(
       await User.update(user.id, { refreshTokenHash: null });
       res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
       res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
-      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
+      // Answered as an unusable cookie, not as "this is an admin". The holder
+      // of the cookie already knows whose account it is, so there is nothing to
+      // hide from them — but this response is what the SITE reads, and telling
+      // the page a control-panel account exists behind this session is how such
+      // a fact ends up rendered on a screen somebody else is looking at. The
+      // browser simply falls back to signed-out, which is the truth.
+      return fail(res, 'INVALID_REFRESH_TOKEN',
+        'Refresh token is invalid or has expired', 401);
     }
     if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
       return fail(res, 'EMAIL_NOT_VERIFIED',

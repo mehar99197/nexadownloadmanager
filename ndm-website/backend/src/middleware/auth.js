@@ -4,7 +4,7 @@ const { verifyAccess } = require('../utils/jwt');
 const { fail } = require('../utils/respond');
 const config = require('../config/env');
 const User = require('../models/User');
-const { isControlPanelAccount, CONTROL_PANEL_MESSAGE } = require('../utils/reservedEmail');
+const { isControlPanelAccount } = require('../utils/reservedEmail');
 
 function extractBearer(req) {
   const header = req.headers.authorization || '';
@@ -29,8 +29,14 @@ async function requireAuth(req, res, next) {
     // existed, or before the account was promoted to staff, keeps working for
     // the rest of its seven-day life. This is the boundary every route behind
     // requireAuth shares, so it also covers the ones nobody has written yet.
+    //
+    // Reported as an ended session, which is what it is, and never as "this is
+    // a control-panel account". The customer site is what reads this answer and
+    // renders it, and a message naming the account type is one screenshot away
+    // from telling a room full of people which address runs the place. The
+    // signed-out state it produces is the correct one either way.
     if (isControlPanelAccount(user))
-      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
+      return fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     // The session generation this token was minted with must still be current.
     // Access tokens live seven days, so without this a password change, a

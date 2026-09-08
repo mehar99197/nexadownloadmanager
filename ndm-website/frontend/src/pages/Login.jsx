@@ -151,17 +151,21 @@ export default function Login() {
                   </button>
                 )}
                 {/*
-                  The server deliberately cannot tell us that THIS address was
-                  created with Google — a distinct answer for an address that
-                  exists is a membership oracle for anyone who types one. So the
-                  hint is given here, unconditionally, after any failed sign-in:
-                  it helps the person who needs it and confirms nothing to
-                  anyone else.
+                  The server deliberately cannot tell us WHY this particular
+                  address was refused — that it was created with Google, or that
+                  it belongs to a staff or creator account. A distinct answer for
+                  an address that exists is a membership oracle for anyone who
+                  types one, and for the control-panel case it would point at the
+                  single address on the site worth attacking. So every hint lives
+                  here instead, unconditionally, after any failed sign-in: the
+                  same words for every address, helping the person who needs them
+                  and confirming nothing about anyone else's.
                 */}
                 {!needsVerification && (
                   <p className="mt-2 text-xs text-red-200/80">
                     Created your account with Google? Use “Continue with Google” below.
                     Never set a password? Use “Forgot password”.
+                    Staff and creator accounts sign in from the admin console, not here.
                   </p>
                 )}
               </div>

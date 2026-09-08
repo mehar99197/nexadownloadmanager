@@ -689,23 +689,39 @@ test('hardening', async (t) => {
       ['panel@example.test', STAFF_PW],
     ]) {
       const res = await shop.post('/api/auth/login', { email, password });
-      assert.equal(res.status, 403, `${email}: ${res.text}`);
-      assert.equal(res.body.error.code, 'RESERVED_ADDRESS');
+      assert.equal(res.status, 401, `${email}: ${res.text}`);
       assert.equal(res.body.data, undefined, 'no session may be handed out');
       assert.equal(shop.cookies.has('ndm_refresh'), false, 'no refresh cookie either');
     }
 
-    // The refusal fires only AFTER the password matches, so it is never a way
-    // to find the administrator's address. A wrong password on it answers
-    // exactly like a wrong password on an address that does not exist —
-    // including how long it takes, which is why the unknown-address branch
-    // still pays for a bcrypt compare.
-    const wrongOnPanel = await shop.post('/api/auth/login',
-      { email: 'creator@example.test', password: 'not-the-password' });
-    const wrongOnGhost = await shop.post('/api/auth/login',
-      { email: 'nobody@example.test', password: 'not-the-password' });
-    assert.equal(wrongOnPanel.status, 401);
-    assert.deepEqual(wrongOnPanel.body, wrongOnGhost.body);
+    // …and it says NOTHING about why. This is the part that matters as much as
+    // the refusal: a named error would answer "wrong password" for thousands of
+    // ordinary addresses and "this one is the administrator" for exactly one,
+    // so anybody credential-stuffing a leaked password would be handed the one
+    // address on the site worth attacking. Four answers, one shape.
+    const answers = [];
+    for (const [label, address, secret] of [
+      ['creator, correct password', 'creator@example.test', CREATOR_PW],
+      ['staff, correct password', 'panel@example.test', STAFF_PW],
+      ['creator, wrong password', 'creator@example.test', 'not-the-password'],
+      ['no such account', 'nobody@example.test', 'not-the-password'],
+    ]) {
+      const res = await shop.post('/api/auth/login', { email: address, password: secret });
+      answers.push([label, res]);
+    }
+    const [, baseline] = answers[answers.length - 1];
+    for (const [label, res] of answers) {
+      assert.equal(res.status, baseline.status, `${label}: ${res.text}`);
+      assert.deepEqual(res.body, baseline.body, `${label}: every refusal must be identical`);
+      assert.doesNotMatch(res.text, /control-panel|admin|creator|root|staff/i, label);
+    }
+    assert.equal(baseline.body.error.code, 'INVALID_CREDENTIALS');
+
+    // The explanation the owner needs is not withheld, only moved: it goes to
+    // the mailbox that owns the account, where nobody else can read it.
+    const email = require('../src/utils/email');
+    assert.equal(typeof email.sendControlPanelSignInAttemptEmail, 'function',
+      'the owner has to be told somewhere, or the refusal is just a mystery');
 
     // A token minted before this rule existed — the same thing as a token held
     // by an account that has just been promoted — dies at the boundary rather
@@ -715,8 +731,11 @@ test('hardening', async (t) => {
     const stale = signAccessToken(await User.findById(creator.id));
     for (const [method, path] of [['get', '/api/user/me'], ['get', '/api/user/license']]) {
       const res = await shop[method](path, { token: stale });
-      assert.equal(res.status, 403, `${path}: ${res.text}`);
-      assert.equal(res.body.error.code, 'RESERVED_ADDRESS');
+      assert.equal(res.status, 401, `${path}: ${res.text}`);
+      // An ended session, never "this is a control-panel account": the customer
+      // site is what renders this string.
+      assert.equal(res.body.error.code, 'SESSION_REVOKED');
+      assert.doesNotMatch(res.text, /control-panel|admin|creator|root/i);
     }
 
     // …and in particular it cannot rewrite the hash the panel signs in with,
@@ -726,7 +745,7 @@ test('hardening', async (t) => {
     // have accepted a request from.
     const rewrite = await shop.put('/api/user/profile',
       { currentPassword: CREATOR_PW, newPassword: 'attacker-chosen-pw-1' }, { token: stale });
-    assert.equal(rewrite.status, 403, rewrite.text);
+    assert.equal(rewrite.status, 401, rewrite.text);
     const [after] = await srv.query('SELECT password_hash FROM users WHERE id = ?', [creator.id]);
     assert.equal(after.password_hash, creator.password_hash, 'the panel password must be untouched');
 
@@ -737,8 +756,13 @@ test('hardening', async (t) => {
     const stapled = srv.client();
     stapled.cookies.set('ndm_refresh', rt);
     const refreshed = await stapled.post('/api/auth/refresh', {});
-    assert.equal(refreshed.status, 403, refreshed.text);
-    assert.equal(refreshed.body.error.code, 'RESERVED_ADDRESS');
+    assert.equal(refreshed.status, 401, refreshed.text);
+    // Indistinguishable from a cookie that simply no longer exists — which is
+    // also exactly what the browser should do with it.
+    const unknownCookie = srv.client();
+    unknownCookie.cookies.set('ndm_refresh', 'a-cookie-nobody-ever-issued');
+    const stranger = await unknownCookie.post('/api/auth/refresh', {});
+    assert.deepEqual(refreshed.body, stranger.body);
     const [cleared] = await srv.query(
       'SELECT refresh_token_hash FROM users WHERE id = ?', [creator.id]);
     assert.equal(cleared.refresh_token_hash, null, 'the stale hash must be dropped');
@@ -788,18 +812,19 @@ test('hardening', async (t) => {
     // cookie has nothing left to spend — a role change now revokes, where only
     // a demotion used to.
     const held = await customer.get('/api/user/me', { token: victim.token });
-    assert.equal(held.status, 403, held.text);
-    assert.equal(held.body.error.code, 'RESERVED_ADDRESS');
+    assert.equal(held.status, 401, held.text);
+    assert.equal(held.body.error.code, 'SESSION_REVOKED');
     const spent = await customer.post('/api/auth/refresh', {});
     assert.equal(spent.status, 401, spent.text);
     assert.equal(spent.body.error.code, 'INVALID_REFRESH_TOKEN');
 
     // Signing in again is refused too — there is no route back to a customer
-    // session for this address while it is staff.
+    // session for this address while it is staff — and the refusal still looks
+    // like nothing more than a bad password.
     const again = await customer.post('/api/auth/login',
       { email: victim.email, password: victim.password });
-    assert.equal(again.status, 403, again.text);
-    assert.equal(again.body.error.code, 'RESERVED_ADDRESS');
+    assert.equal(again.status, 401, again.text);
+    assert.equal(again.body.error.code, 'INVALID_CREDENTIALS');
   });
 
   await srv.stop();

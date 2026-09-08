@@ -87,6 +87,41 @@ async function sendAccountExistsEmail(user) {
   });
 }
 
+/**
+ * Sent when a control-panel account's own password is used at the CUSTOMER
+ * sign-in page.
+ *
+ * The site answers that attempt with the ordinary `INVALID_CREDENTIALS`, byte
+ * for byte, because a distinct answer would tell whoever typed it that this
+ * particular address is the administrator's — the one address on the site worth
+ * attacking, handed over for the price of a password from some unrelated leak.
+ *
+ * So the wire says nothing and the truth goes where it belongs: the mailbox
+ * that owns the account. For the owner it explains a refusal that would
+ * otherwise look like "my password stopped working". For everyone else it is
+ * the alarm you actually want, because reaching this point means the password
+ * matched — somebody, somewhere, is holding a working control-panel password.
+ *
+ * Carries no link that grants anything: the console is reached from a URL the
+ * reader already knows, so a forwarded copy of this is inert.
+ */
+async function sendControlPanelSignInAttemptEmail(user) {
+  const name = escapeHtml(user.name || '');
+  const console_ = `${config.FRONTEND_URL.replace(/\/+$/, '')}${user.role === 'root' ? '/root' : '/admin'}`;
+  const safeConsole = escapeHtml(console_);
+  return send({
+    to: user.email,
+    subject: 'Your control-panel password was used at the customer sign-in page',
+    text: `Hi ${user.name || ''},\n\nSomebody just signed in with this account's password at the CUSTOMER sign-in page. It was refused: control-panel accounts have no customer session, and the customer site never says why.\n\nIf that was you, use the control panel instead:\n${console_}\n\nIf it was NOT you, then somebody else has a working control-panel password for this account. Change it now, and check the audit log once you are in.`,
+    html: `<p>Hi ${name},</p>`
+      + "<p>Somebody just signed in with this account&rsquo;s password at the <strong>customer</strong> sign-in page. "
+      + 'It was refused: control-panel accounts have no customer session, and the customer site never says why.</p>'
+      + `<p>If that was you, use the control panel instead: <a href="${safeConsole}">${safeConsole}</a></p>`
+      + '<p>If it was <strong>not</strong> you, then somebody else has a working control-panel password for this '
+      + 'account. Change it now, and check the audit log once you are in.</p>',
+  });
+}
+
 async function sendPasswordResetEmail(user, token) {
   const link = `${config.FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   const name = escapeHtml(user.name);
@@ -255,6 +290,7 @@ async function sendTeamInviteEmail({ to, ownerName, ownerEmail, token }) {
 }
 
 module.exports = {
+  sendControlPanelSignInAttemptEmail,
   // Exported for the test that pins the sanitising rule; nothing else calls it.
   inviterLabel,
   sendTeamInviteEmail,

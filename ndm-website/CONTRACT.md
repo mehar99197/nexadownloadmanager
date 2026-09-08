@@ -271,11 +271,11 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
 | POST | `/register` | `authLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
-| POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account** (`403 RESERVED_ADDRESS`) — after the password compare, never before it. Every branch runs a real cost-12 bcrypt, including an unknown address, so neither the error code nor the response time answers "does this address have an account?" *(ADDED)* |
+| POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account with the ordinary `401 INVALID_CREDENTIALS`** — identical body to a wrong password, to a right password on a staff row, and to an address with no account at all. Every branch runs a real cost-12 bcrypt, including the unknown-address one, so neither the code nor the clock answers "does this address have an account?" or "is this one the administrator?". The owner is told in their own inbox (`sendControlPanelSignInAttemptEmail`), never on the wire *(ADDED)* |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
-| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, so the session ends rather than being retried on every page load *(ADDED)* |
+| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued, so the session ends rather than being retried on every page load *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
@@ -657,12 +657,31 @@ closing two different gaps:
 - **`isControlPanelAccount(user)`** — `role` is `admin` or `root`. **A
   control-panel row is not a customer**, so the public auth surface may neither
   authenticate it nor write to it:
-  - `POST /auth/login` refuses it (`403 RESERVED_ADDRESS`), and so does
-    `POST /auth/refresh`.
+  - `POST /auth/login` refuses it, and so does `POST /auth/refresh`.
   - `requireAuth` (and `optionalAuth`) refuse it on **every** request, which is
     what kills a bearer token minted before the rule existed or before the
     account was promoted — access tokens live seven days and are stateless, so
     a check only at the mint point would have left the hole open that long.
+  - **Every one of those refusals is indistinguishable from an ordinary one**:
+    `401 INVALID_CREDENTIALS` at login (byte-identical to a wrong password),
+    `401 INVALID_REFRESH_TOKEN` at refresh (identical to a cookie nobody
+    issued), `401 SESSION_REVOKED` at `requireAuth`. Nothing on the public API
+    ever says the words "control-panel", because a named refusal is worse than
+    the hole it closes: credential-stuffing a leaked password would answer
+    "wrong password" for thousands of ordinary addresses and "this one is the
+    administrator" for exactly one — the single address on the site worth
+    attacking, given away for free. Holding the password is not a reason to
+    confirm anything; a reused password from an unrelated breach is exactly how
+    somebody would be holding it. `/admin/login` and `/root/login` have always
+    answered a *customer's* correct credentials with the same flat
+    `INVALID_CREDENTIALS`; this is that rule pointed the other way.
+  - The explanation is not withheld, only moved. `sendControlPanelSignInAttemptEmail`
+    tells the mailbox that owns the account — which is both the answer its owner
+    needs and, since the branch is only reached on a **correct** password, the
+    alarm that somebody is holding a working panel password. The customer login
+    page carries the standing hint ("Staff and creator accounts sign in from the
+    admin console, not here") shown after *any* failed sign-in, beside the
+    existing Google and no-password hints, so it guides without confirming.
   - `POST /auth/google` will not link a second credential to it, and
     `POST /auth/forgot-password` will not mint a reset link for it (answering
     `sent:true` as always, so the refusal itself reveals nothing).
@@ -673,8 +692,13 @@ closing two different gaps:
     promotion has to end the customer session the account is holding, exactly as
     a demotion ends the panel one.
 
-  All of it reuses one wording, `CONTROL_PANEL_MESSAGE`, so the sign-in form,
-  the Google button and a stale session say the same thing.
+  `POST /auth/google` is the ONE public endpoint that names the reason
+  (`403 RESERVED_ADDRESS`, `CONTROL_PANEL_MESSAGE`), and the difference is who
+  is asking. A password proves only that somebody once typed it — it travels in
+  breach dumps. Google has just proved the caller *reads that mailbox*, which is
+  the same mailbox the password form's refusal is explained in, so there is
+  nobody left to hide it from and a vague answer would only waste the creator's
+  time.
 
 Why these rules matter, and why login is the important one: there is **one**
 `users` table and **one** `password_hash`, and `/admin/login` and `/root/login`
@@ -683,10 +707,9 @@ an IP allowlist and a second factor; `/api/auth/login` has neither. While it did
 not check the role, the creator's own credentials opened a customer session from
 any address — and `PUT /api/user/profile` then rewrote that hash, so the customer
 site was a way to *set* the panel password. The refusal is placed after the
-password compare on purpose: firing on the address alone would answer
-differently for the administrator's address than for any other, which is the one
-address worth finding. Creator recovery is `npm run create-root` on the server,
-which updates the existing row — something you must already be on the box to do.
+password compare on purpose, and it is silent on purpose. Creator recovery is
+`npm run create-root` on the server, which updates the existing row — something
+you must already be on the box to do.
 
 ### What never leaves the server — `utils/sanitize.js`
 
