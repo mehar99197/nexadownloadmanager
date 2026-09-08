@@ -4,6 +4,7 @@ const { verifyAccess } = require('../utils/jwt');
 const { fail } = require('../utils/respond');
 const config = require('../config/env');
 const User = require('../models/User');
+const { isControlPanelAccount, CONTROL_PANEL_MESSAGE } = require('../utils/reservedEmail');
 
 function extractBearer(req) {
   const header = req.headers.authorization || '';
@@ -18,6 +19,18 @@ async function requireAuth(req, res, next) {
     const payload = verifyAccess(token);
     const user = await User.findById(Number(payload.sub));
     if (!user) return fail(res, 'UNAUTHORIZED', 'Account not found', 401);
+    // A control-panel row is not a customer. Staff and the creator sign in at
+    // their own endpoints, with their own token families, behind an IP
+    // allowlist and a second factor; this token family has none of that, so an
+    // admin or creator identity must never be reachable through it.
+    //
+    // Enforced HERE, and not only where the token is minted, because the token
+    // outlives the decision that minted it: one issued before this rule
+    // existed, or before the account was promoted to staff, keeps working for
+    // the rest of its seven-day life. This is the boundary every route behind
+    // requireAuth shares, so it also covers the ones nobody has written yet.
+    if (isControlPanelAccount(user))
+      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     // The session generation this token was minted with must still be current.
     // Access tokens live seven days, so without this a password change, a
@@ -43,9 +56,9 @@ async function requireAuth(req, res, next) {
  *
  * For public endpoints that want to attribute a submission to an account
  * WITHOUT taking the sender's word for who they are. Anything a failed check
- * would have rejected — unknown user, ban, stale session generation,
- * unverified address — simply leaves req.user unset, so the route sees an
- * anonymous request rather than a half-trusted one.
+ * would have rejected — unknown user, ban, control-panel account, stale
+ * session generation, unverified address — simply leaves req.user unset, so
+ * the route sees an anonymous request rather than a half-trusted one.
  */
 async function optionalAuth(req, res, next) {
   try {
@@ -53,7 +66,7 @@ async function optionalAuth(req, res, next) {
     if (!token) return next();
     const payload = verifyAccess(token);
     const user = await User.findById(Number(payload.sub));
-    if (!user || user.banned) return next();
+    if (!user || user.banned || isControlPanelAccount(user)) return next();
     if ((Number(payload.tv) || 0) !== (Number(user.token_version) || 0)) return next();
     if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED) return next();
     req.user = user;

@@ -665,5 +665,142 @@ test('hardening', async (t) => {
     assert.equal(done.status, 200, done.text);
   });
 
+  await t.test('a control-panel account has no customer session', async () => {
+    await srv.reset();
+    const bcrypt = require('bcryptjs');
+    const CREATOR_PW = 'the-creator-password-99';
+    const STAFF_PW = 'the-staff-password-99';
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Owner', 'creator@example.test', ?, 'root', 1),
+              ('Staff', 'panel@example.test', ?, 'admin', 1)`,
+      [await bcrypt.hash(CREATOR_PW, 12), await bcrypt.hash(STAFF_PW, 12)]
+    );
+    const [creator] = await srv.query(
+      'SELECT id, password_hash FROM users WHERE email = ?', ['creator@example.test']);
+
+    // The hole this closes: one users table, one password_hash, and the
+    // customer sign-in form never checked the role — so the credentials meant
+    // for an IP-allowlisted, second-factor panel opened an ordinary session
+    // from anywhere.
+    const shop = srv.client();
+    for (const [email, password] of [
+      ['creator@example.test', CREATOR_PW],
+      ['panel@example.test', STAFF_PW],
+    ]) {
+      const res = await shop.post('/api/auth/login', { email, password });
+      assert.equal(res.status, 403, `${email}: ${res.text}`);
+      assert.equal(res.body.error.code, 'RESERVED_ADDRESS');
+      assert.equal(res.body.data, undefined, 'no session may be handed out');
+      assert.equal(shop.cookies.has('ndm_refresh'), false, 'no refresh cookie either');
+    }
+
+    // The refusal fires only AFTER the password matches, so it is never a way
+    // to find the administrator's address. A wrong password on it answers
+    // exactly like a wrong password on an address that does not exist —
+    // including how long it takes, which is why the unknown-address branch
+    // still pays for a bcrypt compare.
+    const wrongOnPanel = await shop.post('/api/auth/login',
+      { email: 'creator@example.test', password: 'not-the-password' });
+    const wrongOnGhost = await shop.post('/api/auth/login',
+      { email: 'nobody@example.test', password: 'not-the-password' });
+    assert.equal(wrongOnPanel.status, 401);
+    assert.deepEqual(wrongOnPanel.body, wrongOnGhost.body);
+
+    // A token minted before this rule existed — the same thing as a token held
+    // by an account that has just been promoted — dies at the boundary rather
+    // than at the end of its seven-day life.
+    const User = require('../src/models/User');
+    const { signAccessToken, generateRefreshToken } = require('../src/utils/jwt');
+    const stale = signAccessToken(await User.findById(creator.id));
+    for (const [method, path] of [['get', '/api/user/me'], ['get', '/api/user/license']]) {
+      const res = await shop[method](path, { token: stale });
+      assert.equal(res.status, 403, `${path}: ${res.text}`);
+      assert.equal(res.body.error.code, 'RESERVED_ADDRESS');
+    }
+
+    // …and in particular it cannot rewrite the hash the panel signs in with,
+    // which is what made this more than a cosmetic separation: PUT
+    // /user/profile changed password_hash, so the customer site was a way to
+    // SET the creator's panel password from an address the panel would never
+    // have accepted a request from.
+    const rewrite = await shop.put('/api/user/profile',
+      { currentPassword: CREATOR_PW, newPassword: 'attacker-chosen-pw-1' }, { token: stale });
+    assert.equal(rewrite.status, 403, rewrite.text);
+    const [after] = await srv.query('SELECT password_hash FROM users WHERE id = ?', [creator.id]);
+    assert.equal(after.password_hash, creator.password_hash, 'the panel password must be untouched');
+
+    // A refresh cookie is refused AND cleared, so the session that should never
+    // have existed is gone rather than retried on every page load.
+    const { token: rt, hash } = generateRefreshToken();
+    await User.update(creator.id, { refreshTokenHash: hash });
+    const stapled = srv.client();
+    stapled.cookies.set('ndm_refresh', rt);
+    const refreshed = await stapled.post('/api/auth/refresh', {});
+    assert.equal(refreshed.status, 403, refreshed.text);
+    assert.equal(refreshed.body.error.code, 'RESERVED_ADDRESS');
+    const [cleared] = await srv.query(
+      'SELECT refresh_token_hash FROM users WHERE id = ?', [creator.id]);
+    assert.equal(cleared.refresh_token_hash, null, 'the stale hash must be dropped');
+
+    // This is a fence between two doors, not a lock on both: the panel's own
+    // sign-in still works with the same password.
+    const panel = srv.client();
+    const rootLogin = await panel.post('/api/root/login',
+      { email: 'creator@example.test', password: CREATOR_PW });
+    assert.equal(rootLogin.status, 200, rootLogin.text);
+    assert.ok(rootLogin.body.data.token, 'the creator still signs in at /root');
+    const staffLogin = await srv.client().post('/api/admin/login',
+      { email: 'panel@example.test', password: STAFF_PW });
+    assert.equal(staffLogin.status, 200, staffLogin.text);
+
+    // And an ordinary customer is entirely unaffected.
+    const customer = srv.client();
+    const me = await srv.makeUser(customer, 'unaffected');
+    assert.ok(me.token, 'a customer still signs in');
+    assert.equal((await customer.get('/api/user/me', { token: me.token })).status, 200);
+    assert.equal((await customer.post('/api/auth/refresh', {})).status, 200);
+  });
+
+  await t.test('promoting a customer to staff ends the session they are holding', async () => {
+    await srv.reset();
+    const bcrypt = require('bcryptjs');
+    const CREATOR_PW = 'the-creator-password-99';
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Owner', 'creator@example.test', ?, 'root', 1)`,
+      [await bcrypt.hash(CREATOR_PW, 12)]
+    );
+
+    const customer = srv.client();
+    const victim = await srv.makeUser(customer, 'promoted');
+    assert.equal((await customer.get('/api/user/me', { token: victim.token })).status, 200);
+    const [row] = await srv.query('SELECT id FROM users WHERE email = ?', [victim.email]);
+
+    const panel = srv.client();
+    const rootToken = (await panel.post('/api/root/login',
+      { email: 'creator@example.test', password: CREATOR_PW })).body.data.token;
+    const promoted = await panel.put(`/api/root/admins/${row.id}`,
+      { role: 'admin' }, { token: rootToken });
+    assert.equal(promoted.status, 200, promoted.text);
+
+    // Both halves: the bearer token stops at the boundary, and the refresh
+    // cookie has nothing left to spend — a role change now revokes, where only
+    // a demotion used to.
+    const held = await customer.get('/api/user/me', { token: victim.token });
+    assert.equal(held.status, 403, held.text);
+    assert.equal(held.body.error.code, 'RESERVED_ADDRESS');
+    const spent = await customer.post('/api/auth/refresh', {});
+    assert.equal(spent.status, 401, spent.text);
+    assert.equal(spent.body.error.code, 'INVALID_REFRESH_TOKEN');
+
+    // Signing in again is refused too — there is no route back to a customer
+    // session for this address while it is staff.
+    const again = await customer.post('/api/auth/login',
+      { email: victim.email, password: victim.password });
+    assert.equal(again.status, 403, again.text);
+    assert.equal(again.body.error.code, 'RESERVED_ADDRESS');
+  });
+
   await srv.stop();
 });

@@ -27,7 +27,9 @@ const {
 const {
   sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail, sendAccountExistsEmail,
 } = require('../utils/email');
-const { isReservedEmail, isControlPanelAccount } = require('../utils/reservedEmail');
+const {
+  isReservedEmail, isControlPanelAccount, CONTROL_PANEL_MESSAGE,
+} = require('../utils/reservedEmail');
 const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 
@@ -166,26 +168,60 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    if (!user) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
 
-    // A Google-created account has no password hash at all — but saying so was
-    // the last membership oracle on this API: `PASSWORD_NOT_SET` for an address
-    // that exists, versus `INVALID_CREDENTIALS` for one that does not, is a
-    // yes/no answer about any address anybody cares to type. Registration no
-    // longer leaks that, so leaking it here would only move the hole.
+    // One compare, three cases, the same cost — that is the whole point of the
+    // shape below.
     //
-    // Nothing is lost by staying quiet. The sign-in page shows the Google
-    // button beside the form, and after ANY failed sign-in it now says that an
+    // A Google-created account has no password hash at all, and an unknown
+    // address has no row. Saying either out loud was a membership oracle:
+    // `PASSWORD_NOT_SET` for an address that exists versus
+    // `INVALID_CREDENTIALS` for one that does not is a yes/no answer about any
+    // address anybody cares to type. Registration no longer leaks that, so
+    // leaking it here would only move the hole. Both now answer
+    // `INVALID_CREDENTIALS`, exactly like a wrong password.
+    //
+    // Identical bodies are only half of it. This used to return early when
+    // `user` was null, WITHOUT touching bcrypt — so a registered address paid
+    // the quarter second and an unknown one came straight back. Measured on
+    // this code, same box, same request: 580 ms against 1.8 ms, which reads as
+    // cleanly as the error code the equal bodies were hiding. So every branch
+    // now runs a real cost-12 compare, against the account's hash or against a
+    // dummy nobody knows.
+    //
+    // `match` is false whenever `user` is null, so the rejection below still
+    // fires and nothing past it can see a null user.
+    //
+    // Nothing is lost by staying quiet: the sign-in page shows the Google
+    // button beside the form, and after ANY failed sign-in it says that an
     // account created with Google needs that button — advice it can give
     // without the server having confirmed anything about the address.
-    //
-    // The dummy compare is not decoration: bcrypt at cost 12 takes a quarter of
-    // a second, so returning early here would leave "no password set" and
-    // "wrong password" trivially distinguishable by response time.
-    const match = user.password_hash
+    const match = user && user.password_hash
       ? await bcrypt.compare(password, user.password_hash)
       : (await bcrypt.compare(password, dummyHash()), false);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+
+    // A control-panel account has no customer session, and this is the gate
+    // that was missing. Register, "Continue with Google", forgot-password and
+    // reset-password all learned to leave a staff or creator row alone; the
+    // sign-in form never did — and it is the same row and the same
+    // password_hash that /admin/login and /root/login check. So the creator's
+    // credentials opened a customer session from any address, with no IP
+    // allowlist and no second factor, and PUT /user/profile then rewrote that
+    // very hash: the customer site was a way to *set* the panel password.
+    //
+    // Deliberately AFTER the password compare. Refusing on the address alone
+    // would answer differently for the administrator's address than for every
+    // other one, handing a stranger a definitive "this is the admin" oracle —
+    // the single address worth attacking. Reaching this line means the caller
+    // has already produced the correct password, so naming the reason tells
+    // them nothing they did not already know, and it is the difference between
+    // the owner understanding what happened and the owner reporting their own
+    // password as broken. Same reasoning as the Google branch below.
+    if (isControlPanelAccount(user)) {
+      // eslint-disable-next-line no-console
+      console.warn('[SECURITY] customer sign-in refused for a control-panel account');
+      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
+    }
 
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
 
@@ -260,8 +296,7 @@ router.post(
       if (isReservedEmail(identity.email) || isControlPanelAccount(byEmail)) {
         // eslint-disable-next-line no-console
         console.warn('[SECURITY] google sign-in refused for a reserved/control-panel address');
-        return fail(res, 'RESERVED_ADDRESS',
-          'This address belongs to a control-panel account. Sign in at the admin console instead.', 403);
+        return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
       }
 
       if (byEmail) {
@@ -394,6 +429,19 @@ router.post(
     // banned — or before verification became a requirement — must not quietly
     // mint fresh access tokens for the next thirty days.
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    // The same rule as /login, applied to the cookie. A customer refresh cookie
+    // issued before that rule existed — or before the account was promoted to
+    // staff — would otherwise keep minting customer access tokens for thirty
+    // days, which is exactly how long the hole would have outlived the fix.
+    // The stale hash is cleared rather than merely refused, so a session that
+    // should never have existed is actually gone rather than retried on every
+    // page load.
+    if (isControlPanelAccount(user)) {
+      await User.update(user.id, { refreshTokenHash: null });
+      res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+      res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+      return fail(res, 'RESERVED_ADDRESS', CONTROL_PANEL_MESSAGE, 403);
+    }
     if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
       return fail(res, 'EMAIL_NOT_VERIFIED',
         'Please verify your email address first. Check your inbox, or ask for a new link.', 403,

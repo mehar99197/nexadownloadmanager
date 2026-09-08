@@ -271,11 +271,11 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
 | POST | `/register` | `authLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
-| POST | `/login` | `authLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie |
+| POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account** (`403 RESERVED_ADDRESS`) — after the password compare, never before it. Every branch runs a real cost-12 bcrypt, including an unknown address, so neither the error code nor the response time answers "does this address have an account?" *(ADDED)* |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
-| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token *(ADDED)* |
+| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, so the session ends rather than being retried on every page load *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
@@ -654,18 +654,39 @@ closing two different gaps:
   distinct error would point a stranger at the administrator's address),
   `POST /auth/google`, and `POST /admin/users` (a plain `400 RESERVED_ADDRESS`;
   the caller is already authenticated there).
-- **`isControlPanelAccount(user)`** — `role` is `admin` or `root`. The public
-  auth surface may not write to such a row: `POST /auth/google` will not link a
-  second credential to it, and `POST /auth/forgot-password` will not mint a
-  reset link for it (answering `sent:true` as always, so the refusal itself
-  reveals nothing). `POST /auth/reset-password` re-checks at redemption, so a
-  link minted before the account was promoted still cannot be spent.
+- **`isControlPanelAccount(user)`** — `role` is `admin` or `root`. **A
+  control-panel row is not a customer**, so the public auth surface may neither
+  authenticate it nor write to it:
+  - `POST /auth/login` refuses it (`403 RESERVED_ADDRESS`), and so does
+    `POST /auth/refresh`.
+  - `requireAuth` (and `optionalAuth`) refuse it on **every** request, which is
+    what kills a bearer token minted before the rule existed or before the
+    account was promoted — access tokens live seven days and are stateless, so
+    a check only at the mint point would have left the hole open that long.
+  - `POST /auth/google` will not link a second credential to it, and
+    `POST /auth/forgot-password` will not mint a reset link for it (answering
+    `sent:true` as always, so the refusal itself reveals nothing).
+    `POST /auth/reset-password` re-checks at redemption, so a link minted before
+    the account was promoted still cannot be spent.
+  - Any role change through `PUT /api/root/admins/:id`, and both
+    `npm run create-admin` / `create-root`, call `User.revokeSessions` — a
+    promotion has to end the customer session the account is holding, exactly as
+    a demotion ends the panel one.
 
-Why the reset rule matters: `/admin/login` and `/root/login` verify the **same**
-`password_hash` that the customer reset flow rewrites, so leaving it open makes
-read access to one mailbox worth the panel password. Creator recovery is
-`npm run create-root` on the server, which updates the existing row — something
-you must already be on the box to do.
+  All of it reuses one wording, `CONTROL_PANEL_MESSAGE`, so the sign-in form,
+  the Google button and a stale session say the same thing.
+
+Why these rules matter, and why login is the important one: there is **one**
+`users` table and **one** `password_hash`, and `/admin/login` and `/root/login`
+verify the very column the customer site reads and writes. The panels sit behind
+an IP allowlist and a second factor; `/api/auth/login` has neither. While it did
+not check the role, the creator's own credentials opened a customer session from
+any address — and `PUT /api/user/profile` then rewrote that hash, so the customer
+site was a way to *set* the panel password. The refusal is placed after the
+password compare on purpose: firing on the address alone would answer
+differently for the administrator's address than for any other, which is the one
+address worth finding. Creator recovery is `npm run create-root` on the server,
+which updates the existing row — something you must already be on the box to do.
 
 ### What never leaves the server — `utils/sanitize.js`
 

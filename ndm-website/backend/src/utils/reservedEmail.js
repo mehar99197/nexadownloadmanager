@@ -35,6 +35,15 @@ const config = require('../config/env');
  * something you must already be on the box to do.
  */
 
+/**
+ * One wording for every public endpoint that turns a control-panel identity
+ * away, so the customer site never explains this two different ways — and so
+ * the sign-in form, the Google button and a stale session all say the same
+ * thing to the same person.
+ */
+const CONTROL_PANEL_MESSAGE =
+  'This address belongs to a control-panel account. Sign in at the admin console instead.';
+
 function isReservedEmail(email) {
   if (!config.ROOT_ADMIN_EMAIL) return false;
   return String(email || '').trim().toLowerCase() === String(config.ROOT_ADMIN_EMAIL).toLowerCase();
@@ -49,4 +58,6 @@ function isProtectedIdentity(email, user) {
   return isReservedEmail(email) || isControlPanelAccount(user);
 }
 
-module.exports = { isReservedEmail, isControlPanelAccount, isProtectedIdentity };
+module.exports = {
+  isReservedEmail, isControlPanelAccount, isProtectedIdentity, CONTROL_PANEL_MESSAGE,
+};

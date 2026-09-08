@@ -217,10 +217,14 @@ router.put(
     if (banned !== undefined) updates.banned = banned;
     if (role !== undefined) updates.role = role;
     await User.update(user.id, updates);
-    // Banning or demoting must also kill the live session. verifyAdminToken
-    // re-reads the role on every request, so a demoted admin's panel token dies
-    // on its own; revokeSessions is what also ends their ordinary user tokens.
-    if (banned === true || role === 'user') await User.revokeSessions(user.id);
+    // Banning or ANY role change must also kill the live session.
+    // verifyAdminToken re-reads the role on every request, so a demoted admin's
+    // panel token dies on its own; revokeSessions is what also ends their
+    // ordinary user tokens. Promotion needs it just as much as demotion did:
+    // the customer session a newly-made admin is holding was minted for an
+    // identity the public API no longer serves, and its refresh cookie would
+    // otherwise sit there for thirty days waiting to be spent.
+    if (banned === true || role !== undefined) await User.revokeSessions(user.id);
 
     const fresh = await User.findById(user.id);
     await audit(req, 'admin.updated', 'user', user.id, `Updated staff admin ${fresh.email}`, req.body);

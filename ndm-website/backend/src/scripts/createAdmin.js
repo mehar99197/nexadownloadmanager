@@ -28,6 +28,12 @@ async function main() {
     await User.update(user.id, {
       name, role: 'admin', emailVerified: true, banned: false, passwordHash,
     });
+    // The row may have been an ordinary customer until this line. Its customer
+    // access tokens are stateless and live another seven days, and the public
+    // API no longer serves a staff identity, so end every session rather than
+    // leaving one that will only be refused later. Same reasoning as
+    // createRoot.js.
+    await User.revokeSessions(user.id);
     user = await User.findById(user.id);
   } else {
     user = await User.create({
