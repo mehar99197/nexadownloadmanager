@@ -55,7 +55,7 @@ export function Bullets({ items }) {
 
 export function Code({ children }) {
   return (
-    <code className="surface-inset rounded-md px-1.5 py-0.5 font-mono text-[0.8em] text-brand-100">
+    <code className="surface-inset rounded-md px-1.5 py-0.5 font-mono text-[0.9em] text-brand-100">
       {children}
     </code>
   );

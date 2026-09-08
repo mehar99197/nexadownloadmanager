@@ -194,12 +194,12 @@ export default function Reviews() {
               ))}
             </div>
 
-            {data.reviews.length === 0 ? (
+            {(data.reviews || []).length === 0 ? (
               <p className="text-zinc-500">
                 {filter ? `No ${filter}-star reviews yet.` : 'No reviews yet. Be the first!'}
               </p>
             ) : (
-              data.reviews.map((r) => (
+              (data.reviews || []).map((r) => (
                 <Card key={r.id} className="card-hover !p-6">
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-brand-500)]/15 text-sm font-bold text-[var(--color-brand-400)]">

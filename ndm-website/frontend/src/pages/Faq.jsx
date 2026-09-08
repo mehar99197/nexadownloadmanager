@@ -81,7 +81,7 @@ const FAQS = [
     a: (
       <>
         Open <Link to="/billing" className="text-brand-300 hover:underline">Billing</Link> and click
-        &ldquo;Cancel Subscription&rdquo;. Your plan stays active until the end of the period you
+        &ldquo;Cancel subscription&rdquo;. Your plan stays active until the end of the period you
         already paid for and will not renew. There is no cancellation fee and no need to email anyone.
       </>
     ),
@@ -184,7 +184,7 @@ export default function Faq() {
         ))}
       </div>
 
-      <div className="surface-panel mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-between gap-4 rounded-xl px-6 py-5">
+      <div className="surface-panel mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-center gap-x-6 gap-y-4 rounded-xl px-6 py-5 text-center sm:text-left">
         <p className="text-sm text-slate-300">Didn&apos;t find it? Read the docs or ask us directly.</p>
         <div className="flex gap-3">
           <Button to="/docs" variant="ghost">Docs</Button>

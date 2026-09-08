@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api, { unwrap } from '../api/client';
 import usePageMeta from '../hooks/usePageMeta';
+import { formatDate } from '../utils/formatDate';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -62,7 +63,7 @@ function Sha256({ value }) {
 
   return (
     <div className="mt-4 text-left">
-      <p className="text-[0.62rem] font-bold uppercase tracking-[0.13em] text-slate-500">SHA-256</p>
+      <p className="text-xs font-bold uppercase tracking-[0.13em] text-slate-500">SHA-256</p>
       <div className="mt-1.5 flex items-center gap-2">
         <code
           className="surface-inset min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 font-mono text-[0.7rem] text-brand-100"
@@ -170,7 +171,7 @@ export default function Download() {
                 <Card key={key} className="card-hover flex flex-col text-center !p-7">
                   <div className="icon-tile mx-auto">{icon}</div>
                   <h3 className="mt-5 text-lg font-bold text-white">{label}</h3>
-                  <p className="mt-2 text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+                  <p className="mt-2 text-xs font-medium tracking-wide text-slate-500">
                     {hasRelease ? `Version ${release.version}` : 'Version not published yet'}
                   </p>
                   <p className="mt-2 text-xs text-slate-400">{format}</p>
@@ -203,7 +204,7 @@ export default function Download() {
                 </svg>
               </div>
               <h3 className="mt-5 text-lg font-bold text-white">macOS</h3>
-              <p className="mt-2 text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Coming later</p>
+              <p className="mt-2 text-xs font-medium tracking-wide text-slate-500">Coming later</p>
               <p className="mt-2 text-xs text-slate-400">
                 The Qt codebase builds on macOS, but we haven&apos;t shipped a signed build yet.
               </p>
@@ -218,7 +219,7 @@ export default function Download() {
           <div className="mx-auto mt-14 max-w-5xl">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <span className="text-xs font-bold uppercase tracking-[0.18em] text-brand-300">Browser extension</span>
+                <span className="text-xs font-bold tracking-wide text-brand-300">Browser extension</span>
                 <h2 className="mt-2 text-2xl font-extrabold tracking-tight text-white">Send downloads from your browser.</h2>
                 <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-400">
                   The extension adds a &ldquo;Download with Nexa&rdquo; button, sniffs
@@ -255,11 +256,11 @@ export default function Download() {
                   </h3>
                   {publishedAt && !Number.isNaN(publishedAt.getTime()) && (
                     <p className="mt-1 text-xs text-slate-500">
-                      Published {publishedAt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                      Published {formatDate(publishedAt)}
                     </p>
                   )}
                 </div>
-                <Link to="/changelog" className="rounded-full border border-brand-400/25 bg-brand-400/10 px-3 py-1 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-brand-300 hover:text-white">
+                <Link to="/changelog" className="rounded-full border border-brand-400/25 bg-brand-400/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.12em] text-brand-300 hover:text-white">
                   Release notes
                 </Link>
               </div>

@@ -97,7 +97,7 @@ export default function Privacy() {
         <Block title="2. The desktop app">
           <p>
             The Windows and Linux app works fully offline for downloading. The only request it
-            makes to our servers is <code className="surface-inset rounded px-1 font-mono text-[0.8em] text-brand-100">POST /api/license/validate</code>,
+            makes to our servers is <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>,
             sent when you activate a key and periodically afterwards to confirm the plan. That
             request carries exactly two things: your license key and a device fingerprint (a
             hash derived from hardware and OS identifiers, so we can enforce seats). It does not

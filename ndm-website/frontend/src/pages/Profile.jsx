@@ -10,6 +10,7 @@ import Button from '../components/Button';
 import Input from '../components/Input';
 import Spinner from '../components/Spinner';
 import usePageMeta from '../hooks/usePageMeta';
+import { formatDate } from '../utils/formatDate';
 
 /**
  * "Your data" — self-service export and deletion, so a data-access or
@@ -86,16 +87,19 @@ function DataCard({ user }) {
       </div>
 
       <div className="mt-7 border-t border-[var(--color-surface-border)] pt-6">
-        <h4 className="font-semibold text-red-300">Delete account</h4>
-        <p className="mt-2 text-sm leading-6 text-slate-400">
-          Permanently removes your account, licence keys, devices, payment history, review and team
-          membership. A paid plan is cancelled first so nothing is charged afterwards. This cannot be undone.
-        </p>
+        <h4 className={`font-semibold ${isStaff ? 'text-slate-200' : 'text-red-300'}`}>Delete account</h4>
         {isStaff ? (
-          <p className="note-warn mt-4 rounded-xl px-4 py-3 text-sm">
-            Control-panel accounts are removed by the creator, not from here.
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            This account has control-panel access, so it can only be removed by the creator from the
+            admin console — not from here.
           </p>
         ) : (
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Permanently removes your account, licence keys, devices, payment history, review and team
+            membership. A paid plan is cancelled first so nothing is charged afterwards. This cannot be undone.
+          </p>
+        )}
+        {!isStaff && (
           <div className="mt-4">
             <Button
               variant="ghost"
@@ -254,7 +258,7 @@ export default function Profile() {
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
         <Card className="card-hover !p-7">
-          <h3 className="text-lg font-bold text-white">Account Info</h3>
+          <h3 className="text-lg font-bold text-white">Account info</h3>
           <form onSubmit={handleSaveName} className="mt-5 space-y-4">
             <Input
               label="Email"
@@ -262,7 +266,14 @@ export default function Profile() {
               type="email"
               value={user.email || ''}
               disabled
-              hint="Contact support to change your email."
+              hint={
+                <>
+                  <Link to="/contact" className="text-slate-300 underline-offset-2 hover:text-brand-300 hover:underline">
+                    Contact support
+                  </Link>{' '}
+                  to change your email.
+                </>
+              }
             />
             <Input
               label="Name"
@@ -284,16 +295,14 @@ export default function Profile() {
               </Button>
               <p className="text-xs text-zinc-500">
                 Member since{' '}
-                {user.createdAt
-                  ? new Date(user.createdAt).toLocaleDateString()
-                  : '—'}
+                {formatDate(user.createdAt) || '—'}
               </p>
             </div>
           </form>
         </Card>
 
         <Card className="card-hover !p-7">
-          <h3 className="text-lg font-bold text-white">Change Password</h3>
+          <h3 className="text-lg font-bold text-white">Change password</h3>
           <form onSubmit={handleChangePassword} className="mt-5 space-y-4">
             <Input
               label="Current password"

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import api, { unwrap } from '../api/client';
+import { formatDate, formatDateShort } from '../utils/formatDate';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/ConfirmDialog';
 import Section from '../components/Section';
@@ -13,7 +14,7 @@ function PaymentRow({ payment }) {
   return (
     <tr className="border-b border-white/10 last:border-0">
       <td className="py-3 pr-4 text-sm text-slate-200">
-        {new Date(payment.createdAt || payment.created_at).toLocaleDateString()}
+        {formatDateShort(payment.createdAt || payment.created_at) || '—'}
       </td>
       <td className="py-3 pr-4 text-sm text-slate-200 capitalize">
         {payment.plan || 'pro'}
@@ -172,7 +173,7 @@ export default function Billing() {
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <Card className="card-hover !p-7">
-          <h3 className="text-lg font-bold text-white">Current Plan</h3>
+          <h3 className="text-lg font-bold text-white">Current plan</h3>
           {subStatus ? (
             <div className="mt-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -199,7 +200,7 @@ export default function Billing() {
                     {subStatus.cancelAtPeriodEnd ? 'Ends' : subStatus.plan === 'free' ? 'Expires' : 'Renews'}
                   </span>
                   <span className="text-sm text-white">
-                    {new Date(subStatus.expiryDate).toLocaleDateString()}
+                    {formatDate(subStatus.expiryDate) || '—'}
                   </span>
                 </div>
               )}
@@ -227,7 +228,7 @@ export default function Billing() {
                       disabled={cancelling}
                       className="border-red-500/30 text-red-300 hover:border-red-500/60"
                     >
-                      {cancelling ? 'Cancelling…' : 'Cancel Subscription'}
+                      {cancelling ? 'Cancelling…' : 'Cancel subscription'}
                     </Button>
                   )}
                 </div>
@@ -235,7 +236,7 @@ export default function Billing() {
               {subStatus.cancelAtPeriodEnd && (
                 <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-xs leading-6 text-amber-200">
                   Your {subStatus.plan} plan is set to end on{' '}
-                  {subStatus.expiryDate ? new Date(subStatus.expiryDate).toLocaleDateString() : 'its renewal date'}.
+                  {formatDate(subStatus.expiryDate) || 'its renewal date'}.
                   Everything keeps working until then, and your account returns to Free afterwards —
                   nothing is deleted. Change your mind any time before that.
                 </p>
@@ -258,9 +259,19 @@ export default function Billing() {
         </Card>
 
         <Card className="card-hover !p-7">
-          <h3 className="text-lg font-bold text-white">Payment History</h3>
+          <h3 className="text-lg font-bold text-white">Payment history</h3>
           {payments.length === 0 ? (
-            <p className="mt-4 text-sm text-zinc-500">No payments yet.</p>
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="text-slate-600" aria-hidden="true">
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <path d="M2 10h20" />
+              </svg>
+              <p className="text-sm font-semibold text-slate-300">No payments yet</p>
+              <p className="max-w-xs text-sm leading-6 text-slate-500">
+                A free plan and the Pro trial are never charged. Once you pay for a plan,
+                every invoice shows up here.
+              </p>
+            </div>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left">

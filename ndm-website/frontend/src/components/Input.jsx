@@ -53,7 +53,7 @@ const Input = forwardRef(function Input(
         // own aria-label into the input's accessible name ("Password Show
         // password"). Associating by htmlFor instead keeps the input's name
         // just "Password".
-        <label htmlFor={inputId} className="mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-slate-300">
+        <label htmlFor={inputId} className="mb-2 block text-xs font-semibold tracking-wide text-slate-300">
           {label}
         </label>
       )}

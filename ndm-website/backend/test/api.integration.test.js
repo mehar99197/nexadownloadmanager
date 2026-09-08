@@ -84,6 +84,17 @@ test('backend API', async (t) => {
       // The trial fields the frontend renders must always be present.
       assert.ok(Object.hasOwn(res.body.data.subscription, 'trial'));
       assert.ok(Object.hasOwn(res.body.data.subscription, 'trialEndsAt'));
+      // CONTRACT.md documents the User as carrying camelCase timestamps, but
+      // this route returns the DB row, which is snake_case. The profile page
+      // read `createdAt`, got undefined, and printed "Member since —" for
+      // every account that ever existed. The mismatch was invisible because
+      // nothing failed — so assert the documented names exist and parse.
+      assert.ok(res.body.data.user.createdAt, 'createdAt is exposed');
+      assert.ok(!Number.isNaN(Date.parse(res.body.data.user.createdAt)), 'createdAt is a date');
+      assert.equal(typeof res.body.data.user.emailVerified, 'boolean');
+      // ...and that exposing them did not also expose a credential.
+      for (const leaked of ['password_hash', 'refresh_token_hash', 'totp_secret', 'token_version'])
+        assert.ok(!(leaked in res.body.data.user), `${leaked} is not returned`);
     });
 
     await t2.test('refresh rotates the cookie and invalidates the old one', async () => {

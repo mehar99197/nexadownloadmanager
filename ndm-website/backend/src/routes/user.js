@@ -38,6 +38,15 @@ function sanitizeUser(user) {
   // "Set a password" instead of "Change password".
   safe.hasPassword = Boolean(password_hash);
   safe.hasGoogle = Boolean(user.google_id);
+  // CONTRACT.md describes the User as carrying `createdAt`/`updatedAt` and
+  // `emailVerified`, but stripSensitive() copies the DB row, which is
+  // snake_case. The site read `user.createdAt` and got undefined every time,
+  // so the profile page said "Member since —" for every account that has ever
+  // existed. Expose the documented names (the raw columns stay for anything
+  // already reading them).
+  safe.createdAt = toIso(user.created_at);
+  safe.updatedAt = toIso(user.updated_at);
+  safe.emailVerified = Boolean(user.email_verified);
   return safe;
 }
 

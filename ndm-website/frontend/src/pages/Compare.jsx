@@ -60,10 +60,10 @@ function Cell({ value }) {
     );
   }
   if (value === 'partial') {
-    return <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide text-amber-300">Partial</span>;
+    return <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-300">Partial</span>;
   }
   if (value === 'coming') {
-    return <span className="rounded-full border border-brand-400/25 bg-brand-400/10 px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide text-brand-300">Coming</span>;
+    return <span className="rounded-full border border-brand-400/25 bg-brand-400/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-brand-300">Coming</span>;
   }
   return <span className="text-slate-300">{value}</span>;
 }
@@ -103,7 +103,7 @@ export default function Compare() {
                     className={`px-5 py-4 text-xs font-bold uppercase tracking-[0.14em] ${i === 0 ? 'text-brand-300' : 'text-slate-400'}`}
                   >
                     {p}
-                    {i === 0 && <span className="ml-2 rounded-full border border-brand-400/25 bg-brand-400/10 px-1.5 py-0.5 text-[0.55rem] text-brand-300">beta</span>}
+                    {i === 0 && <span className="ml-2 rounded-full border border-brand-400/25 bg-brand-400/10 px-1.5 py-0.5 text-xs text-brand-300">beta</span>}
                   </th>
                 ))}
               </tr>

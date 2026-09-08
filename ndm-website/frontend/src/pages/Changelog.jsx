@@ -6,13 +6,7 @@ import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Spinner from '../components/Spinner';
-
-function formatDate(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
-}
+import { formatDate } from '../utils/formatDate';
 
 function ReleaseEntry({ release, latest }) {
   const date = formatDate(release.publishedAt);
@@ -21,7 +15,7 @@ function ReleaseEntry({ release, latest }) {
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-2xl font-extrabold tracking-tight text-white">v{release.version}</h2>
         {latest && (
-          <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.12em] text-emerald-300">
+          <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em] text-emerald-300">
             Latest
           </span>
         )}

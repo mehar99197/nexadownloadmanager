@@ -22,10 +22,10 @@ export default function Docs() {
         </p>
       </div>
 
-      <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="mt-12 flex flex-wrap justify-center gap-5">
         {DOCS_NAV.map((item, i) => (
-          <Card key={item.to} as={Link} to={item.to} className="card-hover block !p-6">
-            <span className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-brand-300">Guide {i + 1}</span>
+          <Card key={item.to} as={Link} to={item.to} className="card-hover block w-full !p-6 sm:w-[calc(50%-0.625rem)] lg:w-[calc(33.333%-0.834rem)]">
+            <span className="text-xs font-bold uppercase tracking-[0.16em] text-brand-300">Guide {i + 1}</span>
             <h2 className="mt-2 text-base font-bold text-white">{item.label}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">{item.blurb}</p>
             <span className="mt-4 inline-block text-sm font-semibold text-brand-300">Read guide &rarr;</span>
@@ -45,7 +45,7 @@ export default function Docs() {
               <span className="text-xs font-bold text-brand-300">0{i + 1}</span>
               <h3 className="mt-1 text-sm font-bold text-white">{t}</h3>
               <p className="mt-1 text-xs leading-6 text-slate-400">{d}</p>
-              <Link to={to} className="mt-2 inline-block text-xs font-semibold text-brand-300 hover:text-white">Details &rarr;</Link>
+              <Link to={to} aria-label={`Details: ${t}`} className="mt-2 inline-block text-xs font-semibold text-brand-300 hover:text-white">Details &rarr;</Link>
             </li>
           ))}
         </ol>

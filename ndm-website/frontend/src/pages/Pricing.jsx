@@ -12,6 +12,33 @@ import Spinner from '../components/Spinner';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
+/** "pro" -> "Pro". Plan names are proper nouns in the UI. */
+function planLabel(id) {
+  return id ? id.charAt(0).toUpperCase() + id.slice(1) : 'your plan';
+}
+
+/**
+ * A plan the visitor cannot act on states its status; it does not render a
+ * dead button. "Current plan" as a disabled .btn-primary was the loudest
+ * element in the table and did nothing when clicked.
+ */
+function PlanState({ label, current }) {
+  return (
+    <p className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-[var(--radius-2)] border px-4 text-sm font-semibold ${
+      current
+        ? 'border-brand-400/35 bg-brand-400/10 text-brand-300'
+        : 'border-[var(--color-surface-border)] text-slate-400'
+    }`}>
+      {current && (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+      )}
+      {label}
+    </p>
+  );
+}
+
 /**
  * Decide what the plan's button should say and do, based on who is looking.
  * Returns { label, action: 'register' | 'trial' | 'checkout' | 'none', to?, disabled }.
@@ -24,13 +51,13 @@ function resolveCta(plan, user) {
 
   if (plan.id === 'free') {
     if (!user) return { label: 'Get started free', action: 'link', to: '/register' };
-    if (currentPlan === 'free') return { label: 'Current plan', action: 'none', disabled: true };
-    return { label: 'Included in your plan', action: 'none', disabled: true };
+    if (currentPlan === 'free') return { label: 'Current plan', action: 'none', current: true };
+    return { label: `Included in ${planLabel(currentPlan)}`, action: 'none' };
   }
 
   if (plan.id === 'pro') {
     if (!user) return { label: 'Start 7-day free trial', action: 'link', to: '/register?trial=1' };
-    if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', disabled: true };
+    if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', current: true };
     if (currentPlan === 'pro' && onTrial) return { label: 'Keep Pro after trial', action: 'checkout' };
     if (currentPlan === 'free' && !trialUsed) return { label: 'Start 7-day free trial', action: 'trial' };
     return { label: 'Upgrade to Pro', action: 'checkout' };
@@ -38,7 +65,7 @@ function resolveCta(plan, user) {
 
   // team
   if (!user) return { label: 'Get Team', action: 'link', to: '/register' };
-  if (currentPlan === 'team') return { label: 'Current plan', action: 'none', disabled: true };
+  if (currentPlan === 'team') return { label: 'Current plan', action: 'none', current: true };
   return { label: 'Get Team', action: 'checkout' };
 }
 
@@ -55,14 +82,12 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
   };
 
   const buttonProps =
-    cta.action === 'link'
-      ? { to: cta.to }
-      : { onClick: handleClick, disabled: busy || cta.disabled };
+    cta.action === 'link' ? { to: cta.to } : { onClick: handleClick, disabled: busy };
 
   return (
     <Card className={`relative flex flex-col !p-7 ${highlight ? '!overflow-visible border-accent-400/60 shadow-[0_0_44px_-16px_rgba(150,92,244,0.72)]' : ''}`}>
       {highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 badge-on-brand text-[0.65rem] font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 badge-on-brand text-xs font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
           Most popular
         </span>
       )}
@@ -88,13 +113,17 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
         ))}
       </ul>
       <div className="mt-7">
-        <Button
-          className="w-full"
-          variant={highlight ? 'primary' : 'ghost'}
-          {...buttonProps}
-        >
-          {cta.label}
-        </Button>
+        {cta.action === 'none' ? (
+          <PlanState label={cta.label} current={cta.current} />
+        ) : (
+          <Button
+            className="w-full"
+            variant={highlight ? 'primary' : 'ghost'}
+            {...buttonProps}
+          >
+            {cta.label}
+          </Button>
+        )}
         {plan.id === 'pro' && user?.subscription?.trial && (
           <p className="mt-2 text-center text-xs text-slate-500">
             You&apos;re on the Pro trial — pick a billing cycle to keep it.
@@ -252,7 +281,7 @@ export default function Pricing() {
                 >
                   {c}
                   {c === 'yearly' && plans.pro?.monthly && plans.pro?.yearly && (
-                    <span className="ml-1.5 rounded bg-brand-400/15 px-1.5 py-0.5 text-[11px] text-brand-300">
+                    <span className="ml-1.5 rounded bg-brand-400/15 px-1.5 py-0.5 text-xs text-brand-300">
                       Save {Math.round(((plans.pro.monthly * 12 - plans.pro.yearly) / (plans.pro.monthly * 12)) * 100)}%
                     </span>
                   )}
