@@ -10,6 +10,7 @@ import Home from '../pages/Home';
 import Download from '../pages/Download';
 import Compare from '../pages/Compare';
 import Input from '../components/Input';
+import Spinner from '../components/Spinner';
 
 // The API client is the only thing these pages touch that we do not own.
 vi.mock('../api/client', () => {
@@ -231,5 +232,40 @@ describe('Input — a rejected field says so', () => {
     expect(field).not.toHaveAttribute('aria-invalid');
     const describedBy = field.getAttribute('aria-describedby');
     expect(document.getElementById(describedBy)).toHaveTextContent('At least 8 characters');
+  });
+});
+
+describe('Spinner — two of them on one page stay two of them', () => {
+  it('gives every instance its own gradient, and points each arc at its own', () => {
+    const { container } = render(
+      <>
+        <Spinner />
+        <Spinner size={32} />
+      </>
+    );
+
+    const gradients = [...container.querySelectorAll('linearGradient')];
+    expect(gradients).toHaveLength(2);
+
+    // The failure this guards against is silent: duplicate ids are legal
+    // enough to render, but url(#id) resolves to whichever element came
+    // first in the document, so the second spinner would quietly borrow the
+    // first one's gradient — and lose it entirely if the first unmounts.
+    const ids = gradients.map((node) => node.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => id && !id.includes(':'))).toBe(true);
+
+    const arcs = [...container.querySelectorAll('.ndm-spinner__arc')];
+    expect(arcs).toHaveLength(2);
+    arcs.forEach((arc, i) => {
+      expect(arc.getAttribute('stroke')).toBe(`url(#${ids[i]})`);
+    });
+  });
+
+  it('is announced as a status, and honours the size it was given', () => {
+    render(<Spinner size={32} />);
+    const mark = screen.getByRole('status', { name: 'Loading' });
+    expect(mark).toHaveAttribute('width', '32');
+    expect(mark).toHaveAttribute('height', '32');
   });
 });

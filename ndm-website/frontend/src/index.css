@@ -760,6 +760,101 @@ body::before {
   }
 }
 
+@layer components {
+  /* ------------------------------------------------------------------ *
+   *  Spinner — two counter-rotating arcs, the outer one marching on its
+   *  dash offset. Replaces the single circle on Tailwind's animate-spin
+   *  that ten screens were sharing.
+   *
+   *  Colour comes from --color-brand-300 and --color-accent-300, and that
+   *  choice is the whole light-theme story: those are the two stops the
+   *  light theme actually inverts (#63dcff -> #1f56b8, #d09bff -> #6b3bc4).
+   *  The old spinner painted itself --color-brand-400, which light leaves
+   *  bright, so it sat at 1.96:1 on a white card and 1.83:1 on the page —
+   *  under the 3:1 WCAG 1.4.11 asks of a UI component, while being the only
+   *  thing on screen at the time. These two measure 6.81:1 and 6.89:1 there,
+   *  and 11.33:1 / 8.42:1 on a dark card. Using
+   *  the inverting stops means one declaration is right on both grounds and
+   *  there is no light-theme override below to keep in sync.
+   *
+   *  Own keyframe names on purpose: Tailwind v4 ships a `spin` keyframe, and
+   *  redefining that name would rewrite every animate-spin in the app.
+   * ------------------------------------------------------------------ */
+  .ndm-spinner__track {
+    stroke: var(--color-brand-300);
+    stroke-opacity: 0.16;
+  }
+
+  .ndm-spinner__arc {
+    transform-origin: 50% 50%;
+    animation:
+      ndm-spinner-march 1.5s ease-in-out infinite,
+      ndm-spinner-turn 2s linear infinite;
+  }
+
+  .ndm-spinner__inner {
+    stroke: var(--color-brand-300);
+    stroke-opacity: 0.5;
+    transform-origin: 50% 50%;
+    animation: ndm-spinner-turn 1.15s linear infinite reverse;
+  }
+
+  /* stop-color is a presentation attribute, so the gradient stops are styled
+     here rather than hard-coded on the elements — that is what lets the two
+     ends follow the theme. */
+  .ndm-spinner__from { stop-color: var(--color-brand-300); }
+  .ndm-spinner__to { stop-color: var(--color-accent-300); }
+}
+
+@keyframes ndm-spinner-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* r=21 gives a circumference of 131.9, so a gap of 152 stays longer than the
+   circle itself and the arc never meets its own tail as it grows. */
+@keyframes ndm-spinner-march {
+  0% {
+    stroke-dasharray: 1 152;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 92 152;
+    stroke-dashoffset: -30;
+  }
+  100% {
+    stroke-dasharray: 1 152;
+    stroke-dashoffset: -151;
+  }
+}
+
+/* A spinner that may not move still has to say "working" — that is the only
+   thing it exists to say. Both arcs hold still at a readable length and the
+   mark breathes instead: no rotation, no travel, nothing vestibular.
+   Deliberately outside @layer components, so it wins over the animations
+   above without needing !important. */
+@media (prefers-reduced-motion: reduce) {
+  .ndm-spinner__arc,
+  .ndm-spinner__inner {
+    animation: ndm-spinner-breathe 2.2s ease-in-out infinite;
+  }
+
+  .ndm-spinner__arc {
+    stroke-dasharray: 62 152;
+  }
+}
+
+@keyframes ndm-spinner-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Light theme: component surfaces.                                    */
 /*                                                                      */
