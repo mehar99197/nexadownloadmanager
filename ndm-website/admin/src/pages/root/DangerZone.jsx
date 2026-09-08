@@ -121,7 +121,7 @@ export default function DangerZone() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-danger">Irreversible</p>
+        <p className="admin-eyebrow text-admin-danger">Irreversible</p>
         <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Danger zone</h2>
         <p className="mt-2 max-w-2xl text-sm text-admin-muted">
           Permanently delete a customer account. Their subscriptions, payments, licence activations
@@ -171,7 +171,7 @@ export default function DangerZone() {
 
       {search && (
         <div className="admin-card !p-0">
-          <DataTable columns={columns} rows={users} loading={loading} emptyMessage="No accounts match that search." />
+          <DataTable columns={columns} rows={users} loading={loading} emptyMessage="No accounts match that search." caption="Accounts matching the search, for permanent deletion" />
         </div>
       )}
 

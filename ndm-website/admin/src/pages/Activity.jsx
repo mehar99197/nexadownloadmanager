@@ -33,9 +33,9 @@ export default function Activity() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Governance</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Activity log</h2><p className="mt-2 max-w-2xl text-sm text-admin-muted">Every important admin action is recorded here for traceability and support handoffs.</p></div><Button variant="secondary" onClick={loadActivity} disabled={loading}>Refresh log</Button></div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="admin-eyebrow text-admin-cyan">Governance</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Activity log</h2><p className="mt-2 max-w-2xl text-sm text-admin-muted">Every important admin action is recorded here for traceability and support handoffs.</p></div><Button variant="secondary" onClick={loadActivity} disabled={loading}>Refresh log</Button></div>
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
-      <div className="admin-card !p-0"><DataTable columns={columns} rows={items} loading={loading} emptyMessage="No admin actions have been recorded." /></div>
+      <div className="admin-card !p-0"><DataTable columns={columns} rows={items} loading={loading} emptyMessage="No admin actions have been recorded." caption="Recent administrator actions" /></div>
     </div>
   );
 }

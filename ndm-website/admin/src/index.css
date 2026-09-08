@@ -8,7 +8,10 @@
   --color-admin-sidebar: #080c15;
   --color-admin-text: #eef2ff;
   --color-admin-muted: #9ba9c3;
-  --color-admin-faint: #63728e;
+  /* Was #63728e, which measured 3.56:1 on a card and 4.03:1 in the sidebar —
+     under AA everywhere it is used (nav icons, meta lines, table sub-labels).
+     Still clearly fainter than --color-admin-muted, just legible. */
+  --color-admin-faint: #7c8aa6;
   --color-admin-accent: #7e6cff;
   --color-admin-accent-hover: #9b75ff;
   --color-admin-cyan: #35c9ff;
@@ -106,8 +109,15 @@ body::before {
     @apply border-b border-admin-border px-4 py-3 text-xs font-semibold uppercase tracking-wide text-admin-muted;
   }
 
-  .admin-table tbody td {
+  .admin-table tbody td,
+  .admin-table tbody th {
     @apply border-b border-admin-border px-4 py-3 align-middle text-admin-text;
+  }
+
+  /* A row header is a label, not a heading: it should not come out bolder than
+     the row it names. */
+  .admin-table tbody th {
+    @apply text-left font-normal;
   }
 
   .admin-table tbody tr:hover {
@@ -137,8 +147,18 @@ body::before {
     box-shadow: 0 0 0 3px rgba(126, 108, 255, 0.18);
   }
 
+  /* Page eyebrows. Set in sentence case: "Operational overview" and "Find the
+     account to delete" in caps are slower to read than the heading beneath
+     them, which is the opposite of what an eyebrow is for. */
+  .admin-eyebrow {
+    @apply text-xs font-bold tracking-wide;
+  }
+
+  /* Sentence case, like the public site's form labels: "Find the account to
+     delete" set in caps is 26 characters of the slowest thing to read on the
+     page, and it is the instruction that matters most there. */
   .admin-label {
-    @apply mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-admin-muted;
+    @apply mb-2 block text-xs font-semibold tracking-wide text-admin-muted;
   }
 
   .btn-admin-primary,
@@ -146,8 +166,22 @@ body::before {
     @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition;
   }
 
+  /* `from-accent-500 to-admin-cyan` carries white at 4.09:1 falling to 1.92:1 —
+     the panel's primary action was its least readable text. Both stops are
+     deepened until white clears 4.5:1 across the whole band; unlike the public
+     site's 125% stop, bg-gradient-to-r reaches each endpoint exactly, so both
+     ends are checked. The glow keeps the original cyan. */
+  /* One declaration for both spellings — the Button component's primary
+     variant and the bare class — so they cannot drift apart. (@apply cannot
+     reference another custom class in Tailwind v4, hence the shared selector
+     rather than composition.) */
+  .btn-admin-gradient,
   .btn-admin-primary {
-    @apply bg-gradient-to-r from-accent-500 to-admin-cyan text-white shadow-[0_12px_26px_-14px_rgba(53,201,255,0.8)];
+    background-image: linear-gradient(to right, #9257cf, #1f6f9e);
+  }
+
+  .btn-admin-primary {
+    @apply text-white shadow-[0_12px_26px_-14px_rgba(53,201,255,0.8)];
   }
 
   .btn-admin-primary:hover,

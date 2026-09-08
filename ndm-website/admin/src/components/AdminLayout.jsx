@@ -51,7 +51,7 @@ export default function AdminLayout() {
           <img src={LOGO} alt="" className="admin-brand-logo h-9 w-9 rounded-xl" aria-hidden="true" />
           <div className="leading-tight">
             <p className="text-sm font-bold tracking-tight">Nexa<span className={`bg-clip-text text-transparent ${IS_ROOT ? 'bg-gradient-to-r from-admin-warning to-admin-danger' : 'bg-gradient-to-r from-accent-400 to-admin-cyan'}`}> {PANEL_LABEL}</span></p>
-            <p className="text-[11px] text-admin-faint">{PANEL_SUBTITLE}</p>
+            <p className="text-xs text-admin-faint">{PANEL_SUBTITLE}</p>
           </div>
         </div>
 
@@ -65,7 +65,7 @@ export default function AdminLayout() {
                 `nav-link ${isActive ? 'nav-link-active' : ''}`
               }
             >
-              <span className="w-4 text-center text-admin-faint">
+              <span aria-hidden="true" className="w-4 text-center text-admin-muted">
                 {item.icon}
               </span>
               {item.label}
@@ -91,7 +91,7 @@ export default function AdminLayout() {
           <div className="flex items-center gap-3">
             <button type="button" aria-label="Open navigation" className="rounded-lg border border-admin-border bg-admin-surface-2 px-2.5 py-2 text-admin-muted md:hidden" onClick={() => setMobileOpen(true)}>☰</button>
             <div>
-            <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-admin-faint">NexaDownloadManager</p>
+            <p className="text-xs font-semibold tracking-wide text-admin-faint">NexaDownloadManager</p>
             <h1 className="mt-0.5 text-sm font-semibold text-admin-text">{PANEL_HEADING}</h1>
             </div>
           </div>

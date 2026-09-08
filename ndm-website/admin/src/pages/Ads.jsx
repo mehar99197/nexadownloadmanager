@@ -4,6 +4,7 @@ import { useConfirm } from '../components/ConfirmDialog.jsx';
 import DataTable from '../components/DataTable.jsx';
 import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
+import { formatDate } from '../utils.js';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
 import StatCard from '../components/StatCard.jsx';
@@ -26,7 +27,7 @@ function count(value) {
 }
 
 function date(value) {
-  return value ? new Date(value).toLocaleDateString() : '—';
+  return value ? formatDate(value) : '—';
 }
 
 // <input type="datetime-local"> wants "YYYY-MM-DDTHH:mm" in LOCAL time; the API
@@ -274,7 +275,7 @@ export default function Ads() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Monetisation</p>
+          <p className="admin-eyebrow text-admin-cyan">Monetisation</p>
           <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Ads</h2>
           <p className="mt-2 text-sm text-admin-muted">
             Promotions shown inside the desktop app to <span className="font-semibold text-admin-text">Free installs only</span>.
@@ -300,7 +301,7 @@ export default function Ads() {
         <div className="border-b border-admin-border px-5 py-4">
           <p className="text-sm text-admin-muted"><span className="font-bold text-admin-text">{ads.length}</span> ads in the rotation</p>
         </div>
-        <DataTable columns={columns} rows={ads} loading={loading} emptyMessage="No ads yet. Free users currently see nothing." />
+        <DataTable columns={columns} rows={ads} loading={loading} emptyMessage="No ads yet. Free users currently see nothing." caption="In-app promotions and their performance" />
       </div>
 
       <Modal

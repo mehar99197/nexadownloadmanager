@@ -230,7 +230,7 @@ export default function Contact() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Customer support</p>
+          <p className="admin-eyebrow text-admin-cyan">Customer support</p>
           <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Contact inbox</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-admin-muted">
             Every message sent from the website&apos;s contact form. Read it, reply by email
@@ -300,6 +300,7 @@ export default function Contact() {
           rows={data.messages}
           loading={loading}
           emptyMessage="No contact messages match these filters."
+          caption="Contact messages matching the current filters"
         />
       </div>
 
