@@ -39,8 +39,15 @@ are deployed by hand and are excluded from every sync.
 job) takes the nightly database dump into `nexa-api/backups/` and sends trial
 reminder emails.
 
+The API log is **`~/domains/nexadownloadmanager.com/logs/api.log`** — beside
+`run-api.sh`, *not* inside `nexa-api/`. `nexa-api/logs/` also exists and is
+empty (the deploy creates it), so grepping there returns a confident zero for
+lines that are really in the other file. Everything the process writes to stdout
+and stderr lands in the real one, `console.warn` included — that is where the
+`[SECURITY] …` lines are.
+
 **Successful `/api/health` requests are deliberately not logged**
-(`backend/src/app.js`), so their absence from `logs/api.log` says nothing about
+(`backend/src/app.js`), so their absence from that log says nothing about
 whether the keepalive is running. Nor does `.run-api.lock`'s mtime (truncating
 an already-empty file does not update it).
 
