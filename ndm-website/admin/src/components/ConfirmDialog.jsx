@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useRef, useState } from 'react';
 import Button from './Button.jsx';
+import useDialogFocus from '../useDialogFocus.js';
 
 const ConfirmContext = createContext(null);
 
@@ -44,14 +45,10 @@ export function useConfirm() {
 
 function ConfirmDialog({ request, onSettle }) {
   const primary = useRef(null);
-
-  useEffect(() => {
-    if (!request) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') onSettle(false); };
-    window.addEventListener('keydown', onKey);
-    primary.current?.focus();
-    return () => window.removeEventListener('keydown', onKey);
-  }, [request, onSettle]);
+  // Focus was moved in already; what was missing is containment. One Tab from
+  // "Delete permanently?" used to land in the sidebar, leaving Cancel
+  // unreachable on the one prompt where reaching it matters most.
+  const panel = useDialogFocus(Boolean(request), () => onSettle(false), { initialFocus: primary });
 
   if (!request) return null;
   const {
@@ -67,10 +64,12 @@ function ConfirmDialog({ request, onSettle }) {
         onClick={() => onSettle(false)}
       />
       <div
+        ref={panel}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="admin-confirm-title"
-        className="relative w-full max-w-md rounded-xl border border-admin-border bg-admin-surface p-5 shadow-xl"
+        tabIndex={-1}
+        className="relative w-full max-w-md rounded-xl border border-admin-border bg-admin-surface p-5 shadow-xl outline-none"
       >
         <h3 id="admin-confirm-title" className="text-base font-semibold text-admin-text">{title}</h3>
         {message && <p className="mt-2 text-sm leading-6 text-admin-muted">{message}</p>}
