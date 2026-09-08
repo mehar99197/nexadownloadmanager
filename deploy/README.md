@@ -41,9 +41,22 @@ reminder emails.
 
 **Successful `/api/health` requests are deliberately not logged**
 (`backend/src/app.js`), so their absence from `logs/api.log` says nothing about
-whether the keepalive is running. To check the cron, look in hPanel — not in
-the log, and not at `.run-api.lock`'s mtime (truncating an already-empty file
-does not update it).
+whether the keepalive is running. Nor does `.run-api.lock`'s mtime (truncating
+an already-empty file does not update it).
+
+The way to actually see it work is a deploy: `build-and-upload.sh` signals the
+old process and does **not** start a new one, so `/api/health` answers
+`502 UPSTREAM_DOWN` until the cron's next minute. Watch it come back —
+
+```bash
+until curl -sf https://nexadownloadmanager.com/api/health; do sleep 10; done
+ssh hostinger 'cd ~/domains/nexadownloadmanager.com/nexa-api \
+  && ps -o lstart=,cmd= -p "$(cat .api.pid)" && stat -c %y src/routes/auth.js'
+```
+
+— and confirm the process start time is *after* the uploaded files' mtime. That
+also proves the running process loaded the build you just shipped, which a file
+checksum alone does not. Measured 2026-09-08: down at 12:08, back at 12:09.
 
 ## Verifying a deploy
 
