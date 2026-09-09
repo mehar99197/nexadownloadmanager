@@ -74,6 +74,10 @@
       Hidden by default. It is shown only when the script below adds
       `.ndm-booting`, so a crawler, a reader with JS off, or a browser where
       that script throws sees no overlay at all rather than a permanent one.
+
+      It costs nothing on a slow connection — the 700 ms floor only applies
+      when the app is ready sooner than that — and nothing at all on in-site
+      navigation, which never reloads the document.
     -->
     <style>
       #ndm-boot { display: none; }
@@ -146,16 +150,19 @@
         if (resolved === 'light') html.setAttribute('data-theme', 'light');
         html.style.colorScheme = resolved;
 
-        /* The boot screen is for a first visit only; every load after it goes
-           straight to the page. If storage cannot be read or written we simply
-           do not show it — a splash we are unable to remember would be a splash
-           on every single load, which is the opposite of what it is for. */
-        var KEY = 'ndm_booted';
-        var seen = true;
-        try { seen = localStorage.getItem(KEY) === '1'; } catch (e) { return; }
-        if (seen) return;
-        try { localStorage.setItem(KEY, '1'); } catch (e) { return; }
+        /* Shown on every full page load, which in a single-page app means
+           exactly the moment it is for: arriving at the site, following a link
+           in from outside, or reloading. Moving around inside the site never
+           reloads the document, so navigation stays instant — that is the
+           "after the first time" half of it.
 
+           This used to be gated on a localStorage flag, one boot screen per
+           browser for ever. It worked, and it was the wrong idea: measured at
+           959 ms on the live bytes and then never again, so the one person who
+           most needs to see it — whoever is judging the site — cannot. A gate
+           nobody can reopen is indistinguishable from a screen that does not
+           work. Losing the flag also loses the branch where blocked storage
+           meant no boot screen at all. */
         html.className += ' ndm-booting';
 
         var started = Date.now();
