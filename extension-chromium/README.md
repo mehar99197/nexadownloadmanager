@@ -5,7 +5,7 @@ Microsoft Edge, Brave, Opera, Vivaldi). It intercepts downloads, captures the
 tab's cookies / User-Agent / referrer, sniffs HLS/DASH/media streams, and hands
 everything to the Nexa desktop app over native messaging.
 
-> Firefox uses the sibling `../extension-firefox/` build (same code, MV2 wrapper).
+> Firefox uses the sibling `../extension-firefox/` build (same code, its own MV3 manifest — Firefox runs the background script as an event page instead of a service worker).
 
 ## Install (unpacked, for development / the challenge demo)
 

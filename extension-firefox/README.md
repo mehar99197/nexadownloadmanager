@@ -2,8 +2,9 @@
 
 The Firefox build of the Nexa extension. It is the **same code** as
 `../extension-chromium/` (`background.js`, `content.js`, popup and options
-pages are kept byte-identical apart from the MV2-forced differences), wrapped
-in a Manifest V2 manifest with `browser_specific_settings.gecko`.
+pages are kept byte-identical apart from a handful of Firefox-specific
+differences), wrapped in a Manifest V3 manifest with
+`browser_specific_settings.gecko`.
 
 Requires **Firefox 115+** (`storage.session`, used to survive background
 restarts, landed in 115).
@@ -58,8 +59,8 @@ Settings and their defaults are documented in `../extension-chromium/README.md`
 
 | | Chromium | Firefox |
 |-|----------|---------|
-| Manifest | V3, `background.service_worker`, `action` | V2, `background.scripts` (persistent), `browser_action` |
-| Injecting `content.js` into already-open tabs | `scripting.executeScript` | falls back to `tabs.executeScript` (no `scripting` permission in MV2) |
+| Manifest | V3, `background.service_worker`, `action` | V3, `background.scripts` (Firefox runs this as a non-persistent event page — it has no `service_worker` background), `action` |
+| Injecting `content.js` into already-open tabs | `scripting.executeScript` | `scripting.executeScript`, with a `tabs.executeScript` fallback kept only in case this build ever runs under MV2 |
 | `author` manifest key | `{ "email": … }` (Chrome's shape) | string (AMO's shape) |
 | Options page | embedded (`open_in_tab: false`) | own tab (`open_in_tab: true`) |
 | Extension ID | fixed by the manifest `key` (dev) / store-assigned | `nexa@nexa.local` always |
@@ -67,8 +68,7 @@ Settings and their defaults are documented in `../extension-chromium/README.md`
 Everything else — provider registry (including the MovieBox CDN block), cookie
 export, request-header capture, media sniffing, the Download button, popup, options,
 notifications and the `ping` / `links` / `show` / `download` / `list-formats`
-messages — is identical. The code avoids MV2-only APIs (apart from the
-`tabs.executeScript` fallback above) so the manifest can move to MV3 later.
+messages — is identical.
 
 ## Privacy
 
