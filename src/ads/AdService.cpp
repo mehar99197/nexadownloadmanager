@@ -135,8 +135,12 @@ void AdService::applyPlan(const QString &plan)
 QUrl AdService::endpoint(const QString &path) const
 {
 #ifdef NEXA_DEV_BUILD
+    // qEnvironmentVariable takes a const char* name, not a QString — the same
+    // slip that was fixed in LicenseManager.cpp. It survived here for the same
+    // reason: this branch only exists under NEXA_DEV_BUILD, so no shipped build
+    // ever compiled it, and `cmake -DNEXA_DEV_BUILD=ON` failed outright.
     const QString base = qEnvironmentVariable(
-        QStringLiteral("NEXA_ADS_API_URL"), QStringLiteral("https://nexadownloadmanager.com/api/ads"));
+        "NEXA_ADS_API_URL", QStringLiteral("https://nexadownloadmanager.com/api/ads"));
 #else
     const QString base = QStringLiteral("https://nexadownloadmanager.com/api/ads");
 #endif

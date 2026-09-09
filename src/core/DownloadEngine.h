@@ -78,6 +78,11 @@ public:
     // ranges like "http://x/file[1-20].jpg" into individual downloads.
     QList<int> addBatch(const QString &text, const HeaderList &headers = {});
     QList<int> addRemoteBatch(const QString &text);
+    // The single sanitiser every untrusted name goes through before it becomes a
+    // path: browser suggestions, Content-Disposition, torrent names. Public and
+    // static so the rules can be tested directly.
+    static QString sanitizeFileName(const QString &name);
+
     static QStringList expandPattern(const QString &token);
 
     // Schedule a download to start at a future time (IDM-style scheduler).

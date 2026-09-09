@@ -33,6 +33,8 @@
 
 namespace nexa {
 
+// Exposed via DownloadEngine::sanitizeFileName() so it is directly testable —
+// it decides where every untrusted name lands on disk.
 static QString safeBasename(QString name)
 {
     // Keep only a filename component. This protects IPC/browser suggestions and
@@ -52,7 +54,9 @@ static QString safeBasename(QString name)
     }
     if (name == QLatin1String(".") || name == QLatin1String(".."))
         name.clear();
-    return name.left(240);
+    // Cap first, then apply the Win32 rules: truncating afterwards could put a
+    // dot back on the end, and a truncated stem could land on a device name.
+    return makeFileNamePortable(name.left(240));
 }
 
 DownloadEngine::DownloadEngine(QObject *parent)
@@ -319,6 +323,11 @@ QString DownloadEngine::categoryFor(const QString &fileName)
     if (prog.contains(ext))  return QStringLiteral("Programs");
     if (img.contains(ext))   return QStringLiteral("Images");
     return QStringLiteral("Other");
+}
+
+QString DownloadEngine::sanitizeFileName(const QString &name)
+{
+    return safeBasename(name);
 }
 
 QString DownloadEngine::pathForName(const QString &fileName) const
@@ -1129,6 +1138,9 @@ void DownloadEngine::remove(int id, bool deleteFile)
         return;
     }
 
+    // yt-dlp keeps its own .part alongside the output and resumes from it, so
+    // unlike the grabbers below its leftovers are not dead weight. Only an
+    // explicit delete removes them.
     if (auto *y = m_siteVideos.take(id)) {
         const QString path = y->savePath();
         m_playlistIds.remove(id);
@@ -1140,11 +1152,21 @@ void DownloadEngine::remove(int id, bool deleteFile)
         return;
     }
 
+    // HLS, MEGA and Spotify partials are deleted on removal even when the caller
+    // asked to keep the file — the same reasoning as the segmented-task branch
+    // at the bottom of this function, and for these three the code already says
+    // so out loud: resume() restarts every one of them "from scratch", so an
+    // interrupted output is a fragment nothing will ever continue. A cancelled
+    // 10-minute stream left 124 MB of unplayable MP4 behind with an empty queue.
+    //
+    // yt-dlp is the deliberate exception below: it resumes its own .part files,
+    // so its leftovers are worth something. Torrents are libtorrent's to manage.
     if (auto *g = m_grabbers.take(id)) {
         const QString path = g->savePath();
+        const bool unfinished = g->state() != DownloadState::Completed;
         g->cancel();
         g->deleteLater();
-        if (deleteFile && !path.isEmpty())
+        if (!path.isEmpty() && (deleteFile || unfinished))
             QFile::remove(path);
         emit taskRemoved(id);
         return;
@@ -1152,9 +1174,10 @@ void DownloadEngine::remove(int id, bool deleteFile)
 
     if (auto *m = m_megaGrabbers.take(id)) {
         const QString path = m->savePath();
+        const bool unfinished = m->state() != DownloadState::Completed;
         m->cancel();
         m->deleteLater();
-        if (deleteFile && !path.isEmpty())
+        if (!path.isEmpty() && (deleteFile || unfinished))
             QFile::remove(path);
         emit taskRemoved(id);
         return;
@@ -1162,9 +1185,10 @@ void DownloadEngine::remove(int id, bool deleteFile)
 
     if (auto *s = m_spotifyGrabbers.take(id)) {
         const QString path = s->savePath();
+        const bool unfinished = s->state() != DownloadState::Completed;
         s->cancel();
         s->deleteLater();
-        if (deleteFile && !path.isEmpty() && QFileInfo(path).isFile())
+        if (!path.isEmpty() && (deleteFile || unfinished) && QFileInfo(path).isFile())
             QFile::remove(path);
         emit taskRemoved(id);
         return;
@@ -1175,11 +1199,32 @@ void DownloadEngine::remove(int id, bool deleteFile)
         return;
     m_pending.removeAll(id);
     const QString path = t->savePath();
+    // A partial segmented download is deleted even when the caller asked to keep
+    // the file, and this is deliberate.
+    //
+    // The downloader preallocates the output to its FULL final size before it
+    // fetches anything (preallocateFile), then writes each segment at its own
+    // offset. So an interrupted download is a file of exactly the right length
+    // whose gaps are zeros — 62% real data and 38% holes in the case that found
+    // this. It is indistinguishable from a finished download by name, by folder
+    // and by size; only a checksum tells them apart. A user who opens it gets a
+    // truncated video or a corrupt installer and no reason to suspect why.
+    //
+    // Nor is it worth keeping. The segment offsets that make a partial
+    // resumable live in the row being deleted two lines below, so the moment
+    // this download leaves the list its partial file can never be continued —
+    // it is only ever going to sit there. Eight aborted downloads left 155 MB
+    // behind with an empty queue, and nothing in the app would ever mention
+    // them again.
+    //
+    // A COMPLETED download is untouched: that file is the whole point.
+    const bool keepFinishedFile = (t->state() == DownloadState::Completed);
+    const bool startedWriting = t->doneBytes() > 0 || t->totalBytes() > 0;
     t->pause();
     t->deleteLater();
     if (m_db)
         m_db->removeTask(id);
-    if (deleteFile && !path.isEmpty())
+    if (!path.isEmpty() && (deleteFile || (!keepFinishedFile && startedWriting)))
         QFile::remove(path);
     emit taskRemoved(id);
     schedule();           // promote a queued download into the freed slot
@@ -1310,14 +1355,17 @@ QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &heade
 
 int DownloadEngine::addRemoteDownload(const QUrl &url)
 {
-    if (!isPublicHttpUrl(url))
+    // Scheme gate first. magnet: has no host to resolve, so the public-address
+    // rule cannot apply to it and must not be asked to — but everything that
+    // speaks HTTP is still held to it, redirects included (addDownload passes
+    // publicNetworkOnly down to the task and its segment workers).
+    if (!isAllowedRemoteScheme(url))
+        return -1;
+    const bool isHttp = url.scheme().compare(QLatin1String("magnet"), Qt::CaseInsensitive) != 0;
+    if (isHttp && !isPublicHttpUrl(url))
         return -1;
 
-    // The same paid gate addDownload() applies. This path builds its own task
-    // rather than going through addDownload(), so without repeating the check
-    // the phone-remote dashboard was a complete way around it: a Free install
-    // could queue a Udemy download from its own web API with no licence
-    // tampering whatsoever.
+    // The same paid gate addDownload() applies, repeated here on purpose.
     // Deliberately a second, independent read. m_authSiteDownloads is the
     // cached copy every other gate uses; verifiedFeatures() re-runs the
     // Ed25519 check against the token itself. They live in different
@@ -1325,25 +1373,32 @@ int DownloadEngine::addRemoteDownload(const QUrl &url)
     // a patched bool here and a defeated signature there, not one edit.
     const bool authSitesAllowed = m_authSiteDownloads
         && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
-    if (isAuthSiteUrl(url) && !authSitesAllowed) {
+    if (isHttp && isAuthSiteUrl(url) && !authSitesAllowed) {
         emit downloadBlocked(url,
             tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
                "or see nexadownloadmanager.com/pricing.").arg(url.host()));
         return -1;
     }
 
-    const int id = m_db->nextId();
-    auto *task = new DownloadTask(id, url, resolveSavePath(url, QString()), m_nam, m_db, this);
-    task->setRateLimiter(m_limiter);
-    task->setCloudProviders(m_providers);
-    task->setPublicNetworkOnly(true);
-    task->setNameResolver([this](const QString &name) { return pathForName(name); });
-    m_tasks.insert(id, task);
-    wireTask(task);
-    emit taskAdded(id);
-    m_pending.append(id);
-    schedule();
-    return id;
+    // Hand off to the one intake path that knows what a URL actually is.
+    //
+    // This used to build a bare DownloadTask and stop, which meant the remote
+    // dashboard could only ever fetch a direct file: a .m3u8 was saved as the
+    // playlist TEXT, a magnet was refused outright, and a video page URL came
+    // back as an error — while its own input placeholder and docs/remote
+    // promised all three. addDownload() is where HlsGrabber, YtDlpGrabber,
+    // TorrentManager, MegaGrabber and SpotifyGrabber are chosen between.
+    //
+    // Routing here does NOT loosen anything. publicNetworkOnly=true is exactly
+    // what IpcServer already passes for the browser extension — the other
+    // untrusted caller — so the dashboard now reaches the same code under the
+    // same policy rather than a private, weaker copy of it. userInitiated is
+    // false, so a remote handoff still runs the confirm prompt when the user
+    // has that switched on: the phone can queue work, but it does not get to
+    // silence a check the person at the keyboard asked for.
+    return addDownload(url, QString(), {}, QString(), QString(),
+                       /*playlist=*/false, /*userInitiated=*/false, QString(),
+                       /*publicNetworkOnly=*/true);
 }
 
 QList<int> DownloadEngine::addRemoteBatch(const QString &text)

@@ -49,10 +49,14 @@ AdBanner::AdBanner(AdService *ads, QWidget *parent)
     text->setSpacing(1);
     auto *kicker = new QLabel(tr("SPONSORED"), this);
     kicker->setObjectName(QStringLiteral("AdKicker"));
+    // Ad copy arrives from the server. PlainText so a promo can only ever be
+    // words, never markup drawn into the app's own chrome.
     m_title = new QLabel(this);
     m_title->setObjectName(QStringLiteral("AdTitle"));
+    m_title->setTextFormat(Qt::PlainText);
     m_body = new QLabel(this);
     m_body->setObjectName(QStringLiteral("AdBody"));
+    m_body->setTextFormat(Qt::PlainText);
     text->addWidget(kicker);
     text->addWidget(m_title);
     text->addWidget(m_body);

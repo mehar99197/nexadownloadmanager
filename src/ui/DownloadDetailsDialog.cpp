@@ -417,8 +417,12 @@ void DownloadDetailsDialog::buildUi()
     m_tile->setAlignment(Qt::AlignCenter);
     auto *titles = new QVBoxLayout;
     titles->setSpacing(2);
+    // PlainText for the same reason as the list cells in MainWindow: the title
+    // is the download's name, which for a torrent is attacker-supplied.
     m_title = new QLabel(plate); m_title->setObjectName(QStringLiteral("Dd_title"));
+    m_title->setTextFormat(Qt::PlainText);
     m_host  = new QLabel(plate); m_host->setObjectName(QStringLiteral("Dd_host"));
+    m_host->setTextFormat(Qt::PlainText);
     titles->addWidget(m_title);
     titles->addWidget(m_host);
     m_pill = new QLabel(plate); m_pill->setObjectName(QStringLiteral("Dd_pill"));
@@ -617,7 +621,9 @@ void DownloadDetailsDialog::refreshHeader()
     paintIcon(m_tile, name);
     const QFontMetrics fm(m_title->font());
     m_title->setText(fm.elidedText(name, Qt::ElideMiddle, 330));
-    m_title->setToolTip(name);
+    // A tooltip has no textFormat of its own — Qt renders it as rich text
+    // whenever it looks like markup — so this one is escaped instead.
+    m_title->setToolTip(name.toHtmlEscaped());
     m_host->setText(m_engine->hostOf(m_id));
 
     const QColor c = statusColor(m_state);

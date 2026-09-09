@@ -581,7 +581,10 @@ segmented downloads, HLS video streams, BitTorrent, and site-specific media \
 extraction via yt-dlp. It ships with a Qt6 GUI and a native-messaging host \
 for browser integration.")
 set(CPACK_PACKAGE_CONTACT "Nexa Maintainers <tauseeqtufail649@gmail.com>")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/")
+# The product's own site. This becomes the .deb's Homepage: field and both
+# NSIS links ("help" and "about"), so a placeholder here sent every installer
+# user to github.com's front page.
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://nexadownloadmanager.com")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "Nexa")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
