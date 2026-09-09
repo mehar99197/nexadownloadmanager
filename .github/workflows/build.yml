@@ -780,11 +780,19 @@ jobs:
           brew install qt@6 libtorrent-rasterbar boost ninja openssl@3 create-dmg || true
           echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
 
+      # CMAKE_CXX_FLAGS carries boost's include dir because Homebrew's
+      # libtorrent-rasterbar.pc lists only its OWN includedir, while libtorrent's
+      # public headers open with #include <boost/config.hpp>. Boost is a separate
+      # keg under /opt/homebrew/opt/boost, so pkg-config's Cflags leave the
+      # compiler unable to find it and TorrentManager.cpp fails to compile.
+      # CMAKE_PREFIX_PATH alone does not fix this: it steers find_package(), not
+      # the include path of a target found through pkg_check_modules.
       - name: Configure & build
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)" \
+            -DCMAKE_CXX_FLAGS="-I$(brew --prefix boost)/include"
           cmake --build build
 
       - name: Smoke test
@@ -796,7 +804,8 @@ jobs:
       - name: Run unit tests
         run: |
           cmake -B build-tests -G Ninja -DNEXA_BUILD_TESTS=ON \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)" \
+            -DCMAKE_CXX_FLAGS="-I$(brew --prefix boost)/include"
           cmake --build build-tests
           ctest --test-dir build-tests --output-on-failure
 

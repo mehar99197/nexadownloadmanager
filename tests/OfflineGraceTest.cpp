@@ -224,7 +224,7 @@ int main(int argc, char **argv)
             {QStringLiteral("plan"), QStringLiteral("pro")},
             {QStringLiteral("token"), token},
             {QStringLiteral("trial"), false},
-            {QStringLiteral("expires"), QDateTime::fromSecsSinceEpoch(now + 30 * 86400, QTimeZone::UTC)
+            {QStringLiteral("expires"), QDateTime::fromSecsSinceEpoch(now + 30 * 86400, QTimeZone::utc())
                                             .toString(Qt::ISODate)},
             {QStringLiteral("seats"), 1},
             {QStringLiteral("activeSeats"), 1},

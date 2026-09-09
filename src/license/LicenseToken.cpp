@@ -110,7 +110,7 @@ QDateTime timeFromClaim(const QJsonValue &value)
 {
     if (!value.isDouble())
         return QDateTime();
-    return QDateTime::fromSecsSinceEpoch(qint64(value.toDouble()), QTimeZone::UTC);
+    return QDateTime::fromSecsSinceEpoch(qint64(value.toDouble()), QTimeZone::utc());
 }
 
 } // namespace
