@@ -111,10 +111,8 @@ export default function About() {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer">
-              View the source
-            </Button>
-            <Button to="/download" variant="ghost">Download Nexa</Button>
+            <Button to="/download">Download Nexa</Button>
+            <Button to="/docs" variant="ghost">Read the docs</Button>
           </div>
         </Card>
       </Section>

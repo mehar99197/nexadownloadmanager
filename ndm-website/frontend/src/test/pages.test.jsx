@@ -91,6 +91,57 @@ describe('Download page', () => {
     expect(screen.getAllByText(new RegExp('a'.repeat(16))).length).toBe(1);
   });
 
+  // The page pre-selects a platform from the user agent and turns that card's
+  // button into the primary CTA reading "Download for <label>". Android's UA is
+  // "Mozilla/5.0 (Linux; Android 14; ...)", so a bare includes('Linux') matched
+  // every phone and offered a .deb as the recommended download.
+  describe('platform pre-selection', () => {
+    const withUserAgent = (ua, fn) => {
+      const original = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+      Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true });
+      try { return fn(); } finally {
+        if (original) Object.defineProperty(window.navigator, 'userAgent', original);
+      }
+    };
+
+    const renderWith = async (ua) => {
+      api.get.mockResolvedValue({
+        data: { ok: true, data: { version: '0.2.0', windowsUrl: 'https://e.test/a.exe', linuxUrl: 'https://e.test/a.deb' } },
+      });
+      withUserAgent(ua, () => renderPage(<Download />));
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+    };
+
+    it('recommends Windows to a Windows desktop', async () => {
+      await renderWith('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36');
+      await waitFor(() => expect(screen.getByText(/Download for Windows/i)).toBeTruthy());
+    });
+
+    it('recommends Linux to a Linux desktop', async () => {
+      await renderWith('Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0');
+      await waitFor(() => expect(screen.getByText(/Download for Linux/i)).toBeTruthy());
+    });
+
+    it('recommends nothing to an Android phone — its UA also says Linux', async () => {
+      await renderWith('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for Linux/i)).toBeNull();
+      expect(screen.queryByText(/Download for Windows/i)).toBeNull();
+    });
+
+    it('recommends nothing to an Android tablet (no "Mobile" token)', async () => {
+      await renderWith('Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for Linux/i)).toBeNull();
+    });
+
+    it('recommends nothing to macOS, which has no build yet', async () => {
+      await renderWith('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/17.0 Safari/605.1.15');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for /i)).toBeNull();
+    });
+  });
+
   it('says the version is unpublished instead of showing a stale fallback', async () => {
     api.get.mockRejectedValue({ response: { status: 404 } });
 

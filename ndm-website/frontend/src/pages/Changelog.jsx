@@ -88,21 +88,18 @@ export default function Changelog() {
             <span className="eyebrow"><span className="eyebrow-dot" />Nothing published yet</span>
             <h2 className="mt-4 text-xl font-bold text-white">No releases yet</h2>
             <p className="mx-auto mt-2 max-w-md text-sm leading-7 text-slate-400">
-              The first public build hasn&apos;t been published. Until then you can build from
-              source — the repository README has the steps.
+              The first public build hasn&apos;t been published yet. Leave us a note and we will
+              tell you the moment it is.
             </p>
             <div className="mt-6 flex justify-center gap-3">
-              <Button href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer">
-                View on GitHub
-              </Button>
-              <Button to="/contact" variant="ghost">Get notified</Button>
+              <Button to="/contact">Get notified</Button>
+              <Button to="/docs" variant="ghost">Read the docs</Button>
             </div>
           </Card>
         )}
 
         <p className="text-center text-xs text-slate-500">
-          Older versions are listed in the{' '}
-          <a href="https://github.com/mehar99197/nexadownloadmanager/releases" target="_blank" rel="noreferrer" className="text-slate-300 hover:text-brand-300">GitHub releases</a>.
+          Every published build is listed above, newest first.{' '}
           Looking for the extension? See the <Link to="/docs/extension" className="text-slate-300 hover:text-brand-300">extension guide</Link>.
         </p>
       </div>

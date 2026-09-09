@@ -116,15 +116,8 @@ export default function DocsShell({ title, intro, children }) {
           <Card className="mt-8 !p-6 sm:!p-8">{children}</Card>
           <p className="mt-6 text-xs text-slate-500">
             Something missing or wrong?{' '}
-            <a
-              href="https://github.com/mehar99197/nexadownloadmanager/issues"
-              target="_blank"
-              rel="noreferrer"
-              className="text-slate-300 hover:text-brand-300"
-            >
-              Open an issue on GitHub
-            </a>{' '}
-            or <Link to="/contact" className="text-slate-300 hover:text-brand-300">contact us</Link>.
+            <Link to="/contact" className="text-slate-300 hover:text-brand-300">Tell us</Link>{' '}
+            and we will fix the page.
           </p>
         </div>
       </div>

@@ -116,6 +116,12 @@ export default function Download() {
   useEffect(() => {
     if (!os) {
       const ua = navigator.userAgent;
+      // Android's user agent starts "Mozilla/5.0 (Linux; Android ...)", so a
+      // plain includes('Linux') matched every phone and pre-selected the .deb
+      // as their primary CTA — "Download for Linux", on a handset. Rule the
+      // handhelds out first and let them land where macOS and iOS already do:
+      // nothing pre-selected, both cards offered plainly.
+      if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return;
       if (ua.includes('Win')) setOs('windows');
       else if (ua.includes('Linux')) setOs('linux');
     }
@@ -149,8 +155,8 @@ export default function Download() {
           {!hasRelease && (
             <div className="mx-auto mt-10 max-w-xl rounded-xl border border-brand-400/25 bg-brand-400/10 px-4 py-3 text-center text-sm text-brand-100">
               No build has been published yet. Watch the{' '}
-              <Link to="/changelog" className="font-semibold underline">changelog</Link> or{' '}
-              <a href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer" className="font-semibold underline">build from source on GitHub</a>.
+              <Link to="/changelog" className="font-semibold underline">changelog</Link>, or{' '}
+              <Link to="/contact" className="font-semibold underline">ask us to tell you</Link> when it lands.
             </div>
           )}
 

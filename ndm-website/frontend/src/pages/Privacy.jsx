@@ -126,8 +126,9 @@ export default function Privacy() {
           <p>
             The extension has no server component. It never contacts nexadownloadmanager.com or
             any other remote host, never uploads cookies, and does not track the sites you visit.
-            You can confirm this in the source, which is public on{' '}
-            <a href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer" className="text-slate-200 hover:text-brand-300">GitHub</a>.
+            The permissions it asks for are listed on its store page, and what it does with them
+            is described in the{' '}
+            <Link to="/docs/extension" className="text-slate-200 hover:text-brand-300">extension guide</Link>.
           </p>
         </Block>
 

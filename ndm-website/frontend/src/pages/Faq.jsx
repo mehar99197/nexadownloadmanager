@@ -43,9 +43,7 @@ const FAQS = [
       <>
         The extension reads cookies only for the site you are downloading from and sends them to the
         Nexa app on your own computer over the browser&apos;s native messaging channel — a local
-        pipe, not the internet. The bridge (nexa-host) and the whole app are open source on{' '}
-        <a href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer" className="text-brand-300 hover:underline">GitHub</a>,
-        so you can read exactly what it does. Nothing about your downloads is sent to our servers;
+        pipe, not the internet. Nothing about your downloads is sent to our servers;
         the app only contacts us to validate a license key. Full details in the{' '}
         <Link to="/privacy" className="text-brand-300 hover:underline">privacy policy</Link>.
       </>

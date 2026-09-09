@@ -10,7 +10,6 @@ import Input from '../components/Input';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 
 const SUPPORT_EMAIL = 'support@nexadownloadmanager.com';
-const ISSUES_URL = 'https://github.com/mehar99197/nexadownloadmanager/issues';
 
 const TOPICS = [
   { value: 'general', label: 'General question' },
@@ -191,12 +190,13 @@ export default function Contact() {
           <Card className="!p-6">
             <h3 className="font-bold text-white">Found a bug?</h3>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              Bugs and feature requests are tracked in the open on GitHub. Search first — someone
-              may have hit it already.
+              Use the form and pick <strong className="text-slate-200">Bug report</strong>. Tell us
+              your OS, the app version and the link you were downloading — that is usually enough
+              to reproduce it on the first try.
             </p>
             <div className="mt-4">
-              <Button href={ISSUES_URL} target="_blank" rel="noreferrer" variant="ghost">
-                GitHub Issues
+              <Button href={`mailto:${SUPPORT_EMAIL}`} variant="ghost">
+                Email support instead
               </Button>
             </div>
           </Card>

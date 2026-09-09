@@ -231,10 +231,33 @@ DirectoryIndex index.html index.php
     RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f
     RewriteRule ^(.+?)/?$ $1/index.html [L]
 
-    # ---- Everything else --------------------------------------------------------
-    # Real files were already served above; any other path is a client-side
-    # route (dashboard, billing, verify-email, ...) and gets the SPA shell.
-    # This is nginx's `try_files $uri $uri/ /index.html`.
+    # ---- Client-side-only routes ------------------------------------------------
+    # These exist in the React router but are deliberately NOT prerendered:
+    # three sit behind ProtectedRoute, and the other four are one-time links
+    # that carry a token in the query string. They have no shell of their own,
+    # so they are named here explicitly and served the app shell with a 200.
+    #
+    # This list is the price of the 404 below, and it is checked, not trusted:
+    # scripts/check-routes.mjs cross-references App.jsx against the prerendered
+    # routes and this line, and fails the build if a route belongs to neither.
+    # Add a client-only route to the router and forget this file, and the test
+    # says so rather than the route quietly starting to 404 in production.
     RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteRule ^ index.html [L]
+    RewriteRule ^(dashboard|billing|profile|verify-email|forgot-password|reset-password|team/join)/?$ index.html [L]
+
+    # ---- Everything else: a real 404 -------------------------------------------
+    # There used to be a `RewriteRule ^ index.html [L]` catch-all here, so EVERY
+    # unknown path answered 200 with the SPA shell — a soft 404. Search engines
+    # index pages that do not exist, a mistyped link looks like a working page,
+    # a missing asset returns HTML with a success status, and no link checker
+    # can see a broken internal link because nothing on the site ever reports
+    # one. Falling through to Apache's own 404 handling fixes the status; the
+    # ErrorDocument below keeps the user experience identical, because the shell
+    # still renders and React still shows the NotFound page — now under 404.
 </IfModule>
+
+# Serve the SPA shell for a 404 so the styled NotFound page is what a visitor
+# sees, while the STATUS stays 404 for crawlers, link checkers and monitoring.
+# A path is relative to the document root, which makes this an internal
+# subrequest, not a redirect - the URL the visitor typed stays in the bar.
+ErrorDocument 404 /index.html

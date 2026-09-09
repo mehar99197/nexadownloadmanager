@@ -22,7 +22,7 @@ export default function DocsExtension() {
       <H2 id="chromium">Chrome, Edge and Brave</H2>
       <Steps
         items={[
-          <>Download <Code>nexa-chrome.zip</Code> (or <Code>nexa-edge.zip</Code>) from the <a href="https://github.com/mehar99197/nexadownloadmanager/releases" target="_blank" rel="noreferrer" className="text-brand-300 hover:underline">GitHub releases</a> and unzip it somewhere permanent — the browser loads it from that folder every start.</>,
+          <>Download <Code>nexa-chrome.zip</Code> (or <Code>nexa-edge.zip</Code>) from the <Link to="/download" className="text-brand-300 hover:underline">download page</Link> and unzip it somewhere permanent — the browser loads it from that folder every start.</>,
           <>Open <Code>chrome://extensions</Code> (<Code>edge://extensions</Code> in Edge, <Code>brave://extensions</Code> in Brave) and turn on <strong className="text-white">Developer mode</strong> in the top-right corner.</>,
           <>Click <strong className="text-white">Load unpacked</strong> and choose the unzipped folder. The Nexa icon appears in the toolbar.</>,
           <>Make sure the desktop app is running, then reload any page you already had open so the content script is injected.</>,
