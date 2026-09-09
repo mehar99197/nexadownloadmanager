@@ -13,6 +13,49 @@ on:
 permissions:
   contents: write
 
+# ── Third-party binaries: pinned, and checked before they are used ──────────
+#
+# Every one of these is downloaded over the network and then either RUN on the
+# runner or BUNDLED into an installer that we go on to Authenticode-sign and
+# notarise. Our signature is what tells SmartScreen and Gatekeeper the contents
+# are ours, so shipping a binary we never verified means vouching for something
+# we did not check.
+#
+# Two problems, both fixed here:
+#   - `latest` / `continuous` are moving tags. Two builds of the same commit
+#     could ship different ffmpeg and yt-dlp, and after the fact there is no way
+#     to say which. Every reference below names an immutable release.
+#   - Nothing was verified. There was no sha256sum, shasum or Get-FileHash
+#     anywhere in this file. Now each download is checked before use and the job
+#     fails loudly if a hash moves.
+#
+# yt-dlp publishes its own signed SHA2-256SUMS with each release, so that is
+# what we check against — a stronger chain of custody than a hash we copied.
+# BtbN and linuxdeploy publish no checksums, so their hashes are recorded here;
+# bump the tag and the hash together.
+#
+# KEEP THESE FRESH. A pinned yt-dlp goes stale and stale yt-dlp means broken
+# extractors, which is the single most common cause of "this video won't
+# download". Bump YTDLP_VERSION on a regular cadence — this pin is for
+# reproducibility and provenance, not for standing still.
+env:
+  YTDLP_VERSION: '2026.08.19'
+  YTDLP_SHA256_LINUX: '1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6'
+  YTDLP_SHA256_WINDOWS: '66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a'
+  YTDLP_SHA256_MACOS: '0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202'
+  # A release-branch build, not master: this one ships to users. ffmpeg 8.x also
+  # carries the `allowed_segment_extensions` guard that stops a hostile HLS
+  # playlist reading local files through a rewritten segment URI.
+  FFMPEG_TAG: 'autobuild-2026-09-08-23-15'
+  FFMPEG_ASSET: 'ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip'
+  FFMPEG_SHA256: '508400eb2ecfab27e2f0383817b54e2bf1946940a8aeda6fe3df9438ff511bf1'
+  # Build-time only — these never reach a user's machine, but they DO execute on
+  # a runner that holds the signing secrets.
+  LINUXDEPLOY_TAG: '1-alpha-20251107-1'
+  LINUXDEPLOY_SHA256: 'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d'
+  LINUXDEPLOY_QT_TAG: '1-alpha-20250213-1'
+  LINUXDEPLOY_QT_SHA256: '15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724'
+
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
@@ -49,9 +92,16 @@ jobs:
           # harfbuzz, xcb, libpng, …) and bundles the Qt platform / sqldrivers /
           # tls / imageformats / iconengines plugins. AppImages need FUSE (absent
           # on CI), so we --appimage-extract and run the inner AppRun directly.
-          dl() { curl -sSL "$1" -o "$2"; chmod +x "$2"; }
-          dl https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy
-          dl https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage linuxdeploy-plugin-qt
+          # Pinned + verified: these AppImages execute on this runner.
+          dl() {
+            curl -sSL --fail "$1" -o "$2"
+            echo "$3  $2" | sha256sum -c - || { echo "ERROR: $2 failed its checksum"; exit 1; }
+            chmod +x "$2"
+          }
+          dl "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-x86_64.AppImage" \
+             linuxdeploy "$LINUXDEPLOY_SHA256"
+          dl "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/${LINUXDEPLOY_QT_TAG}/linuxdeploy-plugin-qt-x86_64.AppImage" \
+             linuxdeploy-plugin-qt "$LINUXDEPLOY_QT_SHA256"
           ./linuxdeploy            --appimage-extract >/dev/null && mv squashfs-root ld
           ./linuxdeploy-plugin-qt  --appimage-extract >/dev/null && mv squashfs-root ldqt
           # linuxdeploy discovers its qt plugin by name on PATH
@@ -111,9 +161,19 @@ jobs:
 
       - name: Download yt-dlp binary
         run: |
-          sudo curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
-            -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
+          base="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"
+          curl -sSL --fail "$base/yt-dlp" -o yt-dlp
+          # Check against the SUMS file from the same immutable release, then
+          # against our own pin — so a swapped release asset AND a swapped sums
+          # file both have to get past us.
+          curl -sSL --fail "$base/SHA2-256SUMS" -o SHA2-256SUMS
+          grep -E '  yt-dlp$' SHA2-256SUMS | sha256sum -c - \
+            || { echo "ERROR: yt-dlp does not match upstream SHA2-256SUMS"; exit 1; }
+          echo "$YTDLP_SHA256_LINUX  yt-dlp" | sha256sum -c - \
+            || { echo "ERROR: yt-dlp does not match our pinned hash"; exit 1; }
+          sudo install -m 0755 yt-dlp /usr/local/bin/yt-dlp
+          rm -f yt-dlp SHA2-256SUMS
+          yt-dlp --version
 
       - name: Build self-contained .deb (all dependencies bundled)
         run: |
@@ -432,10 +492,17 @@ jobs:
       - name: Bundle yt-dlp
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Invoke-WebRequest `
-            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/download/$env:YTDLP_VERSION/yt-dlp.exe" `
             -OutFile dist\yt-dlp.exe
-          Write-Host "yt-dlp bundled"
+          # This binary goes inside the installer we Authenticode-sign, so it is
+          # checked before it gets there.
+          $got = (Get-FileHash dist\yt-dlp.exe -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:YTDLP_SHA256_WINDOWS) {
+            throw "yt-dlp.exe checksum mismatch: got $got, expected $env:YTDLP_SHA256_WINDOWS"
+          }
+          Write-Host "yt-dlp $env:YTDLP_VERSION bundled and verified"
 
       - name: Bundle ffmpeg (static, self-contained)
         run: |
@@ -451,8 +518,11 @@ jobs:
           # The BtbN "win64-gpl" build is a STATIC, self-contained ffmpeg.exe with
           # no external DLL dependencies — the correct thing to bundle. Grab ffprobe
           # too (yt-dlp uses it for format/duration probing).
-          curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
+          curl -sSL --fail "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" \
             -o ffmpeg.zip
+          # Verified before we unzip it: this ships inside the signed installer.
+          echo "$FFMPEG_SHA256  ffmpeg.zip" | sha256sum -c - \
+            || { echo "ERROR: ffmpeg archive failed its checksum"; exit 1; }
           unzip -j ffmpeg.zip "*/ffmpeg.exe" "*/ffprobe.exe" -d dist/
           rm ffmpeg.zip
           ls -lh dist/ffmpeg.exe dist/ffprobe.exe
@@ -738,8 +808,12 @@ jobs:
           # The native-messaging host lives inside the bundle so one drag installs both.
           cp build/nexa-host build/nexa.app/Contents/MacOS/nexa-host
           # yt-dlp + ffmpeg make the video features work without a Homebrew install.
-          curl -sL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" \
+          curl -sSL --fail "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_macos" \
             -o build/nexa.app/Contents/MacOS/yt-dlp
+          # Verified before it is signed into the bundle. macOS ships shasum, not
+          # sha256sum.
+          echo "$YTDLP_SHA256_MACOS  build/nexa.app/Contents/MacOS/yt-dlp" | shasum -a 256 -c - \
+            || { echo "ERROR: yt-dlp_macos failed its checksum"; exit 1; }
           chmod +x build/nexa.app/Contents/MacOS/yt-dlp
           echo "=== bundle contents ==="; ls -la build/nexa.app/Contents/MacOS/
 

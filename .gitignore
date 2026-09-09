@@ -1,5 +1,7 @@
 # Build output
 /build/
+# any out-of-tree build dir: build-dev, build-audit, ...
+build*/
 *.o
 *.obj
 *.so
