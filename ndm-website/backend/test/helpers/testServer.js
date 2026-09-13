@@ -81,6 +81,7 @@ async function stop() {
 async function reset() {
   await query('SET FOREIGN_KEY_CHECKS = 0');
   for (const table of [
+    'user_sessions', 'team_members',
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
     'contact_replies', 'contact_messages',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',

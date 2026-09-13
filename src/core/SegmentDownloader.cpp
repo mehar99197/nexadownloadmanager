@@ -172,8 +172,21 @@ void SegmentDownloader::onMetaData() {
         const bool etagValidator = m_ifRangeValidator.startsWith(QLatin1Char('"'));
         const QString responseValidator = QString::fromUtf8(
             m_reply->rawHeader(etagValidator ? "ETag" : "Last-Modified")).trimmed();
-        if ((m_seg.start + m_seg.done > 0 && status == 200) ||
-            responseValidator.isEmpty() || responseValidator != m_ifRangeValidator) {
+        // A 200 to a request that resumed past byte zero means the server
+        // ignored If-Range and restarted the object — the bytes already on disk
+        // cannot be trusted, so this is a genuine mismatch.
+        const bool restartedFromZero = (m_seg.start + m_seg.done > 0 && status == 200);
+        // A validator that is PRESENT and different means the object changed.
+        // A validator that is ABSENT means the server said nothing either way:
+        // RFC 7232 makes echoing it on a 206 a SHOULD, not a MUST, and several
+        // CDNs omit it. Treating silence as "changed" turned that quirk into a
+        // total failure — every segment dying with "remote object changed during
+        // resume" on a server that was behaving correctly. The byte-range
+        // integrity checks in responseValidationError() still police the bytes
+        // themselves, which is what actually protects the file.
+        const bool changed = !responseValidator.isEmpty()
+                          && responseValidator != m_ifRangeValidator;
+        if (restartedFromZero || changed) {
             m_validatorMismatch = true;
             m_reply->abort();
             return;
@@ -224,7 +237,14 @@ QString SegmentDownloader::responseValidationError() const
             return QStringLiteral("server returned an invalid Content-Range");
         if (start != m_requestStart || end < start || end > m_requestEnd)
             return QStringLiteral("server returned the wrong byte range");
-        if (total >= 0 && m_requestEnd >= total)
+        // Only meaningful for a segment with a real upper bound. An open-ended
+        // request deliberately asks for "…-2^62" because the probe could not
+        // learn the size, so m_requestEnd is a sentinel that is ALWAYS past the
+        // real total — testing it here rejected every such download (the very
+        // case onMetaData's sizeDiscovered() / onSizeDiscovered() exist to
+        // handle: chunked, redirected or auth-gated links whose size only the
+        // live response reveals).
+        if (!m_openEndedRequest && total >= 0 && m_requestEnd >= total)
             return QStringLiteral("server returned an out-of-bounds byte range");
         return QString();
     }
@@ -251,8 +271,15 @@ void SegmentDownloader::stop() {
 
 void SegmentDownloader::setEnd(qint64 newEnd) {
     m_seg.end = newEnd;
-    if (m_openEndedRequest)
+    if (m_openEndedRequest) {
         m_requestEnd = newEnd;
+        // onSizeDiscovered() clamps an open-ended segment to the real last byte
+        // as soon as the live response reveals the size. From that point the
+        // transfer HAS a known length, so a clean close before it is a truncated
+        // download, not EOF — keep it out of the shortFinish path, which would
+        // otherwise truncate the file and mark it Completed at the wrong size.
+        m_openEndedRequest = newEnd >= (qint64(1) << 61);
+    }
     // pump() caps writes at the (now smaller) segment length, so the worker will
     // stop on its own. If we've already fetched up to the new end, finish now.
     if (m_seg.complete() && m_reply)
@@ -386,7 +413,7 @@ void SegmentDownloader::onFinished() {
         const bool downgrade = m_url.scheme().compare(QStringLiteral("https"),
                                                        Qt::CaseInsensitive) == 0
                             && scheme == QLatin1String("http");
-        if (++m_redirects > 8 || !target.isValid() || !sameHost || downgrade ||
+        if (++m_redirects > 8 || !target.isValid() || downgrade ||
             (scheme != QLatin1String("http") && scheme != QLatin1String("https")) ||
             (m_publicNetworkOnly && !isPublicHttpUrl(target))) {
             m_reply->deleteLater();
@@ -394,12 +421,27 @@ void SegmentDownloader::onFinished() {
             emit failed(m_seg.index, QStringLiteral("unsafe or looping range redirect"));
             return;
         }
+        if (!sameHost) {
+            // A cross-host hop used to fail the segment outright, which threw
+            // away long transfers whenever a signed CDN URL expired mid-download
+            // and re-pointed at another host. Follow it — but never carry the
+            // site credential across. This worker has no view of the provider
+            // registry that decides sibling scope (DownloadTask applies that
+            // when it builds the header list), so anything off-host gets only
+            // non-sensitive browser metadata from here on.
+            HeaderList scoped;
+            scoped.reserve(m_headers.size());
+            for (const auto &h : m_headers)
+                if (!isSensitiveHeader(h.first))
+                    scoped.append(h);
+            m_headers = scoped;
+        }
         m_url = target;
         m_reply->deleteLater();
         m_reply = nullptr;
         // Keep the segment offset and retry the same range on the validated
-        // same-origin target. m_redirects is intentionally preserved across
-        // this restart so redirect loops are bounded.
+        // target. m_redirects is intentionally preserved across this restart so
+        // redirect loops are bounded.
         start();
         return;
     }

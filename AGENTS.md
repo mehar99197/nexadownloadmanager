@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Build Commands
 
@@ -15,16 +15,10 @@ cmake --build build
 cmake -B build -G Ninja -DNEXA_BUILD_TESTS=ON
 cmake --build build
 
-# Dev build that honours NEXA_LICENSE_API_URL / NEXA_ADS_API_URL / NEXA_UPDATE_URL /
-# NEXA_ALLOW_INSECURE_LICENSE_API (for pointing at a local backend). A release
-# build compiles those overrides OUT — never ship a binary built with this on.
-cmake -B build -G Ninja -DNEXA_DEV_OVERRIDES=ON
-
 # Run unit tests
 ctest --test-dir build --output-on-failure
 node tests/ExtensionProviderConfigTest.js && node tests/ExtensionSettingsTest.js
 node tests/ExtensionContentTest.js            # on-video button + quality dropdown (jsdom from ndm-website/frontend)
-NEXA_REQUIRE_JSDOM=1 node tests/ExtensionContentTest.js   # what CI runs: a missing jsdom FAILS instead of skipping
 (cd ndm-website/backend && npm test)          # integration suites need MySQL; see backend/test/README.md
 (cd ndm-website/frontend && npm test)          # vitest component tests
 (cd ndm-website/frontend && npm run test:e2e)  # playwright, uses system Chrome

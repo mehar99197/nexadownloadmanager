@@ -85,11 +85,66 @@ test('backend API', async (t) => {
       assert.equal(res2.status, 401, 'stale refresh token rejected');
     });
 
-    await t2.test('logout clears the cookie and the stored hash', async () => {
+    await t2.test('a second device signing in does not sign the first one out', async () => {
+      // Sessions used to be one slot per account (users.refresh_token_hash):
+      // every login overwrote it, so a phone signing in logged the laptop out.
+      const laptop = api;
+      const phone = srv.client();
+      const res = await phone.post('/api/auth/login', { email, password });
+      assert.equal(res.status, 200, res.text);
+      assert.notEqual(phone.cookies.get('ndm_refresh'), laptop.cookies.get('ndm_refresh'));
+
+      const stillLaptop = await laptop.post('/api/auth/refresh');
+      assert.equal(stillLaptop.status, 200, 'first device still refreshes: ' + stillLaptop.text);
+      const stillPhone = await phone.post('/api/auth/refresh');
+      assert.equal(stillPhone.status, 200, 'second device still refreshes: ' + stillPhone.text);
+
+      const rows = await srv.query(
+        'SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ?',
+        [email]
+      );
+      assert.equal(Number(rows[0].n), 2, 'one session row per device');
+
+      // Signing the phone out ends only the phone's session.
+      const out = await phone.post('/api/auth/logout');
+      assert.equal(out.status, 200, out.text);
+      const laptopAfter = await laptop.post('/api/auth/refresh');
+      assert.equal(laptopAfter.status, 200, 'laptop survives the phone signing out');
+      const phoneAfter = await phone.post('/api/auth/refresh');
+      assert.equal(phoneAfter.status, 401, 'phone session is gone');
+    });
+
+    await t2.test('a cookie from the legacy single-slot column still refreshes once', async () => {
+      // Deploying the sessions table must not sign everyone out: an old cookie
+      // is honoured via users.refresh_token_hash and migrated into a row.
+      const crypto = require('node:crypto');
+      const legacyToken = crypto.randomBytes(48).toString('hex');
+      const legacyHash = crypto.createHash('sha256').update(legacyToken).digest('hex');
+      await srv.query('UPDATE users SET refresh_token_hash = ? WHERE email = ?', [legacyHash, email]);
+
+      const old = srv.client();
+      old.cookies.set('ndm_refresh', legacyToken);
+      const res = await old.post('/api/auth/refresh');
+      assert.equal(res.status, 200, res.text);
+      assert.notEqual(old.cookies.get('ndm_refresh'), legacyToken, 'rotated into a session');
+      const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
+      assert.equal(rows[0].refresh_token_hash, null, 'legacy slot cleared after migration');
+
+      const again = await old.post('/api/auth/refresh');
+      assert.equal(again.status, 200, 'the migrated session keeps working');
+      await old.post('/api/auth/logout');
+    });
+
+    await t2.test('logout clears the cookie and the stored session', async () => {
       const res = await api.post('/api/auth/logout');
       assert.equal(res.status, 200, res.text);
       const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
       assert.equal(rows[0].refresh_token_hash, null);
+      const sessions = await srv.query(
+        'SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ?',
+        [email]
+      );
+      assert.equal(Number(sessions[0].n), 0, 'no session rows left for this account');
     });
 
     await t2.test('a banned user cannot use a still-valid access token', async () => {

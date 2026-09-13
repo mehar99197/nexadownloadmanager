@@ -5,11 +5,14 @@ const bcrypt = require('bcryptjs');
 
 const config = require('../config/env');
 const User = require('../models/User');
+const UserSession = require('../models/UserSession');
 const Subscription = require('../models/Subscription');
 
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
-const { authLimiter } = require('../middleware/rateLimiter');
+const {
+  authLimiter, sessionRefreshLimiter, verifyEmailLimiter,
+} = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
 const { ok, fail } = require('../utils/respond');
 
@@ -47,6 +50,24 @@ function setSessionHint(res) {
   res.cookie(SESSION_HINT_COOKIE, '1', {
     httpOnly: false, sameSite: 'lax', secure: config.isProd, maxAge: REFRESH_MAX_AGE, path: '/',
   });
+}
+
+function refreshExpiry() {
+  return new Date(Date.now() + REFRESH_MAX_AGE);
+}
+
+// Open a NEW session row for this browser and set its cookies. Every sign-in
+// path (password, Google) goes through here so a second device never touches
+// the first one's session.
+async function openSession(req, res, user) {
+  const { token: refreshToken, hash } = generateRefreshToken();
+  await UserSession.create({
+    userId: user.id, tokenHash: hash,
+    userAgent: req.get('user-agent') || null, ip: req.ip || null,
+    expiresAt: refreshExpiry(),
+  });
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  setSessionHint(res);
 }
 
 router.post(
@@ -92,10 +113,7 @@ router.post(
       return fail(res, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', 403);
 
     const token = signAccessToken(user);
-    const { token: refreshToken, hash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: hash });
-    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
-    setSessionHint(res);
+    await openSession(req, res, user);
 
     return ok(res, {
       token,
@@ -178,10 +196,7 @@ router.post(
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
 
     const token = signAccessToken(user);
-    const { token: refreshToken, hash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: hash });
-    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
-    setSessionHint(res);
+    await openSession(req, res, user);
 
     return ok(res, {
       token,
@@ -192,7 +207,7 @@ router.post(
 );
 
 router.post(
-  '/verify-email', validate(verifyEmailSchema),
+  '/verify-email', verifyEmailLimiter, validate(verifyEmailSchema),
   asyncHandler(async (req, res) => {
     const { token } = req.body;
     let payload;
@@ -210,15 +225,40 @@ router.post(
 );
 
 router.post(
-  '/refresh',
+  '/refresh', sessionRefreshLimiter,
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
     if (!cookie) return fail(res, 'NO_REFRESH_TOKEN', 'Missing refresh token', 401);
     const hash = hashRefreshToken(cookie);
-    const user = await User.findByRefreshTokenHash(hash);
-    if (!user) return fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+    const invalid = () =>
+      fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+
+    let session = await UserSession.findLiveByTokenHash(hash);
+    if (!session) {
+      // A cookie issued before user_sessions existed still points at the old
+      // single slot on the users row. Honour it once and move it into a row of
+      // its own, so nobody has to sign in again just because we deployed.
+      const legacy = await User.findByRefreshTokenHash(hash);
+      if (!legacy) return invalid();
+      await User.update(legacy.id, { refreshTokenHash: null });
+      session = await UserSession.create({
+        userId: legacy.id, tokenHash: hash,
+        userAgent: req.get('user-agent') || null, ip: req.ip || null,
+        expiresAt: refreshExpiry(),
+      });
+    }
+
+    const user = await User.findById(session.user_id);
+    if (!user || user.banned) {
+      await UserSession.removeByTokenHash(hash);
+      return invalid();
+    }
+
     const { token: rt, hash: newHash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: newHash });
+    // Conditional on the OLD hash: if another tab already rotated this
+    // session, this one loses cleanly instead of overwriting its cookie.
+    if (!(await UserSession.rotate(session.id, hash, newHash, refreshExpiry())))
+      return invalid();
     res.cookie(REFRESH_COOKIE, rt, refreshCookieOptions());
     setSessionHint(res);
     return ok(res, { token: signAccessToken(user) });
@@ -231,8 +271,10 @@ router.post(
     const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
     if (cookie) {
       const hash = hashRefreshToken(cookie);
-      const user = await User.findByRefreshTokenHash(hash);
-      if (user) await User.update(user.id, { refreshTokenHash: null });
+      // Only THIS browser's session ends; every other device stays signed in.
+      await UserSession.removeByTokenHash(hash);
+      const legacy = await User.findByRefreshTokenHash(hash);
+      if (legacy) await User.update(legacy.id, { refreshTokenHash: null });
     }
     res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
     res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
@@ -267,6 +309,9 @@ router.post(
       refreshTokenHash: null,
       adminRefreshTokenHash: null,
     });
+    // A password reset signs the account out EVERYWHERE — that is the point of
+    // one, and with per-browser sessions it now has to be said explicitly.
+    await UserSession.removeAllForUser(user.id);
     return ok(res, { reset: true });
   })
 );

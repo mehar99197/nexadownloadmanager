@@ -27,6 +27,8 @@
 #include <QSettings>
 #include <QClipboard>
 #include <QApplication>
+#include <QStandardItemModel>
+#include <QSignalBlocker>
 #include "license/LicenseManager.h"
 
 namespace nexa {
@@ -159,15 +161,34 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     gen->addRow(tr("When all downloads finish"), m_whenDone);
     // Appearance: the full theme list inline, plus a gallery for people who
     // would rather see the looks than read their names.
+    //
+    // Paid themes are listed — the gallery is the upgrade's best advert — but
+    // disabled and marked, and never applied. This dropdown used to be the one
+    // place with no entitlement check at all: every theme the gallery locks
+    // behind a PRO badge could be picked from here in two clicks and persisted.
     m_themeOnOpen = theme::savedId();
+    const Entitlements &features = m_engine->license()->features();
+    auto themeAllowed = [features](const QString &id) { return features.allowsTheme(id); };
     auto *themeRow = new QHBoxLayout;
     m_theme = new QComboBox(plate);
     for (const theme::ThemeInfo &t : theme::available()) {
-        const QString label = t.automatic
+        QString label = t.automatic
             ? t.name
             : QStringLiteral("%1 — %2").arg(t.dark ? tr("Dark") : tr("Light"), t.name);
+        const bool allowed = themeAllowed(t.id);
+        if (!allowed)
+            label += tr(" (Pro)");
         m_theme->addItem(label, t.id);
-        m_theme->setItemData(m_theme->count() - 1, t.tagline, Qt::ToolTipRole);
+        const int row = m_theme->count() - 1;
+        m_theme->setItemData(row, allowed ? t.tagline
+                                          : tr("Part of the Pro theme collection."), Qt::ToolTipRole);
+        if (!allowed) {
+            // Visible but not selectable: a QStandardItemModel row without the
+            // enabled flag is greyed out and skipped by keyboard navigation.
+            if (auto *model = qobject_cast<QStandardItemModel *>(m_theme->model()))
+                if (QStandardItem *item = model->item(row))
+                    item->setFlags(item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+        }
     }
     m_theme->setCurrentIndex(qMax(0, m_theme->findData(theme::savedId())));
     auto *themeBrowse = new QPushButton(tr("Browse themes…"), plate);
@@ -177,11 +198,29 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     themeRow->addWidget(themeBrowse);
     gen->addRow(tr("Appearance"), themeRow);
     // The combo previews live too — a theme you cannot see is hard to choose.
-    connect(m_theme, &QComboBox::currentIndexChanged, this, [this](int) {
-        applyThemePreview(m_theme->currentData().toString());
+    connect(m_theme, &QComboBox::currentIndexChanged, this, [this, themeAllowed](int) {
+        const QString id = m_theme->currentData().toString();
+        if (!themeAllowed(id)) {
+            // Belt and braces: the row is disabled, but nothing that reaches here
+            // may apply a locked theme even for a frame. Snap back silently.
+            const QSignalBlocker block(m_theme);
+            m_theme->setCurrentIndex(qMax(0, m_theme->findData(theme::savedId())));
+            return;
+        }
+        applyThemePreview(id);
     });
-    connect(themeBrowse, &QPushButton::clicked, this, [this]() {
+    connect(themeBrowse, &QPushButton::clicked, this, [this, features]() {
         ThemeGalleryDialog dlg(this);
+        // Same entitlement the main window's gallery gets; opened from here it
+        // used to show every theme unlocked.
+        dlg.setThemeEntitlement(features.themes == QLatin1String("all"), features.freeThemes);
+        connect(&dlg, &ThemeGalleryDialog::lockedThemeChosen, this,
+                [&dlg](const QString &, const QString &name) {
+            QMessageBox::information(&dlg, tr("Pro theme"),
+                tr("“%1” is part of the Pro theme collection.\n\nFree includes Nexa Dark and "
+                   "Nexa Light. Start the free 7-day trial, or see "
+                   "nexadownloadmanager.com/pricing to unlock all themes.").arg(name));
+        });
         connect(&dlg, &ThemeGalleryDialog::themeApplied, this, [this](const QString &id) {
             const QSignalBlocker block(m_theme);      // already applied; just re-sync
             m_theme->setCurrentIndex(qMax(0, m_theme->findData(id)));
@@ -245,6 +284,9 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     m_streamConc = new QSpinBox(plate);
     m_streamConc->setRange(1, 64);
     m_streamConc->setValue(m_engine->streamConcurrency());
+    m_streamConc->setToolTip(tr("Parallel segment fetches for login-gated streams, which Nexa "
+                                "downloads itself. Public streams are handled by FFmpeg, which "
+                                "manages its own connections."));
     dl->addRow(tr("HLS stream connections"), m_streamConc);
 
     m_plConc = new QSpinBox(plate);
@@ -528,8 +570,12 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kVirusScan), m_virusScan->isChecked());
     s.setValue(QLatin1String(kVirusCmd), m_virusCmd->text().trimmed());
     s.setValue(QLatin1String(kErrLog), m_errLog->isChecked());
-    // Appearance: already live-previewed, so this only has to make it stick.
-    const QString themeKey = m_theme->currentData().toString();
+    // Appearance: already live-previewed, so this only has to make it stick —
+    // unless the entitlement changed underneath us while the dialog was open,
+    // in which case a locked choice is dropped rather than persisted.
+    QString themeKey = m_theme->currentData().toString();
+    if (!m_engine->license()->features().allowsTheme(themeKey))
+        themeKey = m_themeOnOpen;
     const bool themeDirty = themeKey != theme::savedId();
     theme::setSavedId(themeKey);
     // Language: Qt would need every widget rebuilt to re-translate live, so this

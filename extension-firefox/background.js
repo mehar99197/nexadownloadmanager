@@ -628,9 +628,27 @@ function capturedHeadersFor(url, tabId) {
   return match ? { ...match.headers } : {};
 }
 
+// Match patterns for exactly the hosts whose request context we capture.
+//
+// Registering this listener browser-wide is not free, and cacheRequestHeaders()
+// returns immediately for any host without captureRequestHeaders — so <all_urls>
+// was paying that cost across every request to serve a handful of AI-assistant
+// hosts. (Firefox ignores the extraHeaders option, but the filter matters here
+// for the same reason it does in Chromium: the listener runs per request.)
+const CAPTURE_URL_PATTERNS = (() => {
+  const patterns = [];
+  for (const p of PROVIDER_CONFIG) {
+    if (!p.captureRequestHeaders) continue;
+    for (const h of (p.hosts || [])) patterns.push(`*://${h}/*`, `*://*.${h}/*`);
+  }
+  // addListener rejects an empty url list; fall back rather than throw if the
+  // registry ever stops marking any provider for capture.
+  return patterns.length ? patterns : ["<all_urls>"];
+})();
+
 chrome.webRequest.onBeforeSendHeaders.addListener(
   cacheRequestHeaders,
-  { urls: ["<all_urls>"] },
+  { urls: CAPTURE_URL_PATTERNS },
   // extraHeaders exposes Cookie and Authorization in Chromium. We observe only;
   // no blocking permission or request mutation is needed.
   ["requestHeaders", "extraHeaders"]

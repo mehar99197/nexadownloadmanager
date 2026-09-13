@@ -32,9 +32,23 @@ QString UpdateChecker::platformKey()
 #endif
 }
 
+// NEXA_UPDATE_URL redirects the feed (or, as "off", disables checks). Of every
+// endpoint override in the app this is the one with the highest stakes — the
+// feed names an installer the app downloads and RUNS — so, like the licence
+// and ad overrides, it is compiled in only for a -DNEXA_DEV_OVERRIDES=ON build.
+// A shipped binary talks to the production feed and nothing else.
+static QString updateOverride()
+{
+#if NEXA_DEV_OVERRIDES
+    return qEnvironmentVariable("NEXA_UPDATE_URL").trimmed();
+#else
+    return QString();
+#endif
+}
+
 QString UpdateChecker::feedUrl() const
 {
-    const QString env = qEnvironmentVariable("NEXA_UPDATE_URL").trimmed();
+    const QString env = updateOverride();
     if (!env.isEmpty())
         return env;
     return kDefaultFeed + platformKey();
@@ -42,7 +56,7 @@ QString UpdateChecker::feedUrl() const
 
 bool UpdateChecker::isConfigured() const
 {
-    return qEnvironmentVariable("NEXA_UPDATE_URL").trimmed().compare(QLatin1String("off"), Qt::CaseInsensitive) != 0;
+    return updateOverride().compare(QLatin1String("off"), Qt::CaseInsensitive) != 0;
 }
 
 bool UpdateChecker::isNewer(const QString &remote, const QString &current)

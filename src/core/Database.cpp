@@ -188,11 +188,14 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
         return;
     }
 
+    // Prepared ONCE, outside the loop. This runs every ~2 s for every active
+    // download, and a large file is split into 32 segments — re-preparing the
+    // same statement 32 times per save was pure overhead on the GUI thread.
+    QSqlQuery sq(m_db);
+    sq.prepare(QStringLiteral(
+        "INSERT INTO segments (download_id, idx, start, stop, done) "
+        "VALUES (:did, :idx, :start, :stop, :done)"));
     for (const SegmentInfo &s : segments) {
-        QSqlQuery sq(m_db);
-        sq.prepare(QStringLiteral(
-            "INSERT INTO segments (download_id, idx, start, stop, done) "
-            "VALUES (:did, :idx, :start, :stop, :done)"));
         sq.bindValue(QStringLiteral(":did"), task.id());
         sq.bindValue(QStringLiteral(":idx"), s.index);
         sq.bindValue(QStringLiteral(":start"), s.start);

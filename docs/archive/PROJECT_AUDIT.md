@@ -1,3 +1,7 @@
+> **SUPERSEDED — kept for history only.** This document describes a much older
+> state of the tree; most of its findings are fixed and several of its claims no
+> longer match the code. Do not act on it. The current, verified references are
+> `docs/issues.md` and `docs/AUDIT-2026-09-12.md`.
 # Nexa Download Manager — Deep Project Audit
 
 **Audit date:** 2026-08-07  

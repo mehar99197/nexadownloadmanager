@@ -742,15 +742,19 @@ Worth stating, because the intended posture is sound and the fix is to extend it
 
 ### Required fix — ordered by value per unit of effort
 
-**Tier 1 — cheap, closes most of the damage**
+**Tier 1 — cheap, closes most of the damage** — ✅ **all three done 2026-09-12** (see
+`docs/AUDIT-2026-09-12.md`, Status table). Attacks #1, #3, #4 and #6 no longer work on a release
+build; #2 and #5 remain and need Tier 2.
 
-1. **Ignore the `NEXA_*` overrides in release builds.** `NEXA_LICENSE_API_URL`,
-   `NEXA_ADS_API_URL` and `NEXA_ALLOW_INSECURE_LICENSE_API` should be compiled out unless a
-   `NEXA_DEV_BUILD` CMake option is set. This kills attacks #1 and #4 for a few lines of code.
-2. **Filter the theme dropdown through `allowsTheme()`** and re-check the saved theme after the
-   first validation lands. Kills attack #3.
-3. **Route `addRemoteDownload` / `addRemoteBatch` through the same gate as `addDownload`.**
-   Kills attack #6.
+1. ~~**Ignore the `NEXA_*` overrides in release builds.**~~ Done: the `NEXA_DEV_OVERRIDES` CMake
+   option (default OFF) compiles out `NEXA_LICENSE_API_URL`, `NEXA_ADS_API_URL`,
+   `NEXA_ALLOW_INSECURE_LICENSE_API` — and `NEXA_UPDATE_URL`, which was not on this list but is
+   the override that ends in running an installer.
+2. ~~**Filter the theme dropdown through `allowsTheme()`**~~ Done: paid themes are listed but
+   disabled in `SettingsDialog`, the gallery opened from Settings now receives the entitlement
+   too, and `MainWindow` reverts a paid theme in use when `featuresChanged` reports it locked.
+3. ~~**Route `addRemoteDownload` / `addRemoteBatch` through the same gate as `addDownload`.**~~
+   Done: `addRemoteDownload` calls `addDownload` with `publicNetworkOnly=true`.
 
 **Tier 2 — the real fix**
 
@@ -838,16 +842,16 @@ document a `device_mismatch` reason that the backend no longer emits — it was 
    New-Download-dialog A/B test on Windows is still needed to confirm it in the field.
 2. ~~**Issue 2, server side**~~ — ✅ done. The admin panel's existing button now does what it
    claims instead of being undone by the next heartbeat.
-3. **Issue 4, Tier 1** — three small, independent changes that close four of the six bypasses,
-   including the 10-second theme one. Highest value per line of code left in this document.
+3. ~~**Issue 4, Tier 1**~~ — ✅ done 2026-09-12. Four of the six bypasses are closed, including
+   the 10-second theme one.
 4. **Issue 4, Tier 2** — asymmetric token verification. The largest single piece of work here, and
    the one that makes the rest durable.
 5. **Issue 3** — needs the `featuresChanged` wiring listed as Issue 2's remaining client item, so
    it is cheaper once that lands.
 6. **Issue 2's remaining items** — per-device admin routes and the devices list in the admin UI —
    then Tier 3 hardening.
-7. **Fix `tools/extract-translations.py`** before any translation work begins, or every long string
-   will be quietly untranslatable.
+7. ~~**Fix `tools/extract-translations.py`**~~ — ✅ done 2026-09-12: adjacent literals are joined,
+   plural calls get `numerus="yes"`, and locations are always forward-slash paths.
 
 Add the missing seat and licensing tests alongside whichever item lands first — their absence is
 why two of these four issues reached production. Issue 2's fix shipped with seven such tests; the

@@ -34,14 +34,24 @@ constexpr int  kHeartbeatMs    = 5 * 60 * 1000;
 
 QString planLabel(const QString &plan) { return plan.toUpper(); }
 
+const QString kProductionValidateUrl =
+    QStringLiteral("https://nexadownloadmanager.com/api/license/validate");
+
 // The licence endpoints are siblings: .../license/validate, /heartbeat, /release.
 // Deriving them from the one configured URL keeps a dev override pointing the
 // whole family at localhost instead of only the validate call.
+//
+// The override is compiled in ONLY for a -DNEXA_DEV_OVERRIDES=ON build. In a
+// shipped binary the environment variable is never consulted: otherwise anyone
+// could point validation at a server of their own that answers "pro", which is
+// the cheapest of the licensing bypasses recorded in docs/issues.md.
 QUrl licenseEndpoint(const QString &action)
 {
-    const QUrl base(qEnvironmentVariable(
-        "NEXA_LICENSE_API_URL",
-        QStringLiteral("https://nexadownloadmanager.com/api/license/validate")));
+#if NEXA_DEV_OVERRIDES
+    const QUrl base(qEnvironmentVariable("NEXA_LICENSE_API_URL", kProductionValidateUrl));
+#else
+    const QUrl base(kProductionValidateUrl);
+#endif
     if (action == QLatin1String("validate"))
         return base;
     QUrl url(base);
@@ -53,13 +63,18 @@ QUrl licenseEndpoint(const QString &action)
     return url;
 }
 
-// An endpoint is usable if it is HTTPS, or plainly a developer's loopback and
-// explicitly opted in. Same rule the validate path has always applied.
+// An endpoint is usable if it is HTTPS — or, in a dev build only, plainly a
+// developer's loopback that was explicitly opted in. A release build has no
+// insecure path at all.
 bool endpointAllowed(const QUrl &endpoint)
 {
+#if NEXA_DEV_OVERRIDES
     const bool insecureDevelopment =
         qEnvironmentVariableIntValue("NEXA_ALLOW_INSECURE_LICENSE_API") == 1 &&
         (endpoint.host() == QLatin1String("localhost") || endpoint.host() == QLatin1String("127.0.0.1"));
+#else
+    const bool insecureDevelopment = false;
+#endif
     return endpoint.isValid()
         && (endpoint.scheme() == QLatin1String("https") || insecureDevelopment);
 }
@@ -150,13 +165,26 @@ QString LicenseManager::deviceName()
 
 void LicenseManager::start()
 {
-    const QString key = credentialstore::readLicenseKey();
-    if (key.isEmpty()) {
-        setPlan(QStringLiteral("free"), QStringLiteral("Free plan — enter a license key in Settings"));
-        return;
-    }
-    m_licenseKey = key;
-    validate(key, false);
+    // Reading the OS credential store BLOCKS. On Linux it runs a python3 helper
+    // against the Secret Service: a machine without python3 or secretstorage
+    // pays the full 2 s start timeout, and a locked keyring can raise an unlock
+    // prompt inside the 5 s finish timeout. main() calls this before the window
+    // is shown, so doing it inline froze every launch on exactly the machines
+    // least able to afford it.
+    //
+    // Defer to the event loop instead. Nothing is lost by waiting one turn: the
+    // pre-answer state is already Free (Entitlements defaults to the Free set),
+    // so the app gates rather than leaks while the key is being read.
+    QTimer::singleShot(0, this, [this]() {
+        const QString key = credentialstore::readLicenseKey();
+        if (key.isEmpty()) {
+            setPlan(QStringLiteral("free"),
+                    QStringLiteral("Free plan — enter a license key in Settings"));
+            return;
+        }
+        m_licenseKey = key;
+        validate(key, false);
+    });
 }
 
 void LicenseManager::activate(const QString &licenseKey)
@@ -577,8 +605,17 @@ void LicenseManager::deactivate()
 
 void LicenseManager::clearCache()
 {
+    // Remove the cached ENTITLEMENT, and only that. remove("license") took the
+    // whole settings group with it — including license/deviceSeed, the fallback
+    // machine identity used where there is no MAC and no machineUniqueId
+    // (containers, some BSDs). Regenerating that seed changes
+    // deviceFingerprint(), so every cache clear — and one happens on any
+    // rejection, revocation or deactivation — silently burned another seat.
     QSettings settings;
-    settings.remove(QStringLiteral("license"));
+    settings.remove(QLatin1String(kCachedPlan));
+    settings.remove(QLatin1String(kCachedExpires));
+    settings.remove(QLatin1String(kCachedAt));
+    settings.remove(QLatin1String(kCachedTrial));
 }
 
 void LicenseManager::setPlan(const QString &plan, const QString &status)

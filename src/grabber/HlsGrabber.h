@@ -14,13 +14,20 @@ namespace nexa {
 
 class CloudProviders;
 
-// Grabs an adaptive video stream and produces a single MP4.
-//   * HLS (.m3u8): parses the master + media playlist ourselves, downloads all
-//     segments in parallel, rewrites a local playlist, then muxes with FFmpeg
-//     (-c copy, no re-encode). Encryption (#EXT-X-KEY) is passed through to
-//     FFmpeg, which fetches the key and decrypts.
-//   * DASH (.mpd) or anything else: handed straight to FFmpeg, which downloads
-//     and muxes it.
+// Grabs an adaptive video stream and produces a single MP4. start() picks one
+// of two strategies, by whether the stream needs a credential:
+//
+//   * No credential (the common case): the playlist URL goes straight to
+//     FFmpeg, which downloads and muxes it. Its HLS client handles AES-128
+//     keys, variant selection and redirects more robustly than we can, and
+//     `-progress pipe:1` gives us live byte counts to report.
+//   * Behind a login: FFmpeg takes headers only on its command line, and argv
+//     is readable by other local processes, so a session cookie cannot go
+//     there. Instead we parse the master + media playlist ourselves, fetch every
+//     segment through Qt (credentials stay in-process) up to setConcurrency()
+//     at a time, rewrite a local playlist, and let FFmpeg mux local files only
+//     (-c copy, no re-encode). #EXT-X-KEY URIs are absolutised so FFmpeg still
+//     fetches and applies the decryption key.
 //
 // Emits the same signals as DownloadTask so the engine/UI treat it uniformly.
 class HlsGrabber : public QObject {
@@ -33,8 +40,10 @@ public:
     void start();
     void cancel();
 
-    // Parallel segment fetches. Defaults to 16; the engine wires this to the
-    // user's Settings value so it can be tuned (or throttled on slow links).
+    // Parallel segment fetches for the credentialed (per-segment) strategy.
+    // Defaults to 16; the engine wires this to the user's Settings value so it
+    // can be tuned (or throttled on slow links). Has no effect on the direct
+    // FFmpeg path, which manages its own connections.
     void setConcurrency(int n);
     void setCredentialScope(const CloudProviders *providers, const QString &originHost)
     { m_providers = providers; m_credentialHost = originHost.toLower(); }
@@ -58,9 +67,11 @@ private slots:
     void onPlaylistFetched();
     void onSegmentFinished();
     void onMuxFinished(int exitCode);
+    void onFfmpegProgress();       // parse FFmpeg's -progress stream
 
 private:
     void setState(DownloadState s, const QString &detail = QString());
+    bool needsCredentialedFetch() const;   // picks the strategy in start()
     void fetchPlaylist(const QUrl &u);
     void handleMaster(const QString &text);
     void handleMedia(const QString &text);
@@ -90,6 +101,7 @@ private:
 
     QString                m_localPlaylist;   // rewritten index.m3u8 on disk
     QString                m_tempPath;        // private random per-run directory
+    QByteArray             m_progressTail;    // partial -progress line from FFmpeg
     QVector<Segment>       m_segments;
     int                    m_nextToFetch = 0;
     int                    m_inFlight = 0;

@@ -136,6 +136,10 @@ private:
     void finalizeShort(qint64 totalReceived);             // accept actual size, truncate
     void onSizeDiscovered(qint64 total, bool rangesSupported);   // adopt size/Range the live GET revealed
     QString resumeValidator() const;
+    // Check the finished file against m_expectedSha256 when one was set (and
+    // only then — hashing is a full synchronous read of the file). Returns the
+    // error to fail with, or empty to continue; *detail gets the "done…" text.
+    QString verifyHash(QString *detail);
     HashVerification computeSha256() const;  // Compute SHA-256 of the downloaded file
 
     int                       m_id;

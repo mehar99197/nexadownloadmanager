@@ -8,6 +8,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <cstdio>
+#include <memory>
 
 static int g_failures = 0;
 
@@ -127,6 +128,90 @@ int main(int argc, char **argv)
     QFile errResult(errOutput);
     CHECK(!errResult.exists() || errResult.size() == 0,
           "403 error page body was written into the output file");
+
+    // ---- An open-ended segment must ACCEPT a 206 that reveals the real size --
+    // A download whose size the probe could not establish becomes ONE segment
+    // with a sentinel end (DownloadTask::buildSegments uses 1<<62), so the
+    // worker asks for "bytes=0-4611686018427387904". A server that honours Range
+    // answers 206 carrying the real total. responseValidationError() compared
+    // that total against the sentinel — a test that is true for EVERY real file
+    // size — so every such download was rejected as "out-of-bounds", and the
+    // sizeDiscovered()/onSizeDiscovered() path that exists precisely for these
+    // links (chunked, redirected or auth-gated responses whose length only the
+    // live transfer reveals) could never run.
+    QTcpServer openServer;
+    CHECK(openServer.listen(QHostAddress::LocalHost), "open-ended test server did not start");
+    QObject::connect(&openServer, &QTcpServer::newConnection, [&]() {
+        while (openServer.hasPendingConnections()) {
+            QTcpSocket *socket = openServer.nextPendingConnection();
+            auto request = std::make_shared<QByteArray>();
+            QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, body, request]() {
+                request->append(socket->readAll());
+                if (!request->contains("\r\n\r\n"))
+                    return;
+                CHECK(request->contains("Range: bytes=0-"),
+                      "open-ended segment sent no Range header");
+                // Honour the range, clamping the sentinel end to the real last
+                // byte — what any conforming server does with an over-long end.
+                socket->write("HTTP/1.1 206 Partial Content\r\n"
+                              "Content-Range: bytes 0-9/10\r\n"
+                              "Content-Length: 10\r\n"
+                              "Accept-Ranges: bytes\r\n"
+                              "Connection: close\r\n\r\n");
+                socket->write(body);
+                socket->disconnectFromHost();
+            });
+        }
+    });
+
+    const QString openOutput = temp.filePath(QStringLiteral("openended.bin"));
+    nexa::SegmentInfo openSeg;
+    openSeg.index = 0;
+    openSeg.start = 0;
+    openSeg.end   = qint64(1) << 62;   // the unknown-size sentinel
+    nexa::SegmentDownloader openWorker(
+        openSeg,
+        QUrl(QStringLiteral("http://127.0.0.1:%1/file").arg(openServer.serverPort())),
+        openOutput, {}, nullptr);
+
+    bool openFailed = false, openCompleted = false, openShort = false, sizeSeen = false;
+    qint64 discoveredTotal = -1;
+    bool discoveredRanges = false;
+    QObject::connect(&openWorker, &nexa::SegmentDownloader::sizeDiscovered,
+                     [&](qint64 total, bool rangesSupported) {
+        sizeSeen = true;
+        discoveredTotal = total;
+        discoveredRanges = rangesSupported;
+        // Mirror DownloadTask::onSizeDiscovered: clamp the open-ended segment to
+        // the real last byte so it finishes at EOF rather than relying on the
+        // server to close the connection.
+        openWorker.setEnd(total - 1);
+    });
+    QObject::connect(&openWorker, &nexa::SegmentDownloader::failed,
+                     [&](int, const QString &reason) {
+        openFailed = true;
+        std::fprintf(stderr, "  open-ended segment failed: %s\n", qPrintable(reason));
+        app.quit();
+    });
+    QObject::connect(&openWorker, &nexa::SegmentDownloader::completed,
+                     [&](int) { openCompleted = true; app.quit(); });
+    QObject::connect(&openWorker, &nexa::SegmentDownloader::shortFinish,
+                     [&](int, qint64) { openShort = true; app.quit(); });
+    QTimer::singleShot(3000, &app, &QCoreApplication::quit);
+    openWorker.start();
+    app.exec();
+
+    CHECK(!openFailed, "a 206 revealing the real size was rejected on an open-ended segment");
+    CHECK(openCompleted, "open-ended segment did not complete on a well-formed 206");
+    CHECK(!openShort, "a fully-received open-ended segment was reported as a short finish");
+    CHECK(sizeSeen && discoveredTotal == body.size(),
+          "the live 206 did not report the real file size");
+    CHECK(discoveredRanges, "a 206 on the live transfer did not report Range support");
+    QFile openResult(openOutput);
+    CHECK(openResult.exists() && openResult.size() == body.size(),
+          "open-ended segment wrote the wrong number of bytes");
+    if (openResult.open(QIODevice::ReadOnly))
+        CHECK(openResult.readAll() == body, "open-ended segment wrote the wrong bytes");
 
     return g_failures == 0 ? 0 : 1;
 }

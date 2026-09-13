@@ -49,8 +49,11 @@ function signChallenge(user, { secret, realm }) {
 }
 
 function verifyChallenge(token, { secret, realm }) {
+  // SECURITY: Verify token type BEFORE any other logic to prevent token confusion attacks
   const payload = jwt.verify(token, secret);
-  if (!payload || payload.typ !== `2fa-${realm}`) throw new jwt.JsonWebTokenError('invalid challenge');
+  if (!payload || payload.typ !== `2fa-${realm}`) {
+    throw new jwt.JsonWebTokenError('invalid challenge type');
+  }
   return payload;
 }
 

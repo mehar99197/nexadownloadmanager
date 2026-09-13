@@ -4,5 +4,8 @@ dist
 *.log
 mongo-data
 
+# Vite dependency pre-bundle cache (frontend/.vite, admin/.vite)
+.vite/
+
 # Uploaded release installers (large binaries — never committed)
 backend/uploads/

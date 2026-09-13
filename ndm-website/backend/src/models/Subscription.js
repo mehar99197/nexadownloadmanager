@@ -6,6 +6,30 @@ const {
   SEAT_LEASE_SECONDS,
 } = require('../utils/license');
 
+// Columns update()/updateByUserId() may touch. The name is interpolated into
+// the statement, so it must never come from user input — see User.js. Seat
+// leases live in license_activations and have their own methods.
+const UPDATABLE_COLUMNS = new Set([
+  'plan', 'status', 'license_key', 'device_fingerprint', 'seats', 'start_date',
+  'expiry_date', 'trial_ends_at', 'trial_reminder_sent_at',
+  'stripe_subscription_id', 'stripe_customer_id',
+]);
+
+// Shared by both update flavours: turns {camelCase: value} into SET clauses,
+// refusing any column outside the allowlist.
+function setClauses(fields, what) {
+  const sets = [];
+  const vals = [];
+  for (const [k, v] of Object.entries(fields)) {
+    const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+    if (!UPDATABLE_COLUMNS.has(col))
+      throw new Error(`${what}: "${k}" is not an updatable column`);
+    sets.push(`${col} = ?`);
+    vals.push(v);
+  }
+  return { sets, vals };
+}
+
 const Subscription = {
   async findById(id) {
     return queryOne('SELECT * FROM subscriptions WHERE id = ?', [id]);
@@ -224,26 +248,14 @@ const Subscription = {
   },
 
   async update(id, fields) {
-    const sets = [];
-    const vals = [];
-    for (const [k, v] of Object.entries(fields)) {
-      const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
-      sets.push(`${col} = ?`);
-      vals.push(v);
-    }
+    const { sets, vals } = setClauses(fields, 'Subscription.update');
     if (sets.length === 0) return;
     vals.push(id);
     await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE id = ?`, vals);
   },
 
   async updateByUserId(userId, fields) {
-    const sets = [];
-    const vals = [];
-    for (const [k, v] of Object.entries(fields)) {
-      const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
-      sets.push(`${col} = ?`);
-      vals.push(v);
-    }
+    const { sets, vals } = setClauses(fields, 'Subscription.updateByUserId');
     if (sets.length === 0) return;
     vals.push(userId);
     await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE user_id = ?`, vals);

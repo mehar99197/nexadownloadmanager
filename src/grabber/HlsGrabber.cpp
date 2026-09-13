@@ -1,5 +1,6 @@
 #include "grabber/HlsGrabber.h"
 #include "core/ExternalTools.h"
+#include "auth/AuthUtils.h"
 #include "auth/CloudProviders.h"
 #include "web/PublicUrlPolicy.h"
 
@@ -17,16 +18,10 @@
 
 namespace nexa {
 
-static bool isSensitiveHeader(const QByteArray &name)
-{
-    const QByteArray lower = name.toLower();
-    return lower == QByteArrayLiteral("cookie")
-        || lower == QByteArrayLiteral("authorization")
-        || lower == QByteArrayLiteral("referer")
-        || lower == QByteArrayLiteral("proxy-authorization")
-        || lower == QByteArrayLiteral("x-api-key")
-        || lower == QByteArrayLiteral("x-csrf-token");
-}
+// isSensitiveHeader() / isCredentialHeader() come from auth/AuthUtils.h. The
+// second is the one that matters here: it is what start() tests to decide
+// whether this stream can be handed to FFmpeg at all, since FFmpeg takes headers
+// only on its command line and argv is readable by other local processes.
 
 HlsGrabber::HlsGrabber(int id, const QUrl &url, const QString &savePath,
                        const HeaderList &headers, QObject *parent)
@@ -61,6 +56,17 @@ QString HlsGrabber::tempDir() const
 void HlsGrabber::setConcurrency(int n)
 {
     m_concurrency = qBound(1, n, 64);
+}
+
+// True when this stream needs a secret header that FFmpeg cannot be given
+// safely. Decides which of the two download strategies start() uses.
+bool HlsGrabber::needsCredentialedFetch() const
+{
+    const HeaderList headers = scopedHeaders(m_url);
+    for (const auto &h : headers)
+        if (isCredentialHeader(h.first))
+            return true;
+    return false;
 }
 
 HeaderList HlsGrabber::scopedHeaders(const QUrl &target) const
@@ -121,16 +127,28 @@ void HlsGrabber::start()
                                       QFileDevice::WriteOwner |
                                       QFileDevice::ExeOwner);
 
-    // HLS/DASH: let FFmpeg handle the stream directly instead of downloading
-    // segments one-by-one and muxing locally.  FFmpeg's built-in HLS client has
-    // robust retry logic, handles AES-128 encryption, multi-bitrate variant
-    // selection, and redirects — all of which break when we parse the playlist
-    // ourselves and replay individual segment URLs through QNetworkAccessManager.
-    // The per-segment approach was the original design for progress granularity,
-    // but segment downloads that silently fail produce a local playlist that
-    // references missing files, causing "FFmpeg mux failed (code 8)".
-    // Direct ffmpeg pass-through avoids all of these problems.
-    muxViaFfmpegDirect();
+    // Two strategies, chosen by whether this stream needs a credential.
+    //
+    // Default — hand the playlist straight to FFmpeg. Its built-in HLS client
+    // has robust retry logic and handles AES-128 encryption, multi-bitrate
+    // variant selection and redirects better than replaying individual segment
+    // URLs through QNetworkAccessManager ourselves. The per-segment path was the
+    // original design (for progress granularity), but a segment download that
+    // silently failed left a local playlist referencing missing files, which
+    // surfaced as an opaque "FFmpeg mux failed (code 8)".
+    //
+    // Exception — a stream behind a login. FFmpeg accepts headers only on its
+    // command line, and argv is readable by other processes on this machine, so
+    // handing it a session cookie is not an option. Those streams go through the
+    // per-segment path instead: the credential travels inside Qt's network stack
+    // and FFmpeg only ever sees local files. Before this split such a stream got
+    // no credential at all and simply 403'd.
+    if (needsCredentialedFetch()) {
+        setState(DownloadState::Probing, QStringLiteral("fetching playlist"));
+        fetchPlaylist(m_url);
+    } else {
+        muxViaFfmpegDirect();
+    }
 }
 
 void HlsGrabber::cancel()
@@ -540,6 +558,13 @@ void HlsGrabber::muxViaFfmpegDirect()
     QDir().mkpath(QFileInfo(m_savePath).absolutePath());
 
     QStringList args = { QStringLiteral("-y"),
+                         // Machine-readable progress on stdout instead of the
+                         // human "frame= … size= …" stats on stderr, which
+                         // nothing read. Without it this path emitted no
+                         // progress at all: a stream sat at 0 B with no size,
+                         // speed or ETA for its entire download.
+                         QStringLiteral("-nostats"),
+                         QStringLiteral("-progress"), QStringLiteral("pipe:1"),
                          QStringLiteral("-rw_timeout"), QStringLiteral("30000000"),
                          QStringLiteral("-protocol_whitelist"),
                          // `crypto` is REQUIRED for AES-128 HLS (#EXT-X-KEY):
@@ -555,16 +580,9 @@ void HlsGrabber::muxViaFfmpegDirect()
     auto noCRLF = [](const QString &s) { QString o = s; o.remove('\r'); o.remove('\n'); return o; };
     QString hdr;
     QString ua;
-    // Only block truly credential-bearing headers from ffmpeg; Referer/Origin
-    // are just URLs, not secrets, and CDNs need them for hotlink protection.
-    auto isCredentialHeader = [](const QByteArray &name) {
-        const QByteArray lower = name.toLower();
-        return lower == QByteArrayLiteral("cookie")
-            || lower == QByteArrayLiteral("authorization")
-            || lower == QByteArrayLiteral("proxy-authorization")
-            || lower == QByteArrayLiteral("x-api-key")
-            || lower == QByteArrayLiteral("x-csrf-token");
-    };
+    // Credential-bearing headers never reach this path — start() routes a stream
+    // that needs one through the per-segment fetch instead. The guard stays as a
+    // second line of defence: nothing may put a secret into argv here.
     for (const auto &h : scopedHeaders(m_url)) {
         if (isCredentialHeader(h.first))
             continue;
@@ -580,7 +598,10 @@ void HlsGrabber::muxViaFfmpegDirect()
          << QStringLiteral("-c") << QStringLiteral("copy")
          << m_savePath;
 
+    m_progressTail.clear();
     m_ffmpeg = new QProcess(this);
+    connect(m_ffmpeg, &QProcess::readyReadStandardOutput,
+            this, &HlsGrabber::onFfmpegProgress);
     connect(m_ffmpeg, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) { onMuxFinished(code); });
     connect(m_ffmpeg, &QProcess::errorOccurred, this,
@@ -590,6 +611,49 @@ void HlsGrabber::muxViaFfmpegDirect()
     });
     m_ffmpeg->start(ffmpeg, args);   // bundled exe isn't on PATH on Windows
     m_ffmpeg->closeWriteChannel();   // EOF on stdin: ffmpeg never blocks on a prompt
+}
+
+// FFmpeg's `-progress pipe:1` stream: blocks of key=value lines, each block
+// terminated by "progress=continue" (or "progress=end"). `total_size` is how
+// many bytes it has written to the output so far, which is the only meaningful
+// progress figure for a stream whose final length nobody knows up front.
+void HlsGrabber::onFfmpegProgress()
+{
+    if (!m_ffmpeg || m_cancelled)
+        return;
+    m_progressTail += m_ffmpeg->readAllStandardOutput();
+
+    bool blockEnded = false;
+    qsizetype nl;
+    while ((nl = m_progressTail.indexOf('\n')) >= 0) {
+        const QByteArray line = m_progressTail.left(nl).trimmed();
+        m_progressTail.remove(0, nl + 1);
+        const qsizetype eq = line.indexOf('=');
+        if (eq <= 0)
+            continue;
+        const QByteArray key = line.left(eq).trimmed();
+        const QByteArray value = line.mid(eq + 1).trimmed();
+        if (key == "progress") {
+            blockEnded = true;
+        } else if (key == "total_size") {
+            bool ok = false;
+            const qint64 written = value.toLongLong(&ok);
+            if (ok && written >= 0)
+                m_bytes = written;
+        }
+    }
+    // A build that doesn't speak -progress would otherwise grow this buffer for
+    // the life of the download; it is line-oriented or it is not used at all.
+    if (m_progressTail.size() > 8 * 1024)
+        m_progressTail.clear();
+    if (!blockEnded)
+        return;
+
+    const qint64 elapsed = m_clock.elapsed();
+    const double bps = elapsed > 0 ? double(m_bytes) * 1000.0 / double(elapsed) : 0.0;
+    // total = -1: an adaptive stream has no size until it is muxed, and the UI
+    // already renders that as "unknown" rather than inventing a percentage.
+    emit progress(m_id, m_bytes, -1, bps);
 }
 
 void HlsGrabber::onMuxFinished(int exitCode)
@@ -606,7 +670,14 @@ void HlsGrabber::onMuxFinished(int exitCode)
     cleanupTemp();
 
     if (ok) {
-        emit progress(m_id, m_bytes > 0 ? m_bytes : 1, m_bytes > 0 ? m_bytes : 1, 0.0);
+        // The finished file on disk is the authoritative size. m_bytes tracks
+        // FFmpeg's output counter on the direct path and downloaded bytes on the
+        // segment path — neither is the answer, and the old placeholder of 1
+        // reported every completed stream to the UI and the phone dashboard as
+        // being one byte long.
+        const qint64 finalSize = QFileInfo(m_savePath).size();
+        const qint64 total = finalSize > 0 ? finalSize : qMax<qint64>(m_bytes, 0);
+        emit progress(m_id, total, total, 0.0);
         setState(DownloadState::Completed, QStringLiteral("saved %1").arg(fileName()));
         emit finished(m_id);
     } else {

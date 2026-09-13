@@ -46,6 +46,14 @@ private:
 
     DownloadEngine *m_engine;
     QLocalServer   *m_server = nullptr;
+
+    // `yt-dlp -J` probes currently running. Each is a process that lives for
+    // seconds, so the count is capped: the socket is user-scoped, but any code
+    // running as this user (a compromised extension included) can send as many
+    // list-formats messages as it likes.
+    int             m_formatProbes = 0;
+    static constexpr int kMaxFormatProbes      = 4;
+    static constexpr int kFormatProbeTimeoutMs = 45000;   // frees a hung slot
 };
 
 } // namespace nexa

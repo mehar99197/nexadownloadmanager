@@ -121,6 +121,10 @@ public:
     void setStreamConcurrency(int n) { m_streamConcurrency = qBound(1, n, 64); }
     int  streamConcurrency() const { return m_streamConcurrency; }
 
+    // Network connections actually in flight right now, across every job type.
+    // Counted, never inferred from a setting — the UI reports this to the user.
+    int  activeConnections() const;
+
     // Subtitle embedding for yt-dlp video grabs (applied to new grabbers).
     void setSubtitles(bool embed, const QString &langs = QStringLiteral("en"))
     { m_embedSubs = embed; if (!langs.trimmed().isEmpty()) m_subLangs = langs.trimmed(); }
@@ -235,10 +239,14 @@ private:
     // Refresh an automatically detected browser session immediately before a
     // site download. Browsers may be opened or switched after Nexa starts.
     void    refreshBrowserLoginFor(const QUrl &url);
-    // Fetch a remote .torrent file (async, following redirects), then hand the
-    // local copy to the libtorrent session. libtorrent can't load an http URL.
+    // Fetch a remote .torrent file, then hand the local copy to the libtorrent
+    // session (libtorrent can't load an http URL). Redirects are followed
+    // MANUALLY and recursively through this same function so the captured
+    // credentials can be re-scoped — and dropped — on a cross-host hop;
+    // `credHost` carries the origin they belong to across those hops.
     void    fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
-                             const HeaderList &headers);
+                             const HeaderList &headers,
+                             const QString &credHost = QString(), int redirects = 0);
     void    schedule();              // start queued tasks up to m_maxConcurrent
     int     activeCount() const;     // tasks currently Probing/Downloading
     void    ensureTorrents();        // lazily create the libtorrent session

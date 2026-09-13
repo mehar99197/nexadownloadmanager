@@ -129,11 +129,20 @@ void AdService::applyPlan(const QString &plan)
 
 QUrl AdService::endpoint(const QString &path) const
 {
-    const QString base = qEnvironmentVariable(
-        "NEXA_ADS_API_URL", QStringLiteral("https://nexadownloadmanager.com/api/ads"));
+    // The environment override exists for developers pointing a build at
+    // localhost and is compiled in only with -DNEXA_DEV_OVERRIDES=ON. A shipped
+    // binary never consults it: the banner renders whatever this endpoint
+    // returns, so redirecting it is a way to put arbitrary content in the app.
+    static const QString kProduction = QStringLiteral("https://nexadownloadmanager.com/api/ads");
+#if NEXA_DEV_OVERRIDES
+    const QString base = qEnvironmentVariable("NEXA_ADS_API_URL", kProduction);
     QUrl url(base + path);
     const bool insecureDevelopment = qEnvironmentVariableIntValue("NEXA_ALLOW_INSECURE_LICENSE_API") == 1 &&
         (url.host() == QLatin1String("localhost") || url.host() == QLatin1String("127.0.0.1"));
+#else
+    QUrl url(kProduction + path);
+    const bool insecureDevelopment = false;
+#endif
     if (!url.isValid() || (url.scheme() != QLatin1String("https") && !insecureDevelopment))
         return QUrl();
     return url;

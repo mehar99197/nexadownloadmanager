@@ -32,12 +32,37 @@ const authLimiter = makeLimiter({
   max: 5,
 });
 
-// License validation (called by the C++ app): 10 per hour per source IP. The
-// fingerprint is untrusted input and must not be the sole rate-limit key.
+// License validation (called by the C++ app): 10 per hour per (source IP,
+// licence key). Keyed on the IP alone, one shared egress address — an office,
+// a campus, CGNAT — shared a single 10/hour budget across every user behind
+// it, and the eleventh activation was refused; Team plans are exactly the
+// customers most likely to sit behind one. Adding the key gives each licence
+// its own budget per address. The IP stays in the key: the fingerprint is
+// untrusted input, and one key still cannot be hammered from one address
+// however many devices claim it.
 const licenseLimiter = makeLimiter({
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.ip,
+  keyGenerator: (req) => {
+    const key = typeof req.body?.license_key === 'string'
+      ? req.body.license_key.trim().toUpperCase().slice(0, 64) : '';
+    return `${req.ip}|${key}`;
+  },
+});
+
+// Session refresh runs on every full page load, so it must not share the
+// 5/15 min login budget — but it is an unauthenticated endpoint that hits the
+// database, so it cannot go unbounded either. Same shape as the admin one.
+const sessionRefreshLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+});
+
+// Email-verification links: one click each, with room for the retries a
+// confused user makes, but not for a script walking token space.
+const verifyEmailLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
 });
 
 // Admin login: 5 per 15 min.
@@ -102,4 +127,5 @@ const teamInviteLimiter = makeLimiter({
 module.exports = {
   authLimiter, licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter,
+  sessionRefreshLimiter, verifyEmailLimiter,
 };

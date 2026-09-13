@@ -101,6 +101,20 @@ if(WIN32)
     target_link_libraries(nexa PRIVATE Advapi32)
 endif()
 
+# Developer overrides for the network endpoints the app trusts — the licence
+# API (NEXA_LICENSE_API_URL, NEXA_ALLOW_INSECURE_LICENSE_API), the ad feed
+# (NEXA_ADS_API_URL) and the update feed (NEXA_UPDATE_URL). They exist so a
+# developer can point a build at localhost. In a shipped binary the same
+# variables let anyone redirect licence validation to a server that answers
+# "pro" — or, worse, the updater to a feed that hands it an installer to run.
+# OFF by default, so a release build compiles every one of those lookups out;
+# turn it on for a local dev build: cmake -DNEXA_DEV_OVERRIDES=ON ...
+option(NEXA_DEV_OVERRIDES "Honour NEXA_*_URL environment overrides (dev builds only)" OFF)
+if(NEXA_DEV_OVERRIDES)
+    target_compile_definitions(nexa PRIVATE NEXA_DEV_OVERRIDES=1)
+    message(WARNING "NEXA_DEV_OVERRIDES is ON: this build trusts NEXA_* endpoint overrides. Never ship it.")
+endif()
+
 # macOS: build a real .app bundle so Finder/Launchpad treat it as an app and the
 # icon + identifier are right. nexa-host stays a plain command-line binary; the
 # browsers exec it directly by path.

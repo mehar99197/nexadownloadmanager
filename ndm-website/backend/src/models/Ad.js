@@ -3,6 +3,15 @@
 const { query, queryOne, insert, execute } = require('../config/db');
 const { MAX_ADS_PER_RESPONSE } = require('../utils/ads');
 
+// Columns update() may touch. The name is interpolated into the statement, so
+// it must never come from user input; the route's Zod schema is .strict(), but
+// this makes the guarantee live here rather than one schema edit away. Counters
+// and audit columns are deliberately absent — they have their own methods.
+const UPDATABLE_COLUMNS = new Set([
+  'title', 'body', 'image_url', 'target_url', 'cta_label', 'placement',
+  'active', 'weight', 'starts_at', 'ends_at',
+]);
+
 const Ad = {
   async findById(id) {
     return queryOne('SELECT * FROM ads WHERE id = ?', [id]);
@@ -53,6 +62,8 @@ const Ad = {
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+      if (!UPDATABLE_COLUMNS.has(col))
+        throw new Error(`Ad.update: "${k}" is not an updatable column`);
       sets.push(`${col} = ?`);
       vals.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
     }

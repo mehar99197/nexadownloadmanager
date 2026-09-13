@@ -879,4 +879,9 @@ jobs:
           ./extension-firefox/build.sh
           unzip -t dist/nexa-chrome.zip
           unzip -t dist/nexa-firefox.zip
-          node tests/ExtensionProviderConfigTest.js && node tests/ExtensionSettingsTest.js
+          node tests/ExtensionProviderConfigTest.js
+          node tests/ExtensionSettingsTest.js
+          # jsdom comes from the frontend's node_modules, installed by the
+          # "Frontend and admin builds" step above. NEXA_REQUIRE_JSDOM makes a
+          # missing dependency fail here rather than skip to a green tick.
+          NEXA_REQUIRE_JSDOM=1 node tests/ExtensionContentTest.js

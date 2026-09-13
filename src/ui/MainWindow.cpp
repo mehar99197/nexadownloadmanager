@@ -819,6 +819,20 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
                "dropped to the Free plan.\n\nEnter your license key again in "
                "Settings to take a seat back, if one is available."));
     });
+    // The theme in use must stay inside the entitlement the server just
+    // reported. A paid theme survives a lapsed subscription otherwise — the
+    // gates only ever ran when a theme was CHOSEN, never when the plan changed
+    // underneath one already applied (or one written straight into settings).
+    connect(m_engine->license(), &LicenseManager::featuresChanged, this,
+            [this](const Entitlements &features) {
+        const QString current = theme::savedId();
+        if (features.allowsTheme(current) || features.freeThemes.isEmpty())
+            return;
+        theme::setSavedId(features.freeThemes.first());
+        if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance()))
+            theme::apply(*app);
+        refreshTheme();
+    });
     connect(m_engine, &DownloadEngine::scheduledAdded,   this, [this](int) { updateStats(); });
     connect(m_engine, &DownloadEngine::scheduledRemoved, this, [this](int) { updateStats(); });
     // IDM-style: a held (externally-added) download asks before it starts. Resolve
@@ -993,7 +1007,9 @@ void MainWindow::updateStats()
 
     // ---- Metric tiles ----
     m_metActiveVal->setText(QString::number(active));
-    const int threads = active * qMax(1, m_engine->streamConcurrency());
+    // Counted, not inferred: this used to be activeDownloads × the HLS
+    // concurrency setting, which reported connections that were never opened.
+    const int threads = m_engine->activeConnections();
     m_metActiveSub->setText(active > 0 ? QStringLiteral("↑ %1 threads").arg(threads)
                           : queued > 0 ? QStringLiteral("%1 queued").arg(queued)
                                        : QStringLiteral("idle"));
@@ -1456,13 +1472,19 @@ void MainWindow::togglePauseSelected()
         m_engine->resume(id);
 }
 
-// The installer finished downloading (and, when the feed had a checksum, was
-// verified by the engine — a mismatch would have errored, never reached here).
+// The installer finished downloading. When the feed carried a checksum the
+// engine already enforced it — a mismatch fails the download and never reaches
+// here — so `verified` below distinguishes "checked and good" from "there was
+// nothing to check it against", which the dialog now says out loud.
 void MainWindow::offerInstallUpdate(int id)
 {
     const QString path = m_engine->savePathOf(id);
     const QString version = m_pendingUpdateVersion;
-    const bool verified = m_stateDetail.value(id).contains(QLatin1String("verified"));
+    // Ask the task what it actually verified. This used to substring-match the
+    // human-readable status line for "verified", which is a display string, not
+    // a security decision.
+    DownloadTask *task = m_engine->task(id);
+    const bool verified = task && task->hashVerification().verified;
     m_pendingUpdateTask = -1;
     m_pendingUpdateVersion.clear();
     if (path.isEmpty() || !QFileInfo::exists(path))
@@ -1471,14 +1493,20 @@ void MainWindow::offerInstallUpdate(int id)
     QMessageBox box(this);
     box.setWindowTitle(tr("Update ready"));
     box.setText(tr("Nexa %1 has been downloaded%2.")
-                    .arg(version, verified ? QStringLiteral(" and verified") : QString()));
+                    .arg(version, verified ? tr(" and verified") : QString()));
 #ifdef Q_OS_WIN
-    box.setInformativeText(QStringLiteral("Install now? Nexa will close while the installer runs; "
-                                          "your downloads resume when you reopen it."));
+    QString detail = tr("Install now? Nexa will close while the installer runs; your downloads resume when you reopen it.");
 #else
-    box.setInformativeText(QStringLiteral("Open the package now? Your system's package installer "
-                                          "will take it from here; restart Nexa afterwards."));
+    QString detail = tr("Open the package now? Your system's package installer will take it from here; restart Nexa afterwards.");
 #endif
+    // An installer is executable code. Say plainly when the feed handed us no
+    // checksum to check it against, rather than launching it as if it had.
+    if (!verified) {
+        detail = tr("This build could not be checksum-verified: the update feed carried no SHA-256 for it. Install it only if you trust the download.")
+               + QStringLiteral("\n\n") + detail;
+        box.setIcon(QMessageBox::Warning);
+    }
+    box.setInformativeText(detail);
     QPushButton *now = box.addButton(tr("Install now"), QMessageBox::AcceptRole);
     box.addButton(tr("Later"), QMessageBox::RejectRole);
     box.exec();

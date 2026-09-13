@@ -275,6 +275,14 @@ void WebServer::onReadyRead(QTcpSocket *sock)
     auto it = m_conns.find(sock);
     if (it == m_conns.end())
         return;
+    // One request per connection. Anything that arrives after we have answered
+    // is discarded rather than appended: the buffer still holds the request we
+    // just handled, so re-parsing it would dispatch it twice (a pipelined or
+    // split follow-up could replay an /api/add or /api/remove).
+    if (it->answered) {
+        sock->readAll();
+        return;
+    }
     QByteArray &buf = it->buffer;
     buf.append(sock->readAll());
 
@@ -287,10 +295,17 @@ void WebServer::onReadyRead(QTcpSocket *sock)
     Request req;
     bool needMore = false;
     if (!tryParse(buf, req, needMore)) {
-        if (!needMore)
+        if (!needMore) {
+            it->answered = true;
+            buf.clear();
             sendResponse(sock, 400, QStringLiteral("text/plain"), "bad request");
+        }
         return;   // needMore: wait for the rest of the request (timer guards it)
     }
+    // Mark answered BEFORE dispatching: dispatch() writes the response, and the
+    // socket can surface more readyRead activity while it drains.
+    it->answered = true;
+    buf.clear();
     dispatch(sock, req);
 }
 
@@ -365,7 +380,10 @@ bool WebServer::tryParse(const QByteArray &buf, Request &req, bool &needMore) co
 void WebServer::dispatch(QTcpSocket *sock, const Request &req)
 {
     // CORS preflight: answered before the auth gate (the browser sends OPTIONS
-    // with no Authorization header). The CORS headers ride on every response.
+    // with no Authorization header). No Access-Control-Allow-* headers are sent
+    // anywhere, deliberately — the dashboard is same-origin, so cross-origin
+    // callers get nothing back and a hostile page cannot read this API even if
+    // it somehow learned the token.
     if (req.method == QLatin1String("OPTIONS")) {
         sendResponse(sock, 204, QStringLiteral("text/plain"), QByteArray());
         return;

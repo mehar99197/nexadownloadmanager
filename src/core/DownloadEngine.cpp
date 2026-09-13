@@ -10,6 +10,7 @@
 #include "site/SpotifyGrabber.h"
 #include "ai/AiClient.h"
 #include "auth/AuthenticationManager.h"
+#include "auth/AuthUtils.h"
 #include "auth/BrowserLogin.h"
 #include "auth/CloudProviders.h"
 #include "core/RateLimiter.h"
@@ -757,6 +758,38 @@ int DownloadEngine::activeCount() const
     return n;
 }
 
+// Real connections in flight. The UI's "threads" tile used to render
+// activeDownloads × the HLS concurrency SETTING — two unrelated numbers
+// multiplied together, reporting connections that did not exist (and, while the
+// HLS grabber ignored that setting entirely, could not exist). A segmented HTTP
+// download holds one connection per unfinished segment; every other job type
+// manages its own sockets and counts as one.
+int DownloadEngine::activeConnections() const
+{
+    int n = 0;
+    for (auto *t : m_tasks) {
+        if (t->state() != DownloadState::Downloading)
+            continue;
+        for (const SegmentInfo &s : t->segments())
+            if (!s.complete())
+                ++n;
+    }
+    auto countRunning = [&n](const auto &jobs) {
+        for (auto *j : jobs)
+            if (j->state() == DownloadState::Downloading)
+                ++n;
+    };
+    countRunning(m_grabbers);
+    countRunning(m_megaGrabbers);
+    countRunning(m_siteVideos);
+    countRunning(m_spotifyGrabbers);
+    if (m_torrents)
+        for (int id : m_torrentIds)
+            if (m_torrents->stateOf(id) == DownloadState::Downloading)
+                ++n;
+    return n;
+}
+
 void DownloadEngine::schedule()
 {
     if (m_inSchedule)
@@ -828,25 +861,66 @@ void DownloadEngine::setSeedRatio(double ratio)
 }
 
 void DownloadEngine::fetchTorrentFile(int id, const QUrl &url, const QString &saveDir,
-                                      const HeaderList &headers)
+                                      const HeaderList &headers, const QString &credHost,
+                                      int redirects)
 {
-    emit taskStateChanged(id, DownloadState::Probing, QStringLiteral("fetching .torrent…"));
+    if (redirects == 0)
+        emit taskStateChanged(id, DownloadState::Probing, QStringLiteral("fetching .torrent…"));
+
+    // The captured Cookie/Authorization belong to the host the user was on — a
+    // private tracker, typically. Every other network path in the engine follows
+    // redirects MANUALLY so those can be dropped before a cross-host hop; this
+    // one used Qt's automatic redirects, which re-send the same raw headers to
+    // whatever host the tracker points at, handing the session to a third party.
+    const QString origin = credHost.isEmpty() ? url.host().toLower() : credHost;
+    const QString host = url.host().toLower();
+    const bool inScope = host.compare(origin, Qt::CaseInsensitive) == 0
+        || (m_providers && m_providers->sameCredentialScope(host, origin));
 
     QNetworkRequest req(url);
-    for (const auto &h : headers)
-        req.setRawHeader(h.first, h.second);
-    // cdimage.kali.org → kali.download is a 302; follow redirects to the file.
+    for (const auto &h : headers) {
+        if (inScope || !isSensitiveHeader(h.first))
+            req.setRawHeader(h.first, h.second);
+    }
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
+                     QNetworkRequest::ManualRedirectPolicy);
 
     QNetworkReply *reply = m_nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, id, saveDir, reply]() {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, id, saveDir, reply, headers, origin, redirects]() {
         reply->deleteLater();
         if (!m_torrentIds.contains(id))            // removed while in flight
             return;
         if (reply->error() != QNetworkReply::NoError) {
             emit taskStateChanged(id, DownloadState::Error,
                 QStringLiteral("could not fetch .torrent: %1").arg(reply->errorString()));
+            m_torrentIds.remove(id);
+            return;
+        }
+        // cdimage.kali.org → kali.download is a 302, so the hop must still be
+        // followed — just with the credentials re-scoped for the new host first.
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status >= 300 && status < 400) {
+            const QByteArray location = reply->rawHeader("Location");
+            const QUrl target = location.isEmpty() ? QUrl()
+                : reply->url().resolved(QUrl::fromEncoded(location));
+            const QString scheme = target.scheme().toLower();
+            const bool downgrade = reply->url().scheme().compare(QLatin1String("https"),
+                                                                 Qt::CaseInsensitive) == 0
+                                && scheme == QLatin1String("http");
+            if (redirects >= 8 || !target.isValid() || downgrade
+                || (scheme != QLatin1String("http") && scheme != QLatin1String("https"))) {
+                emit taskStateChanged(id, DownloadState::Error,
+                    QStringLiteral("could not fetch .torrent: unsafe or looping redirect"));
+                m_torrentIds.remove(id);
+                return;
+            }
+            fetchTorrentFile(id, target, saveDir, headers, origin, redirects + 1);
+            return;
+        }
+        if (status >= 400) {
+            emit taskStateChanged(id, DownloadState::Error,
+                QStringLiteral("could not fetch .torrent: server returned HTTP %1").arg(status));
             m_torrentIds.remove(id);
             return;
         }
@@ -1288,21 +1362,24 @@ QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &heade
 
 int DownloadEngine::addRemoteDownload(const QUrl &url)
 {
-    if (!isPublicHttpUrl(url))
+    if (!url.isValid() || !isAllowedRemoteScheme(url))
+        return -1;
+    // http(s) targets must additionally be PUBLIC: a LAN client must never be
+    // able to use Nexa as a probe into the host machine's private network.
+    const QString scheme = url.scheme().toLower();
+    if ((scheme == QStringLiteral("http") || scheme == QStringLiteral("https"))
+        && !isPublicHttpUrl(url))
         return -1;
 
-    const int id = m_db->nextId();
-    auto *task = new DownloadTask(id, url, resolveSavePath(url, QString()), m_nam, m_db, this);
-    task->setRateLimiter(m_limiter);
-    task->setCloudProviders(m_providers);
-    task->setPublicNetworkOnly(true);
-    task->setNameResolver([this](const QString &name) { return pathForName(name); });
-    m_tasks.insert(id, task);
-    wireTask(task);
-    emit taskAdded(id);
-    m_pending.append(id);
-    schedule();
-    return id;
+    // Route through addDownload instead of building a DownloadTask here. Doing
+    // it by hand skipped every gate that entry point applies: the tracked-job
+    // ceiling (so the phone dashboard could grow the queue without bound), the
+    // paid auth-site check (so a Free plan reached login-gated course sites
+    // through the remote API), and the grabber routing that makes a magnet,
+    // stream or yt-dlp link work at all — the dashboard offers magnet links in
+    // its own placeholder text and they were rejected outright.
+    return addDownload(url, QString(), {}, QString(), QString(), /*playlist=*/false,
+                       /*userInitiated=*/true, QString(), /*publicNetworkOnly=*/true);
 }
 
 QList<int> DownloadEngine::addRemoteBatch(const QString &text)

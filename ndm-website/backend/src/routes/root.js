@@ -13,6 +13,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 
 const User = require('../models/User');
+const UserSession = require('../models/UserSession');
 const AuditLog = require('../models/AuditLog');
 const Release = require('../models/Release');
 const config = require('../config/env');
@@ -224,6 +225,7 @@ router.put(
       updates.refreshTokenHash = null;
     }
     await User.update(user.id, updates);
+    if (banned === true) await UserSession.removeAllForUser(user.id);
 
     const fresh = await User.findById(user.id);
     await audit(req, 'admin.updated', 'user', user.id, `Updated staff admin ${fresh.email}`, req.body);
@@ -240,6 +242,7 @@ router.post(
       passwordHash: await bcrypt.hash(req.body.password, BCRYPT_COST),
       refreshTokenHash: null, adminRefreshTokenHash: null,
     });
+    await UserSession.removeAllForUser(user.id);
     await audit(req, 'admin.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
   })
@@ -251,6 +254,7 @@ router.post(
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
     await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
+    await UserSession.removeAllForUser(user.id);
     await audit(req, 'admin.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
     return ok(res, { revoked: true });
   })
@@ -268,6 +272,7 @@ router.post(
       totpEnabled: 0, totpSecret: null, totpRecovery: null,
       refreshTokenHash: null, adminRefreshTokenHash: null,
     });
+    await UserSession.removeAllForUser(user.id);
     await audit(req, 'admin.2fa_reset', 'user', user.id, `Reset two-factor authentication for ${user.email}`);
     return ok(res, { reset: true });
   })

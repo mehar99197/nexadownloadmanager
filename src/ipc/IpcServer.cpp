@@ -20,9 +20,11 @@
 #include <QUrl>
 #include <QRegularExpression>
 #include <QAbstractSocket>
+#include <QTimer>
 #include <QDebug>
 #include <QPointer>
 #include <algorithm>
+#include <memory>
 
 namespace nexa {
 
@@ -398,20 +400,61 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
 
 void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
 {
+    if (m_formatProbes >= kMaxFormatProbes) {
+        sendFramed(sock, QJsonObject{{"ok", false},
+                                     {"message", "too many quality probes in flight; try again"}});
+        return;
+    }
+    ++m_formatProbes;
+
     auto *proc = new QProcess(this);
     auto out = std::make_shared<QByteArray>();
     // The peer can disconnect during the multi-second `yt-dlp -J`; a raw sock would
     // dangle. A QPointer goes null on delete so the finished callback can bail.
     QPointer<QLocalSocket> safeSock(sock);
+    // finished() and errorOccurred() can BOTH fire for one process (a crash
+    // reports an error and then finishes), and a process that never starts fires
+    // only the second. One shared latch keeps the reply, the slot release and
+    // the deletion to exactly once, whichever path gets there first.
+    auto settled = std::make_shared<bool>(false);
+    auto settle = [this, settled, proc, safeSock](const QJsonObject &reply) {
+        if (*settled)
+            return;
+        *settled = true;
+        --m_formatProbes;
+        if (safeSock)
+            sendFramed(safeSock, reply);
+        if (proc->state() != QProcess::NotRunning)
+            proc->kill();
+        proc->deleteLater();
+    };
+    // A hung probe must not hold its slot — or the peer's reply — forever.
+    // Parented to `proc`, so settling early cancels it.
+    QTimer::singleShot(kFormatProbeTimeoutMs, proc, [settle]() {
+        settle(QJsonObject{{"ok", false}, {"message", "quality probe timed out"}});
+    });
+    connect(proc, &QProcess::errorOccurred, this, [settle](QProcess::ProcessError error) {
+        // Only the never-started case is terminal here; a crash also reaches
+        // finished(), which reports it with its exit status.
+        if (error == QProcess::FailedToStart)
+            settle(QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});
+    });
     connect(proc, &QProcess::readyReadStandardOutput, this,
             [proc, out]() {
         if (out->size() < 8 * 1024 * 1024)   // cap at 8 MB (M8 fix)
             out->append(proc->readAllStandardOutput());
     });
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, safeSock, proc, out](int, QProcess::ExitStatus) {
-        if (!safeSock) { proc->deleteLater(); return; }
-        QLocalSocket *sock = safeSock;
+            [settle, out](int exitCode, QProcess::ExitStatus status) {
+        if (status != QProcess::NormalExit || exitCode != 0) {
+            // A failed probe is NOT "this video has no formats". Replying ok
+            // with an empty list made every yt-dlp failure — an unsupported
+            // site, an expired session, a missing JS runtime — look to the
+            // extension like a video with nothing to download.
+            settle(QJsonObject{{"ok", false},
+                               {"message", "yt-dlp could not read this video's formats"}});
+            return;
+        }
         // Collect EVERY distinct video height yt-dlp reports (audio is muxed in
         // separately, so a video-only DASH format like 2160p still counts). For
         // each height keep the highest frame-rate seen so a quality can be
@@ -489,12 +532,11 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
             });
         }
 
-        sendFramed(sock, QJsonObject{{"ok", true},
-                                     {"hasAudio", hasAudio},
-                                     {"title", info.value(QStringLiteral("title")).toString()},
-                                     {"qualities", quals},
-                                     {"audioFormats", audioQuals}});
-        proc->deleteLater();
+        settle(QJsonObject{{"ok", true},
+                           {"hasAudio", hasAudio},
+                           {"title", info.value(QStringLiteral("title")).toString()},
+                           {"qualities", quals},
+                           {"audioFormats", audioQuals}});
     });
     // -J extraction is network-bound (a few seconds); the host waits for us.
     // `--` ends option parsing so a URL starting with '-' can't be read as a flag.
@@ -521,10 +563,11 @@ void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)
     // the absolute path so the qualities probe works there too.
     proc->start(resolveTool(QStringLiteral("yt-dlp")), args);
     proc->closeWriteChannel();   // EOF stdin — prevents interactive-prompt hang
-    if (!proc->waitForStarted(3000)) {
-        sendFramed(sock, QJsonObject{{"ok", false}, {"message", "yt-dlp not available"}});
-        proc->deleteLater();
-    }
+    // No waitForStarted() here. It blocked the GUI thread for up to three
+    // seconds — every download, timer and repaint in this single-threaded app
+    // stopped with it — on the exact machines where exec is slowest (cold cache,
+    // on-access antivirus). The errorOccurred handler above reports a failed
+    // start asynchronously instead.
 }
 
 } // namespace nexa

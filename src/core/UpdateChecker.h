@@ -15,14 +15,17 @@ namespace nexa {
 //   { "version": "0.2.0", "url": "https://…/download/windows",
 //     "notes": "what's new", "sha256": "<hex or empty>" }
 //
-// $NEXA_UPDATE_URL overrides the feed URL; "off" disables checking entirely.
+// In a build configured with -DNEXA_DEV_OVERRIDES=ON, $NEXA_UPDATE_URL overrides
+// the feed URL and "off" disables checking entirely. A release build ignores
+// the variable: the feed decides which installer this app downloads and runs,
+// so it is never something the environment may redirect.
 class UpdateChecker : public QObject {
     Q_OBJECT
 public:
     explicit UpdateChecker(QObject *parent = nullptr);
 
-    bool isConfigured() const;                  // false only when NEXA_UPDATE_URL=off
-    QString feedUrl() const;                    // env override, else the default feed
+    bool isConfigured() const;                  // false only for NEXA_UPDATE_URL=off (dev builds)
+    QString feedUrl() const;                    // dev override, else the production feed
     void check(const QString &currentVersion);  // async; emits one signal below
 
     // "windows" | "linux" | "macos" — the feed's os selector for this build.

@@ -35,16 +35,10 @@ static const QString kDrmErrorDetail = QStringLiteral(
     "DRM-protected media — the audio/video is encrypted (e.g. Apple Music) and "
     "cannot be played. Only non-DRM previews are downloadable.");
 
-// Headers that carry the user's site credentials. These must NEVER be sent to a
-// host other than the one they were captured for (a cross-host redirect to a CDN
-// or third party would otherwise leak the session cookie / bearer token).
-static bool isSensitiveHeader(const QByteArray &name)
-{
-    const QByteArray l = name.toLower();
-    return l == "cookie" || l == "authorization" || l == "referer" ||
-           l == "proxy-authorization" || l == "x-api-key" ||
-           l == "x-csrf-token";
-}
+// isSensitiveHeader() — the headers that carry the user's site credentials and
+// must NEVER be sent to a host other than the one they were captured for — now
+// lives in auth/AuthUtils.h, so the torrent fetch and the stream grabber apply
+// exactly the same rule as this file does.
 
 // Two hosts share a credential scope when they're the same host or are explicit
 // credential siblings of the same cloud provider. The registry, not naive
@@ -1436,20 +1430,11 @@ void DownloadTask::finalizeShort(qint64 totalReceived)
         return;
     }
 
-    // Compute SHA-256 hash and verify if expected hash was provided
-    m_hashResult = computeSha256();
-    QString completionDetail = QStringLiteral("done");
-    if (m_hashResult.hasExpected) {
-        if (m_hashResult.verified) {
-            completionDetail = QStringLiteral("done (hash verified)");
-        } else {
-            // Hash mismatch - this is a data integrity error
-            setState(DownloadState::Error,
-                     QStringLiteral("hash mismatch: expected %1, got %2")
-                     .arg(m_expectedSha256.toLower(), m_hashResult.sha256));
-            persist();
-            return;
-        }
+    QString completionDetail;
+    if (const QString hashError = verifyHash(&completionDetail); !hashError.isEmpty()) {
+        setState(DownloadState::Error, hashError);   // data-integrity failure
+        persist();
+        return;
     }
 
     setState(DownloadState::Completed, completionDetail);
@@ -1472,28 +1457,50 @@ void DownloadTask::checkAllComplete()
         return;
     }
 
-    // Compute SHA-256 hash and verify if expected hash was provided
-    m_hashResult = computeSha256();
-    QString completionDetail = QStringLiteral("done");
-    if (m_hashResult.hasExpected) {
-        if (m_hashResult.verified) {
-            completionDetail = QStringLiteral("done (hash verified)");
-            if (kDebug)
-                qDebug().noquote() << "NEXA HASH VERIFIED" << m_id << m_hashResult.sha256;
-        } else {
-            // Hash mismatch - this is a data integrity error
-            setState(DownloadState::Error,
-                     QStringLiteral("hash mismatch: expected %1, got %2")
-                     .arg(m_expectedSha256.toLower(), m_hashResult.sha256));
-            persist();
-            return;
-        }
+    QString completionDetail;
+    if (const QString hashError = verifyHash(&completionDetail); !hashError.isEmpty()) {
+        setState(DownloadState::Error, hashError);   // data-integrity failure
+        persist();
+        return;
     }
 
     setState(DownloadState::Completed, completionDetail);
     persist();
     emit progress(m_id, m_done, m_total, 0.0);
     emit finished(m_id);
+}
+
+// Verify the finished file against an expected SHA-256, if one was supplied.
+// Returns an error to fail the download with, or an empty string to continue;
+// *detail receives the completion text.
+//
+// The hash is computed ONLY when something asked for it. Both completion paths
+// used to hash unconditionally, and computeSha256() consults m_expectedSha256
+// only *after* reading the file — so every finished download was read end to
+// end on the GUI thread, freezing the window (and stalling every other active
+// download, which share that thread) in proportion to its size, to produce a
+// value no caller ever looked at. Only the updater sets an expected hash.
+QString DownloadTask::verifyHash(QString *detail)
+{
+    *detail = QStringLiteral("done");
+    m_hashResult = HashVerification{};
+    if (m_expectedSha256.isEmpty())
+        return QString();
+
+    m_hashResult = computeSha256();
+    // A hash was demanded and could not be produced (unreadable or empty
+    // file). Fail closed: the caller that asked for verification — the
+    // updater, about to run this file — must never see "Completed" here.
+    if (!m_hashResult.hasExpected)
+        return QStringLiteral("hash verification failed: the file could not be read");
+    if (m_hashResult.verified) {
+        if (kDebug)
+            qDebug().noquote() << "NEXA HASH VERIFIED" << m_id << m_hashResult.sha256;
+        *detail = QStringLiteral("done (hash verified)");
+        return QString();
+    }
+    return QStringLiteral("hash mismatch: expected %1, got %2")
+        .arg(m_expectedSha256.toLower(), m_hashResult.sha256);
 }
 
 // Compute SHA-256 hash of the downloaded file for integrity verification.

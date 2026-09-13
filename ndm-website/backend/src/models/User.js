@@ -2,6 +2,19 @@
 
 const { query, queryOne, insert, execute } = require('../config/db');
 
+// Every column update() may touch. The column NAME is interpolated into the
+// statement (only values are bound), so it must never come from user input —
+// today every caller passes hardcoded keys or a Zod-stripped object, but that is
+// a property of each caller's discipline, not of this function. An allowlist
+// makes it a property of the code: an unknown key throws instead of becoming
+// SQL. Keep in step with the users table in config/schema.js.
+const UPDATABLE_COLUMNS = new Set([
+  'name', 'email', 'password_hash', 'role', 'email_verified', 'banned',
+  'google_id', 'avatar_url', 'refresh_token_hash', 'admin_refresh_token_hash',
+  'root_refresh_token_hash', 'trial_used', 'totp_secret', 'totp_enabled',
+  'totp_recovery',
+]);
+
 const User = {
   async findById(id) {
     return queryOne('SELECT * FROM users WHERE id = ?', [id]);
@@ -59,6 +72,8 @@ const User = {
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+      if (!UPDATABLE_COLUMNS.has(col))
+        throw new Error(`User.update: "${k}" is not an updatable column`);
       sets.push(`${col} = ?`);
       vals.push(v);
     }

@@ -122,6 +122,29 @@ async function initSchema() {
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
 
+  // Site sessions: one row per signed-in browser, keyed by the SHA-256 of its
+  // refresh token. This replaces users.refresh_token_hash, which was a single
+  // slot per account — signing in on a second device silently signed the first
+  // one out, and two tabs refreshing at once raced for it. The old column is
+  // kept (and read as a fallback in /auth/refresh) so a cookie issued before
+  // this table existed still works once, migrating itself into a row here.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NOT NULL,
+      token_hash CHAR(64) NOT NULL,
+      user_agent VARCHAR(255) NULL DEFAULT NULL,
+      ip VARCHAR(45) NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      UNIQUE KEY uq_user_sessions_token (token_hash),
+      INDEX idx_user_sessions_user (user_id),
+      INDEX idx_user_sessions_expiry (expires_at),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   // "Continue with Google". `google_id` is Google's immutable subject claim —
   // never the email, which a user can change at Google. It is UNIQUE so one
   // Google account can only ever be linked to one Nexa account.

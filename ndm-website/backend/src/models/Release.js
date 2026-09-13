@@ -2,6 +2,15 @@
 
 const { query, queryOne, insert, execute } = require('../config/db');
 
+// Columns update() may touch. The name is interpolated into the statement, so
+// it must never come from user input — see User.js for the reasoning. The
+// download counter has its own atomic increment and is deliberately absent.
+const UPDATABLE_COLUMNS = new Set([
+  'version', 'windows_url', 'linux_url', 'windows_sha256', 'linux_sha256',
+  'windows_file', 'linux_file', 'windows_filename', 'linux_filename',
+  'windows_size', 'linux_size', 'changelog', 'is_latest', 'published_at',
+]);
+
 const Release = {
   async findLatest() {
     return queryOne('SELECT * FROM releases WHERE is_latest = 1 ORDER BY published_at DESC LIMIT 1');
@@ -34,6 +43,8 @@ const Release = {
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+      if (!UPDATABLE_COLUMNS.has(col))
+        throw new Error(`Release.update: "${k}" is not an updatable column`);
       sets.push(`${col} = ?`);
       vals.push(v);
     }

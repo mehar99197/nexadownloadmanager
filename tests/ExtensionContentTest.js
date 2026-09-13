@@ -4,8 +4,10 @@
 //
 //   node tests/ExtensionContentTest.js
 //
-// jsdom is resolved from the website's node_modules; when it is not installed
-// the test prints a notice and exits 0 (the CI job that installs it runs it).
+// jsdom is resolved from the website's node_modules. When it is not installed
+// the test prints a notice and exits 0 so a bare checkout stays usable — unless
+// NEXA_REQUIRE_JSDOM=1 is set, which CI does so a missing dependency fails the
+// build instead of silently reporting a pass.
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -17,7 +19,15 @@ for (const p of ["jsdom", path.join(__dirname, "..", "ndm-website", "frontend", 
   try { ({ JSDOM } = require(p)); break; } catch (_) { /* try the next */ }
 }
 if (!JSDOM) {
-  console.log("Extension content tests skipped — jsdom not installed (cd ndm-website/frontend && npm ci)");
+  const how = "jsdom not installed (cd ndm-website/frontend && npm ci)";
+  // CI sets NEXA_REQUIRE_JSDOM=1. Without it a runner that never installed the
+  // dependency reported a clean pass for tests that did not run — the same
+  // silent-skip trap the backend job already guards against.
+  if (process.env.NEXA_REQUIRE_JSDOM === "1") {
+    console.error(`Extension content tests could NOT run — ${how}`);
+    process.exit(1);
+  }
+  console.log(`Extension content tests skipped — ${how}`);
   process.exit(0);
 }
 

@@ -39,9 +39,12 @@ function signLicenseToken(payload) {
 }
 
 function verifyTyped(token, secret, type) {
+  // SECURITY: ALWAYS verify token type to prevent token confusion attacks.
+  // An access token must never be accepted where a reset token is expected.
   const payload = jwt.verify(token, secret);
-  if (!payload || payload.typ !== type)
-    throw new jwt.JsonWebTokenError('invalid token type');
+  if (!payload || payload.typ !== type) {
+    throw new jwt.JsonWebTokenError(`invalid token type: expected '${type}', got '${payload?.typ || 'none'}'`);
+  }
   return payload;
 }
 

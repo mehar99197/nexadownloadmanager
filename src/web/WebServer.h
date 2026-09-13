@@ -68,6 +68,12 @@ private:
     struct Conn {
         QByteArray buffer;
         QTimer    *timer = nullptr;
+        // Set once this connection's single request has been answered. Every
+        // response is Connection: close, but the socket lingers until the write
+        // drains, so more bytes can still arrive — and the buffer still holds
+        // the request we just handled. Without this flag they were re-parsed
+        // and the SAME request dispatched a second time.
+        bool       answered = false;
     };
 
     DownloadEngine *m_engine;

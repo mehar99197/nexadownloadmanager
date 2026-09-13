@@ -343,6 +343,13 @@ int main(int argc, char *argv[])
         const QString scheme = dashboard->isTls() ? QStringLiteral("https") : QStringLiteral("http");
         const QString base = QStringLiteral("%1://%2:%3/").arg(scheme, host).arg(dashboard->port());
         s.setValue(QStringLiteral("dashboard/currentUrl"), base + QStringLiteral("?token=") + token);
+        
+        // SECURITY WARNING: HTTP dashboard on LAN exposes token to network sniffers
+        if (lan && !dashboard->isTls()) {
+            qWarning() << "⚠️  SECURITY WARNING: Dashboard running on HTTP (LAN mode).";
+            qWarning() << "   Your authentication token is transmitted in plaintext!";
+            qWarning() << "   Set NEXA_TLS_CERT and NEXA_TLS_KEY environment variables to enable HTTPS.";
+        }
         // Only print the secret token when stdout is an interactive terminal —
         // not when redirected to a log file / journald, where anyone who can
         // read the logs would gain full remote control.

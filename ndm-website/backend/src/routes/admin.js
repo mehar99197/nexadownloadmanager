@@ -4,6 +4,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 
 const User = require('../models/User');
+const UserSession = require('../models/UserSession');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
 const Review = require('../models/Review');
@@ -343,6 +344,9 @@ router.put(
     if (user.id === req.admin.id && banned === true)
       return fail(res, 'SELF_LOCKOUT', 'You cannot disable your own admin account', 400);
     if (Object.keys(updates).length) await User.update(user.id, updates);
+    // A ban must take effect on every device the user is signed in on, not
+    // only the next one that tries to sign in.
+    if (banned === true) await UserSession.removeAllForUser(user.id);
 
     if (plan !== undefined) {
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
@@ -381,6 +385,7 @@ router.post(
       refreshTokenHash: null,
       adminRefreshTokenHash: null,
     });
+    await UserSession.removeAllForUser(user.id);
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
   })
@@ -393,8 +398,10 @@ router.post(
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
     await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
-    await audit(req, 'user.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
-    return ok(res, { revoked: true });
+    const sessions = await UserSession.removeAllForUser(user.id);
+    await audit(req, 'user.sessions_revoked', 'user', user.id,
+      `Revoked sessions for ${user.email}`, { sessions });
+    return ok(res, { revoked: true, sessions });
   })
 );
 

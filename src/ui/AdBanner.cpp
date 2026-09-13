@@ -53,6 +53,12 @@ AdBanner::AdBanner(AdService *ads, QWidget *parent)
     m_title->setObjectName(QStringLiteral("AdTitle"));
     m_body = new QLabel(this);
     m_body->setObjectName(QStringLiteral("AdBody"));
+    // Ad copy comes off the network. QLabel defaults to Qt::AutoText, so its
+    // mightBeRichText() heuristic would render anything containing markup as
+    // HTML — letting whoever controls the ad feed restyle the banner, or forge
+    // UI inside it. These are captions; say so.
+    m_title->setTextFormat(Qt::PlainText);
+    m_body->setTextFormat(Qt::PlainText);
     text->addWidget(kicker);
     text->addWidget(m_title);
     text->addWidget(m_body);
