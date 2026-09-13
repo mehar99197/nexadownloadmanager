@@ -124,7 +124,14 @@ private:
     void sendProbe();                 // issue the ranged size/Range probe for m_url
     void fetchGoogleDriveConfirm();   // GET the Drive confirm page, parse, re-probe
     void fetchConfirmPage();          // GET a generic confirm page, parse, re-probe
-    bool preallocateFile();
+    // Create the destination and grow it to m_total on a worker thread, then
+    // continue into startTransfer(). See growFile() in the .cpp for why the
+    // growth must not run on the GUI thread.
+    void beginPreallocation();
+    void startTransfer();         // segments + timers + workers, once the file exists
+    // Grow the destination to `size` bytes on a throw-away worker thread;
+    // `done(ok)` runs back on this thread afterwards (never, if the task is gone).
+    void growFileAsync(qint64 size, bool settleValidData, std::function<void(bool)> done);
     void buildSegments(qint64 total, bool rangesSupported);
     void launchSegments();
     void clearSegments();
@@ -174,6 +181,7 @@ private:
     QVector<SegmentDownloader*> m_workers;
     int                       m_completedSegments = 0;
     int                       m_activeSegments = 0;
+    int                       m_allocGeneration = 0;   // a stale growFileAsync result is ignored
     QHash<int, int>           m_retries;        // per-segment retry attempts
     std::function<QString(const QString &)> m_nameResolver;
     static constexpr int      kMaxRetries = 5;

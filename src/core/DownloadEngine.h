@@ -158,6 +158,10 @@ public:
     AuthenticationManager *auth() const { return m_auth; }
     LicenseManager *license() const { return m_license; }
     QString licensePlan() const { return m_licensePlan; }
+    // Why addDownload() would refuse `url` before queuing anything — empty when
+    // it would not. The IPC reply carries it so the browser extension shows the
+    // same reason the desktop dialog does.
+    QString blockReason(const QUrl &url) const;
 
     // Data-driven cloud provider registry (loaded from JSON at startup).
     CloudProviders *providers() const { return m_providers; }

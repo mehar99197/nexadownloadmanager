@@ -15,6 +15,7 @@
 #include <QUrlQuery>
 #include <QDateTime>
 #include <QDebug>
+#include <QPointer>
 #include <QUuid>
 
 namespace nexa {
@@ -126,6 +127,22 @@ QUrl normalizeUdemyUrl(const QUrl &url, bool playlist)
     if (!playlist)
         normalized.setQuery(url.query());
     return normalized;
+}
+
+// yt-dlp reported a login problem on a job that carried no credential at all:
+// the URL was pasted (or the browser export came back empty), so the fix is to
+// start it from the page through the extension, not to chase the site. Windows
+// makes this the common case — yt-dlp cannot read Chrome / Edge / Brave cookies
+// there (App-Bound Encryption), so a pasted course URL never gets a session.
+QString withCredentialHint(const QString &why, const QStringList &authArgs)
+{
+    static const QRegularExpression loginRe(
+        QStringLiteral("authentication required|login required|sign-in required"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (!authArgs.isEmpty() || !loginRe.match(why).hasMatch())
+        return why;
+    return why + QStringLiteral(" — use the Nexa button on the page in your browser "
+                                "so your login is sent with it");
 }
 
 // A readable course/playlist folder name pulled from the page URL slug, e.g.
@@ -647,6 +664,11 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
     m_plName.clear();
     m_plClock.start();
 
+    const QString exe = exePath();
+    if (exe.isEmpty()) {
+        setState(DownloadState::Error, QStringLiteral("yt-dlp is not installed or executable"));
+        return;
+    }
     const int K = qBound(1, m_plConcurrency, 8);
     setState(DownloadState::Downloading,
              QStringLiteral("starting playlist (%1 in parallel)").arg(K));
@@ -674,9 +696,26 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
         connect(p, &QProcess::readyReadStandardOutput, this, &YtDlpGrabber::onPlOutput);
         connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                 this, [this](int, QProcess::ExitStatus) { onPlProcFinished(); });
+        connect(p, &QProcess::errorOccurred, this,
+                [this, p = QPointer<QProcess>(p)](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart)
+                return;
+            // A worker that never started emits no finished(), so the tally
+            // below never reached K and the course row sat on "starting" for
+            // ever. Queued, because start() can report this synchronously from
+            // inside the launch loop, before the remaining workers exist.
+            QMetaObject::invokeMethod(this, [this, p]() {
+                if (m_cancelled || !p || !m_plProcs.contains(p))
+                    return;
+                m_plRates[p] = 0.0;
+                if (m_lastError.isEmpty())
+                    m_lastError = QStringLiteral("ERROR: yt-dlp could not be started");
+                onPlProcFinished();
+            }, Qt::QueuedConnection);
+        });
         m_plProcs << p;
         m_plRates.insert(p, 0.0);
-        p->start(exePath(), a);   // absolute path: the bundled exe isn't on PATH on Windows
+        p->start(exe, a);   // absolute path: the bundled exe isn't on PATH on Windows
         p->closeWriteChannel();   // EOF on stdin: a prompt aborts, never hangs
     }
 }
@@ -939,7 +978,7 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
                 why = m_tail.isEmpty() ? QStringLiteral("code %1").arg(exitCode) : m_tail.last();
             if (why.length() > 160)
                 why = why.left(157) + QStringLiteral("…");
-            setState(DownloadState::Error, why);
+            setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
         }
         return;
     }
@@ -962,7 +1001,7 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
             why = why.left(157) + QStringLiteral("…");
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp FAILED" << m_id << "\n" << m_tail.join('\n');
-        setState(DownloadState::Error, why);
+        setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
     }
 }
 
@@ -1176,7 +1215,7 @@ void YtDlpGrabber::onPlProcFinished()
             why = m_tail.isEmpty() ? QStringLiteral("no videos downloaded") : m_tail.last();
         if (why.length() > 160)
             why = why.left(157) + QStringLiteral("…");
-        setState(DownloadState::Error, why);
+        setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
     }
 }
 

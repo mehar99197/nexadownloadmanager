@@ -20,6 +20,10 @@ QStringList authSites();
 
 // Most-recently-used browser whose cookie store exists on disk, as a yt-dlp
 // browser name (chrome/brave/chromium/edge/vivaldi/opera/firefox). Empty if none.
+// On Windows only Firefox is ever returned: Chromium browsers keep their cookies
+// under App-Bound Encryption there, which yt-dlp cannot decrypt, so a Chrome /
+// Edge / Brave credential would only guarantee a login failure — the extension's
+// cookie export is the Chromium path on Windows (see IpcServer).
 QString detectBrowser();
 
 // For a Chromium-family browser, the profile DIR most recently logged into

@@ -181,6 +181,14 @@ bool DownloadEngine::isAuthSiteUrl(const QUrl &url) const
     return false;
 }
 
+QString DownloadEngine::blockReason(const QUrl &url) const
+{
+    if (isAuthSiteUrl(url) && !m_authSiteDownloads)
+        return tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
+                  "or see nexadownloadmanager.com/pricing.").arg(url.host());
+    return QString();
+}
+
 // Default every known auth site to "use my logged-in browser" so the user never
 // has to open Site Logins. yt-dlp reads the cookies LIVE from the browser on each
 // download (--cookies-from-browser), so they're always current — old cookies are
@@ -409,10 +417,8 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     // reason that looks like a bug. The server enforces the same rule when it
     // decides the plan, so editing the cached entitlement locally gains nothing
     // beyond this client-side convenience check.
-    if (isAuthSiteUrl(url) && !m_authSiteDownloads) {
-        emit downloadBlocked(url,
-            tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
-               "or see nexadownloadmanager.com/pricing.").arg(url.host()));
+    if (const QString why = blockReason(url); !why.isEmpty()) {
+        emit downloadBlocked(url, why);
         return -1;
     }
 

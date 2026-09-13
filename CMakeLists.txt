@@ -7,6 +7,10 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+if(WIN32)
+    enable_language(RC)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -36,6 +40,7 @@ endif()
 
 add_executable(nexa
     resources.qrc
+    $<$<BOOL:${WIN32}>:packaging/nexa.rc>
     src/main.cpp
     src/core/Database.cpp
     src/core/RateLimiter.cpp
@@ -300,6 +305,22 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_extension_installer_test PRIVATE src)
     target_link_libraries(nexa_extension_installer_test PRIVATE Qt6::Core)
 
+    # End-to-end DownloadTask against a local Range-capable server: worker-thread
+    # preallocation, 8-way segmented transfer, sparse destination on Windows.
+    add_executable(nexa_download_task_test
+        tests/DownloadTaskTest.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/core/Database.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/CloudProviders.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_download_task_test PRIVATE src)
+    target_link_libraries(nexa_download_task_test PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
+
     enable_testing()
     add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
     add_test(NAME extension_installer COMMAND nexa_extension_installer_test)
@@ -312,6 +333,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME cloud_providers COMMAND nexa_cloud_providers_test)
     add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
+    add_test(NAME download_task COMMAND nexa_download_task_test)
 endif()
 
 # ===========================================================================

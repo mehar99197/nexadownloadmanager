@@ -352,20 +352,29 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
                 return;
             }
             // For yt-dlp auth sites (Udemy, Vimeo, Coursera, etc.), the engine
-            // already registered --cookies-from-browser at startup via
-            // autoEnableBrowserLogins(). yt-dlp reads every cookie from the
-            // browser's SQLite store this way, which is more complete than the
-            // Netscape export the extension produces (that export only covers
-            // cookies the extension API can enumerate for this single domain).
-            // Prefer --cookies-from-browser, but fall back to the extension's
-            // cookie export when no supported browser was detected on this
-            // machine (e.g. a fresh install without Chrome/Firefox profiles).
+            // registered --cookies-from-browser at startup via
+            // autoEnableBrowserLogins(): yt-dlp then reads the browser's LIVE
+            // jar on every run, which stays correct for the whole session,
+            // whereas the extension's export is a snapshot. So on Linux/macOS
+            // keep the browser credential when one exists — registering the
+            // export would replace it for the session (refreshBrowserLoginFor
+            // never overrides a cookies.txt) and later pasted URLs would run
+            // on stale cookies. Windows is the exception: Chrome / Edge / Brave
+            // 127+ App-Bound Encryption makes the store unreadable to yt-dlp,
+            // browserlogin::detectBrowser() therefore never registers a
+            // Chromium credential there, and the export — from the very
+            // browser the user clicked in — is the one that works. A Firefox
+            // credential on Windows is readable but may be the wrong browser
+            // for this click, so the export still wins there.
             // Use YtDlpGrabber::isSiteVideoUrl — its hardcoded fallback means
             // this still works when CloudProviders fails to load at startup.
-            const bool isYtDlpSite = YtDlpGrabber::isSiteVideoUrl(url);
-            const bool hasBrowserCookies = isYtDlpSite
+#ifdef Q_OS_WIN
+            const bool keepBrowserCookies = false;
+#else
+            const bool keepBrowserCookies = YtDlpGrabber::isSiteVideoUrl(url)
                 && am->resolve(url).kind == DomainAuth::Kind::BrowserCookies;
-            if (!cookiesText.isEmpty() && !hasBrowserCookies) {
+#endif
+            if (!cookiesText.isEmpty() && !keepBrowserCookies) {
                 ar = am->registerCookieData(authDomain, cookiesText);
             } else if (!bearer.isEmpty()) {
                 const qint64 exp = qint64(obj.value(QStringLiteral("bearerExpiresAt")).toDouble(0));
@@ -392,10 +401,15 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     const bool userInitiated = obj.value(QStringLiteral("userInitiated")).toBool(false) && !ask;
     const int id = m_engine->addDownload(url, QString(), headers, suggestedName, quality,
                                          playlist, userInitiated, QString(), true);
-    if (id < 0)
-        sendReply(QJsonObject{{"ok", false}, {"message", "rejected"}});
-    else
+    if (id < 0) {
+        // Say WHY when the engine can. A bare "rejected" sent Udemy users
+        // hunting for a broken extension when the answer was the plan gate.
+        const QString why = m_engine->blockReason(url);
+        sendReply(QJsonObject{{"ok", false},
+                              {"message", why.isEmpty() ? QStringLiteral("rejected") : why}});
+    } else {
         sendReply(QJsonObject{{"ok", true}, {"id", id}});
+    }
 }
 
 void IpcServer::listFormats(QLocalSocket *sock, const QUrl &url)

@@ -58,6 +58,16 @@ QStringList authSites()
 // fall back to "default profile only" for those).
 static QString chromiumConfigDir(const QString &browser)
 {
+#ifdef Q_OS_WIN
+    // Chrome / Edge / Brave 127+ on Windows keep cookies under App-Bound
+    // Encryption: only the browser's own elevated service can decrypt them, so
+    // yt-dlp's --cookies-from-browser reads nothing there ("Failed to decrypt
+    // with DPAPI"). Never offer a Chromium profile on Windows — registering it
+    // would replace the extension's working cookie export with a guaranteed
+    // login error.
+    Q_UNUSED(browser);
+    return QString();
+#else
     const QString cfg = QDir::homePath() + QStringLiteral("/.config/");
     if (browser == QStringLiteral("chrome"))   return cfg + QStringLiteral("google-chrome");
     if (browser == QStringLiteral("chromium")) return cfg + QStringLiteral("chromium");
@@ -66,6 +76,7 @@ static QString chromiumConfigDir(const QString &browser)
     if (browser == QStringLiteral("vivaldi"))  return cfg + QStringLiteral("vivaldi");
     if (browser == QStringLiteral("opera"))    return cfg + QStringLiteral("opera");
     return QString();
+#endif
 }
 
 // Discover a Chromium-family browser's profiles from its "Local State" JSON
@@ -184,16 +195,9 @@ QString bestProfileForDomain(const QString &browser, const QString &domain)
 
 QString detectBrowser()
 {
+#ifndef Q_OS_WIN
     const QString home = QDir::homePath();
-    struct Cand { const char *name; QString path; };
-    const QVector<Cand> cands = {
-        {"chrome",   home + QStringLiteral("/.config/google-chrome")},
-        {"brave",    home + QStringLiteral("/.config/BraveSoftware/Brave-Browser")},
-        {"chromium", home + QStringLiteral("/.config/chromium")},
-        {"edge",     home + QStringLiteral("/.config/microsoft-edge")},
-        {"vivaldi",  home + QStringLiteral("/.config/vivaldi")},
-        {"opera",    home + QStringLiteral("/.config/opera")},
-    };
+#endif
     QString best;
     QDateTime bestMtime;
     auto consider = [&](const char *name, const QString &cookiePath) {
@@ -205,13 +209,31 @@ QString detectBrowser()
             bestMtime = fi.lastModified();
         }
     };
+#ifndef Q_OS_WIN
+    // Chromium family: readable by yt-dlp on Linux (keyring / basic v10 keys).
+    // Deliberately absent on Windows — see chromiumConfigDir().
+    struct Cand { const char *name; QString path; };
+    const QVector<Cand> cands = {
+        {"chrome",   home + QStringLiteral("/.config/google-chrome")},
+        {"brave",    home + QStringLiteral("/.config/BraveSoftware/Brave-Browser")},
+        {"chromium", home + QStringLiteral("/.config/chromium")},
+        {"edge",     home + QStringLiteral("/.config/microsoft-edge")},
+        {"vivaldi",  home + QStringLiteral("/.config/vivaldi")},
+        {"opera",    home + QStringLiteral("/.config/opera")},
+    };
     for (const Cand &c : cands)
         for (const QString &prof : {QStringLiteral("Default"), QStringLiteral("Profile 1")}) {
             consider(c.name, c.path + QStringLiteral("/") + prof + QStringLiteral("/Cookies"));
             consider(c.name, c.path + QStringLiteral("/") + prof + QStringLiteral("/Network/Cookies"));
         }
+#endif
     {
+        // Firefox keeps a plain cookies.sqlite that yt-dlp reads on every OS.
+#ifdef Q_OS_WIN
+        const QDir ff(qEnvironmentVariable("APPDATA") + QStringLiteral("/Mozilla/Firefox/Profiles"));
+#else
         const QDir ff(home + QStringLiteral("/.mozilla/firefox"));
+#endif
         const auto profiles = ff.entryList(QStringList{QStringLiteral("*.default*")},
                                            QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QString &p : profiles)

@@ -1,7 +1,9 @@
 #include "core/ProxyConfig.h"
 
 #include <QNetworkProxy>
+#include <QObject>
 #include <QSettings>
+#include <QThread>
 #include <QUrl>
 
 namespace nexa::proxyconfig {
@@ -34,11 +36,36 @@ Settings read()
 }
 } // namespace
 
+// Qt resolves the OS proxy synchronously, on the thread that issues the
+// request — the GUI thread here, once per request. On Windows that is WinHTTP's
+// WPAD auto-detect ("Automatically detect settings", on by default): DHCP and
+// DNS probes that take seconds the first time, and a PAC evaluation per request
+// after that when one is found. A 32-connection download start paid all of it
+// inside launchSegments(), with the window frozen. Ask once from a throw-away
+// thread instead, so the answer — or the "no WPAD here" verdict Qt caches — is
+// in place before any real request needs it. The lookup is mutex-guarded inside
+// Qt and shares nothing with us, so this is the same kind of exception to the
+// single-threaded rule as DownloadTask::growFileAsync().
+static void warmSystemProxyLookup()
+{
+    static bool started = false;
+    if (started)
+        return;
+    started = true;
+    QThread *worker = QThread::create([]() {
+        QNetworkProxyFactory::systemProxyForQuery(
+            QNetworkProxyQuery(QUrl(QStringLiteral("https://nexadownloadmanager.com/"))));
+    });
+    QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
 void applyFromSettings()
 {
     const Settings c = read();
     if (c.mode == QLatin1String("system")) {
         QNetworkProxyFactory::setUseSystemConfiguration(true);
+        warmSystemProxyLookup();
         return;
     }
     // Any explicit choice (including "none") must switch the system factory off,

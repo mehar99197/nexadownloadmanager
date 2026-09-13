@@ -17,7 +17,10 @@
 #include <QRegularExpression>
 #include <QUrlQuery>
 #include <QCryptographicHash>
+#include <QLocale>
+#include <QThread>
 #include <algorithm>
+#include <memory>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -535,6 +538,9 @@ void DownloadTask::start()
         return;
 
     setState(DownloadState::Probing, QStringLiteral("contacting server"));
+    // A growFileAsync() worker from an earlier run of this task may still be in
+    // flight; its result must not launch segments under this fresh probe.
+    ++m_allocGeneration;
 
     // Turn cloud share/preview links into direct download endpoints up front
     // so cookies are scoped to (and sent to) the host that actually serves bytes.
@@ -780,20 +786,7 @@ void DownloadTask::onProbeFinished()
         }
     }
 
-    if (!preallocateFile()) {
-        setState(DownloadState::Error, QStringLiteral("cannot create destination file"));
-        return;
-    }
-
-    buildSegments(total, ranges);
-    persist();
-    setState(DownloadState::Downloading,
-             QStringLiteral("%1 connection(s)").arg(m_segments.size()));
-    m_clock.start();
-    m_lastTickBytes = m_done;
-    m_lastTickMs = 0;
-    m_speedTimer->start();
-    launchSegments();
+    beginPreallocation();
 }
 
 // Fetch a generic confirm/interstitial page IN FULL (the ranged probe only saw
@@ -951,48 +944,131 @@ void DownloadTask::onDriveConfirmFinished()
 // A segmented download writes at high offsets almost immediately (segment 31
 // starts 31/32 of the way in), so on a multi-gigabyte file that is gigabytes of
 // zeroes written before the first payload byte lands — on this app's single
-// thread, with the window frozen throughout. Marking the file sparse tells NTFS
-// to leave the gaps unallocated and report them as zeroes, which is exactly what
-// a partially-downloaded file wants.
+// thread, with the window frozen throughout: measured at 14 s for a 2 GB file on
+// a SATA SSD, which is exactly the "Not Responding" users saw the moment a
+// 32-connection download started. Marking the file sparse tells NTFS to leave
+// the gaps unallocated and report them as zeroes, which is exactly what a
+// partially-downloaded file wants.
 //
 // Best-effort by design: FAT32 and exFAT have no sparse support and simply
-// refuse, which leaves the previous behaviour rather than failing the download.
+// refuse; growFile() then absorbs their zero-fill on the worker thread instead.
 // The trade-off is that space is no longer reserved up front, so a full disk now
 // surfaces as a write error mid-download instead of a failure to preallocate.
-static void markFileSparse(const QString &path)
+static bool markFileSparse(const QString &path)
 {
     const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t *>(path.utf16()),
                                       GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
-        return;
+        return false;
     DWORD returned = 0;
-    DeviceIoControl(handle, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr);
+    const bool ok = DeviceIoControl(handle, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0,
+                                    &returned, nullptr);
     CloseHandle(handle);
+    return ok;
 }
 #endif
 
-bool DownloadTask::preallocateFile()
+// Grow an EXISTING file at `path` to `size` bytes. This is the call that can
+// stall for as long as the filesystem takes to zero-fill the gap, which is why
+// it only ever runs on the worker thread growFileAsync() creates:
+//   * FAT32 / exFAT zero-fill inside SetEndOfFile() itself — a 2 GB file on a
+//     USB stick is minutes of blocking.
+//   * NTFS extends instantly but zero-fills from its valid-data-length to the
+//     first write past it, inside that write (see markFileSparse). With
+//     `settleValidData` the last byte is written here, so whatever fill IS going
+//     to happen (sparse refused: a network share, an odd volume) happens on this
+//     thread and never under a segment worker on the GUI thread. On a sparse
+//     file it costs one allocation unit.
+//   * ext4 / APFS / XFS extend lazily; the poke costs one block.
+// Refuses to create the file: the task made it before handing over, and a path
+// that has since gone (renamed, removed) must not come back as a zero file.
+static bool growFile(const QString &path, qint64 size, bool settleValidData)
 {
-    QDir().mkpath(QFileInfo(m_savePath).absolutePath());
-    QFile f(m_savePath);
+    if (size <= 0)
+        return true;
+    if (!QFile::exists(path))
+        return false;
+    QFile f(path);
     if (!f.open(QIODevice::ReadWrite))
         return false;
-#ifdef Q_OS_WIN
-    // Must happen while the file is still empty — NTFS only converts cleanly
-    // before data is written. Uses its own shared handle, so `f` staying open is
-    // fine. No-op on every other platform: ftruncate() is already sparse there,
-    // and writing at a high offset does not zero-fill.
-    markFileSparse(m_savePath);
-#endif
-    if (m_total > 0) {
-        if (!f.resize(m_total)) {
-            f.close();
+    if (f.size() != size && !f.resize(size))
+        return false;
+    if (settleValidData) {
+        const char zero = 0;
+        if (!f.seek(size - 1) || f.write(&zero, 1) != 1)
             return false;
-        }
+        f.flush();
     }
-    f.close();
     return true;
+}
+
+// The one place this single-threaded app uses a worker thread: a blocking
+// filesystem call with no asynchronous form. The worker shares nothing — it
+// gets a copy of the path and writes one result slot that the queued finished()
+// delivery orders ahead of the read. `this` is the connection context, so a
+// task destroyed mid-growth simply never hears back; the worker owns itself and
+// is deleted once it has finished.
+void DownloadTask::growFileAsync(qint64 size, bool settleValidData,
+                                 std::function<void(bool)> done)
+{
+    auto ok = std::make_shared<bool>(false);
+    QThread *worker = QThread::create([path = m_savePath, size, settleValidData, ok]() {
+        *ok = growFile(path, size, settleValidData);
+    });
+    connect(worker, &QThread::finished, this, [ok, done]() { done(*ok); });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
+void DownloadTask::beginPreallocation()
+{
+    QDir().mkpath(QFileInfo(m_savePath).absolutePath());
+    {
+        QFile f(m_savePath);
+        if (!f.open(QIODevice::ReadWrite)) {      // creates it; never truncates
+            setState(DownloadState::Error, QStringLiteral("cannot create destination file"));
+            return;
+        }
+#ifdef Q_OS_WIN
+        // Before the resize, so the extension is a hole rather than allocation.
+        // Uses its own shared handle, so `f` staying open is fine.
+        if (!markFileSparse(m_savePath) && kDebug)
+            qDebug().noquote() << "NEXA SPARSE refused" << m_id << m_savePath;
+#endif
+    }
+    if (m_total <= 0) {                          // unknown size: nothing to grow
+        startTransfer();
+        return;
+    }
+    const int generation = ++m_allocGeneration;
+    setState(DownloadState::Probing,
+             QStringLiteral("allocating %1 on disk").arg(QLocale().formattedDataSize(m_total)));
+    growFileAsync(m_total, /*settleValidData=*/true, [this, generation](bool ok) {
+        // Paused, or paused-and-restarted, while the worker ran: that later flow
+        // owns the file now and this result is stale.
+        if (generation != m_allocGeneration || m_state != DownloadState::Probing)
+            return;
+        if (!ok) {
+            setState(DownloadState::Error,
+                     QStringLiteral("cannot allocate the destination file"));
+            return;
+        }
+        startTransfer();
+    });
+}
+
+void DownloadTask::startTransfer()
+{
+    buildSegments(m_total, m_rangesSupported);
+    persist();
+    setState(DownloadState::Downloading,
+             QStringLiteral("%1 connection(s)").arg(m_segments.size()));
+    m_clock.start();
+    m_lastTickBytes = m_done;
+    m_lastTickMs = 0;
+    m_speedTimer->start();
+    launchSegments();
 }
 
 void DownloadTask::buildSegments(qint64 total, bool rangesSupported)
@@ -1246,10 +1322,21 @@ void DownloadTask::onSizeDiscovered(qint64 total, bool rangesSupported)
         if (!m_workers.isEmpty() && m_workers.first())
             m_workers.first()->setEnd(total - 1);
     }
-    // Grow the pre-allocated file to the real length (best-effort: the write path
-    // still appends correctly even if this fails, e.g. on a non-seekable FS).
-    QFile f(m_savePath);
-    if (f.open(QIODevice::ReadWrite)) { f.resize(total); f.close(); }
+    // Grow the file to the real length so a later pause finds it backing the
+    // progress (resume() wants size >= total). Off-thread, because on FAT32 /
+    // exFAT the extension is a synchronous zero-fill. No valid-data settling: a
+    // single stream writes sequentially, so nothing ever writes past the valid
+    // length, and poking the last byte could race the final write of a tiny
+    // download. If the stream turned out shorter than advertised and finished
+    // (truncated) while the worker was still growing, put the truncation back.
+    growFileAsync(total, /*settleValidData=*/false, [this](bool) {
+        if (m_state == DownloadState::Completed && m_total > 0
+            && QFileInfo(m_savePath).size() > m_total) {
+            QFile f(m_savePath);
+            if (f.open(QIODevice::ReadWrite))
+                f.resize(m_total);
+        }
+    });
     persist();
     emit progress(m_id, m_done, m_total, 0.0);   // UI now shows size + time-left
 }
@@ -1550,6 +1637,7 @@ void DownloadTask::pause()
     if (m_state != DownloadState::Downloading && m_state != DownloadState::Probing)
         return;
     m_speedTimer->stop();
+    ++m_allocGeneration;   // orphan an in-flight allocation worker (see start())
     if (m_probe) {
         // abort() can fire finished() SYNCHRONOUSLY, re-entering onProbeFinished
         // which nulls m_probe — then the old code dereferenced a now-null m_probe
