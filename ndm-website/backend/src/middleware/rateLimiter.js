@@ -117,22 +117,39 @@ const aiLimiter = makeDurableLimiter('ai', {
   max: 120,
 });
 
-// A continuation of an installer transfer: a ranged request that does not
-// start at byte 0, on the public download route. The desktop updater fetches
-// the installer through the segmented engine — up to 32 connections, each its
-// own ranged request, plus the work-stealing tails — and browsers and download
-// managers resume with ranges too. One 187 MB update is dozens of these.
+// The public installer route, /api/releases/download/:os, is where the
+// desktop updater and the site's download button fetch a 150-200 MB file.
+// The updater pulls it through the segmented engine: up to 32 connections,
+// each its own ranged request, plus work-stealing tails and per-segment
+// retries. Browsers and download managers resume with ranges too. One update
+// is therefore dozens of requests from one address in a few seconds.
 //
-// Neither limiter may count them. The download limiter used to, so a single
-// update burned its 30-per-window budget mid-transfer; the engine then retried
-// every rejected segment, and those retries (2 300 of them in one afternoon)
-// pushed the same address over the GLOBAL limit as well, which took the whole
-// site's API away from that user for a quarter of an hour. A bare request or
-// a range from byte 0 still counts on both — the same rule the route uses for
-// its download counter (releases.js, isFreshStart), so what the limiters
-// protect and what they count are the same thing.
+// Counting those against per-address budgets broke the rollout of v0.2.1
+// (2026-09-13): the download limiter (then 30) refused segments mid-transfer,
+// the engine retried every refusal, and 2 300 retries pushed the same address
+// over the GLOBAL limit, which took the whole API away from that user for a
+// quarter of an hour — including the website's own pages.
+//
+// Two rules follow. The route is exempt from the global limiter altogether:
+// it has its own budget below, and nothing that happens to an installer
+// transfer may lock a user out of login, licensing or pricing. And the
+// route's own budget is sized for a segmented transfer, not for a click,
+// while still bounding how far a script can inflate the download counter.
+//
+// Continuations (a range not starting at byte 0) are exempt from that budget
+// as well, matching the route's own counter rule (releases.js, isFreshStart).
+// Note that behind Hostinger's CDN the origin never sees a Range header — the
+// edge strips it, fetches the object and slices it itself — so every chunk
+// arrives here as a fresh start. That is why the budget cannot be "30 clicks":
+// it must absorb a whole segmented transfer even when the exemption cannot
+// fire. With the CDN off (recommended for this domain) ranges reach the
+// origin and only true fresh starts count.
+const DOWNLOAD_ROUTE = /^\/(?:api\/)?releases\/download\//;
+function isDownloadRoute(req) {
+  return DOWNLOAD_ROUTE.test(req.originalUrl || req.url || '');
+}
 function isDownloadContinuation(req) {
-  if (!/^\/(?:api\/)?releases\/download\//.test(req.originalUrl || req.url || '')) return false;
+  if (!isDownloadRoute(req)) return false;
   const range = String(req.headers.range || '').trim();
   return range !== '' && !/^bytes=0-/.test(range);
 }
@@ -141,15 +158,16 @@ function isDownloadContinuation(req) {
 const apiLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 1000,
-  skip: isDownloadContinuation,
+  skip: isDownloadRoute,
 });
 
-// Public counting download: light per-IP cap so the counter cannot be
-// inflated trivially while still allowing retries for both OSes.
+// Public counting download: bounded per address so the counter cannot be
+// inflated trivially, sized for a full segmented transfer with retries.
 const downloadLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 150,
   skip: isDownloadContinuation,
+  message: 'Too many installer downloads from this address. Please try again in a few minutes.',
 });
 
 // Admin/root session refresh runs on every full page load of the panel, so
