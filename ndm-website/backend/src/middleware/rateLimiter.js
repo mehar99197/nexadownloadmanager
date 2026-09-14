@@ -125,9 +125,22 @@ const apiLimiter = makeLimiter({
 
 // Public counting download redirect: light per-IP cap so the counter cannot
 // be inflated trivially while still allowing retries for both OSes.
+//
+// Only a FRESH start counts: no Range header, or one that begins at byte 0.
+// The desktop updater fetches the installer through the segmented engine —
+// up to 32 connections, each its own ranged request, plus the work-stealing
+// tails — and browsers and download managers resume with ranges too. Counting
+// every chunk meant a single 187 MB update burned the whole budget
+// mid-transfer and every user's updater died with 429. This is the same rule
+// the route uses for its download counter (releases.js, isFreshStart), so
+// what the limiter protects and what it counts are the same thing.
 const downloadLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 30,
+  skip: (req) => {
+    const range = String(req.headers.range || '').trim();
+    return range !== '' && !/^bytes=0-/.test(range);
+  },
 });
 
 // Admin/root session refresh runs on every full page load of the panel, so
