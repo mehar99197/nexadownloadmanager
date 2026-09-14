@@ -139,11 +139,14 @@ const aiLimiter = makeDurableLimiter('ai', {
 // Continuations (a range not starting at byte 0) are exempt from that budget
 // as well, matching the route's own counter rule (releases.js, isFreshStart).
 // Note that behind Hostinger's CDN the origin never sees a Range header — the
-// edge strips it, fetches the object and slices it itself — so every chunk
-// arrives here as a fresh start. That is why the budget cannot be "30 clicks":
-// it must absorb a whole segmented transfer even when the exemption cannot
-// fire. With the CDN off (recommended for this domain) ranges reach the
-// origin and only true fresh starts count.
+// edge strips it, fetches the object and slices it itself, and it was measured
+// issuing TWO origin requests per client chunk (54 chunks -> 106 origin hits).
+// So every chunk arrives here as a fresh start, twice. That is why the budget
+// cannot be "30 clicks": it must absorb a whole segmented transfer (about 130
+// origin hits for 32 connections plus tails, more with retries) even when the
+// exemption cannot fire. With the CDN off (recommended for this domain) ranges
+// reach the origin, only true fresh starts count, and the download counter
+// stops being inflated by the same amplification.
 const DOWNLOAD_ROUTE = /^\/(?:api\/)?releases\/download\//;
 function isDownloadRoute(req) {
   return DOWNLOAD_ROUTE.test(req.originalUrl || req.url || '');
@@ -165,7 +168,7 @@ const apiLimiter = makeLimiter({
 // inflated trivially, sized for a full segmented transfer with retries.
 const downloadLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 150,
+  max: 400,
   skip: isDownloadContinuation,
   message: 'Too many installer downloads from this address. Please try again in a few minutes.',
 });

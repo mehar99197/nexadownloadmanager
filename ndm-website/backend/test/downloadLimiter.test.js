@@ -43,13 +43,13 @@ test('installer transfers: continuations are free, fresh starts get their own bu
       assert.equal(await get(server, { Range: `bytes=${1000 + i}-${2000 + i}` }), 200,
         `continuation #${i + 1} was rate limited`);
     }
-    // The route's own budget (150 fresh starts) is untouched by all of that —
+    // The route's own budget (400 fresh starts) is untouched by all of that —
     // a bare request and a probe from byte 0 both count as a fresh start.
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 400; i++) {
       const headers = i % 2 ? { Range: 'bytes=0-0' } : {};
       assert.equal(await get(server, headers), 200, `fresh start #${i + 1} should pass`);
     }
-    assert.equal(await get(server), 429, 'the 151st fresh start must be limited');
+    assert.equal(await get(server), 429, 'the 401st fresh start must be limited');
     assert.equal(await get(server, { Range: 'bytes=0-1048575' }), 429, 'a from-zero range is a fresh start too');
     // Limited for fresh starts, yet a resume of an in-flight transfer still works.
     assert.equal(await get(server, { Range: 'bytes=5000-6000' }), 200);
