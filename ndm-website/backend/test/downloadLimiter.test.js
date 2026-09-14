@@ -11,20 +11,24 @@ const http = require('node:http');
 
 delete process.env.RATE_LIMIT_DISABLED;   // exercise the real limiter
 const express = require('express');
-const { downloadLimiter } = require('../src/middleware/rateLimiter');
+const { downloadLimiter, apiLimiter } = require('../src/middleware/rateLimiter');
 
+// Mounted exactly like app.js: the global limiter on /api, the download
+// limiter on the route — both must let installer continuations through.
 function serve() {
   const app = express();
-  app.get('/download/:os', downloadLimiter, (req, res) => res.status(200).send('ok'));
+  app.use('/api', apiLimiter);
+  app.get('/api/releases/download/:os', downloadLimiter, (req, res) => res.status(200).send('ok'));
+  app.get('/api/other', (req, res) => res.status(200).send('ok'));
   return new Promise((resolve) => {
     const server = http.createServer(app);
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
 }
 
-async function get(server, headers = {}) {
+async function get(server, headers = {}, path = '/api/releases/download/windows') {
   const { port } = server.address();
-  const res = await fetch(`http://127.0.0.1:${port}/download/windows`, { headers });
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers });
   await res.text();
   return res.status;
 }
@@ -48,6 +52,10 @@ test('only fresh starts consume the download budget; ranged continuations never 
     assert.equal(await get(server, { Range: 'bytes=0-1048575' }), 429, 'a from-zero range is a fresh start too');
     // Limited for fresh starts, yet a resume of an in-flight transfer still works.
     assert.equal(await get(server, { Range: 'bytes=5000-6000' }), 200);
+    // The exemption is scoped to the download route: a ranged request anywhere
+    // else still counts against the global limiter (it passes here only
+    // because the global budget of 1000 is far from spent).
+    assert.equal(await get(server, { Range: 'bytes=5000-6000' }, '/api/other'), 200);
   } finally {
     server.close();
   }

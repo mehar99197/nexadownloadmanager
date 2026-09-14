@@ -117,30 +117,39 @@ const aiLimiter = makeDurableLimiter('ai', {
   max: 120,
 });
 
+// A continuation of an installer transfer: a ranged request that does not
+// start at byte 0, on the public download route. The desktop updater fetches
+// the installer through the segmented engine — up to 32 connections, each its
+// own ranged request, plus the work-stealing tails — and browsers and download
+// managers resume with ranges too. One 187 MB update is dozens of these.
+//
+// Neither limiter may count them. The download limiter used to, so a single
+// update burned its 30-per-window budget mid-transfer; the engine then retried
+// every rejected segment, and those retries (2 300 of them in one afternoon)
+// pushed the same address over the GLOBAL limit as well, which took the whole
+// site's API away from that user for a quarter of an hour. A bare request or
+// a range from byte 0 still counts on both — the same rule the route uses for
+// its download counter (releases.js, isFreshStart), so what the limiters
+// protect and what they count are the same thing.
+function isDownloadContinuation(req) {
+  if (!/^\/(?:api\/)?releases\/download\//.test(req.originalUrl || req.url || '')) return false;
+  const range = String(req.headers.range || '').trim();
+  return range !== '' && !/^bytes=0-/.test(range);
+}
+
 // Generous global limiter mounted on /api.
 const apiLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 1000,
+  skip: isDownloadContinuation,
 });
 
-// Public counting download redirect: light per-IP cap so the counter cannot
-// be inflated trivially while still allowing retries for both OSes.
-//
-// Only a FRESH start counts: no Range header, or one that begins at byte 0.
-// The desktop updater fetches the installer through the segmented engine —
-// up to 32 connections, each its own ranged request, plus the work-stealing
-// tails — and browsers and download managers resume with ranges too. Counting
-// every chunk meant a single 187 MB update burned the whole budget
-// mid-transfer and every user's updater died with 429. This is the same rule
-// the route uses for its download counter (releases.js, isFreshStart), so
-// what the limiter protects and what it counts are the same thing.
+// Public counting download: light per-IP cap so the counter cannot be
+// inflated trivially while still allowing retries for both OSes.
 const downloadLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  skip: (req) => {
-    const range = String(req.headers.range || '').trim();
-    return range !== '' && !/^bytes=0-/.test(range);
-  },
+  skip: isDownloadContinuation,
 });
 
 // Admin/root session refresh runs on every full page load of the panel, so
