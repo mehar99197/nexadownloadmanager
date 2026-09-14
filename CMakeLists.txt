@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Nexa VERSION 0.2.0 LANGUAGES CXX DESCRIPTION "Nexa Download Manager")
+project(Nexa VERSION 0.2.1 LANGUAGES CXX DESCRIPTION "Nexa Download Manager")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +105,11 @@ if(WIN32)
     set_target_properties(nexa PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(nexa PRIVATE Advapi32)
 endif()
+
+# The version the app reports to the update feed, the licence server and the
+# extension's ping. Defined from the project version so it can never drift from
+# the installer / package version again (main.cpp carried its own "0.2.0").
+target_compile_definitions(nexa PRIVATE NEXA_VERSION="${PROJECT_VERSION}")
 
 # Developer overrides for the network endpoints the app trusts — the licence
 # API (NEXA_LICENSE_API_URL, NEXA_ALLOW_INSECURE_LICENSE_API), the ad feed

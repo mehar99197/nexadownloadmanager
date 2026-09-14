@@ -37,6 +37,12 @@
 #include <atomic>
 #include <algorithm>
 
+// Set by CMake from project(Nexa VERSION …); the fallback keeps a stray build
+// (IDE, test target) compiling but is deliberately not a real version.
+#ifndef NEXA_VERSION
+#define NEXA_VERSION "0.0.0-dev"
+#endif
+
 namespace nexa {
 
 // ---- Opt-in troubleshooting log (see core/Logging.h) --------------------
@@ -126,7 +132,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));
-    QApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+    QApplication::setApplicationVersion(QStringLiteral(NEXA_VERSION));   // from CMake project()
     // Portable mode (a `portable.txt` beside the executable) must be resolved
     // BEFORE the first QSettings read, or settings would come from the profile.
     nexa::portable::initialise();
