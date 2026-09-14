@@ -41,6 +41,17 @@ jobs:
       - name: Smoke test
         run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
 
+      # The package version comes from CMake's project() — the same number the
+      # binary reports to the update feed — so a release bump is one edit, not
+      # four. A .deb stamped 0.2.0 around a 0.2.1 binary made dpkg treat the
+      # upgrade as a reinstall and the website list the wrong file.
+      - name: Read project version
+        run: |
+          v=$(sed -n 's/^project(Nexa VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          test -n "$v" || { echo "could not read project version from CMakeLists.txt"; exit 1; }
+          echo "NEXA_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Packaging version $v"
+
       - name: Gather FULL dependency closure (linuxdeploy + Qt plugins)
         run: |
           set -e
@@ -118,7 +129,7 @@ jobs:
       - name: Build self-contained .deb (all dependencies bundled)
         run: |
           set -e
-          PKG=nexa_0.2.0_amd64
+          PKG=nexa_${NEXA_VERSION}_amd64
           mkdir -p ${PKG}/DEBIAN
           mkdir -p ${PKG}/usr/bin
           mkdir -p ${PKG}/usr/lib/nexa
@@ -274,7 +285,7 @@ jobs:
           INSTALLED_SIZE=$(du -sk ${PKG} | cut -f1)
           cat > ${PKG}/DEBIAN/control <<CTRL
           Package: nexa
-          Version: 0.2.0
+          Version: ${NEXA_VERSION}
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
@@ -295,7 +306,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nexa-linux-amd64-deb
-          path: nexa_0.2.0_amd64.deb
+          path: nexa_${{ env.NEXA_VERSION }}_amd64.deb
           retention-days: 90
 
       - name: Create GitHub Release (Linux .deb)
@@ -320,7 +331,7 @@ jobs:
 
             Built from: ${{ github.sha }}
           files: |
-            nexa_0.2.0_amd64.deb
+            nexa_${{ env.NEXA_VERSION }}_amd64.deb
           draft: false
           prerelease: false
         env:
@@ -740,7 +751,7 @@ jobs:
           # Install ONLY the .deb and whatever it declares (libc6, libstdc++6,
           # libgcc-s1, libgl1, libegl1). NO qt6 / libtorrent here — if the build
           # weren't self-contained, the next step would find missing libraries.
-          apt-get install -y ./nexa_0.2.0_amd64.deb
+          apt-get install -y ./nexa_*_amd64.deb
 
       - name: Assert nothing is missing
         run: |
