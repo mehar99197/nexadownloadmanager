@@ -26,13 +26,16 @@ const {
 
 const {
   sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail, sendAccountExistsEmail,
-  sendControlPanelSignInAttemptEmail,
+  sendControlPanelSignInAttemptEmail, sendAccountLockedEmail,
 } = require('../utils/email');
 const {
   isReservedEmail, isControlPanelAccount, CONTROL_PANEL_MESSAGE,
 } = require('../utils/reservedEmail');
 const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
+const { isLocked, recordFailure, recordSuccess, clearLock } = require('../utils/loginLockout');
+const { passwordProblem } = require('../utils/passwordPolicy');
+const cookieFlags = require('../utils/cookies');
 
 const BCRYPT_COST = 12;
 
@@ -59,23 +62,25 @@ const REFRESH_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 // visitor who never signed in does not trigger a 401 + refresh on every load.
 const SESSION_HINT_COOKIE = 'ndm_session';
 
+// Flags live in utils/cookies.js, shared with the staff and creator sessions.
 function refreshCookieOptions() {
-  return {
-    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
-    maxAge: REFRESH_MAX_AGE, path: '/api/auth',
-  };
+  return cookieFlags.refreshCookieOptions('/api/auth', REFRESH_MAX_AGE);
 }
 
 function setSessionHint(res) {
-  res.cookie(SESSION_HINT_COOKIE, '1', {
-    httpOnly: false, sameSite: 'lax', secure: config.secureCookies, maxAge: REFRESH_MAX_AGE, path: '/',
-  });
+  res.cookie(SESSION_HINT_COOKIE, '1', cookieFlags.sessionHintCookieOptions(REFRESH_MAX_AGE));
 }
 
 router.post(
   '/register', authLimiter, requireTurnstile, validate(registerSchema),
   asyncHandler(async (req, res) => {
     const { name, email, password } = req.body;
+
+    // Value rules (breached / contains the address) come before the hash and
+    // before the lookup, so the refusal is the same for a new and an existing
+    // address and nothing about membership rides on it.
+    const problem = await passwordProblem(password, { email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
 
     // Hashed BEFORE the lookup, deliberately. bcrypt at cost 12 is a quarter of
     // a second; doing it only on the "new address" branch would put that
@@ -196,10 +201,28 @@ router.post(
     // button beside the form, and after ANY failed sign-in it says that an
     // account created with Google needs that button — advice it can give
     // without the server having confirmed anything about the address.
-    const match = user && user.password_hash
+    //
+    // A locked account (utils/loginLockout.js) takes the dummy branch too: the
+    // real hash is never consulted while the lock holds, and the answer is the
+    // same 401 after the same work, so the lock is not observable from here.
+    const locked = isLocked(user);
+    const match = user && user.password_hash && !locked
       ? await bcrypt.compare(password, user.password_hash)
       : (await bcrypt.compare(password, dummyHash()), false);
-    if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    if (!match) {
+      // Only a genuine wrong guess at a customer account counts towards the
+      // lock. A control-panel row is refused below whatever the password, and
+      // must not be lockable from the customer form.
+      if (user && user.password_hash && !locked && !isControlPanelAccount(user)) {
+        const outcome = await recordFailure(user);
+        if (outcome.locked && outcome.notify) {
+          void sendAccountLockedEmail(user, outcome).catch((err) =>
+            // eslint-disable-next-line no-console
+            console.error('[auth] lockout notice failed:', err.message));
+        }
+      }
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
 
     // A control-panel account has no customer session, and this is the gate
     // that was missing. Register, "Continue with Google", forgot-password and
@@ -245,6 +268,15 @@ router.post(
       return fail(res, 'EMAIL_NOT_VERIFIED',
         'Please verify your email address first. Check your inbox, or ask for a new link.', 403,
         { canResend: true });
+
+    await recordSuccess(user);
+    // A hash made at a lower cost than today's is replaced with a fresh one
+    // while the plaintext is in hand — the only moment that is possible — so
+    // raising BCRYPT_COST later upgrades every account on its next sign-in
+    // instead of needing a migration nobody can run without the passwords.
+    if (bcrypt.getRounds(user.password_hash) < BCRYPT_COST) {
+      await User.update(user.id, { passwordHash: await bcrypt.hash(password, BCRYPT_COST) });
+    }
 
     const token = signAccessToken(user);
     const { token: refreshToken, hash } = generateRefreshToken();
@@ -562,6 +594,8 @@ router.post(
       console.warn('[SECURITY] reset link redemption refused for a control-panel account');
       return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
     }
+    const problem = await passwordProblem(password, { email: user.email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(password, BCRYPT_COST),
       // Receiving this link is itself proof the person reads that inbox, which
@@ -570,6 +604,9 @@ router.post(
       // stranding it behind a verification mail it can never receive.
       emailVerified: true,
     });
+    // Proof of the inbox is also the way out of a sign-in lock — the one the
+    // lockout mail points at — and it takes the guessed-at password with it.
+    await clearLock(user.id);
     // Ends every other session on the account — the whole point of a reset when
     // the reason for it is "somebody else may be in here".
     await User.revokeSessions(user.id);

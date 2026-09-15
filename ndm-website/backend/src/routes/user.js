@@ -9,8 +9,7 @@ const validate = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
 const { licenseRotateLimiter } = require('../middleware/rateLimiter');
 const { sendLicenseEmail } = require('../utils/email');
-const { updateProfileSchema, deleteAccountSchema } = require('../schemas/user.schema');
-const config = require('../config/env');
+const { updateProfileSchema, deleteAccountSchema, deviceParamsSchema } = require('../schemas/user.schema');
 const { signAccessToken, generateRefreshToken } = require('../utils/jwt');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
@@ -21,6 +20,8 @@ const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
 const { stripSensitive } = require('../utils/sanitize');
+const { refreshCookieOptions } = require('../utils/cookies');
+const { passwordProblem } = require('../utils/passwordPolicy');
 
 const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
@@ -47,6 +48,13 @@ function sanitizeUser(user) {
   safe.createdAt = toIso(user.created_at);
   safe.updatedAt = toIso(user.updated_at);
   safe.emailVerified = Boolean(user.email_verified);
+  // Lockout bookkeeping is the server's business (and the admin panel's); the
+  // sign-in form is deliberately told nothing about it, so the profile must
+  // not become the place it leaks from either.
+  delete safe.failed_logins;
+  delete safe.locked_until;
+  delete safe.lock_level;
+  delete safe.lock_notified_at;
   return safe;
 }
 
@@ -112,6 +120,8 @@ router.put(
         const matches = await bcrypt.compare(currentPassword, req.user.password_hash);
         if (!matches) return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
       }
+      const problem = await passwordProblem(newPassword, { email: req.user.email });
+      if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
       updates.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
     }
     if (Object.keys(updates).length) await User.update(req.user.id, updates);
@@ -123,10 +133,7 @@ router.put(
       await User.revokeSessions(req.user.id);
       const { token: refreshToken, hash } = generateRefreshToken();
       await User.update(req.user.id, { refreshTokenHash: hash });
-      res.cookie(REFRESH_COOKIE, refreshToken, {
-        httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
-        maxAge: 30 * 24 * 60 * 60 * 1000, path: '/api/auth',
-      });
+      res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions('/api/auth', 30 * 24 * 60 * 60 * 1000));
       token = signAccessToken(await User.findById(req.user.id));
     }
     const user = await User.findById(req.user.id);
@@ -360,7 +367,7 @@ router.delete(
 );
 
 router.delete(
-  '/devices/:id', requireAuth,
+  '/devices/:id', requireAuth, validate(deviceParamsSchema),
   asyncHandler(async (req, res) => {
     const sub = await findUserSubscription(req.user.id);
     if (!sub) return fail(res, 'NOT_FOUND', 'No subscription for this account', 404);

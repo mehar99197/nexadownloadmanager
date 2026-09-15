@@ -153,6 +153,35 @@ const idParamSchema = {
   params: z.object({ id: objectId }).strict(),
 };
 
+// The read-only admin queries that used to take req.query as it came. The
+// models clamp these anyway; the schemas make a bad value a 400 at the door
+// instead of a silently substituted default, and refuse unknown keys.
+const limitQuerySchema = {
+  query: z.object({ limit: z.coerce.number().int().min(1).max(200).optional() }).strict(),
+};
+const usersExportQuerySchema = {
+  query: z
+    .object({
+      q: z.string().trim().max(200).optional(),
+      role: z.enum(['user', 'admin', 'root']).optional(),
+      banned: z.enum(['true', 'false']).optional(),
+      emailVerified: z.enum(['true', 'false']).optional(),
+    })
+    .strict(),
+};
+const subscriptionsExportQuerySchema = {
+  query: z
+    .object({
+      q: z.string().trim().max(200).optional(),
+      status: z.string().trim().max(50).optional(),
+      plan: z.enum(['free', 'pro', 'team']).optional(),
+    })
+    .strict(),
+};
+const tokenRejectionsQuerySchema = {
+  query: z.object({ hours: z.coerce.number().int().min(1).max(24 * 30).optional() }).strict(),
+};
+
 // Installer upload/removal: /releases/:id/artifact/:os
 const releaseArtifactParamsSchema = {
   params: z.object({ id: objectId, os: z.enum(['windows', 'linux']) }).strict(),
@@ -183,5 +212,9 @@ module.exports = {
   releaseArtifactParamsSchema,
   listQuerySchema,
   idParamSchema,
+  limitQuerySchema,
+  usersExportQuerySchema,
+  subscriptionsExportQuerySchema,
+  tokenRejectionsQuerySchema,
   sha256,
 };

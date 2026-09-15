@@ -16,6 +16,8 @@ const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const Release = require('../models/Release');
 const config = require('../config/env');
+const { refreshCookieOptions } = require('../utils/cookies');
+const { passwordProblem } = require('../utils/passwordPolicy');
 
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
@@ -37,10 +39,7 @@ const ROOT_REFRESH_PATH = '/api/root';
 const BCRYPT_COST = 12;
 
 function rootRefreshCookieOptions() {
-  return {
-    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
-    maxAge: 4 * 60 * 60 * 1000, path: ROOT_REFRESH_PATH,
-  };
+  return refreshCookieOptions(ROOT_REFRESH_PATH, 4 * 60 * 60 * 1000);
 }
 
 async function issueRootSession(res, user) {
@@ -177,6 +176,8 @@ router.post(
     const { name, email, password } = req.body;
     if (await User.findByEmail(email))
       return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
+    const problem = await passwordProblem(password, { email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     const user = await User.create({
       name, email, passwordHash: await bcrypt.hash(password, BCRYPT_COST),
       role: 'admin', emailVerified: true,
@@ -237,6 +238,8 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
+    const problem = await passwordProblem(req.body.password, { email: user.email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     await User.update(user.id, { passwordHash: await bcrypt.hash(req.body.password, BCRYPT_COST) });
     await User.revokeSessions(user.id);
     await audit(req, 'admin.password_reset', 'user', user.id, `Reset password for ${user.email}`);

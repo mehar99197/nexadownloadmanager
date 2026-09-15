@@ -145,6 +145,14 @@ async function initSchema() {
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
+  // Sign-in lockout state (utils/loginLockout.js): wrong passwords in a row,
+  // when password sign-in reopens, how many locks so far (escalation) and
+  // when the owner was last told. DATETIME, not TIMESTAMP, like every other
+  // instant the code computes itself.
+  await addColumnIfMissing('users', 'failed_logins INT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('users', 'locked_until DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('users', 'lock_level TINYINT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('users', 'lock_notified_at DATETIME NULL DEFAULT NULL');
   // The last TOTP step this account successfully used. A monotonic high-water
   // mark, so the same six digits cannot be presented twice inside their
   // 90-second validity window (RFC 6238 §5.2). See routes/twoFactor.js.

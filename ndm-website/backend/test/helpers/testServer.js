@@ -34,6 +34,9 @@ process.env.ADMIN_ALLOWED_IPS = process.env.ADMIN_ALLOWED_IPS || '127.0.0.1,::1,
 // utils/reservedEmail.js keeps out of the public sign-up flow, so the suites
 // need a known value to assert against.
 process.env.ROOT_ADMIN_EMAIL = process.env.ROOT_ADMIN_EMAIL || 'creator@example.test';
+// The breach check would call Have I Been Pwned from every sign-up in the
+// suites; passwordPolicy.test.js covers it with a fake fetch instead.
+process.env.PASSWORD_BREACH_CHECK = process.env.PASSWORD_BREACH_CHECK || 'false';
 
 const app = require('../../src/app');
 const { getPool, query } = require('../../src/config/db');

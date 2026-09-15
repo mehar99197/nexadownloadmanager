@@ -12,6 +12,9 @@ const Ad = require('../models/Ad');
 const AuditLog = require('../models/AuditLog');
 const ContactMessage = require('../models/ContactMessage');
 const config = require('../config/env');
+const { refreshCookieOptions } = require('../utils/cookies');
+const { passwordProblem } = require('../utils/passwordPolicy');
+const { clearLock } = require('../utils/loginLockout');
 const { getPool } = require('../config/db');
 
 const validate = require('../middleware/validate');
@@ -41,10 +44,7 @@ const ADMIN_REFRESH_COOKIE = 'ndm_admin_refresh';
 const ADMIN_REFRESH_PATH = '/api/admin';
 
 function adminRefreshCookieOptions() {
-  return {
-    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
-    maxAge: 8 * 60 * 60 * 1000, path: ADMIN_REFRESH_PATH,
-  };
+  return refreshCookieOptions(ADMIN_REFRESH_PATH, 8 * 60 * 60 * 1000);
 }
 
 async function issueAdminSession(res, user) {
@@ -63,6 +63,7 @@ const {
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
   idParamSchema, deleteUserSchema,
+  limitQuerySchema, usersExportQuerySchema, subscriptionsExportQuerySchema, tokenRejectionsQuerySchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -256,7 +257,7 @@ router.get(
 );
 
 router.get(
-  '/activity',
+  '/activity', validate(limitQuerySchema),
   asyncHandler(async (req, res) => {
     return ok(res, await AuditLog.listRecent(req.query.limit || 50));
   })
@@ -302,7 +303,7 @@ router.post(
 const EXPORT_MAX = 5000;
 
 router.get(
-  '/users/export',
+  '/users/export', validate(usersExportQuerySchema),
   asyncHandler(async (req, res) => {
     const users = await User.listAll({
       limit: EXPORT_MAX,
@@ -459,12 +460,32 @@ router.post(
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
+    const problem = await passwordProblem(req.body.password, { email: user.email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     await User.update(user.id, { passwordHash: await bcrypt.hash(req.body.password, 12) });
     // Ends every live session, not just the refresh cookies — see
     // User.revokeSessions.
     await User.revokeSessions(user.id);
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
+  })
+);
+
+// Lift a sign-in lockout (utils/loginLockout.js) for somebody on the phone
+// with support. The lock also ends by itself and on a password reset; this
+// is for the person who cannot wait and cannot reach their inbox. Counters
+// go back to zero as well, so the next wrong guess starts a fresh count.
+router.post(
+  '/users/:id/unlock', validate(idParamSchema),
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(Number(req.params.id));
+    if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    const wasLocked = Boolean(user.locked_until && new Date(user.locked_until).getTime() > Date.now());
+    await clearLock(user.id);
+    await audit(req, 'user.unlocked', 'user', user.id,
+      `${wasLocked ? 'Lifted sign-in lock' : 'Reset sign-in failure count'} for ${user.email}`);
+    return ok(res, { unlocked: true, wasLocked });
   })
 );
 
@@ -497,7 +518,7 @@ router.get(
 // testing a crack against the API. `expired` is separated out because a client
 // with a skewed clock or a long sleep generates those honestly.
 router.get(
-  '/security/token-rejections',
+  '/security/token-rejections', validate(tokenRejectionsQuerySchema),
   asyncHandler(async (req, res) => {
     return ok(res, await recentRejections({ hours: req.query.hours }));
   })
@@ -511,7 +532,7 @@ router.get(
 // minutes. Flagging continues, so a licence that genuinely keeps spreading
 // still comes back to this queue for a person to look at again.
 router.post(
-  '/subscriptions/:id/sharing/clear',
+  '/subscriptions/:id/sharing/clear', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
     if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
@@ -523,7 +544,7 @@ router.post(
 
 // Put a licence back under automatic enforcement after it was exempted.
 router.post(
-  '/subscriptions/:id/sharing/resume',
+  '/subscriptions/:id/sharing/resume', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
     if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
@@ -541,7 +562,7 @@ router.post(
 // VMs from one template) look identical from here, so a person decides. To act
 // on one, use the existing "Free seats" control or cancel the subscription.
 router.get(
-  '/subscriptions/flagged',
+  '/subscriptions/flagged', validate(limitQuerySchema),
   asyncHandler(async (req, res) => {
     const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
     return ok(res, { subscriptions, thresholds: sharingThresholds });
@@ -549,7 +570,7 @@ router.get(
 );
 
 router.get(
-  '/subscriptions/export',
+  '/subscriptions/export', validate(subscriptionsExportQuerySchema),
   asyncHandler(async (req, res) => {
     const { subscriptions } = await Subscription.list({
       page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,

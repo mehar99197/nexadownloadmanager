@@ -2,6 +2,17 @@
 
 const { query, queryOne, insert, execute } = require('../config/db');
 
+// Columns update() may touch. Credentials and session state are here because
+// the auth routes rotate them through update(); the counters that only ever
+// move through their own atomic UPDATEs (trial_used, token_version) are not.
+const UPDATABLE_COLUMNS = new Set([
+  'name', 'email', 'password_hash', 'role', 'banned', 'email_verified',
+  'google_id', 'avatar_url',
+  'refresh_token_hash', 'admin_refresh_token_hash', 'root_refresh_token_hash',
+  'totp_secret', 'totp_enabled', 'totp_recovery', 'totp_last_step',
+  'failed_logins', 'locked_until', 'lock_level', 'lock_notified_at',
+]);
+
 const User = {
   async findById(id) {
     return queryOne('SELECT * FROM users WHERE id = ?', [id]);
@@ -82,6 +93,11 @@ const User = {
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+      // The column name is interpolated into the statement, so it must never
+      // be anything but one of ours — same rule as Release.update. Every caller
+      // builds `fields` from validated input, and this is what keeps it so.
+      if (!UPDATABLE_COLUMNS.has(col))
+        throw new Error(`User.update: "${k}" is not an updatable column`);
       sets.push(`${col} = ?`);
       vals.push(v);
     }

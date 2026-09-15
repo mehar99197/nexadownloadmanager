@@ -176,7 +176,7 @@ export default function Register() {
               type="password"
               autoComplete="new-password"
               required
-              hint="At least 8 characters"
+              hint="At least 8 characters — not your email, and not one seen in a data breach"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />

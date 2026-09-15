@@ -317,7 +317,7 @@ export default function Profile() {
               name="newPassword"
               type="password"
               autoComplete="new-password"
-              hint="At least 8 characters"
+              hint="At least 8 characters — not your email, and not one seen in a data breach"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
             />

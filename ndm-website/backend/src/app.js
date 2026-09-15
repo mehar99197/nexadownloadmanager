@@ -19,6 +19,14 @@ const { publicStats } = require('./utils/stats');
 const app = express();
 
 app.set('trust proxy', config.TRUST_PROXY || false);
+// Query strings parse to flat strings only. The default ('extended', via qs)
+// turns `?q[]=x` into an array and `?a[b]=1` into an object, so a handler that
+// expects `req.query.q` to be a string can be handed something else — the
+// zod schemas reject that, but the routes that read req.query directly should
+// never see it in the first place. Nothing here needs nested query syntax.
+// Set before the first app.use(): Express builds its router, with the parser
+// it will use, the moment anything is mounted.
+app.set('query parser', 'simple');
 
 app.use(helmet());
 app.use(cors({ origin: config.CORS_ORIGINS, credentials: true }));
@@ -54,7 +62,9 @@ if (!config.isProd) {
 
 app.use('/api/webhooks/stripe', express.raw({ type: '*/*' }));
 app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+// The API speaks JSON; a form-encoded body is only ever accepted at all so a
+// stray client gets a validation error instead of a parser one. Flat and small.
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
 app.use('/api', apiLimiter);
 // Second layer under SameSite=Lax for state-changing requests — see the

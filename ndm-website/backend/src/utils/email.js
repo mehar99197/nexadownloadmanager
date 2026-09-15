@@ -122,6 +122,26 @@ async function sendControlPanelSignInAttemptEmail(user) {
   });
 }
 
+/**
+ * Sent when repeated wrong passwords lock password sign-in for a while
+ * (utils/loginLockout.js). The sign-in form itself says nothing — a guesser
+ * must not learn they tripped anything — so this is where the owner finds
+ * out, together with the one action that both ends the lock and takes the
+ * password out of the guesser's reach.
+ */
+async function sendAccountLockedEmail(user, { minutes }) {
+  const name = escapeHtml(user.name || '');
+  const reset = `${config.FRONTEND_URL}/forgot-password`;
+  const safeReset = escapeHtml(reset);
+  const when = `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  return send({
+    to: user.email,
+    subject: 'Sign-in to your NexaDownloadManager account was locked',
+    text: `Hi ${user.name || ''},\n\nSomebody entered the wrong password for your account too many times, so password sign-in is paused for ${when}.\n\nIf that was you, wait and try again. If it was not, reset your password now — that ends the pause immediately and signs out anyone else:\n${reset}\n\nSigning in with Google is not affected.`,
+    html: `<p>Hi ${name},</p><p>Somebody entered the wrong password for your account too many times, so password sign-in is paused for <strong>${when}</strong>.</p><p>If that was you, wait and try again. If it was not, <a href="${safeReset}">reset your password now</a> — that ends the pause immediately and signs out anyone else.</p><p>Signing in with Google is not affected.</p>`,
+  });
+}
+
 async function sendPasswordResetEmail(user, token) {
   const link = `${config.FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   const name = escapeHtml(user.name);
@@ -303,4 +323,5 @@ module.exports = {
   sendReceiptEmail,
   sendWelcomeEmail,
   sendTrialEndingEmail,
+  sendAccountLockedEmail,
 };

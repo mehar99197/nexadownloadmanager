@@ -135,23 +135,28 @@ signature and cuts that window to 15 minutes.
 Only the SHA-256 hash is stored on `User.refreshTokenHash`. Generate with
 `generateRefreshToken()` → `{ token, hash }`; store `hash`, set `token` in the cookie.
 On `/api/auth/refresh`, read the cookie, `hashRefreshToken(cookie)` and compare to the
-stored hash (rotate on every refresh). Recommended cookie options:
+stored hash (rotate on every refresh). The flags come from **`utils/cookies.js`**
+(`refreshCookieOptions(path, maxAge)`) — the one place they are decided, shared
+by all three refresh cookies:
 ```js
-res.cookie('ndm_refresh', token, {
-  httpOnly: true, sameSite: 'lax', secure: config.isProd,
-  maxAge: 30 * 24 * 60 * 60 * 1000, path: '/api/auth',
-});
+res.cookie('ndm_refresh', token, refreshCookieOptions('/api/auth', 30 * 24 * 60 * 60 * 1000));
+// = { httpOnly: true, secure: config.secureCookies, sameSite: 'strict',
+//     path: '/api/auth', maxAge: 30 * 24 * 60 * 60 * 1000 }
 ```
+`sameSite: 'strict'` *(CHANGED from `lax`)*: a refresh cookie is only ever
+needed by XHR from our own page, and a same-site XHR carries it whatever link
+the visitor arrived by; `lax` additionally sent it on cross-site top-level GETs,
+which nothing needs. The non-httpOnly `ndm_session` hint stays `lax` on
+purpose — it holds no secret and must survive a cross-site navigation so a
+link from an email does not land a signed-in person on a page that thinks they
+are signed out (`sessionHintCookieOptions`).
 
 **Admin refresh token:** same scheme for the admin SPA, cookie **`ndm_admin_refresh`**,
 hash stored on `User.adminRefreshTokenHash` (`users.admin_refresh_token_hash`, 64-char hex).
 Set by `POST /api/admin/login`, rotated by `POST /api/admin/refresh`, cleared by
 `POST /api/admin/logout` and by `POST /api/admin/users/:id/revoke-sessions`:
 ```js
-res.cookie('ndm_admin_refresh', token, {
-  httpOnly: true, sameSite: 'lax', secure: config.isProd,
-  maxAge: 8 * 60 * 60 * 1000, path: '/api/admin',
-});
+res.cookie('ndm_admin_refresh', token, refreshCookieOptions('/api/admin', 8 * 60 * 60 * 1000));
 ```
 The lifetime matches the 8h admin JWT; after a page refresh the SPA calls
 `POST /api/admin/refresh` (cookie only, no bearer) to get a new `{ token }`, then
@@ -211,7 +216,10 @@ router.post('/register', authLimiter, validate(registerSchema), asyncHandler(han
 Each exported schema is an object `{ body?, query?, params? }` of zod types. `validate`
 parses each present part and **assigns the parsed result back to `req.body/query/params`**
 (so coercion + unknown-key stripping is applied). Every object uses `.strict()` — unknown
-keys are rejected (injection defense). On `ZodError`: `400 VALIDATION_ERROR` with
+keys are rejected (injection defense). `app.set('query parser', 'simple')` keeps
+`req.query` flat — `?q[]=x` is the literal key `q[]` (which a strict schema
+refuses), never an array or a nested object — and form bodies are parsed
+`extended: false` at 64 KB. On `ZodError`: `400 VALIDATION_ERROR` with
 `details = err.flatten()`.
 
 ### Exact export names per domain schema file
@@ -274,11 +282,44 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account with the ordinary `401 INVALID_CREDENTIALS`** — identical body to a wrong password, to a right password on a staff row, and to an address with no account at all. Every branch runs a real cost-12 bcrypt, including the unknown-address one, so neither the code nor the clock answers "does this address have an account?" or "is this one the administrator?". The owner is told in their own inbox (`sendControlPanelSignInAttemptEmail`), never on the wire *(ADDED)* |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
-| POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
+| POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash; **clears a sign-in lockout** (proof of the inbox is the way out of it) *(ADDED)* |
 | POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued, so the session ends rather than being retried on every page load *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
+
+**Sign-in lockout** (`utils/loginLockout.js`) *(ADDED)*: the login limiter is
+keyed per (IP, email) and cannot see many addresses guessing at one account,
+so the account keeps its own score. `LOGIN_LOCKOUT_THRESHOLD` (10) consecutive
+wrong passwords set `users.locked_until` for `LOGIN_LOCKOUT_MINUTES` (15),
+doubling per repeat lock (`users.lock_level`) and capped at four times the
+base, so the same mechanism cannot be used to lock a victim out for a day. While
+locked, `/login` answers the ordinary `401 INVALID_CREDENTIALS` after the same
+dummy bcrypt — the lock is **not observable on the wire**; the owner is told by
+`sendAccountLockedEmail` (at most once per 24 h). A correct password after the
+lock expires, a password reset, or `POST /api/admin/users/:id/unlock` zero the
+counters. Only the password gate is affected: "Continue with Google" is not a
+guess. Wrong passwords against a control-panel row are not counted (it is
+refused whatever the password, and must not be lockable from the customer form).
+The lock columns never appear in `/api/user/me` (`sanitizeUser` drops them);
+the admin user detail shows them.
+
+**Password value rules** (`utils/passwordPolicy.js`) *(ADDED)*: on every path
+that sets a password (`/register`, `/reset-password`, `PUT /user/profile`,
+`POST /admin/users/:id/reset-password`, `POST /root/admins`,
+`POST /root/admins/:id/reset-password`) a password that contains the account's
+email local-part, or that appears in a known breach, is refused with
+`400 WEAK_PASSWORD` and a message safe to show verbatim. The breach check asks
+Have I Been Pwned's range API with k-anonymity (five hex characters of the
+SHA-1 leave the server, never the password), fails **open** on error or after
+`PASSWORD_BREACH_TIMEOUT_MS`, and is off with `PASSWORD_BREACH_CHECK=false`
+(the test bootstrap sets that). Registration runs the check before the hash
+and before the lookup, so the refusal is identical for a new and an existing
+address.
+
+**Hash upgrade on sign-in** *(ADDED)*: a stored hash with fewer bcrypt rounds
+than `BCRYPT_COST` (12) is re-hashed with the plaintext in hand on the next
+successful login, so raising the cost later needs no migration.
 
 ### `routes/user.js` → `/api/user` (all `requireAuth`)
 | Method | Path | Middleware |
@@ -370,6 +411,7 @@ checksum computed at upload time.
 | GET | `/users` | `requireAdmin`, `validate(listQuerySchema)` |
 | PUT | `/users/:id` | `requireAdmin`, `validate(updateUserSchema)` — a `plan` change also sets `trial_ends_at=NULL`. `403` if the target is an `admin`/`root` and the caller is not the creator; **no `role` field** |
 | POST | `/users/:id/revoke-sessions` | `requireAdmin` — nulls `refreshTokenHash` **and** `adminRefreshTokenHash`; `403` on a control-panel target unless the caller is the creator |
+| POST | `/users/:id/unlock` | `requireAdmin`, `validate(idParamSchema)` — lifts a sign-in lockout and zeroes its counters; `{ unlocked: true, wasLocked }`; audited as `user.unlocked`; same control-panel-target rule *(ADDED)* |
 | DELETE | `/users/:id` | `requireAdmin`, `validate(deleteUserSchema)` — **irreversible**. Body must carry the target's exact `confirmEmail` (`400 CONFIRM_MISMATCH`). Refuses the caller's own account (`400 SELF_LOCKOUT`), any creator (`403`), and — for a staff caller — any control-panel account (`blockedStaffTarget`). The audit row is written *before* the delete because `audit_logs.admin_user_id` is `ON DELETE SET NULL`. Data removal is the schema's cascade, not the route's: subscriptions, payments, reviews and (through subscriptions) `license_activations` + `team_members` are `ON DELETE CASCADE`; audit logs, ads and contact messages are `ON DELETE SET NULL`, so what was done outlives who did it. The creator's `/api/root/users/:id` is the same rule with a wider reach *(ADDED)* |
 | GET | `/subscriptions` | `requireAdmin`, `validate(listQuerySchema)` |
 | GET | `/reviews/pending` | `requireAdmin` |
@@ -735,8 +777,8 @@ an `Origin` must carry one in `CORS_ORIGINS` or the request's own origin, else
 `403 BAD_ORIGIN`. A **missing** Origin is allowed on purpose: that is every
 non-browser client — the desktop app, Stripe webhooks, curl, the tests — and none
 of them can be a CSRF vector, since CSRF is precisely an attack that borrows a
-*browser's* ambient credentials. This is a second layer under `SameSite=Lax`, not
-a replacement for it.
+*browser's* ambient credentials. This is a second layer under `SameSite=Strict`
+on the refresh cookies, not a replacement for it.
 
 ### Turnstile — `middleware/turnstile.js`
 `requireTurnstile` runs BEFORE `validate()` on `POST /auth/register`,

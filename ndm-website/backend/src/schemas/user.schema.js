@@ -35,4 +35,9 @@ const deleteAccountSchema = {
     .strict(),
 };
 
-module.exports = { updateProfileSchema, deleteAccountSchema };
+// DELETE /user/devices/:id — a seat's activation id.
+const deviceParamsSchema = {
+  params: z.object({ id: z.coerce.number().int().positive('Invalid id') }).strict(),
+};
+
+module.exports = { updateProfileSchema, deleteAccountSchema, deviceParamsSchema };

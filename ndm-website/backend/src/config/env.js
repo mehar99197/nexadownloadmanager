@@ -194,6 +194,18 @@ const config = {
 
   EMAIL_VERIFICATION_REQUIRED: bool(process.env.EMAIL_VERIFICATION_REQUIRED, isHardened),
 
+  // Per-account sign-in lockout (utils/loginLockout.js): this many wrong
+  // passwords in a row lock password sign-in for LOGIN_LOCKOUT_MINUTES,
+  // doubling per repeat and capped at four times the base.
+  LOGIN_LOCKOUT_THRESHOLD: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_THRESHOLD, 10)),
+  LOGIN_LOCKOUT_MINUTES: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_MINUTES, 15)),
+
+  // Refuse passwords found in known breaches (utils/passwordPolicy.js, HIBP
+  // k-anonymity range API — the password never leaves this server). Fails
+  // open when the API is unreachable within the timeout.
+  PASSWORD_BREACH_CHECK: bool(process.env.PASSWORD_BREACH_CHECK, true),
+  PASSWORD_BREACH_TIMEOUT_MS: Math.max(500, intOrDefault(process.env.PASSWORD_BREACH_TIMEOUT_MS, 2500)),
+
   // Where uploaded installers are stored. Keep this OFF the web root and on a
   // volume with room for several builds — every artifact is a full installer.
   RELEASE_UPLOAD_DIR: process.env.RELEASE_UPLOAD_DIR
