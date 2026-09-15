@@ -158,6 +158,53 @@ test('signing in honours ?next= (a team invitation lands on the join page, not t
   await expect(page.getByRole('button', { name: /accept invitation/i })).toBeVisible();
 });
 
+test('a two-factor account gets the code step, and the profile shows 2FA and sessions', async ({ page }) => {
+  await stubApi(page);
+  const me = { user: { id: 1, name: 'Ada', email: 'ada@example.test', role: 'user', hasPassword: true }, subscription: { plan: 'free', status: 'active', seats: 1 }, team: null };
+  let signedIn = false;
+  // The password checks out but the account has TOTP on: no session yet,
+  // only a challenge that POST /auth/login/2fa turns into one.
+  await page.route('**/api/auth/login', (r) =>
+    r.fulfill({ json: { ok: true, data: { requiresTwoFactor: true, challenge: 'c'.repeat(40) } } }));
+  await page.route('**/api/auth/login/2fa', (r) => {
+    const body = r.request().postDataJSON();
+    if (body.code !== '246810' || body.challenge !== 'c'.repeat(40))
+      return r.fulfill({ status: 401, json: { ok: false, error: { code: 'INVALID_CODE', message: 'That code is not valid' } } });
+    signedIn = true;
+    return r.fulfill({ json: { ok: true, data: { token: 'tok', user: me.user } } });
+  });
+  await page.route('**/api/user/me', (r) => (signedIn
+    ? r.fulfill({ json: { ok: true, data: me } })
+    : r.fulfill({ status: 401, json: { ok: false, error: { code: 'UNAUTHORIZED', message: 'no session' } } })));
+  await page.route('**/api/auth/2fa', (r) =>
+    r.fulfill({ json: { ok: true, data: { enabled: true, pending: false, recoveryCodesLeft: 7 } } }));
+  await page.route('**/api/user/sessions', (r) =>
+    r.fulfill({ json: { ok: true, data: { sessions: [
+      { id: 1, current: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/128.0 Safari/537.36', ip: '203.0.113.5', lastUsedAt: new Date().toISOString() },
+      { id: 2, current: false, userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/128.0 Mobile Safari/537.36', ip: '198.51.100.7', lastUsedAt: new Date().toISOString() },
+    ] } } }));
+
+  await page.goto('/login?next=%2Fprofile');
+  await page.fill('input[name="email"]', 'ada@example.test');
+  await page.fill('input[name="password"]', 'password-123');
+  await page.click('button[type="submit"]');
+
+  await expect(page.getByRole('heading', { name: /enter your verification code/i })).toBeVisible();
+  await page.fill('input[name="code"]', '111111');
+  await page.click('button[type="submit"]');
+  await expect(page.getByRole('alert')).toContainText(/not valid/i);
+  await page.fill('input[name="code"]', '246810');
+  await page.click('button[type="submit"]');
+
+  await expect(page).toHaveURL(/\/profile$/);
+  await expect(page.getByTestId('two-factor-status')).toHaveText('On');
+  await expect(page.getByText(/7 recovery codes left/i)).toBeVisible();
+  const rows = page.getByTestId('session-list').getByRole('listitem');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('This browser');
+  await expect(rows.nth(1)).toContainText('Chrome on Android');
+});
+
 test('an invalid team invitation says so instead of a blank page', async ({ page }) => {
   await stubApi(page);
   await page.route('**/api/team/invites/**', (r) =>

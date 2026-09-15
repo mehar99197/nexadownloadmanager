@@ -50,11 +50,23 @@ export async function refreshAdminToken() {
   return token;
 }
 
+/**
+ * Fired on window when the API answers 403 TWO_FACTOR_REQUIRED: the account is
+ * signed in but must enrol in two-factor authentication before it may use
+ * anything but the setup screen. AdminAuthContext listens and routes there.
+ */
+export const TWO_FACTOR_REQUIRED_EVENT = 'ndm:two-factor-required';
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error?.config;
     const url = original?.url || '';
+    if (error?.response?.status === 403 && error.response.data?.error?.code === 'TWO_FACTOR_REQUIRED'
+        && typeof window !== 'undefined') {
+      window.dispatchEvent(new window.CustomEvent(TWO_FACTOR_REQUIRED_EVENT));
+      return Promise.reject(error);
+    }
     if (
       error?.response?.status !== 401 ||
       !original ||

@@ -1,0 +1,43 @@
+# Automated dependency scanning. Dependabot opens one pull request per update
+# (security updates immediately, the rest weekly, grouped so the three npm
+# trees do not produce a dozen PRs a week) and files security alerts under
+# Security → Dependabot. This runs on GitHub's side and needs no Actions
+# minutes; only the CI on the resulting PRs does.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /ndm-website/backend
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      backend-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, backend]
+
+  - package-ecosystem: npm
+    directory: /ndm-website/frontend
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, frontend]
+
+  - package-ecosystem: npm
+    directory: /ndm-website/admin
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      admin-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, admin]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, ci]

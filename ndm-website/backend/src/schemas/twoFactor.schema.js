@@ -19,7 +19,9 @@ const twoFactorEnableSchema = {
 
 const twoFactorDisableSchema = {
   body: z.object({
-    password: z.string().min(1),
+    // Optional in the schema only: the route insists on it for every account
+    // that has a password (a Google-created customer has none).
+    password: z.string().min(1).max(128).optional(),
     code: anyCode,
   }).strict(),
 };

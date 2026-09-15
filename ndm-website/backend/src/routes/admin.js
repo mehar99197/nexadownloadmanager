@@ -15,6 +15,7 @@ const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
 const { clearLock } = require('../utils/loginLockout');
+const security = require('../utils/securityEvents');
 const { getPool } = require('../config/db');
 
 const validate = require('../middleware/validate');
@@ -64,6 +65,7 @@ const {
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
   idParamSchema, deleteUserSchema,
   limitQuerySchema, usersExportQuerySchema, subscriptionsExportQuerySchema, tokenRejectionsQuerySchema,
+  securityEventsQuerySchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -119,10 +121,15 @@ router.post(
     // A Google-created account has NO password hash. bcrypt.compare against
     // null throws, so an account promoted to admin that way answered 500 to
     // every sign-in attempt instead of a plain rejection.
-    if (!user || user.role !== 'admin' || !user.password_hash)
+    if (!user || user.role !== 'admin' || !user.password_hash) {
+      await security.record('admin.login.failed', { req, email, severity: 'warning' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
     const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    if (!match) {
+      await security.record('admin.login.failed', { req, user, severity: 'warning' });
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     // Second factor on: no session yet — hand back a short-lived challenge
     // that only POST /login/2fa (with a valid code) can turn into one.
@@ -132,11 +139,13 @@ router.post(
         challenge: signChallenge(user, { secret: config.JWT_ADMIN_SECRET, realm: 'admin' }),
       });
     }
+    await security.record('admin.login.success', { req, user, detail: 'password only — no second factor on this account' });
     return ok(res, await finishAdminLogin(res, user));
   })
 );
 
-async function finishAdminLogin(res, user) {
+async function finishAdminLogin(res, user, req) {
+  if (req) await security.record('admin.login.success', { req, user, detail: 'two-factor' });
   await issueAdminSession(res, user);
   return { token: signAdminToken(user), admin: adminIdentity(user) };
 }
@@ -190,7 +199,12 @@ router.use(requireAdmin);
 router.get(
   '/me',
   asyncHandler(async (req, res) => ok(res, {
-    ...adminIdentity(req.admin), twoFactorEnabled: Boolean(req.admin.totp_enabled),
+    ...adminIdentity(req.admin),
+    twoFactorEnabled: Boolean(req.admin.totp_enabled),
+    // The SPA sends an un-enrolled account straight to the setup screen when
+    // this is on (middleware/adminAuth.js answers 403 TWO_FACTOR_REQUIRED to
+    // everything else meanwhile).
+    twoFactorRequired: Boolean(config.ADMIN_2FA_REQUIRED),
   }))
 );
 
@@ -517,6 +531,14 @@ router.get(
 // are people constructing tokens by hand — the visible trace of somebody
 // testing a crack against the API. `expired` is separated out because a client
 // with a skewed clock or a long sleep generates those honestly.
+// The security-event feed (utils/securityEvents.js): sign-in failures and
+// locks, two-factor outcomes, resets, session replays, panel sign-ins —
+// newest first, with per-kind counts for the window.
+router.get(
+  '/security/events', validate(securityEventsQuerySchema),
+  asyncHandler(async (req, res) => ok(res, await security.listRecent(req.query)))
+);
+
 router.get(
   '/security/token-rejections', validate(tokenRejectionsQuerySchema),
   asyncHandler(async (req, res) => {

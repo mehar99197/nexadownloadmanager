@@ -3,6 +3,14 @@ import { render, screen, act } from '@testing-library/react';
 import { useEffect } from 'react';
 
 const SCRIPT_SEL = 'script[src="https://accounts.google.com/gsi/client"]';
+const NONCE = 'test-nonce.1700000000000.abcdefghijklmnopqrstuv';
+
+// The button asks the API for an OIDC nonce before it initialises Google;
+// jsdom has no server, so the client is stubbed to hand one out.
+vi.mock('../api/client', () => ({
+  default: { get: vi.fn(async () => ({ data: { ok: true, data: { nonce: NONCE } } })) },
+  unwrap: (res) => res.data.data,
+}));
 
 // CLIENT_ID is read once at module evaluation, so each case stubs the env and
 // re-imports the component instead of relying on a developer's local .env.
@@ -48,6 +56,23 @@ describe('GoogleButton — the white slab', () => {
     const GoogleButton = await loadWith();
     render(<GoogleButton onCredential={() => {}} />);
     expect(screen.getByTestId('google-button')).toHaveClass('scheme-light');
+  });
+});
+
+describe('GoogleButton — the nonce', () => {
+  it('initialises Google with the nonce the server issued and hands it back with the credential', async () => {
+    // The backend accepts only an ID token carrying the nonce it gave THIS
+    // browser (GET /api/auth/google/nonce), so the value has to reach
+    // initialize() and travel back to the caller beside the credential.
+    stubWidth(320);
+    const gis = stubGis();
+    const GoogleButton = await loadWith();
+    const onCredential = vi.fn();
+    await act(async () => { render(<GoogleButton onCredential={onCredential} />); });
+    const init = gis.initialize.mock.calls.at(-1)[0];
+    expect(init.nonce).toBe(NONCE);
+    init.callback({ credential: 'id-token' });
+    expect(onCredential).toHaveBeenCalledWith('id-token', NONCE);
   });
 });
 

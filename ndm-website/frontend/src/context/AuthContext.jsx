@@ -71,13 +71,32 @@ export function AuthProvider({ children }) {
     };
   }, [refreshMe]);
 
+  /**
+   * Password sign-in. An account with two-factor on answers with a short-lived
+   * challenge instead of a session; the caller shows the code prompt and
+   * finishes with completeTwoFactor(). Resolves { twoFactor: true, challenge }
+   * in that case, or the signed-in user otherwise.
+   */
   const login = useCallback(
     async (email, password) => {
       const res = await api.post('/auth/login', { email, password });
       const data = unwrap(res);
+      if (data?.requiresTwoFactor) return { twoFactor: true, challenge: data.challenge };
       if (!data?.token) {
         throw new Error('No token returned from login.');
       }
+      setToken(data.token);
+      return refreshMe();
+    },
+    [refreshMe]
+  );
+
+  /** Second step of a two-factor sign-in: the challenge from login() plus a code. */
+  const completeTwoFactor = useCallback(
+    async (challenge, code) => {
+      const res = await api.post('/auth/login/2fa', { challenge, code });
+      const data = unwrap(res);
+      if (!data?.token) throw new Error('No token returned from two-factor sign-in.');
       setToken(data.token);
       return refreshMe();
     },
@@ -99,9 +118,12 @@ export function AuthProvider({ children }) {
    * a returning sign-in.
    */
   const loginWithGoogle = useCallback(
-    async (credential) => {
-      const res = await api.post('/auth/google', { credential });
+    async (credential, nonce) => {
+      const res = await api.post('/auth/google', { credential, ...(nonce ? { nonce } : {}) });
       const data = unwrap(res);
+      // A Google account with two-factor on gets the same code prompt as a
+      // password sign-in — Google proved the identity, the app proves the device.
+      if (data?.requiresTwoFactor) return { twoFactor: true, challenge: data.challenge, created: Boolean(data.created) };
       if (!data?.token) throw new Error('No token returned from Google sign-in.');
       setToken(data.token);
       const me = await refreshMe();
@@ -126,6 +148,7 @@ export function AuthProvider({ children }) {
     loading,
     isAuthenticated: !!user,
     login,
+    completeTwoFactor,
     loginWithGoogle,
     register,
     logout,

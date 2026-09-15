@@ -105,18 +105,28 @@ test('backend API', async (t) => {
       const rotated = api.cookies.get('ndm_refresh');
       assert.notEqual(rotated, old, 'cookie value changed');
 
-      // Replaying the old cookie must fail: that is the whole point of rotation.
+      // Replaying the old cookie must fail: that is the whole point of
+      // rotation. Two tabs racing on one cookie jar get a 30-second grace
+      // (models/UserSession.js), so the rotation is aged past it first.
+      await srv.query('UPDATE user_sessions SET rotated_at = DATE_SUB(NOW(), INTERVAL 2 MINUTE) WHERE prev_token_hash IS NOT NULL');
       const replay = srv.client();
       replay.cookies.set('ndm_refresh', old);
       const res2 = await replay.post('/api/auth/refresh');
       assert.equal(res2.status, 401, 'stale refresh token rejected');
+      // …and the replay ended the whole family: the rotated cookie is dead too.
+      assert.equal((await api.post('/api/auth/refresh')).status, 401, 'family revoked after replay');
+      // A fresh sign-in for the tests that follow.
+      const again = await api.post('/api/auth/login', { email, password });
+      assert.equal(again.status, 200, again.text);
     });
 
-    await t2.test('logout clears the cookie and the stored hash', async () => {
+    await t2.test('logout clears the cookie and revokes the session', async () => {
       const res = await api.post('/api/auth/logout');
       assert.equal(res.status, 200, res.text);
-      const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
-      assert.equal(rows[0].refresh_token_hash, null);
+      const rows = await srv.query(
+        'SELECT COUNT(*) AS live FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ? AND s.revoked_at IS NULL',
+        [email]);
+      assert.equal(Number(rows[0].live), 0);
     });
 
     await t2.test('a banned user cannot use a still-valid access token', async () => {

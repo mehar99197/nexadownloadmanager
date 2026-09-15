@@ -120,14 +120,19 @@ test('team schemas: invite needs an email, join needs a well-formed token', () =
   assert.deepEqual(inviteLookupSchema.params.parse({ token }), { token });
 });
 
-test('two-factor schemas: 6-digit enable code, recovery codes allowed at login, disable needs password', () => {
+test('two-factor schemas: 6-digit enable code, recovery codes allowed at login, disable password optional in shape only', () => {
   const { twoFactorLoginSchema, twoFactorEnableSchema, twoFactorDisableSchema } = require('../src/schemas/twoFactor.schema');
   assert.deepEqual(twoFactorEnableSchema.body.parse({ code: ' 123456 ' }), { code: '123456' });
   assert.equal(twoFactorEnableSchema.body.safeParse({ code: 'k7f3q-9x2mp' }).success, false);
   assert.equal(twoFactorLoginSchema.body.safeParse({ challenge: 'x'.repeat(30), code: 'k7f3q-9x2mp' }).success, true);
   assert.equal(twoFactorLoginSchema.body.safeParse({ challenge: 'short', code: '123456' }).success, false);
-  assert.equal(twoFactorDisableSchema.body.safeParse({ code: '123456' }).success, false);
+  // The password is optional in the SCHEMA because a Google-created customer
+  // has none; the route still demands it from every account that has one
+  // (sessions2fa.integration.test.js). An empty string is never accepted.
+  assert.equal(twoFactorDisableSchema.body.safeParse({ code: '123456' }).success, true);
+  assert.equal(twoFactorDisableSchema.body.safeParse({ password: '', code: '123456' }).success, false);
   assert.equal(twoFactorDisableSchema.body.safeParse({ password: 'pw', code: '123456' }).success, true);
+  assert.equal(twoFactorDisableSchema.body.safeParse({ password: 'pw', code: '123456', extra: 1 }).success, false);
 });
 
 test('deleteAccountSchema demands the password and the literal word DELETE', () => {

@@ -10,7 +10,6 @@ const { requireAuth } = require('../middleware/auth');
 const { licenseRotateLimiter } = require('../middleware/rateLimiter');
 const { sendLicenseEmail } = require('../utils/email');
 const { updateProfileSchema, deleteAccountSchema, deviceParamsSchema } = require('../schemas/user.schema');
-const { signAccessToken, generateRefreshToken } = require('../utils/jwt');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
@@ -20,12 +19,13 @@ const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
 const { stripSensitive } = require('../utils/sanitize');
-const { refreshCookieOptions } = require('../utils/cookies');
+const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
+const { hashRefreshToken } = require('../utils/jwt');
+const UserSession = require('../models/UserSession');
+const security = require('../utils/securityEvents');
 const { passwordProblem } = require('../utils/passwordPolicy');
 
 const BCRYPT_COST = 12;
-const REFRESH_COOKIE = 'ndm_refresh';
-const SESSION_HINT_COOKIE = 'ndm_session';
 
 function sanitizeUser(user) {
   // stripSensitive() removes every credential column, including the ones this
@@ -131,13 +131,65 @@ router.put(
     let token;
     if (newPassword !== undefined) {
       await User.revokeSessions(req.user.id);
-      const { token: refreshToken, hash } = generateRefreshToken();
-      await User.update(req.user.id, { refreshTokenHash: hash });
-      res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions('/api/auth', 30 * 24 * 60 * 60 * 1000));
-      token = signAccessToken(await User.findById(req.user.id));
+      await security.record('password.changed', { req, user: req.user, detail: 'every other session ended' });
+      ({ token } = await issueSession(req, res, await User.findById(req.user.id)));
     }
     const user = await User.findById(req.user.id);
     return ok(res, { user: sanitizeUser(user), ...(token ? { token } : {}) });
+  })
+);
+
+/**
+ * The account's live browser sessions (models/UserSession.js). `current`
+ * marks the one this request's refresh cookie belongs to. Signing one out
+ * revokes its family; "everywhere else" keeps only the current one.
+ */
+router.get(
+  '/sessions', requireAuth,
+  asyncHandler(async (req, res) => {
+    const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
+    const currentHash = cookie ? hashRefreshToken(cookie) : null;
+    const current = currentHash ? await UserSession.findLive(currentHash) : null;
+    const rows = await UserSession.listForUser(req.user.id);
+    return ok(res, {
+      sessions: rows.map((s) => ({
+        id: s.id,
+        current: Boolean(current && current.id === s.id),
+        userAgent: s.user_agent,
+        ip: s.ip,
+        createdAt: s.created_at,
+        lastUsedAt: s.last_used_at,
+        expiresAt: s.expires_at,
+      })),
+    });
+  })
+);
+
+router.delete(
+  '/sessions/:id', requireAuth, validate(deviceParamsSchema),
+  asyncHandler(async (req, res) => {
+    const session = await UserSession.findById(Number(req.params.id));
+    if (!session || session.user_id !== req.user.id || session.revoked_at)
+      return fail(res, 'NOT_FOUND', 'Session not found', 404);
+    await UserSession.revokeFamily(session.family);
+    await security.record('session.revoked', { req, user: req.user, detail: `session ${session.id} signed out from the account page` });
+    return ok(res, { revoked: true });
+  })
+);
+
+router.post(
+  '/sessions/revoke-others', requireAuth,
+  asyncHandler(async (req, res) => {
+    const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
+    const current = cookie ? await UserSession.findLive(hashRefreshToken(cookie)) : null;
+    const rows = await UserSession.listForUser(req.user.id);
+    let revoked = 0;
+    for (const s of rows) {
+      if (current && s.family === current.family) continue;
+      revoked += await UserSession.revokeFamily(s.family);
+    }
+    await security.record('session.revoked', { req, user: req.user, detail: `${revoked} other session(s) signed out from the account page` });
+    return ok(res, { revoked });
   })
 );
 
@@ -359,9 +411,9 @@ router.delete(
       summary: `${user.email} deleted their own account`,
       metadata: { plans: subs.map((s) => s.plan), teamMembersDropped: members },
     });
+    await security.record('account.deleted', { req, user, detail: 'deleted by the account owner' });
     await User.remove(user.id);
-    res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
-    res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+    clearSessionCookies(res);
     return ok(res, { deleted: true });
   })
 );

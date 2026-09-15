@@ -56,6 +56,7 @@ const googleSchema = {
   body: z
     .object({
       credential: z.string().trim().min(20).max(4096),
+      nonce: z.string().trim().min(16).max(128).optional(),
     })
     .strict(),
 };

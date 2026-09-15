@@ -128,6 +128,65 @@ local, non-production deployment. So the cutover has two independent halves:
    copy, put the key in a password manager or another offline secure store:
    losing every copy would force a key rotation and a desktop release.
 
+### Half 1b — what the code does, what only you can do
+
+The application side of the security checklist is in the code and switches on
+by itself on a public box: per-browser sessions with rotation and replay
+detection (`user_sessions`), 15-minute access tokens (`ACCESS_TOKEN_TTL`),
+TOTP for customers and **mandatory** TOTP for every control-panel account
+(`ADMIN_2FA_REQUIRED`, default on), an OIDC nonce + single-use ledger on
+"Continue with Google", bcrypt cost 12 with breached-password refusal,
+per-account lockout, durable MySQL rate limiters, Zod on every input, helmet
+with CSP + HSTS + `X-Frame-Options: DENY`, AES-256-GCM on the TOTP secrets,
+a `security_events` feed with e-mail alerts (admin panel → Security), and
+Dependabot on the repository. The pieces that live outside this repository:
+
+1. **`ADMIN_2FA_REQUIRED`.** After the first deploy that carries it, the admin
+   and root panels serve only the two-factor setup screen until the account
+   has an authenticator enrolled — plan for a minute with a phone in hand on
+   the next sign-in. To defer, set `ADMIN_2FA_REQUIRED=false` in `nexa-api/.env`
+   and restart. Set `TOTP_ENCRYPTION_KEY` (32+ random characters) **before**
+   anybody enrols; changing it later invalidates every enrolled secret.
+
+2. **`SECURITY_ALERT_EMAIL`.** Where the real-time alerts go (lockout waves,
+   session replays, root sign-in failures, replayed Google tokens). Blank
+   means `ROOT_ADMIN_EMAIL`. Uses the same SMTP as everything else.
+
+3. **A WAF in front of the site.** Hostinger's CDN gives a bot challenge, not a
+   rule engine. The zero-cost option is Cloudflare's free plan: move the
+   domain's nameservers to Cloudflare (hPanel → Domains → DNS/Nameservers),
+   proxy the `A`/`AAAA` records (orange cloud), then in the Cloudflare
+   dashboard turn on **Security → WAF → Managed rules (Cloudflare Free
+   Managed Ruleset)**, **Bot Fight Mode**, SSL/TLS mode **Full (strict)**, and
+   add a rate-limiting rule for `/api/auth/*` (e.g. 30 requests / minute per
+   IP). Because Cloudflare then terminates TLS, the API sees Cloudflare's
+   address: `TRUST_PROXY` stays `1` (the PHP shim forwards the client address
+   it was given) and Cloudflare's own `CF-Connecting-IP` is what LiteSpeed
+   passes on when its Cloudflare integration is enabled. Verify after the
+   switch: one deliberate wrong password on your own account must show
+   **your** address, not a Cloudflare one, in admin → Security → events;
+   otherwise the lockout and the rate limits key on Cloudflare's edge.
+   Turnstile (already wired: `TURNSTILE_*`) lives in the same dashboard.
+
+4. **Ship the logs.** Every security event is one line on stdout,
+   `[security] {"kind":…}`, which the keepalive appends to
+   `~/domains/nexadownloadmanager.com/logs/api.log`. A hosted log service
+   (Better Stack, Papertrail, Grafana Cloud Loki — all have a free tier)
+   ingests that file with their agent or, on shared hosting without root, with
+   a cron'd `curl` that POSTs new lines. Alert there on `"severity":"critical"`.
+   The same events are in MySQL (`security_events`, 90-day retention) and in
+   the panel, so nothing is lost while that is being set up.
+
+5. **Redis is not available on shared hosting.** The sliding-window limiters
+   count in MySQL instead (`middleware/rateLimitStore.js`) — the same
+   durability across restarts, one round-trip per gated request. Should the
+   API ever move to a VPS, `rateLimitStore.js` is the one file to swap.
+
+6. **Dependabot** opens pull requests on GitHub for the backend, frontend,
+   admin and root `package.json` files and the Actions workflows
+   (`.github/dependabot.yml`). Merge them like any other change; `npm audit --audit-level=high`
+   already gates CI (`build.yml`).
+
 ### Half 2 — turn payments on (when the Stripe account is ready)
 
 1. Get the **live** secret `sk_live_…` and the webhook signing secret `whsec_…`

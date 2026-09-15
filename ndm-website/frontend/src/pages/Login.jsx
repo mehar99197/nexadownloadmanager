@@ -7,13 +7,13 @@ import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import GoogleButton, { googleAuthEnabled } from '../components/GoogleButton';
+import GoogleButton, { googleAuthEnabled, refreshNonce } from '../components/GoogleButton';
 import usePageMeta from '../hooks/usePageMeta';
 
 export default function Login() {
   usePageMeta({ title: "Sign in", description: "Sign in to your Nexa Download Manager account to manage your plan, license key and billing." });
 
-  const { login, loginWithGoogle, isAuthenticated } = useAuth();
+  const { login, completeTwoFactor, loginWithGoogle, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [searchParams] = useSearchParams();
@@ -34,6 +34,11 @@ export default function Login() {
   // Without an offer to re-send, that refusal is a dead end: the original link
   // expires after an hour and there is no signed-in page to ask from.
   const [needsVerification, setNeedsVerification] = useState(false);
+  // Two-factor: the password (or Google) checked out and the server handed
+  // back a short-lived challenge; the code from the authenticator app (or a
+  // recovery code) turns it into a session.
+  const [challenge, setChallenge] = useState((location.state && location.state.challenge) || null);
+  const [code, setCode] = useState('');
   const [resending, setResending] = useState(false);
 
   const resendVerification = async () => {
@@ -66,7 +71,12 @@ export default function Login() {
     setNeedsVerification(false);
     setSubmitting(true);
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      if (result?.twoFactor) {
+        setChallenge(result.challenge);
+        setCode('');
+        return;
+      }
       toast.success('Logged in successfully.');
       navigate(next, { replace: true });
     } catch (err) {
@@ -83,14 +93,24 @@ export default function Login() {
 
   // The Google button hands back an ID token; the backend verifies it and
   // creates or links the account, so there is no separate "sign up with Google".
-  const handleGoogle = async (credential) => {
+  const handleGoogle = async (credential, nonce) => {
     setError('');
     setGoogleBusy(true);
     try {
-      const { created } = await loginWithGoogle(credential);
-      toast.success(created ? 'Account created — welcome to Nexa!' : 'Logged in successfully.');
+      const result = await loginWithGoogle(credential, nonce);
+      if (result?.twoFactor) {
+        setChallenge(result.challenge);
+        setCode('');
+        return;
+      }
+      toast.success(result.created ? 'Account created — welcome to Nexa!' : 'Logged in successfully.');
       navigate(next, { replace: true });
     } catch (err) {
+      if (err?.response?.data?.error?.code === 'GOOGLE_NONCE_INVALID') {
+        // The 30-minute nonce lapsed while the page sat open: mint a new one so
+        // the next click works, instead of asking for a reload.
+        refreshNonce().catch(() => {});
+      }
       setError(
         err?.response?.data?.error?.message ||
         err?.message ||
@@ -102,6 +122,28 @@ export default function Login() {
   };
 
   const busy = submitting || googleBusy;
+
+  const handleCode = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSubmitting(true);
+    try {
+      await completeTwoFactor(challenge, code.trim());
+      toast.success('Logged in successfully.');
+      navigate(next, { replace: true });
+    } catch (err) {
+      const errCode = err?.response?.data?.error?.code;
+      if (errCode === 'INVALID_CHALLENGE') {
+        // The five-minute prompt lapsed: back to the password step.
+        setChallenge(null);
+        setError('That code prompt has expired. Please sign in again.');
+      } else {
+        setError(err?.response?.data?.error?.message || err?.message || 'That code is not valid.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <Section className="auth-section flex min-h-[70vh] items-center">
@@ -130,6 +172,40 @@ export default function Login() {
             </div>
           )}
 
+          {challenge ? (
+            <form onSubmit={handleCode} className="mt-7 space-y-4" noValidate aria-labelledby="two-factor-title">
+              <h2 id="two-factor-title" className="text-lg font-bold text-white">Enter your verification code</h2>
+              <p className="text-sm text-slate-300">
+                Open your authenticator app and type the 6-digit code for Nexa Download Manager.
+                Lost the device? A recovery code works here too.
+              </p>
+              <Input
+                label="Verification code"
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                required
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+              />
+              {error && (
+                <div role="alert" className="rounded-[var(--radius-2)] border border-red-400/25 bg-red-400/10 px-4 py-3 text-sm text-red-200">
+                  {error}
+                </div>
+              )}
+              <Button type="submit" className="w-full" disabled={submitting || !code.trim()}>
+                {submitting ? 'Checking…' : 'Verify and sign in'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => { setChallenge(null); setError(''); }}
+                className="block w-full text-center text-sm text-slate-400 underline underline-offset-2 hover:text-white"
+              >
+                Back to sign in
+              </button>
+            </form>
+          ) : (
           <form onSubmit={handleSubmit} className="mt-7 space-y-4" noValidate>
             <Input
               label="Email"
@@ -204,6 +280,7 @@ export default function Login() {
               {submitting ? 'Signing in…' : googleBusy ? 'Signing in with Google…' : 'Sign in'}
             </Button>
           </form>
+          )}
 
           <p className="mt-6 text-center text-sm text-slate-500">
             Don&apos;t have an account?{' '}

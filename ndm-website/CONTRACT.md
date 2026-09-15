@@ -108,7 +108,7 @@ Header: `Authorization: Bearer <token>`.
 
 | Token | TTL | Secret | Signed by | Verified by |
 |-------|-----|--------|-----------|-------------|
-| user access | 7d | `JWT_SECRET` | `signAccessToken(user)` | `verifyAccess` / `requireAuth` |
+| user access | `ACCESS_TOKEN_TTL` (15m) *(CHANGED from 7d)* | `JWT_SECRET` | `signAccessToken(user)` | `verifyAccess` / `requireAuth` |
 | admin | 8h | `JWT_ADMIN_SECRET` | `signAdminToken(user)` | `verifyAdmin` / `requireAdmin` |
 | root (creator) | 4h | `JWT_ROOT_SECRET` | `signRootToken(user)` | `verifyRoot` / `requireRoot` |
 | email verify | 1h | `JWT_SECRET` | `signEmailToken(user)` | `verifyEmailToken` |
@@ -131,11 +131,32 @@ a revoked licence stayed usable on plan-gated endpoints for a day. A beat has
 already resolved the subscription and renewed the seat, so minting costs one
 signature and cuts that window to 15 minutes.
 
-**Refresh token:** opaque random string in an **httpOnly cookie named `ndm_refresh`**.
-Only the SHA-256 hash is stored on `User.refreshTokenHash`. Generate with
-`generateRefreshToken()` → `{ token, hash }`; store `hash`, set `token` in the cookie.
-On `/api/auth/refresh`, read the cookie, `hashRefreshToken(cookie)` and compare to the
-stored hash (rotate on every refresh). The flags come from **`utils/cookies.js`**
+**Refresh token:** opaque random string (CSPRNG, `generateRefreshToken()` →
+`{ token, hash }`) in an **httpOnly cookie named `ndm_refresh`**. Only the
+SHA-256 hash is stored — **one row per browser in `user_sessions`**
+(`models/UserSession.js`), not a single column on the user *(CHANGED)*: a
+person signed in on a laptop and a phone holds two independent sessions, and
+the account page lists and revokes them (`GET/DELETE /api/user/sessions`).
+`utils/session.js#issueSession(req, res, user)` creates the row, sets the
+cookie (+ the `ndm_session` hint) and returns `{ token, user }`; every path
+that opens a customer session goes through it (`/login`, `/login/2fa`,
+`/google`, a password change).
+
+`POST /api/auth/refresh` **rotates** the cookie on every use: the row's
+`token_hash` becomes the new hash, the old one moves to `prev_token_hash` with
+`rotated_at`, and the access token comes back short-lived (`ACCESS_TOKEN_TTL`,
+15 minutes) so the cookie — not the bearer — is what carries the session.
+**Replay detection:** presenting a hash that only matches `prev_token_hash`
+means the token has been used twice. Within 30 seconds of the rotation that is
+two tabs racing on one cookie jar and the newer cookie is simply re-sent;
+after that it is a stolen cookie and **the whole `family` is revoked** —
+the thief's copy and the victim's — and a `session.reuse_detected` security event
+is recorded. `family` (random, fixed for the life of the browser session) is
+what ties the rotated generations together. `User.revokeSessions` (password
+change, role change, ban, admin revoke) revokes every row for the user and
+bumps `token_version`, which also kills outstanding bearers.
+
+The cookie flags come from **`utils/cookies.js`**
 (`refreshCookieOptions(path, maxAge)`) — the one place they are decided, shared
 by all three refresh cookies:
 ```js
@@ -260,6 +281,8 @@ Schema field notes:
 ## 5. Models (fields)
 
 - **User**: numeric `id`, `name`, `email`(unique,lowercase,index), `passwordHash`, `role`['user','admin','root' default 'user' — 'root' is settable only by the `create-root` CLI], `emailVerified`(bool def false), `banned`(bool def false), `refreshTokenHash`(String def null), `adminRefreshTokenHash`(`admin_refresh_token_hash` VARCHAR(64) null — admin SPA cookie hash), `rootRefreshTokenHash`(`root_refresh_token_hash` VARCHAR(64) null — creator console cookie hash), `trialUsed`(`trial_used` TINYINT(1) def 0 — the no-card trial is one-shot), timestamps (`createdAt`/`updatedAt`).
+- **UserSession** (`user_sessions`, `models/UserSession.js`) *(ADDED)*: `id`, `user_id`(FK, cascade), `family` CHAR(32), `token_hash` CHAR(64) unique, `prev_token_hash` CHAR(64) null, `user_agent`, `ip`, `created_at`, `last_used_at`, `rotated_at` null, `expires_at`, `revoked_at` null. `create`, `findLive(hash)`, `findReplaced(hash)` → `{ session, withinGrace }`, `rotate(id, fromHash, toHash, ttlMs)`, `revokeFamily`, `revokeById`, `revokeAllForUser`, `listForUser`, `pruneDead`. `User.refreshTokenHash` is no longer used for customers.
+- **SecurityEvent** (`security_events`, `utils/securityEvents.js`) *(ADDED)*: `id`, `kind` (`login.failed`, `login.locked`, `login.success`, `session.reuse_detected`, `session.revoked`, `2fa.failed|replayed|recovery_used|enabled|disabled`, `google.nonce_rejected|token_rejected|token_replayed`, `admin.login.failed|success`, `root.login.failed|success`, `account.deleted`, `password.changed`, `password.reset`, `password.reset_requested`), `severity` info|warning|critical, `user_id`, `email`, `ip`, `user_agent`, `detail`, `created_at`. `record(kind, { req, user?, email?, severity?, detail? })` writes the row, prints one `[security] {json}` line to stdout (for log shipping) and, for the kinds in `RULES`, emails `SECURITY_ALERT_EMAIL` (≥ one alert per kind per cooldown). Pruned after 90 days by `utils/housekeeping.js`, which also drops dead sessions, spent `used_id_tokens` (`jti` PK, `expires_at`) and expired `rate_limits`.
 - **Subscription**: numeric `id`, `userId`(FK users.id), `plan`['free','pro','team'], `status`['active','expired','cancelled' def 'active'], `licenseKey`(unique), legacy `deviceFingerprint`, `seats`, dates, `trialEndsAt`(`trial_ends_at` DATETIME null — set only for the 7-day Pro trial; cleared by paid activation), Stripe ids, timestamps. Device assignments are in `license_activations` and are transactionally capped by `seats`.
   Helpers: `Subscription.expireTrialIfNeeded(sub)` (lazy downgrade to `plan='free', status='active', trial_ends_at=NULL, expiry_date=planExpiry('free')` when `trial_ends_at` is past and there is no `stripe_subscription_id`; returns the fresh row) and `Subscription.startTrial(userId)` (single transaction → `{ ok, subscription } | { ok:false, reason }`).
 - **Payment**: `userId`, `amount`, `currency`(def 'usd'), `plan`, `billingCycle`['monthly','yearly'], `stripePaymentId`, `status`['paid','failed','refunded' def 'paid'], timestamps.
@@ -283,8 +306,15 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash; **clears a sign-in lockout** (proof of the inbox is the way out of it) *(ADDED)* |
-| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued, so the session ends rather than being retried on every page load *(ADDED)* |
-| POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
+| POST | `/refresh` | — | read `ndm_refresh` cookie, find the live `user_sessions` row, **rotate** it (§3), return a new 15-minute access token. A hash matching only `prev_token_hash` is a replay: re-sent within the 30-s grace, otherwise the family is revoked and `401 INVALID_REFRESH_TOKEN`. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row has its session revoked and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued *(CHANGED)* |
+| POST | `/logout` | — | revoke this browser's session family + clear `ndm_refresh` / `ndm_session` *(CHANGED)* |
+| POST | `/login/2fa` | `twoFactorLimiter`, `validate(twoFactorLoginSchema)` | `{ challenge, code }` → the normal `{ token, user }` + cookie, for an account whose `/login` (or `/google`) answered `{ requiresTwoFactor:true, challenge }`. Challenge is a 5-min JWT `typ:"2fa-user"` under `JWT_SECRET` (`routes/twoFactor.js`, realm `user`) *(ADDED)* |
+| GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft }` *(ADDED)* |
+| POST | `/2fa/setup` | `requireAuth` | `{ secret, otpauthUrl }` — stored encrypted, not yet enabled *(ADDED)* |
+| POST | `/2fa/enable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorEnableSchema)` | `{ code }` → `{ enabled:true, recoveryCodes[8] }` shown once *(ADDED)* |
+| POST | `/2fa/disable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` — the password is mandatory for every account that has one (`400 INVALID_PASSWORD`); a Google-created account (no `password_hash`) turns it off with the code alone, the same allowance `DELETE /user/account` makes *(ADDED)* |
+| GET | `/google/nonce` | — | `{ nonce, expiresInSeconds }` — the OIDC nonce for "Continue with Google", also kept in the httpOnly cookie `ndm_gnonce` (path `/api/auth/google`, 30 min, Strict). Signed (`random.exp.hmac`), so nothing is stored *(ADDED)* |
+| POST | `/google` | `authLimiter`, `validate(googleSchema)` | `{ credential, nonce? }`. The ID token must carry the nonce this server issued to **this browser** (cookie), else `401 GOOGLE_NONCE_INVALID` — the page fetches a fresh nonce and re-initialises Google. One token opens one session: its `jti` goes in `used_id_tokens` until the token's own `exp`; a second presentation is `401 GOOGLE_AUTH_FAILED` + a `google.token_replayed` critical event. A 2FA account gets `{ requiresTwoFactor, challenge, created }` instead of a session *(CHANGED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
 
@@ -329,6 +359,9 @@ successful login, so raising the cost later needs no migration.
 | GET | `/license` | `requireAuth` — license key (+ `trial`, `trialEndsAt`). `403 EMAIL_NOT_VERIFIED` with `{canResend:true}` for an unverified address |
 | POST | `/license/rotate` | `requireAuth`, `licenseRotateLimiter` (5/day, durable) — issue a NEW licence key and stamp `revoked_at` on every activation. Paid + `active` only (`400 NOT_ROTATABLE`), audit `license.rotated`, best-effort licence email. → `{ licenseKey, plan, devicesRevoked }`. **This is the only way to take a leaked key back**: a Team member is handed the owner's real key and no activation row records who created it, so removing them from the roster revokes nothing *(ADDED)* |
 | GET | `/billing` | `requireAuth` — payment history |
+| GET | `/sessions` | `requireAuth` — `{ sessions:[{ id, current, userAgent, ip, createdAt, lastUsedAt, expiresAt }] }`, this account's live browser sessions; `current` is the one whose refresh cookie came with the request *(ADDED)* |
+| DELETE | `/sessions/:id` | `requireAuth`, `validate(deviceParamsSchema)` — revoke that session's family (`404` if not this user's or already revoked); `session.revoked` event *(ADDED)* |
+| POST | `/sessions/revoke-others` | `requireAuth` — revoke every family but the current one → `{ revoked }` *(ADDED)* |
 
 ### `routes/subscription.js` → `/api/subscription`
 | Method | Path | Middleware |
@@ -406,11 +439,12 @@ checksum computed at upload time.
 | POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }` *(ADDED, open)* |
 | POST | `/refresh` | `adminLoginLimiter`, `ipWhitelist` — **open**; reads `ndm_admin_refresh`, verifies hash + `role==='admin'` + not banned, rotates cookie → `{ token }`. `401 NO_REFRESH_TOKEN` / `401 INVALID_REFRESH_TOKEN` / `403 FORBIDDEN` (banned; hash nulled) *(ADDED)* |
 | POST | `/logout` | `ipWhitelist` — **open**; clears `ndm_admin_refresh` + nulls `adminRefreshTokenHash` → `{ loggedOut: true }` *(ADDED)* |
-| GET | `/me` | `requireAdmin` → `{ id, name, email, role }` (`id` is a string, as in `/login`) *(ADDED)* |
+| GET | `/me` | `requireAdmin` → `{ id, name, email, role, twoFactorEnabled, twoFactorRequired }` (`id` is a string, as in `/login`). `twoFactorRequired` mirrors `ADMIN_2FA_REQUIRED`; when it is on and `twoFactorEnabled` is off, every other panel route answers `403 TWO_FACTOR_REQUIRED` (`{ setupPath:'/2fa/setup' }`) and the SPA parks the account on the Security screen *(CHANGED)* |
+| GET | `/security/events` | `requireAdmin`, `validate(securityEventsQuerySchema)` — `?hours=24&kind=&limit=200` → `{ hours, events[], counts:[{ kind, severity, n }] }` from `security_events`, newest first *(ADDED)* |
 | GET | `/stats` | `requireAdmin` — also returns `ads:{ total, active, impressions, clicks }` |
 | GET | `/users` | `requireAdmin`, `validate(listQuerySchema)` |
 | PUT | `/users/:id` | `requireAdmin`, `validate(updateUserSchema)` — a `plan` change also sets `trial_ends_at=NULL`. `403` if the target is an `admin`/`root` and the caller is not the creator; **no `role` field** |
-| POST | `/users/:id/revoke-sessions` | `requireAdmin` — nulls `refreshTokenHash` **and** `adminRefreshTokenHash`; `403` on a control-panel target unless the caller is the creator |
+| POST | `/users/:id/revoke-sessions` | `requireAdmin` — revokes every `user_sessions` row, bumps `token_version`, nulls `adminRefreshTokenHash`/`rootRefreshTokenHash`; `403` on a control-panel target unless the caller is the creator |
 | POST | `/users/:id/unlock` | `requireAdmin`, `validate(idParamSchema)` — lifts a sign-in lockout and zeroes its counters; `{ unlocked: true, wasLocked }`; audited as `user.unlocked`; same control-panel-target rule *(ADDED)* |
 | DELETE | `/users/:id` | `requireAdmin`, `validate(deleteUserSchema)` — **irreversible**. Body must carry the target's exact `confirmEmail` (`400 CONFIRM_MISMATCH`). Refuses the caller's own account (`400 SELF_LOCKOUT`), any creator (`403`), and — for a staff caller — any control-panel account (`blockedStaffTarget`). The audit row is written *before* the delete because `audit_logs.admin_user_id` is `ON DELETE SET NULL`. Data removal is the schema's cascade, not the route's: subscriptions, payments, reviews and (through subscriptions) `license_activations` + `team_members` are `ON DELETE CASCADE`; audit logs, ads and contact messages are `ON DELETE SET NULL`, so what was done outlives who did it. The creator's `/api/root/users/:id` is the same rule with a wider reach *(ADDED)* |
 | GET | `/subscriptions` | `requireAdmin`, `validate(listQuerySchema)` |
@@ -664,12 +698,18 @@ device by `/api/license/*` — membership only decides who sees the key.
 - `GET /api/user/export` → the whole account as JSON (`account, subscriptions[].devices, payments, review, team`), `Content-Disposition: attachment`.
 - `DELETE /api/user/account` `{ password, confirm:'DELETE' }` (`deleteAccountSchema`) → cancels an active Stripe subscription first, writes audit `user.self_deleted`, `User.remove` (cascades), clears `ndm_refresh` + `ndm_session`. 403 for admin/root accounts, 400 `INVALID_PASSWORD`.
 
-### Two-factor authentication (admin + root) — `routes/twoFactor.js`
-Mounted by `routes/admin.js` (`realm:'admin'`, `JWT_ADMIN_SECRET`) and
-`routes/root.js` (`realm:'root'`, `JWT_ROOT_SECRET`). Columns on `users`:
+### Two-factor authentication (admin, root **and customers**) — `routes/twoFactor.js`
+Mounted by `routes/admin.js` (`realm:'admin'`, `JWT_ADMIN_SECRET`),
+`routes/root.js` (`realm:'root'`, `JWT_ROOT_SECRET`) and `routes/auth.js`
+(`realm:'user'`, `JWT_SECRET`, gate `requireAuth`, subject `req.user`,
+`finishLogin` → `issueSession`) *(CHANGED)*. Columns on `users`:
 `totp_secret` (AES-256-GCM via `utils/totp.js`, key = `TOTP_ENCRYPTION_KEY` or
 `JWT_ADMIN_SECRET`), `totp_enabled`, `totp_recovery` (JSON array of SHA-256
-hashes; a code is removed when used).
+hashes; a code is removed when used). Optional for customers (account page);
+**mandatory for the panels** when `ADMIN_2FA_REQUIRED` is on (the default on a
+public deployment): `requireTwoFactorEnrolled` in `middleware/adminAuth.js`
+answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
+`/2fa/setup`, `/2fa/enable` until `totp_enabled` is set.
 
 - `POST <realm>/login` with 2FA on → `{ requiresTwoFactor:true, challenge }` (5-min JWT `typ:"2fa-<realm>"`), NO session/cookie.
 - `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.

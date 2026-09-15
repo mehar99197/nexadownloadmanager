@@ -11,6 +11,8 @@ import Input from '../components/Input';
 import Spinner from '../components/Spinner';
 import usePageMeta from '../hooks/usePageMeta';
 import { formatDate } from '../utils/formatDate';
+import TwoFactorCard from '../components/account/TwoFactorCard';
+import SessionsCard from '../components/account/SessionsCard';
 
 /**
  * "Your data" — self-service export and deletion, so a data-access or
@@ -172,7 +174,7 @@ function DataCard({ user }) {
 }
 
 export default function Profile() {
-  usePageMeta({ title: "Profile", description: "Update your Nexa Download Manager account name and password." });
+  usePageMeta({ title: "Profile", description: "Update your Nexa Download Manager account name, password, two-factor authentication and signed-in devices." });
 
   const { user, refreshMe } = useAuth();
   const toast = useToast();
@@ -333,6 +335,9 @@ export default function Profile() {
             </Button>
           </form>
         </Card>
+
+        <TwoFactorCard user={user} />
+        <SessionsCard />
 
         <div className="lg:col-span-2">
           <DataCard user={user} />

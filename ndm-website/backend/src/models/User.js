@@ -74,6 +74,12 @@ const User = {
         WHERE id = ?`,
       [id]
     );
+    // Every browser session too (models/UserSession.js) — the bump above
+    // kills the access tokens, this stops the refresh cookies re-minting them.
+    await execute(
+      'UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL',
+      [id]
+    );
     const row = await queryOne('SELECT token_version FROM users WHERE id = ?', [id]);
     return row ? Number(row.token_version) || 0 : 0;
   },

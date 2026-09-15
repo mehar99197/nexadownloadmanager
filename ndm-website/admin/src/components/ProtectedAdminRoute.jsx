@@ -6,7 +6,7 @@ import { useAdminAuth } from '../context/AdminAuthContext.jsx';
  * /admin basename). Children render only when authenticated.
  */
 export default function ProtectedAdminRoute({ children }) {
-  const { isAuthenticated, loading } = useAdminAuth();
+  const { isAuthenticated, loading, mustEnrol } = useAdminAuth();
   const location = useLocation();
 
   if (loading) {
@@ -19,6 +19,12 @@ export default function ProtectedAdminRoute({ children }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  // ADMIN_2FA_REQUIRED and this account has no second factor yet: the API
+  // answers 403 to every screen but the setup one, so go straight there.
+  if (mustEnrol && location.pathname !== '/security') {
+    return <Navigate to="/security" replace state={{ from: location }} />;
   }
 
   return children;

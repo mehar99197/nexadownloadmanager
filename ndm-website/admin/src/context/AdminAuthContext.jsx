@@ -4,6 +4,7 @@ import api, {
   clearAdminAccessToken,
   refreshAdminToken,
   unwrap,
+  TWO_FACTOR_REQUIRED_EVENT,
 } from '../api/client.js';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
 
@@ -32,6 +33,15 @@ export function AdminAuthProvider({ children }) {
       setAdmin({ authenticated: true });
       return null;
     }
+  }, []);
+
+  // The server refused a request because this account has not enrolled in
+  // two-factor authentication yet (ADMIN_2FA_REQUIRED). Normally /me already
+  // says so; this catches the setting being switched on under a live session.
+  useEffect(() => {
+    const onRequired = () => setAdmin((a) => (a ? { ...a, twoFactorRequired: true, twoFactorEnabled: false } : a));
+    window.addEventListener(TWO_FACTOR_REQUIRED_EVENT, onRequired);
+    return () => window.removeEventListener(TWO_FACTOR_REQUIRED_EVENT, onRequired);
   }, []);
 
   useEffect(() => {
@@ -104,6 +114,10 @@ export function AdminAuthProvider({ children }) {
       // Convenience for rendering only — the server re-checks the real role on
       // every request, so a tampered value here grants nothing.
       isRoot: IS_ROOT && admin?.role === 'root',
+      // Enrolment is mandatory and not done: ProtectedAdminRoute keeps the
+      // account on the Security screen until it is (the API refuses
+      // everything else anyway — this is the friendly half).
+      mustEnrol: Boolean(admin?.twoFactorRequired && !admin?.twoFactorEnabled),
       login,
       completeTwoFactor,
       refreshAdmin,

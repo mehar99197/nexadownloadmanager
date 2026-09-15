@@ -206,6 +206,19 @@ const config = {
   PASSWORD_BREACH_CHECK: bool(process.env.PASSWORD_BREACH_CHECK, true),
   PASSWORD_BREACH_TIMEOUT_MS: Math.max(500, intOrDefault(process.env.PASSWORD_BREACH_TIMEOUT_MS, 2500)),
 
+  // Where utils/securityEvents.js mails its alerts. Empty = ROOT_ADMIN_EMAIL.
+  SECURITY_ALERT_EMAIL: (process.env.SECURITY_ALERT_EMAIL || '').trim(),
+
+  // Customer access tokens: short, because the refresh cookie (rotated on
+  // every use, per browser, with replay detection) is what carries the
+  // session. See utils/jwt.js and models/UserSession.js.
+  ACCESS_TOKEN_TTL: (process.env.ACCESS_TOKEN_TTL || '15m').trim(),
+
+  // Control-panel accounts must have TOTP on; until they do, the panels only
+  // serve the two-factor setup screen (middleware/adminAuth.js). Defaults on
+  // for any public deployment.
+  ADMIN_2FA_REQUIRED: bool(process.env.ADMIN_2FA_REQUIRED, isHardened),
+
   // Where uploaded installers are stored. Keep this OFF the web root and on a
   // volume with room for several builds — every artifact is a full installer.
   RELEASE_UPLOAD_DIR: process.env.RELEASE_UPLOAD_DIR

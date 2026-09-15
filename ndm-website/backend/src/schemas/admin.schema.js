@@ -181,6 +181,15 @@ const subscriptionsExportQuerySchema = {
 const tokenRejectionsQuerySchema = {
   query: z.object({ hours: z.coerce.number().int().min(1).max(24 * 30).optional() }).strict(),
 };
+const securityEventsQuerySchema = {
+  query: z
+    .object({
+      hours: z.coerce.number().int().min(1).max(24 * 30).optional(),
+      kind: z.string().trim().regex(/^[a-z0-9_.]{1,50}$/).optional(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    })
+    .strict(),
+};
 
 // Installer upload/removal: /releases/:id/artifact/:os
 const releaseArtifactParamsSchema = {
@@ -216,5 +225,6 @@ module.exports = {
   usersExportQuerySchema,
   subscriptionsExportQuerySchema,
   tokenRejectionsQuerySchema,
+  securityEventsQuerySchema,
   sha256,
 };

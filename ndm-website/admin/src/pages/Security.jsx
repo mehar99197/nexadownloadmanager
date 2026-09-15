@@ -5,8 +5,10 @@ import Button from '../components/Button.jsx';
 import Badge from '../components/Badge.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
+import DataTable from '../components/DataTable.jsx';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
+import { formatDateTime } from '../utils.js';
 
 function errorMessage(err, fallback) {
   // A 4xx makes axios throw before unwrap() runs, so the server's message
@@ -23,8 +25,117 @@ function errorMessage(err, fallback) {
  * current code. Everything is per realm: the creator's 2FA is separate from
  * a staff admin's, because they are separate logins.
  */
+const SEVERITY_TONE = { critical: 'danger', warning: 'warning', info: 'info' };
+const WINDOWS = [
+  { hours: 24, label: 'Last 24 hours' },
+  { hours: 24 * 7, label: 'Last 7 days' },
+  { hours: 24 * 30, label: 'Last 30 days' },
+];
+
+/**
+ * The security-event feed (GET /api/admin/security/events): failed and
+ * locked sign-ins, two-factor outcomes, session replays, Google nonce and
+ * token rejections, panel logins — what a SIEM would show, without one.
+ * The critical ones also went out by email when they happened
+ * (utils/securityEvents.js RULES).
+ */
+function SecurityEvents() {
+  const [hours, setHours] = useState(24);
+  const [kind, setKind] = useState('');
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = { hours, limit: 200 };
+      if (kind) params.kind = kind;
+      setData(await unwrap(api.get('/admin/security/events', { params })));
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to load security events.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [hours, kind]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const columns = [
+    { key: 'time', header: 'Time', render: (e) => <span className="whitespace-nowrap text-xs text-admin-muted">{formatDateTime(e.created_at)}</span> },
+    { key: 'severity', header: 'Severity', render: (e) => <Badge tone={SEVERITY_TONE[e.severity] || 'default'}>{e.severity}</Badge> },
+    { key: 'kind', header: 'Event', render: (e) => <span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-semibold text-admin-cyan">{e.kind}</span> },
+    { key: 'who', header: 'Account', render: (e) => <div><p className="text-admin-text">{e.email || '—'}</p>{e.user_id && <p className="text-xs text-admin-faint">user #{e.user_id}</p>}</div> },
+    { key: 'ip', header: 'From', render: (e) => <div><p className="font-mono text-xs text-admin-text">{e.ip || '—'}</p><p className="max-w-[16rem] truncate text-xs text-admin-faint" title={e.user_agent || ''}>{e.user_agent || ''}</p></div> },
+    { key: 'detail', header: 'Detail', render: (e) => <span className="text-admin-muted">{e.detail || ''}</span> },
+  ];
+
+  const counts = data?.counts || [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="admin-eyebrow text-admin-faint">Threat detection</p>
+          <h3 className="mt-1 text-xl font-bold tracking-tight">Security events</h3>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-admin-muted">
+            Failed and locked sign-ins, two-factor outcomes, session replays and rejected Google credentials.
+            Critical events are also emailed to the security contact as they happen.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            aria-label="Time window"
+            className="admin-input !w-auto"
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value))}
+          >
+            {WINDOWS.map((w) => <option key={w.hours} value={w.hours}>{w.label}</option>)}
+          </select>
+          <Button variant="secondary" onClick={load} disabled={loading}>Refresh</Button>
+        </div>
+      </div>
+
+      {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
+
+      {counts.length > 0 && (
+        <div className="flex flex-wrap gap-2" data-testid="security-event-counts">
+          <button
+            type="button"
+            onClick={() => setKind('')}
+            className={`rounded-full border px-3 py-1 text-xs font-semibold ${kind === '' ? 'border-admin-cyan bg-admin-cyan/10 text-admin-cyan' : 'border-admin-border text-admin-muted'}`}
+          >
+            All ({counts.reduce((n, c) => n + c.n, 0)})
+          </button>
+          {counts.map((c) => (
+            <button
+              key={`${c.kind}-${c.severity}`}
+              type="button"
+              onClick={() => setKind(c.kind)}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold ${kind === c.kind ? 'border-admin-cyan bg-admin-cyan/10 text-admin-cyan' : 'border-admin-border text-admin-muted'}`}
+            >
+              {c.kind} ({c.n})
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="admin-card !p-0">
+        <DataTable
+          columns={columns}
+          rows={data?.events || []}
+          loading={loading}
+          emptyMessage="Nothing recorded in this window."
+          caption="Recent security events"
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Security() {
-  const { admin, refreshAdmin } = useAdminAuth();
+  const { admin, refreshAdmin, mustEnrol } = useAdminAuth();
   const [state, setState] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -127,6 +238,15 @@ export default function Security() {
         </p>
       </div>
 
+      {mustEnrol && (
+        <div role="alert" data-testid="enrol-required" className="rounded-xl border border-admin-warning/40 bg-admin-warning/10 px-4 py-3 text-sm text-admin-text">
+          <p className="font-semibold">Two-factor authentication is required for this panel.</p>
+          <p className="mt-1 text-admin-muted">
+            Every other screen stays locked until this account has an authenticator enrolled. Turn it on below —
+            it takes a minute.
+          </p>
+        </div>
+      )}
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
       {notice && <div className="rounded-xl border border-admin-success/30 bg-admin-success/10 px-4 py-3 text-sm text-admin-success">{notice}</div>}
 
@@ -219,6 +339,8 @@ export default function Security() {
             : ' With no codes left, ask the creator to reset your 2FA from the root console.'}
         </p>
       </div>
+
+      {!mustEnrol && <SecurityEvents />}
 
       <Modal
         open={disableOpen}

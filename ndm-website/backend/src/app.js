@@ -28,7 +28,14 @@ app.set('trust proxy', config.TRUST_PROXY || false);
 // it will use, the moment anything is mounted.
 app.set('query parser', 'simple');
 
-app.use(helmet());
+// Nothing served from this API is ever meant to sit in a frame: DENY, and the
+// CSP equivalent. The site's HTML gets the same from deploy/hostinger/.htaccess.
+app.use(helmet({
+  frameguard: { action: 'deny' },
+  contentSecurityPolicy: {
+    directives: { ...helmet.contentSecurityPolicy.getDefaultDirectives(), 'frame-ancestors': ["'none'"] },
+  },
+}));
 app.use(cors({ origin: config.CORS_ORIGINS, credentials: true }));
 app.use(cookieParser());
 

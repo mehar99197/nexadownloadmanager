@@ -71,7 +71,7 @@ function keyFor(keys, kid) {
  * audience (another site's token replayed at ours), expiry, or an email Google
  * itself has not verified.
  */
-async function verifyGoogleIdToken(idToken, { fetchImpl = globalThis.fetch } = {}) {
+async function verifyGoogleIdToken(idToken, { fetchImpl = globalThis.fetch, nonce } = {}) {
   if (!config.GOOGLE_CLIENT_ID) throw new Error('Google sign-in is not configured');
   if (!idToken || typeof idToken !== 'string') throw new Error('Missing Google credential');
 
@@ -101,13 +101,26 @@ async function verifyGoogleIdToken(idToken, { fetchImpl = globalThis.fetch } = {
   // Google Workspace admin claim an address they do not actually control.
   if (payload.email_verified !== true && payload.email_verified !== 'true')
     throw new Error('This Google account has an unverified email address');
+  // The OIDC nonce: this server handed the page a value, the page gave it to
+  // Google, Google signed it into the token. A token minted for our client id
+  // in any other context — another site's page, an earlier visit, a captured
+  // credential — does not carry it. Compared in constant time; a missing
+  // expectation (older bundle) is refused rather than skipped.
+  if (!nonce || typeof payload.nonce !== 'string'
+      || payload.nonce.length !== nonce.length
+      || !crypto.timingSafeEqual(Buffer.from(payload.nonce), Buffer.from(nonce)))
+    throw new Error('Google credential nonce mismatch');
 
   return {
     googleId: String(payload.sub),
     email: String(payload.email).toLowerCase(),
     emailVerified: true,
-    name: payload.name || String(payload.email).split('@')[0],
+    name: payload.name || String(payload.email).toLowerCase().split('@')[0],
     picture: typeof payload.picture === 'string' ? payload.picture.slice(0, 500) : null,
+    // For the replay ledger (used_id_tokens): Google sets jti on every ID
+    // token; exp bounds how long the ledger has to remember it.
+    jti: typeof payload.jti === 'string' ? payload.jti.slice(0, 191) : null,
+    expiresAt: Number(payload.exp) ? new Date(Number(payload.exp) * 1000) : null,
   };
 }
 

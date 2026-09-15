@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import api, { unwrap } from '../api/client';
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
@@ -16,18 +17,50 @@ let scriptPromise = null;
 // The site calls it from every sign-in surface (login, register, and again on
 // each theme or width change), so the client is initialised here exactly once
 // and its callback is routed to whichever button is currently mounted.
+//
+// The OIDC nonce: before initialising, the site asks its own API for a nonce
+// (GET /api/auth/google/nonce, which also keeps a copy in an httpOnly cookie)
+// and hands it to Google, which signs it into the ID token. The backend then
+// accepts only a token carrying the nonce it issued to this browser — a
+// credential minted anywhere else, or captured earlier, does not. The nonce
+// lives 30 minutes; after a GOOGLE_NONCE_INVALID answer the caller can call
+// refreshNonce() and initialise again (initialize() accepts being re-run
+// with a new config; it is the repeated *identical* call that is wasteful).
 let initialised = false;
+let currentNonce = null;
 const active = { onCredential: null, onError: null };
-function initialiseOnce(google) {
-  if (initialised) return;
+async function fetchNonce() {
+  const data = unwrap(await api.get('/auth/google/nonce'));
+  currentNonce = data?.nonce || null;
+  return currentNonce;
+}
+async function initialiseOnce(google, { force = false } = {}) {
+  if (initialised && !force) return;
   initialised = true;
+  let nonce;
+  try {
+    nonce = await fetchNonce();
+  } catch (err) {
+    // Leave the door open for the next mount: a nonce the API could not
+    // hand out right now is not a reason to keep the button dead until reload.
+    initialised = false;
+    throw err;
+  }
   google.accounts.id.initialize({
     client_id: CLIENT_ID,
+    ...(nonce ? { nonce } : {}),
     callback: (response) => {
-      if (response?.credential) active.onCredential?.(response.credential);
+      if (response?.credential) active.onCredential?.(response.credential, currentNonce);
       else active.onError?.('Google did not return a credential. Please try again.');
     },
   });
+}
+
+/** Get a fresh nonce and re-initialise: used after the server reports the old one expired. */
+export async function refreshNonce() {
+  if (!window.google?.accounts?.id) return null;
+  await initialiseOnce(window.google, { force: true });
+  return currentNonce;
 }
 
 function loadScript() {
@@ -63,9 +96,10 @@ export const googleAuthEnabled = () => Boolean(CLIENT_ID);
  * button and the backend's POST /api/auth/google switch on together (the API
  * answers 503 GOOGLE_AUTH_DISABLED without a client ID of its own).
  *
- * `onCredential(idToken)` receives the ID token, which the caller posts to the
- * backend — nothing is trusted client-side; the token is verified server-side
- * against Google's public keys.
+ * `onCredential(idToken, nonce)` receives the ID token and the nonce it was
+ * minted with; the caller posts both to the backend — nothing is trusted
+ * client-side; the token is verified server-side against Google's public keys
+ * and against the nonce this server issued.
  */
 export default function GoogleButton({
   onCredential,
@@ -126,8 +160,11 @@ export default function GoogleButton({
         // A privacy extension can let the script "load" while stubbing the API
         // away. Without this the button silently never appears.
         if (!google?.accounts?.id) throw new Error('Google Identity Services unavailable');
-        initialiseOnce(google);
-        active.onCredential = (credential) => onCredentialRef.current?.(credential);
+        return initialiseOnce(google).then(() => google);
+      })
+      .then((google) => {
+        if (cancelled || !container.current || !google) return;
+        active.onCredential = (credential, nonce) => onCredentialRef.current?.(credential, nonce);
         active.onError = (message) => onErrorRef.current?.(message);
         google.accounts.id.renderButton(container.current, {
           type: 'standard',

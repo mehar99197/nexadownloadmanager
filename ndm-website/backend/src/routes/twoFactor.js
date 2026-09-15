@@ -109,7 +109,17 @@ function twoFactorState(user) {
  * @param audit(req, action, user, summary)
  * @param gate          the realm's requireAdmin / requireRoot middleware array
  */
-function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, gate }) {
+function mountTwoFactor(router, {
+  realm, secret, eligible, finishLogin, audit, gate,
+  // The request property the gate fills: `admin` for the panels, `user`
+  // for customers (middleware/auth.js).
+  subject = (req) => req.admin,
+  // The issuer label the authenticator app shows for this entry.
+  issuer = `Nexa ${realm === 'root' ? 'Root' : 'Admin'}`,
+  // (req, user, 'failed' | 'replayed' | 'recovery' | 'enabled' | 'disabled') —
+  // the customer realm feeds utils/securityEvents.js from here.
+  onEvent = async () => {},
+}) {
   const family = { secret, realm };
 
   router.post(
@@ -128,34 +138,38 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
         if (result.replayed) {
           await audit(req, `${realm}.code_replayed`, user,
             `${user.email} presented an already-used two-factor code`);
+          await onEvent(req, user, 'replayed');
           return fail(res, 'CODE_ALREADY_USED',
             'That code has already been used. Wait for your app to show the next one.', 401);
         }
+        await onEvent(req, user, 'failed');
         return fail(res, 'INVALID_CODE', 'That code is not valid', 401);
       }
       if (result.usedRecovery) {
         await User.update(user.id, { totpRecovery: JSON.stringify(result.remaining) });
         await audit(req, `${realm}.recovery_code_used`, user,
           `${user.email} signed in with a recovery code (${result.remaining.length} left)`);
+        await onEvent(req, user, 'recovery');
       }
-      return ok(res, await finishLogin(res, user));
+      return ok(res, await finishLogin(res, user, req));
     })
   );
 
-  router.get('/2fa', gate, asyncHandler(async (req, res) => ok(res, twoFactorState(req.admin))));
+  router.get('/2fa', gate, asyncHandler(async (req, res) => ok(res, twoFactorState(subject(req)))));
 
   router.post(
     '/2fa/setup', gate,
     asyncHandler(async (req, res) => {
-      if (req.admin.totp_enabled)
+      const me = subject(req);
+      if (me.totp_enabled)
         return fail(res, 'ALREADY_ENABLED', 'Two-factor authentication is already on. Turn it off first to re-enrol.', 400);
       const secret = totp.generateSecret();
-      await User.update(req.admin.id, {
+      await User.update(me.id, {
         totpSecret: totp.encryptSecret(secret), totpRecovery: null, totpLastStep: null,
       });
       return ok(res, {
         secret,
-        otpauthUrl: totp.otpauthUrl({ secret, account: req.admin.email, issuer: `Nexa ${realm === 'root' ? 'Root' : 'Admin'}` }),
+        otpauthUrl: totp.otpauthUrl({ secret, account: me.email, issuer }),
       });
     })
   );
@@ -163,9 +177,10 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
   router.post(
     '/2fa/enable', gate, twoFactorLimiter, validate(twoFactorEnableSchema),
     asyncHandler(async (req, res) => {
-      if (req.admin.totp_enabled)
+      const me = subject(req);
+      if (me.totp_enabled)
         return fail(res, 'ALREADY_ENABLED', 'Two-factor authentication is already on', 400);
-      const secret = totp.decryptSecret(req.admin.totp_secret);
+      const secret = totp.decryptSecret(me.totp_secret);
       if (!secret) return fail(res, 'NOT_SET_UP', 'Start the setup first', 400);
       const match = totp.matchTotp(secret, req.body.code);
       if (!match.ok)
@@ -173,10 +188,11 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
       const { codes, hashes } = totp.generateRecoveryCodes();
       // totpLastStep in the same write: the code that turned 2FA on is spent,
       // so it cannot be turned straight back around at /2fa/disable.
-      await User.update(req.admin.id, {
+      await User.update(me.id, {
         totpEnabled: 1, totpRecovery: JSON.stringify(hashes), totpLastStep: match.step,
       });
-      await audit(req, `${realm}.2fa_enabled`, req.admin, `${req.admin.email} turned on two-factor authentication`);
+      await audit(req, `${realm}.2fa_enabled`, me, `${me.email} turned on two-factor authentication`);
+      await onEvent(req, me, 'enabled');
       return ok(res, { enabled: true, recoveryCodes: codes });
     })
   );
@@ -184,22 +200,30 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
   router.post(
     '/2fa/disable', gate, twoFactorLimiter, validate(twoFactorDisableSchema),
     asyncHandler(async (req, res) => {
-      if (!req.admin.totp_enabled)
+      const me = subject(req);
+      if (!me.totp_enabled)
         return fail(res, 'NOT_ENABLED', 'Two-factor authentication is not on', 400);
-      // Same null-hash guard as the realm logins: compare() throws on null.
-      const passwordOk = Boolean(req.admin.password_hash)
-        && await bcrypt.compare(req.body.password, req.admin.password_hash);
-      if (!passwordOk) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
-      const result = await checkCode(req.admin, req.body.code);
+      // Every account that has a password must prove it. A Google-created
+      // customer has none (routes/user.js makes the same allowance for
+      // deleting the account); the code from the enrolled authenticator is
+      // the proof available for it. Panel accounts always have a password.
+      if (me.password_hash) {
+        if (!req.body.password)
+          return fail(res, 'INVALID_PASSWORD', 'Password is required to turn off two-factor authentication', 400);
+        if (!await bcrypt.compare(req.body.password, me.password_hash))
+          return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
+      }
+      const result = await checkCode(me, req.body.code);
       if (!result.ok)
         return fail(res, result.replayed ? 'CODE_ALREADY_USED' : 'INVALID_CODE',
           result.replayed
             ? 'That code has already been used. Wait for your app to show the next one.'
             : 'That code is not valid', 400);
-      await User.update(req.admin.id, {
+      await User.update(me.id, {
         totpEnabled: 0, totpSecret: null, totpRecovery: null, totpLastStep: null,
       });
-      await audit(req, `${realm}.2fa_disabled`, req.admin, `${req.admin.email} turned off two-factor authentication`);
+      await audit(req, `${realm}.2fa_disabled`, me, `${me.email} turned off two-factor authentication`);
+      await onEvent(req, me, 'disabled');
       return ok(res, { enabled: false });
     })
   );

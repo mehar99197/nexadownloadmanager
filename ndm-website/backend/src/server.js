@@ -5,6 +5,7 @@ const licenseKeys = require('./config/licenseKeys');
 const { connectDB } = require('./config/db');
 const { initSchema } = require('./config/schema');
 const { ensureUploadDir } = require('./utils/releaseFiles');
+const housekeeping = require('./utils/housekeeping');
 const app = require('./app');
 
 process.on('unhandledRejection', (reason) => {
@@ -27,6 +28,8 @@ connectDB().then(async () => {
   // Uploaded installers land here. Created up-front so the first upload of a
   // fresh deployment does not fail on a missing directory.
   await ensureUploadDir();
+  // Dead sessions, old security events, spent ID-token ids, expired counters.
+  housekeeping.schedule();
 
   // Loopback by default, in every mode. Every deployment so far puts a reverse
   // proxy (nginx, or Hostinger's PHP shim) in front of this process, and that

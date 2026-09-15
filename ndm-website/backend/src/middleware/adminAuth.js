@@ -112,8 +112,26 @@ async function verifyRootToken(req, res, next) {
   }
 }
 
-const requireAdmin = [ipWhitelist, verifyAdminToken];
-const requireRoot = [rootIpWhitelist, verifyRootToken];
+/**
+ * A control-panel account without two-factor is only allowed to set it up.
+ *
+ * Everything else behind the panel gates answers 403 TWO_FACTOR_REQUIRED
+ * until TOTP is enabled, so a staff password alone — phished, reused,
+ * guessed inside the IP allowlist — never reaches customer data. The SPA
+ * reads the code and shows the enrolment screen. Off for local development
+ * (ADMIN_2FA_REQUIRED, defaults to the deployment being public).
+ */
+const TWO_FACTOR_EXEMPT = /^\/(me|logout|2fa(\/setup|\/enable)?)\/?$/;
+function requireTwoFactorEnrolled(req, res, next) {
+  if (!config.ADMIN_2FA_REQUIRED || !req.admin || req.admin.totp_enabled) return next();
+  if (TWO_FACTOR_EXEMPT.test(req.path)) return next();
+  return fail(res, 'TWO_FACTOR_REQUIRED',
+    'Two-factor authentication must be set up before this account can use the control panel', 403,
+    { setupPath: '/2fa/setup' });
+}
+
+const requireAdmin = [ipWhitelist, verifyAdminToken, requireTwoFactorEnrolled];
+const requireRoot = [rootIpWhitelist, verifyRootToken, requireTwoFactorEnrolled];
 
 module.exports = {
   ipWhitelist, rootIpWhitelist,

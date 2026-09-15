@@ -6,9 +6,11 @@ const crypto = require('crypto');
 
 const config = require('../config/env');
 const User = require('../models/User');
+const { insert } = require('../config/db');
 const Subscription = require('../models/Subscription');
 
 const validate = require('../middleware/validate');
+const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const { authLimiter, loginLimiter, authIpLimiter } = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
@@ -35,7 +37,10 @@ const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 const { isLocked, recordFailure, recordSuccess, clearLock } = require('../utils/loginLockout');
 const { passwordProblem } = require('../utils/passwordPolicy');
-const cookieFlags = require('../utils/cookies');
+const UserSession = require('../models/UserSession');
+const security = require('../utils/securityEvents');
+const { mountTwoFactor, signChallenge } = require('./twoFactor');
+const AuditLog = require('../models/AuditLog');
 
 const BCRYPT_COST = 12;
 
@@ -54,21 +59,29 @@ function dummyHash() {
     dummyPasswordHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), BCRYPT_COST);
   return dummyPasswordHash;
 }
-const REFRESH_COOKIE = 'ndm_refresh';
 
-const REFRESH_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
-// Non-httpOnly marker with the same lifetime as the refresh cookie. It holds no
-// secret — it only tells the site "there may be a session, try /user/me", so a
-// visitor who never signed in does not trigger a 401 + refresh on every load.
-const SESSION_HINT_COOKIE = 'ndm_session';
+// The session cookies, their flags and issueSession() live in utils/session.js
+// (shared with the profile route, which opens a fresh session after a
+// password change).
+const {
+  REFRESH_COOKIE, REFRESH_MAX_AGE, refreshCookieOptions, setSessionHint,
+  clearSessionCookies, issueSession,
+} = require('../utils/session');
 
-// Flags live in utils/cookies.js, shared with the staff and creator sessions.
-function refreshCookieOptions() {
-  return cookieFlags.refreshCookieOptions('/api/auth', REFRESH_MAX_AGE);
-}
-
-function setSessionHint(res) {
-  res.cookie(SESSION_HINT_COOKIE, '1', cookieFlags.sessionHintCookieOptions(REFRESH_MAX_AGE));
+/**
+ * The password (or Google) checked out. A two-factor account gets a challenge
+ * instead of a session; everybody else gets the session.
+ */
+async function finishSignIn(req, res, user, extra = {}) {
+  if (user.totp_enabled) {
+    return ok(res, {
+      requiresTwoFactor: true,
+      challenge: signChallenge(user, { secret: config.JWT_SECRET, realm: 'user' }),
+      ...extra,
+    });
+  }
+  await security.record('login.success', { req, user });
+  return ok(res, { ...(await issueSession(req, res, user)), ...extra });
 }
 
 router.post(
@@ -215,12 +228,20 @@ router.post(
       // must not be lockable from the customer form.
       if (user && user.password_hash && !locked && !isControlPanelAccount(user)) {
         const outcome = await recordFailure(user);
-        if (outcome.locked && outcome.notify) {
-          void sendAccountLockedEmail(user, outcome).catch((err) =>
-            // eslint-disable-next-line no-console
-            console.error('[auth] lockout notice failed:', err.message));
+        if (outcome.locked) {
+          await security.record('login.locked', { req, user, severity: 'warning',
+            detail: `locked for ${outcome.minutes} min after repeated wrong passwords` });
+          if (outcome.notify) {
+            void sendAccountLockedEmail(user, outcome).catch((err) =>
+              // eslint-disable-next-line no-console
+              console.error('[auth] lockout notice failed:', err.message));
+          }
         }
       }
+      // Recorded for every refusal, known account or not — the stuffing rule
+      // in utils/securityEvents.js counts across addresses. A locked account's
+      // guesses are included: they are still somebody guessing.
+      await security.record('login.failed', { req, email, user: user || undefined });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
 
@@ -278,16 +299,7 @@ router.post(
       await User.update(user.id, { passwordHash: await bcrypt.hash(password, BCRYPT_COST) });
     }
 
-    const token = signAccessToken(user);
-    const { token: refreshToken, hash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: hash });
-    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
-    setSessionHint(res);
-
-    return ok(res, {
-      token,
-      user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
-    });
+    return finishSignIn(req, res, user);
   })
 );
 
@@ -309,21 +321,90 @@ router.post(
  * Turnstile is deliberately NOT applied: Google's own challenge already proves a
  * human, and there is no anonymous write here to abuse.
  */
+/**
+ * OIDC nonce for "Continue with Google". The page asks for one before it
+ * initialises Google Identity Services and passes it along; Google signs it
+ * into the ID token; /google below requires the token's nonce to equal the
+ * one this server issued to THIS browser (kept in an httpOnly cookie, so the
+ * page cannot substitute its own). Signed rather than stored: HMAC over a
+ * random value and an expiry, verifiable without a table. Single use is
+ * enforced separately by the used_id_tokens ledger on the token's jti.
+ */
+const GOOGLE_NONCE_COOKIE = 'ndm_gnonce';
+const GOOGLE_NONCE_TTL_MS = 30 * 60 * 1000;
+function mintGoogleNonce() {
+  const random = crypto.randomBytes(18).toString('base64url');
+  const exp = Date.now() + GOOGLE_NONCE_TTL_MS;
+  const sig = crypto.createHmac('sha256', config.JWT_SECRET).update(`${random}.${exp}`).digest('base64url').slice(0, 22);
+  return `${random}.${exp}.${sig}`;
+}
+function googleNonceIsValid(nonce) {
+  const parts = String(nonce || '').split('.');
+  if (parts.length !== 3) return false;
+  const [random, exp, sig] = parts;
+  if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false;
+  const expected = crypto.createHmac('sha256', config.JWT_SECRET).update(`${random}.${exp}`).digest('base64url').slice(0, 22);
+  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+}
+
+router.get(
+  '/google/nonce',
+  asyncHandler(async (req, res) => {
+    if (!config.isGoogleAuthEnabled)
+      return fail(res, 'GOOGLE_AUTH_DISABLED', 'Google sign-in is not available', 503);
+    const nonce = mintGoogleNonce();
+    res.cookie(GOOGLE_NONCE_COOKIE, nonce, {
+      httpOnly: true, secure: config.secureCookies, sameSite: 'strict',
+      path: '/api/auth/google', maxAge: GOOGLE_NONCE_TTL_MS,
+    });
+    return ok(res, { nonce, expiresInSeconds: GOOGLE_NONCE_TTL_MS / 1000 });
+  })
+);
+
 router.post(
   '/google', authLimiter, validate(googleSchema),
   asyncHandler(async (req, res) => {
     if (!config.isGoogleAuthEnabled)
       return fail(res, 'GOOGLE_AUTH_DISABLED', 'Google sign-in is not available', 503);
 
+    // The nonce this server issued to this browser. The body copy is what
+    // the page gave Google; the cookie is what we remember giving the page.
+    // Both must be ours and agree, and the token must carry the same value.
+    const nonce = req.cookies && req.cookies[GOOGLE_NONCE_COOKIE];
+    res.clearCookie(GOOGLE_NONCE_COOKIE, { path: '/api/auth/google' });
+    if (!nonce || !googleNonceIsValid(nonce) || (req.body.nonce && req.body.nonce !== nonce)) {
+      await security.record('google.nonce_rejected', { req, severity: 'warning',
+        detail: !nonce ? 'no nonce cookie' : !googleNonceIsValid(nonce) ? 'expired or forged nonce' : 'body/cookie nonce mismatch' });
+      return fail(res, 'GOOGLE_NONCE_INVALID',
+        'That Google sign-in has expired. Please reload the page and try again.', 401);
+    }
+
     let identity;
     try {
-      identity = await verifyGoogleIdToken(req.body.credential);
+      identity = await verifyGoogleIdToken(req.body.credential, { nonce });
     } catch (err) {
       // The reason is logged for operators but never echoed verbatim: it can
       // describe our own configuration.
       // eslint-disable-next-line no-console
       console.error('[auth] google credential rejected:', err.message);
+      await security.record('google.token_rejected', { req, severity: 'warning', detail: err.message.slice(0, 200) });
       return fail(res, 'GOOGLE_AUTH_FAILED', 'Could not verify that Google sign-in. Please try again.', 401);
+    }
+
+    // One signed token opens one session. The ledger keeps the jti until the
+    // token itself expires (an hour), after which Google's exp refuses it.
+    if (identity.jti) {
+      try {
+        await insert('INSERT INTO used_id_tokens (jti, expires_at) VALUES (?, ?)',
+          [identity.jti, identity.expiresAt || new Date(Date.now() + 60 * 60 * 1000)]);
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') {
+          await security.record('google.token_replayed', { req, email: identity.email, severity: 'critical',
+            detail: 'a Google ID token was presented a second time' });
+          return fail(res, 'GOOGLE_AUTH_FAILED', 'Could not verify that Google sign-in. Please try again.', 401);
+        }
+        throw err;
+      }
     }
 
     let user = await User.findByGoogleId(identity.googleId);
@@ -403,17 +484,7 @@ router.post(
 
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
 
-    const token = signAccessToken(user);
-    const { token: refreshToken, hash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: hash });
-    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
-    setSessionHint(res);
-
-    return ok(res, {
-      token,
-      created,
-      user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
-    });
+    return finishSignIn(req, res, user, { created });
   })
 );
 
@@ -476,8 +547,33 @@ router.post(
     const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
     if (!cookie) return fail(res, 'NO_REFRESH_TOKEN', 'Missing refresh token', 401);
     const hash = hashRefreshToken(cookie);
-    const user = await User.findByRefreshTokenHash(hash);
-    if (!user) return fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+    let session = await UserSession.findLive(hash);
+    if (!session) {
+      // Not a live token. Was it one that was just rotated away? Two tabs
+      // refreshing on one cookie jar present the old cookie within seconds of
+      // each other and are rotated again; a copy turning up later is a stolen
+      // cookie, and the whole family ends — see models/UserSession.js.
+      const replaced = await UserSession.findReplaced(hash);
+      if (replaced && replaced.withinGrace) {
+        session = replaced.session;
+      } else {
+        if (replaced) {
+          await UserSession.revokeFamily(replaced.session.family);
+          const owner = await User.findById(replaced.session.user_id);
+          await security.record('session.reuse_detected', {
+            req, user: owner || undefined, severity: 'critical',
+            detail: `a rotated refresh token was presented again ${Math.round(Number(replaced.session.since_rotation_ms) / 1000)}s after rotation; session family revoked`,
+          });
+        }
+        clearSessionCookies(res);
+        return fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+      }
+    }
+    const user = await User.findById(session.user_id);
+    if (!user) {
+      clearSessionCookies(res);
+      return fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+    }
     // The same two gates login applies. A cookie issued before an account was
     // banned — or before verification became a requirement — must not quietly
     // mint fresh access tokens for the next thirty days.
@@ -490,9 +586,8 @@ router.post(
     // should never have existed is actually gone rather than retried on every
     // page load.
     if (isControlPanelAccount(user)) {
-      await User.update(user.id, { refreshTokenHash: null });
-      res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
-      res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+      await UserSession.revokeFamily(session.family);
+      clearSessionCookies(res);
       // Answered as an unusable cookie, not as "this is an admin". The holder
       // of the cookie already knows whose account it is, so there is nothing to
       // hide from them — but this response is what the SITE reads, and telling
@@ -507,7 +602,12 @@ router.post(
         'Please verify your email address first. Check your inbox, or ask for a new link.', 403,
         { canResend: true });
     const { token: rt, hash: newHash } = generateRefreshToken();
-    await User.update(user.id, { refreshTokenHash: newHash });
+    const rotated = await UserSession.rotate(session.id, session.token_hash, newHash, REFRESH_MAX_AGE);
+    if (!rotated) {
+      // Lost a race with a concurrent refresh of the same row: that request's
+      // cookie is the live one now and the browser already holds it.
+      return fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
+    }
     res.cookie(REFRESH_COOKIE, rt, refreshCookieOptions());
     setSessionHint(res);
     return ok(res, { token: signAccessToken(user) });
@@ -519,12 +619,11 @@ router.post(
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
     if (cookie) {
-      const hash = hashRefreshToken(cookie);
-      const user = await User.findByRefreshTokenHash(hash);
-      if (user) await User.update(user.id, { refreshTokenHash: null });
+      // This browser's session only; the account's other sessions stay.
+      const session = await UserSession.findLive(hashRefreshToken(cookie));
+      if (session) await UserSession.revokeFamily(session.family);
     }
-    res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
-    res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+    clearSessionCookies(res);
     return ok(res, { loggedOut: true });
   })
 );
@@ -567,6 +666,7 @@ router.post(
       void sendPasswordResetEmail(user, resetToken).catch((err) =>
         // eslint-disable-next-line no-console
         console.error('[auth] password reset email failed:', err.message));
+      await security.record('password.reset_requested', { req, user });
     }
     return ok(res, { sent: true });
   })
@@ -610,10 +710,35 @@ router.post(
     // Ends every other session on the account — the whole point of a reset when
     // the reason for it is "somebody else may be in here".
     await User.revokeSessions(user.id);
-    res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
-    res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+    await security.record('password.reset', { req, user, detail: 'every session ended; lock cleared' });
+    clearSessionCookies(res);
     return ok(res, { reset: true });
   })
 );
+
+// Customer two-factor authentication: the same routes the control panels use
+// (routes/twoFactor.js), mounted on this router — /login/2fa completes a
+// sign-in that answered `requiresTwoFactor`, /2fa/* manage enrolment from the
+// account page. Optional for customers; the panels enforce it
+// (ADMIN_2FA_REQUIRED, middleware/adminAuth.js).
+mountTwoFactor(router, {
+  realm: 'user',
+  secret: config.JWT_SECRET,
+  eligible: (user) => user.role === 'user',
+  gate: requireAuth,
+  subject: (req) => req.user,
+  issuer: 'Nexa Download Manager',
+  finishLogin: async (res, user, req) => {
+    await security.record('login.success', { req, user, detail: 'two-factor' });
+    return issueSession(req, res, user);
+  },
+  audit: (req, action, user, summary) =>
+    AuditLog.create({ adminUserId: null, action, entityType: 'user', entityId: user.id, summary }),
+  onEvent: (req, user, what) => security.record(
+    { failed: '2fa.failed', replayed: '2fa.replayed', recovery: '2fa.recovery_used',
+      enabled: '2fa.enabled', disabled: '2fa.disabled' }[what] || `2fa.${what}`,
+    { req, user, severity: ['failed', 'replayed', 'recovery'].includes(what) ? 'warning' : 'info' }
+  ),
+});
 
 module.exports = router;

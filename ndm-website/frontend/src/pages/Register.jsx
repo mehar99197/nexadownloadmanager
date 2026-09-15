@@ -82,13 +82,21 @@ export default function Register() {
    * this returns a live session straight away — so a ?trial=1 sign-up can redeem
    * its Pro trial here and land on the dashboard instead of the login page.
    */
-  const handleGoogle = async (credential) => {
+  const handleGoogle = async (credential, nonce) => {
     setError('');
     setGoogleBusy(true);
     try {
       // Google signs an EXISTING user straight in, so this page cannot assume it
       // created anything — `created` is what tells the two apart.
-      const { created } = await loginWithGoogle(credential);
+      const result = await loginWithGoogle(credential, nonce);
+      if (result?.twoFactor) {
+        // An existing account with two-factor on: finish on the sign-in page,
+        // which owns the code prompt. The trial intent is kept for after that.
+        if (wantsTrial) markPendingTrial();
+        navigate(`/login?next=${encodeURIComponent(next)}`, { replace: true, state: { challenge: result.challenge } });
+        return;
+      }
+      const { created } = result;
       let trialStarted = false;
       if (wantsTrial) {
         markPendingTrial();

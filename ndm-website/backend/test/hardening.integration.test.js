@@ -727,6 +727,7 @@ test('hardening', async (t) => {
     // by an account that has just been promoted — dies at the boundary rather
     // than at the end of its seven-day life.
     const User = require('../src/models/User');
+const UserSession = require('../src/models/UserSession');
     const { signAccessToken, generateRefreshToken } = require('../src/utils/jwt');
     const stale = signAccessToken(await User.findById(creator.id));
     for (const [method, path] of [['get', '/api/user/me'], ['get', '/api/user/license']]) {
@@ -752,7 +753,9 @@ test('hardening', async (t) => {
     // A refresh cookie is refused AND cleared, so the session that should never
     // have existed is gone rather than retried on every page load.
     const { token: rt, hash } = generateRefreshToken();
-    await User.update(creator.id, { refreshTokenHash: hash });
+    // A session row for the creator, as an older build could have left behind
+    // (models/UserSession.js is where refresh cookies live now).
+    await UserSession.create({ userId: creator.id, tokenHash: hash, ttlMs: 60 * 60 * 1000 });
     const stapled = srv.client();
     stapled.cookies.set('ndm_refresh', rt);
     const refreshed = await stapled.post('/api/auth/refresh', {});
@@ -764,8 +767,8 @@ test('hardening', async (t) => {
     const stranger = await unknownCookie.post('/api/auth/refresh', {});
     assert.deepEqual(refreshed.body, stranger.body);
     const [cleared] = await srv.query(
-      'SELECT refresh_token_hash FROM users WHERE id = ?', [creator.id]);
-    assert.equal(cleared.refresh_token_hash, null, 'the stale hash must be dropped');
+      'SELECT revoked_at FROM user_sessions WHERE token_hash = ?', [hash]);
+    assert.ok(cleared && cleared.revoked_at, 'the stale session must be revoked');
 
     // This is a fence between two doors, not a lock on both: the panel's own
     // sign-in still works with the same password.

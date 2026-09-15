@@ -214,6 +214,19 @@ files, never edit the shared scaffold).
   excludes the calling device so a renewal is always free. `revoked_at` is what
   separates "an admin took this seat away" from "the lease lapsed" — without it a
   running client's next heartbeat silently undid the admin's action.
+- **A customer session is a row, not a column.** `user_sessions` holds one
+  refresh-token family per browser (`models/UserSession.js`); `POST /api/auth/refresh`
+  rotates the hash on every use and a token presented twice outside a 30-second
+  grace revokes the whole family (`session.reuse_detected`). Access tokens live
+  `ACCESS_TOKEN_TTL` (15 min) — the cookie carries the session, not the bearer.
+  Every path that opens a session goes through `utils/session.js#issueSession`.
+  TOTP is shared code for all three realms (`routes/twoFactor.js`); the panels
+  refuse everything but enrolment until it is on (`ADMIN_2FA_REQUIRED`,
+  `middleware/adminAuth.js`). "Continue with Google" needs the nonce this server
+  issued to that browser (`GET /api/auth/google/nonce`) and burns the token's
+  `jti`. Security-relevant moments go through `utils/securityEvents.js#record`
+  (MySQL + a `[security]` log line + e-mail alerts) — add a `record` call, not a
+  `console.warn`, when you add one.
 - **Rate limiting is split on purpose.** The security-critical limiters count in
   MySQL (`middleware/rateLimitStore.js`) so the keepalive cron's restarts do not
   hand out fresh budgets; the high-volume ones (`apiLimiter` on all of `/api`,

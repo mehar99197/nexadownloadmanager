@@ -555,6 +555,77 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  // One row per browser sign-in (models/UserSession.js): the family survives
+  // rotations, prev_token_hash is what turns a replayed refresh cookie into a
+  // detected theft, and only SHA-256 hashes ever land here. DATETIME because
+  // the code computes every instant itself.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NOT NULL,
+      family CHAR(32) NOT NULL,
+      token_hash CHAR(64) NOT NULL,
+      prev_token_hash CHAR(64) NULL DEFAULT NULL,
+      user_agent VARCHAR(255) NULL DEFAULT NULL,
+      ip VARCHAR(45) NULL DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      rotated_at DATETIME NULL DEFAULT NULL,
+      expires_at DATETIME NOT NULL,
+      revoked_at DATETIME NULL DEFAULT NULL,
+      UNIQUE KEY uq_session_token (token_hash),
+      INDEX idx_session_user (user_id),
+      INDEX idx_session_family (family),
+      INDEX idx_session_prev (prev_token_hash),
+      INDEX idx_session_expiry (expires_at),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  // An earlier build created user_sessions with only the single-token columns
+  // (a row per browser, no rotation memory). CREATE IF NOT EXISTS leaves such
+  // a table as it is, so the rotation/replay columns are added here. Rows
+  // from that build carry no family and are simply never matched again —
+  // those browsers sign in once more.
+  await addColumnIfMissing('user_sessions', "family CHAR(32) NOT NULL DEFAULT ''");
+  await addColumnIfMissing('user_sessions', 'prev_token_hash CHAR(64) NULL DEFAULT NULL');
+  await addColumnIfMissing('user_sessions', 'rotated_at DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('user_sessions', 'revoked_at DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('user_sessions', 'last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  await addIndexIfMissing('user_sessions', 'idx_session_family (family)');
+  await addIndexIfMissing('user_sessions', 'idx_session_prev (prev_token_hash)');
+
+  // Security events (utils/securityEvents.js): sign-in failures and locks,
+  // two-factor outcomes, resets, session replays, control-panel sign-ins —
+  // what a SIEM would ingest, kept where the admin panel and the alert rules
+  // can read it. Pruned by the daily maintenance job.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS security_events (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      kind VARCHAR(50) NOT NULL,
+      severity ENUM('info', 'warning', 'critical') NOT NULL DEFAULT 'info',
+      user_id INT UNSIGNED NULL DEFAULT NULL,
+      email VARCHAR(255) NULL DEFAULT NULL,
+      ip VARCHAR(45) NULL DEFAULT NULL,
+      user_agent VARCHAR(255) NULL DEFAULT NULL,
+      detail TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_security_kind_time (kind, created_at),
+      INDEX idx_security_time (created_at),
+      INDEX idx_security_user (user_id),
+      INDEX idx_security_ip (ip)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // Google ID tokens already accepted at /auth/google, by jti, until they
+  // expire: the same signed token cannot open a second session.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS used_id_tokens (
+      jti VARCHAR(191) NOT NULL PRIMARY KEY,
+      expires_at DATETIME NOT NULL,
+      INDEX idx_used_id_token_expiry (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   await execute(`
     CREATE TABLE IF NOT EXISTS rate_limits (
       id VARCHAR(191) NOT NULL PRIMARY KEY,

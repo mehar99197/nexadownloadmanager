@@ -43,33 +43,44 @@ function sign(claims = {}, { kid = KID, key = privateKey, algorithm = 'RS256' } 
       email_verified: true,
       name: 'Ada Lovelace',
       picture: 'https://lh3.googleusercontent.test/a/ada',
+      nonce: NONCE,
+      jti: 'jti-1',
       ...claims,
     },
     key,
     { algorithm, keyid: kid, expiresIn: '5m' }
   );
 }
+const NONCE = 'server-issued-nonce-value-0001';
+const VERIFY = { nonce: NONCE };
 
-function withClientId(clientId, work) {
+async function withClientId(clientId, work) {
   const saved = config.GOOGLE_CLIENT_ID;
   config.GOOGLE_CLIENT_ID = clientId;
   resetCertCache();
   try {
-    return work();
+    // Awaited, not returned: a bare `return work()` ran the finally block —
+    // and restored the client id — before the async work had started.
+    return await work();
   } finally {
     config.GOOGLE_CLIENT_ID = saved;
     resetCertCache();
+  }
+}
 
 test('a well-formed token yields the identity Google asserts', async () => {
   await withClientId(CLIENT_ID, async () => {
-    const identity = await verifyGoogleIdToken(sign(), { fetchImpl: certsFetch() });
-    assert.deepEqual(identity, {
+    const identity = await verifyGoogleIdToken(sign(), { fetchImpl: certsFetch(), ...VERIFY });
+    assert.deepEqual({ ...identity, expiresAt: undefined }, {
       googleId: '1029384756',
       email: 'ada@example.test',
       emailVerified: true,
       name: 'Ada Lovelace',
       picture: 'https://lh3.googleusercontent.test/a/ada',
+      jti: 'jti-1',
+      expiresAt: undefined,
     });
+    assert.ok(identity.expiresAt instanceof Date, 'exp is surfaced for the replay ledger');
   });
 });
 
@@ -77,7 +88,7 @@ test('the email is lowercased and a missing name falls back to the local part', 
   await withClientId(CLIENT_ID, async () => {
     const identity = await verifyGoogleIdToken(
       sign({ email: 'Ada.Lovelace@Example.TEST', name: undefined }),
-      { fetchImpl: certsFetch() }
+      { fetchImpl: certsFetch(), ...VERIFY }
     );
     assert.equal(identity.email, 'ada.lovelace@example.test');
     assert.equal(identity.name, 'ada.lovelace');
@@ -87,7 +98,7 @@ test('the email is lowercased and a missing name falls back to the local part', 
 test("another site's token is rejected (audience mismatch)", async () => {
   await withClientId(CLIENT_ID, async () => {
     await assert.rejects(
-      verifyGoogleIdToken(sign({ aud: 'someone-else.apps.googleusercontent.com' }), { fetchImpl: certsFetch() }),
+      verifyGoogleIdToken(sign({ aud: 'someone-else.apps.googleusercontent.com' }), { fetchImpl: certsFetch(), ...VERIFY }),
       /audience/i
     );
   });
@@ -98,7 +109,7 @@ test('a token signed by a different key is rejected', async () => {
     const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
     // Same kid, so the right key is looked up — only the signature disagrees.
     await assert.rejects(
-      verifyGoogleIdToken(sign({}, { key: other.privateKey }), { fetchImpl: certsFetch() }),
+      verifyGoogleIdToken(sign({}, { key: other.privateKey }), { fetchImpl: certsFetch(), ...VERIFY }),
       /signature/i
     );
   });
@@ -106,7 +117,7 @@ test('a token signed by a different key is rejected', async () => {
 test('wrong issuer, expiry and an unverified email are all refused', async () => {
   await withClientId(CLIENT_ID, async () => {
     await assert.rejects(
-      verifyGoogleIdToken(sign({ iss: 'https://evil.test' }), { fetchImpl: certsFetch() }),
+      verifyGoogleIdToken(sign({ iss: 'https://evil.test' }), { fetchImpl: certsFetch(), ...VERIFY }),
       /issuer/i
     );
     const expired = jwt.sign(
@@ -114,9 +125,9 @@ test('wrong issuer, expiry and an unverified email are all refused', async () =>
       privateKey,
       { algorithm: 'RS256', keyid: KID, expiresIn: '-1s' }
     );
-    await assert.rejects(verifyGoogleIdToken(expired, { fetchImpl: certsFetch() }), /expired/i);
+    await assert.rejects(verifyGoogleIdToken(expired, { fetchImpl: certsFetch(), ...VERIFY }), /expired/i);
     await assert.rejects(
-      verifyGoogleIdToken(sign({ email_verified: false }), { fetchImpl: certsFetch() }),
+      verifyGoogleIdToken(sign({ email_verified: false }), { fetchImpl: certsFetch(), ...VERIFY }),
       /unverified email/i
     );
   });
@@ -128,20 +139,20 @@ test('an unsigned (alg=none) token never reaches verification', async () => {
       { iss: 'accounts.google.com', aud: CLIENT_ID, sub: '1', email: 'a@b.test', email_verified: true },
       '', { algorithm: 'none' }
     );
-    await assert.rejects(verifyGoogleIdToken(unsigned, { fetchImpl: certsFetch() }), /algorithm/i);
+    await assert.rejects(verifyGoogleIdToken(unsigned, { fetchImpl: certsFetch(), ...VERIFY }), /algorithm/i);
   });
 });
 
 test('an unknown key id forces one refetch, and the key set is otherwise cached', async () => {
   await withClientId(CLIENT_ID, async () => {
     const fetchImpl = certsFetch();
-    await verifyGoogleIdToken(sign(), { fetchImpl });
-    await verifyGoogleIdToken(sign(), { fetchImpl });
+    await verifyGoogleIdToken(sign(), { fetchImpl, ...VERIFY });
+    await verifyGoogleIdToken(sign(), { fetchImpl, ...VERIFY });
     assert.equal(fetchImpl.calls, 1, 'the second verification must reuse the cached keys');
 
     // A token naming a key we have never seen looks exactly like a rotation.
     await assert.rejects(
-      verifyGoogleIdToken(sign({}, { kid: 'rotated-key' }), { fetchImpl }),
+      verifyGoogleIdToken(sign({}, { kid: 'rotated-key' }), { fetchImpl, ...VERIFY }),
       /signing key not found/i
     );
     assert.equal(fetchImpl.calls, 2, 'an unknown kid must trigger exactly one refetch');
@@ -150,7 +161,7 @@ test('an unknown key id forces one refetch, and the key set is otherwise cached'
 
 test('with no client ID configured nothing is verified at all', async () => {
   await withClientId('', async () => {
-    await assert.rejects(verifyGoogleIdToken(sign(), { fetchImpl: certsFetch() }), /not configured/i);
+    await assert.rejects(verifyGoogleIdToken(sign(), { fetchImpl: certsFetch(), ...VERIFY }), /not configured/i);
   });
 });
 
@@ -166,5 +177,20 @@ test('a missing or malformed credential is refused before any network call', asy
 
 });
 
-  }
-}
+test('the OIDC nonce is required and must match what this server issued', async () => {
+  await withClientId(CLIENT_ID, async () => {
+    await assert.rejects(
+      verifyGoogleIdToken(sign({ nonce: 'something-else-entirely-00' }), { fetchImpl: certsFetch(), ...VERIFY }),
+      /nonce mismatch/
+    );
+    await assert.rejects(
+      verifyGoogleIdToken(sign({ nonce: undefined }), { fetchImpl: certsFetch(), ...VERIFY }),
+      /nonce mismatch/
+    );
+    // No expectation at all (a caller that forgot) is a refusal, not a skip.
+    await assert.rejects(
+      verifyGoogleIdToken(sign(), { fetchImpl: certsFetch() }),
+      /nonce mismatch/
+    );
+  });
+});

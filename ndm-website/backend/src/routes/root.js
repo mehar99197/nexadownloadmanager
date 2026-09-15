@@ -18,6 +18,7 @@ const Release = require('../models/Release');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const security = require('../utils/securityEvents');
 
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
@@ -74,10 +75,15 @@ router.post(
     // ROOT_ADMIN_EMAIL cannot sign in here.
     // A password-less (Google-created) row cannot sign in here: bcrypt.compare
     // against null throws, which would answer 500 rather than rejecting.
-    if (!isRootUser(user) || !user.password_hash)
+    if (!isRootUser(user) || !user.password_hash) {
+      await security.record('root.login.failed', { req, email, severity: 'critical' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
     const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    if (!match) {
+      await security.record('root.login.failed', { req, user, severity: 'critical' });
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     // Second factor on: no session until POST /login/2fa verifies a code.
     if (user.totp_enabled) {
@@ -86,11 +92,13 @@ router.post(
         challenge: signChallenge(user, { secret: config.JWT_ROOT_SECRET, realm: 'root' }),
       });
     }
+    await security.record('root.login.success', { req, user, severity: 'warning', detail: 'password only — no second factor on this account' });
     return ok(res, await finishRootLogin(res, user));
   })
 );
 
-async function finishRootLogin(res, user) {
+async function finishRootLogin(res, user, req) {
+  if (req) await security.record('root.login.success', { req, user, detail: 'two-factor' });
   await issueRootSession(res, user);
   await audit({ admin: user }, 'root.login', 'user', user.id, `Root sign-in ${user.email}`);
   return { token: signRootToken(user), admin: rootIdentity(user) };
@@ -143,7 +151,9 @@ router.post(
 router.use(requireRoot);
 
 router.get('/me', asyncHandler(async (req, res) => ok(res, {
-  ...rootIdentity(req.admin), twoFactorEnabled: Boolean(req.admin.totp_enabled),
+  ...rootIdentity(req.admin),
+  twoFactorEnabled: Boolean(req.admin.totp_enabled),
+  twoFactorRequired: Boolean(config.ADMIN_2FA_REQUIRED),
 })));
 
 router.get(

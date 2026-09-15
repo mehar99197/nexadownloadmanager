@@ -20,7 +20,7 @@ function basePayload(user) {
 }
 
 function signAccessToken(user) {
-  return jwt.sign({ ...basePayload(user), typ: 'access' }, config.JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ ...basePayload(user), typ: 'access' }, config.JWT_SECRET, { expiresIn: config.ACCESS_TOKEN_TTL });
 }
 
 function signAdminToken(user) {

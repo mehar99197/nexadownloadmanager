@@ -142,6 +142,11 @@ async function sendAccountLockedEmail(user, { minutes }) {
   });
 }
 
+/** Plain-text operator alert from utils/securityEvents.js. */
+async function sendSecurityAlertEmail(to, subject, text) {
+  return send({ to, subject: `${subject} — Nexa Download Manager`, text });
+}
+
 async function sendPasswordResetEmail(user, token) {
   const link = `${config.FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   const name = escapeHtml(user.name);
@@ -324,4 +329,5 @@ module.exports = {
   sendWelcomeEmail,
   sendTrialEndingEmail,
   sendAccountLockedEmail,
+  sendSecurityAlertEmail,
 };
