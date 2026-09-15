@@ -35,6 +35,13 @@ function errorHandler(err, req, res, next) {
     if (config.exposeStackTraces) details = err.sqlMessage;
   } else if (err.code === 'ER_NO_REFERENCED_ROW_2') {
     status = 400; code = 'BAD_REQUEST'; message = 'Referenced record does not exist';
+  } else if (err.type === 'entity.parse.failed') {
+    // body-parser: the JSON did not parse. Its own code is the parser's
+    // internal one and its message quotes the byte offset — neither is an
+    // API contract, and 'INTERNAL_ERROR' on a 400 read as our fault.
+    status = 400; code = 'BAD_JSON'; message = 'Request body is not valid JSON';
+  } else if (err.type === 'entity.too.large') {
+    status = 413; code = 'PAYLOAD_TOO_LARGE'; message = 'Request body is too large';
   }
 
   if (status >= 500) {

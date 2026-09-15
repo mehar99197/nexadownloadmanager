@@ -227,6 +227,48 @@ describe('Pricing promotion code', () => {
   });
 });
 
+describe('Pricing while billing is disabled', () => {
+  const plans = { free: { id: 'free', name: 'Free', price: 0, features: [] },
+                  pro: { id: 'pro', name: 'Pro', monthly: 5, yearly: 45, features: [] },
+                  team: { id: 'team', name: 'Team', monthly: 15, yearly: 135, features: [] } };
+  const renderPricing = async (extra) => {
+    const Pricing = (await import('../pages/Pricing')).default;
+    api.get.mockResolvedValue({ data: { ok: true, data: { ...plans, ...extra } } });
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <AuthProvider>
+            <Pricing />
+          </AuthProvider>
+        </ToastProvider>
+      </MemoryRouter>
+    );
+  };
+
+  it('says so on the paid buttons and drops the Stripe promise', async () => {
+    // A hardened deployment without Stripe keys answers 503 to /checkout; the
+    // page should not invite the click — nor claim Stripe handles payments.
+    await renderPricing({ billing: 'disabled' });
+    // Rendered as a plain state label, like "Current plan" — not a disabled
+    // button a screen reader would announce as something to try.
+    // Signed out: Pro still offers the (free) trial; Team, which can only be
+    // bought, shows the state instead of a "Get Team" link.
+    expect(await screen.findByText(/^coming soon$/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /get team/i })).toBeNull();
+    expect(screen.queryByText(/handled securely by Stripe/i)).toBeNull();
+    expect(screen.getByText(/paid plans open soon/i)).toBeInTheDocument();
+    // The free trial needs no card and keeps working.
+    expect(screen.getByRole('link', { name: /start 7-day free trial/i })).toHaveAttribute('href', '/register?trial=1');
+  });
+
+  it('keeps the normal buttons when billing is live', async () => {
+    await renderPricing({ billing: 'live' });
+    expect(await screen.findByRole('link', { name: /get team/i })).toBeInTheDocument();
+    expect(screen.getByText(/handled securely by Stripe/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /coming soon/i })).toBeNull();
+  });
+});
+
 describe('Compare — the feature matrix is a real table', () => {
   it('associates every cell with a product and a feature', () => {
     renderPage(<Compare />);

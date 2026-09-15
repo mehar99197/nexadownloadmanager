@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/client';
 import { useToast } from '../components/Toast';
@@ -17,8 +17,15 @@ export default function Login() {
   const navigate = useNavigate();
   const toast = useToast();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
+  // Arriving straight from a successful registration: the address is known
+  // (router state survives the redirect; the query flag survives a reload),
+  // so prefill it and keep the "verify first" notice on screen rather than
+  // relying on a toast that vanished before the page finished loading.
+  const justRegistered = searchParams.get('registered') === '1';
+  const registeredEmail = (location.state && location.state.registeredEmail) || '';
 
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(registeredEmail);
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -107,6 +114,15 @@ export default function Login() {
           <p className="mt-2 text-sm leading-6 text-slate-400">
             Welcome back. Enter your credentials to continue.
           </p>
+
+          {justRegistered && (
+            <div role="status" className="mt-5 rounded-[var(--radius-2)] border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
+              <strong className="font-semibold">Account created.</strong> We sent a verification
+              link{registeredEmail ? <> to <span className="font-semibold">{registeredEmail}</span></> : null}.
+              Open it, then sign in here{location.state && location.state.wantsTrial ? ' to start your 7-day Pro trial' : ''}.
+              Nothing in your inbox? Check spam, or use the button below after a first sign-in attempt to get a new link.
+            </div>
+          )}
 
           {googleAuthEnabled() && (
             <div className="mt-7">

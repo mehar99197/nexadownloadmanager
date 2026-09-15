@@ -181,6 +181,41 @@ it — so after any change, `curl -sI` for the header and then open `/`, `/admin
 and `/root` in a browser and check the console for "Refused to load". A CSP that
 blocks a bundle returns a perfectly good 200 to curl and a blank page to users.
 
+`DEPLOY_HTACCESS=1 ./deploy/build-and-upload.sh` does the backup-and-upload
+above for you (backups land in `~/domains/nexadownloadmanager.com/htaccess-backups/`).
+
+### The one inline script and its hash
+
+`frontend/index.html` has exactly one inline `<script>` — the first-visit boot
+screen and the theme stamp that stops the flash of the wrong theme — and the
+CSP allows it by SHA-256 hash (`'sha256-…'` in `script-src`). The hash covers
+the script's exact bytes, so:
+
+- editing that block changes the hash. `build-and-upload.sh` recomputes it from
+  the built `dist/index.html` (`frontend/scripts/inline-script-hashes.mjs`) and
+  refuses to deploy until `public_html.htaccess` in the repo carries the new
+  value — it prints the value to paste. Then ship the `.htaccess` too.
+- line endings count. `.gitattributes` pins `frontend/index.html` to LF so a
+  Windows checkout builds the same bytes as a Linux one. (The site once shipped
+  a CRLF shell whose hash was not in the CSP: browsers dropped the script
+  silently — no boot screen, a light-theme flash for dark-mode readers on every
+  load — while every curl check passed.)
+
+### www.
+
+`.htaccess` 301s `www.nexadownloadmanager.com` to the apex. Serving both as
+separate origins split the session cookies and made "Continue with Google"
+fail on www. ("origin is not allowed for the given client ID").
+
+## The browser extension packages
+
+Until the store listings are live, the download page and `/docs/extension` link
+`/downloads/nexa-chrome.zip`, `nexa-edge.zip` and `nexa-firefox.zip`. They are
+static files: Phase 1b of `build-and-upload.sh` runs `extension-chromium/package.sh`
+and `extension-firefox/build.sh` and copies the results into `dist/downloads/`,
+so every frontend deploy ships the extension that matches the checkout. `zip`
+and `unzip` must be installed on the machine that deploys.
+
 ## Updating
 
 ```bash

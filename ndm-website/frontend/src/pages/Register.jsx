@@ -65,7 +65,12 @@ export default function Register() {
           ? 'Account created! Sign in to start your 7-day Pro trial.'
           : 'Account created! Please check your email to verify.'
       );
-      navigate(`/login?next=${encodeURIComponent(next)}`, { replace: true });
+      // The toast is gone in a few seconds; the sign-in page also gets the
+      // address (to prefill) and the fact that it is fresh, so it can keep
+      // saying "check your inbox" for as long as the person is looking at it.
+      navigate(`/login?next=${encodeURIComponent(next)}&registered=1`, {
+        replace: true, state: { registeredEmail: email, wantsTrial },
+      });
     } catch (err) {
       const msg =
         err?.response?.data?.error?.message ||

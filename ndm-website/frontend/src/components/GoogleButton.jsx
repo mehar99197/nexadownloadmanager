@@ -11,6 +11,25 @@ const MAX_WIDTH = 320;
 
 let scriptPromise = null;
 
+// google.accounts.id.initialize() is meant to run ONCE per page: a second call
+// logs "initialize() is called multiple times" and only the last one counts.
+// The site calls it from every sign-in surface (login, register, and again on
+// each theme or width change), so the client is initialised here exactly once
+// and its callback is routed to whichever button is currently mounted.
+let initialised = false;
+const active = { onCredential: null, onError: null };
+function initialiseOnce(google) {
+  if (initialised) return;
+  initialised = true;
+  google.accounts.id.initialize({
+    client_id: CLIENT_ID,
+    callback: (response) => {
+      if (response?.credential) active.onCredential?.(response.credential);
+      else active.onError?.('Google did not return a credential. Please try again.');
+    },
+  });
+}
+
 function loadScript() {
   if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
   if (window.google?.accounts?.id) return Promise.resolve(window.google);
@@ -107,13 +126,9 @@ export default function GoogleButton({
         // A privacy extension can let the script "load" while stubbing the API
         // away. Without this the button silently never appears.
         if (!google?.accounts?.id) throw new Error('Google Identity Services unavailable');
-        google.accounts.id.initialize({
-          client_id: CLIENT_ID,
-          callback: (response) => {
-            if (response?.credential) onCredentialRef.current?.(response.credential);
-            else onErrorRef.current?.('Google did not return a credential. Please try again.');
-          },
-        });
+        initialiseOnce(google);
+        active.onCredential = (credential) => onCredentialRef.current?.(credential);
+        active.onError = (message) => onErrorRef.current?.(message);
         google.accounts.id.renderButton(container.current, {
           type: 'standard',
           theme,

@@ -22,7 +22,7 @@ export default function DocsExtension() {
       <H2 id="chromium">Chrome, Edge and Brave</H2>
       <Steps
         items={[
-          <>Download <Code>nexa-chrome.zip</Code> (or <Code>nexa-edge.zip</Code>) from the <Link to="/download" className="text-brand-300 hover:underline">download page</Link> and unzip it somewhere permanent — the browser loads it from that folder every start.</>,
+          <>Download <a href="/downloads/nexa-chrome.zip" download className="text-brand-300 hover:underline"><Code>nexa-chrome.zip</Code></a> (or <a href="/downloads/nexa-edge.zip" download className="text-brand-300 hover:underline"><Code>nexa-edge.zip</Code></a> for Edge) and unzip it somewhere permanent — the browser loads it from that folder every start. Both are also on the <Link to="/download" className="text-brand-300 hover:underline">download page</Link>.</>,
           <>Open <Code>chrome://extensions</Code> (<Code>edge://extensions</Code> in Edge, <Code>brave://extensions</Code> in Brave) and turn on <strong className="text-white">Developer mode</strong> in the top-right corner.</>,
           <>Click <strong className="text-white">Load unpacked</strong> and choose the unzipped folder. The Nexa icon appears in the toolbar.</>,
           <>Make sure the desktop app is running, then reload any page you already had open so the content script is injected.</>,
@@ -33,8 +33,8 @@ export default function DocsExtension() {
       <H2 id="firefox">Firefox</H2>
       <Steps
         items={[
-          <>Download <Code>nexa-firefox.xpi</Code> (or the Firefox zip) from GitHub releases.</>,
-          <>Open <Code>about:addons</Code>, click the gear icon and choose <strong className="text-white">Install Add-on From File…</strong>. For an unsigned development build, use <Code>about:debugging#/runtime/this-firefox</Code> &rarr; <strong className="text-white">Load Temporary Add-on</strong> instead (it lasts until Firefox restarts).</>,
+          <>Download <a href="/downloads/nexa-firefox.zip" download className="text-brand-300 hover:underline"><Code>nexa-firefox.zip</Code></a> (also on the <Link to="/download" className="text-brand-300 hover:underline">download page</Link>).</>,
+          <>Open <Code>about:debugging#/runtime/this-firefox</Code>, click <strong className="text-white">Load Temporary Add-on…</strong> and pick the zip. Until the Add-ons listing is approved the build is unsigned, so release Firefox only accepts it this way — and a temporary add-on lasts until Firefox restarts. Once the listing is live it installs permanently with one click.</>,
           <>Firefox 115 or newer is required.</>,
         ]}
       />

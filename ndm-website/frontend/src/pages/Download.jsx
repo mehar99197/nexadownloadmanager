@@ -41,10 +41,14 @@ function formatBytes(bytes) {
   return `${Math.round(n / 1024)} KB`;
 }
 
+// The packaged extension, served as static files under /downloads/ (the deploy
+// script builds them from extension-chromium/ and extension-firefox/). Until the
+// store listings are approved this is the only way to get it, so every card
+// offers the file itself first and the install guide second.
 const BROWSERS = [
-  { key: 'chrome', label: 'Chrome', note: 'Also works in Brave and other Chromium browsers' },
-  { key: 'edge', label: 'Edge', note: 'Microsoft Edge (Chromium)' },
-  { key: 'firefox', label: 'Firefox', note: 'Firefox 115 or newer' },
+  { key: 'chrome', label: 'Chrome', note: 'Also works in Brave and other Chromium browsers', file: 'nexa-chrome.zip', guide: '/docs/extension#chromium' },
+  { key: 'edge', label: 'Edge', note: 'Microsoft Edge (Chromium)', file: 'nexa-edge.zip', guide: '/docs/extension#chromium' },
+  { key: 'firefox', label: 'Firefox', note: 'Firefox 115 or newer', file: 'nexa-firefox.zip', guide: '/docs/extension#firefox' },
 ];
 
 function Sha256({ value }) {
@@ -230,8 +234,8 @@ export default function Download() {
                 <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-400">
                   The extension adds a &ldquo;Download with Nexa&rdquo; button, sniffs
                   HLS/DASH streams, and hands cookies to the app running on your
-                  machine. Store listings aren&apos;t live yet, so each button opens the
-                  install guide.
+                  machine. Store listings aren&apos;t live yet, so download the packaged
+                  zip and load it unpacked &mdash; the guide takes two minutes.
                 </p>
               </div>
               <Link to="/docs/extension" className="text-sm font-semibold text-brand-300 hover:text-brand-200">
@@ -243,8 +247,11 @@ export default function Download() {
                 <Card key={b.key} className="card-hover !p-5">
                   <h3 className="text-base font-bold text-white">{b.label}</h3>
                   <p className="mt-1 text-xs text-slate-400">{b.note}</p>
-                  <div className="mt-4">
-                    <Button to="/docs/extension" variant="ghost" className="w-full">
+                  <div className="mt-4 flex flex-col gap-2">
+                    <Button href={`/downloads/${b.file}`} download={b.file} className="w-full">
+                      Download {b.file}
+                    </Button>
+                    <Button to={b.guide} variant="ghost" className="w-full">
                       Install guide
                     </Button>
                   </div>

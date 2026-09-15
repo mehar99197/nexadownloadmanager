@@ -780,6 +780,25 @@ test('backend flows', async (t) => {
     });
   });
 
+  // ------------------------------------------------- malformed request bodies
+  await t.test('body-parser failures carry their own codes', async (t2) => {
+    const post = (body) => fetch(`${srv.baseUrl()}/api/contact`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    });
+    await t2.test('unparseable JSON is a 400 BAD_JSON, not an INTERNAL_ERROR', async () => {
+      const res = await post('{"name": ');
+      assert.equal(res.status, 400);
+      const json = await res.json();
+      assert.equal(json.error.code, 'BAD_JSON');
+      assert.doesNotMatch(json.error.message, /position|line \d+/, 'no parser internals in the message');
+    });
+    await t2.test('an oversized body is a 413 PAYLOAD_TOO_LARGE', async () => {
+      const res = await post(JSON.stringify({ email: 'a@b.co', message: 'x'.repeat(1_100_000) }));
+      assert.equal(res.status, 413);
+      assert.equal((await res.json()).error.code, 'PAYLOAD_TOO_LARGE');
+    });
+  });
+
   await srv.stop();
   fs.rmSync(process.env.RELEASE_UPLOAD_DIR, { recursive: true, force: true });
 });

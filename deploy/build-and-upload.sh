@@ -50,6 +50,15 @@
 #   VITE_PLAUSIBLE_SRC       self-hosted Plausible script URL (optional)
 #   RESTART_BACKEND=0        skip restarting the remote node process after upload
 #   SKIP_FRONTEND=1 / SKIP_ADMIN=1 / SKIP_BACKEND=1   deploy a subset
+#   DEPLOY_HTACCESS=1        also upload deploy/hostinger/public_html.htaccess (the
+#                            server copy is backed up OUTSIDE public_html first).
+#                            Off by default: routing + CSP live in that file and
+#                            a bad one takes the whole site down.
+#
+# The frontend phase also packages the browser extension (extension-chromium/
+# package.sh, extension-firefox/build.sh) into dist/downloads/, because the
+# download page links nexa-chrome.zip / nexa-edge.zip / nexa-firefox.zip there
+# until the store listings are live. `zip` and `unzip` must be on PATH.
 
 set -euo pipefail
 
@@ -92,6 +101,7 @@ export VITE_PLAUSIBLE_SRC="${VITE_PLAUSIBLE_SRC:-}"
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 RESTART_BACKEND="${RESTART_BACKEND:-1}"
+DEPLOY_HTACCESS="${DEPLOY_HTACCESS:-0}"
 SKIP_FRONTEND="${SKIP_FRONTEND:-0}"
 SKIP_ADMIN="${SKIP_ADMIN:-0}"
 SKIP_BACKEND="${SKIP_BACKEND:-0}"
@@ -111,7 +121,7 @@ trap cleanup EXIT
 # --------------------------------------------------------------------------
 phase "Phase 0: preflight checks"
 
-for cmd in node npm rsync ssh; do
+for cmd in node npm rsync ssh zip unzip; do
   command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required on this machine"
 done
 [[ -f "${FRONTEND}/package.json" ]] || die "not a nexadownloadmanager repo root: ${FRONTEND}/package.json missing"
@@ -150,6 +160,34 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
     || die "prerendered /pricing shell lacks canonical ${VITE_SITE_URL}/pricing"
   grep -q "property=\"og:url\" content=\"${VITE_SITE_URL}/download\"" "${FRONTEND}/dist/download/index.html" \
     || die "prerendered /download shell lacks og:url ${VITE_SITE_URL}/download"
+
+  # The browser extension, as the download page links it. Both packagers
+  # validate the manifests and refuse an inline <script>, so a broken package
+  # never ships; the unzip -t is the same check CI runs on its artifacts.
+  phase "Phase 1b: packaging the browser extension into dist/downloads/"
+  "${REPO_ROOT}/extension-chromium/package.sh"
+  "${REPO_ROOT}/extension-firefox/build.sh"
+  mkdir -p "${FRONTEND}/dist/downloads"
+  for z in nexa-chrome.zip nexa-edge.zip nexa-firefox.zip; do
+    [[ -f "${REPO_ROOT}/dist/${z}" ]] || die "extension packager produced no dist/${z}"
+    unzip -tq "${REPO_ROOT}/dist/${z}" >/dev/null || die "dist/${z} is not a valid zip"
+    cp "${REPO_ROOT}/dist/${z}" "${FRONTEND}/dist/downloads/${z}"
+  done
+
+  # Content-Security-Policy guard. The shells carry ONE inline script (the boot
+  # screen + theme stamp in index.html) and the .htaccess allows it by SHA-256
+  # hash. If the block was edited, the hash below changes and every browser
+  # silently drops the script — no boot screen, a flash of the wrong theme —
+  # while curl still sees a healthy 200. Refuse to deploy until the .htaccess
+  # in the repo names the new hash (and remember: that file is uploaded
+  # separately, see DEPLOY_HTACCESS).
+  HTACCESS_SRC="${SITE}/deploy/hostinger/public_html.htaccess"
+  INLINE_HASHES="$(node "${SITE}/frontend/scripts/inline-script-hashes.mjs" "${FRONTEND}/dist/index.html")"
+  for h in ${INLINE_HASHES}; do
+    grep -q -- "'${h}'" "${HTACCESS_SRC}" \
+      || die "dist/index.html carries an inline script the CSP does not allow. Add '${h}' to script-src in ${HTACCESS_SRC} and deploy it (DEPLOY_HTACCESS=1)."
+  done
+  echo "CSP: inline script hash(es) allowed by .htaccess: ${INLINE_HASHES:-none}"
   grep -q "${VITE_SITE_URL}/sitemap.xml" "${FRONTEND}/dist/robots.txt" \
     || die "dist/robots.txt does not point at ${VITE_SITE_URL}/sitemap.xml"
   echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL})."
@@ -220,6 +258,21 @@ phase "Phase 4: ensuring remote directories"
 ssh -p "${SSH_PORT}" "${REMOTE}" \
   "mkdir -p '${WEBROOT}/admin' '${API_DIR}/logs' '${API_DIR}/uploads/releases'"
 echo "Remote layout OK: ${WEBROOT}/, ${WEBROOT}/admin/, ${API_DIR}/{logs,uploads/releases}/"
+
+# --------------------------------------------------------------------------
+# Phase 4a — .htaccess (opt-in). Routing, the /api proxy and the CSP all live
+# here, so it is never synced blindly: the live copy is backed up outside
+# public_html (the frontend sync would delete a .bak beside it), then replaced.
+# --------------------------------------------------------------------------
+if [[ "${DEPLOY_HTACCESS}" == "1" ]]; then
+  phase "Phase 4a: uploading public_html/.htaccess (server copy backed up first)"
+  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  ssh -p "${SSH_PORT}" "${REMOTE}" \
+    "mkdir -p ~/${REMOTE_SITE}/htaccess-backups && cp ~/${WEBROOT}/.htaccess ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP} 2>/dev/null || true"
+  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
+    "${SITE}/deploy/hostinger/public_html.htaccess" "${REMOTE}:${WEBROOT}/.htaccess"
+  echo ".htaccess uploaded (previous copy: ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP})"
+fi
 
 # --------------------------------------------------------------------------
 # Phase 5 — upload frontend -> public_html/
@@ -332,3 +385,5 @@ Smoke test:
   curl -sI https://nexadownloadmanager.com/pricing | head -1
   curl -s  https://nexadownloadmanager.com/api/health
 EOF
+
+

@@ -18,6 +18,7 @@
 #
 # Post-deploy verification (run once, mandatory):
 #   curl -sI https://nexadownloadmanager.com/          -> no X-Robots-Tag
+#   curl -sI https://www.nexadownloadmanager.com/      -> 301 to https://nexadownloadmanager.com/
 #   curl -sI https://nexadownloadmanager.com/          -> Content-Security-Policy
 #   then load /, /admin and /root in a browser and check the console is clean
 #     (a CSP that blocks a bundle is invisible to curl -sI)
@@ -65,12 +66,17 @@ DirectoryIndex index.html index.php
     # served from this document root, so one policy covers all three.
     #
     # `script-src` carries no 'unsafe-inline' and no 'unsafe-eval' on purpose:
-    # the Vite builds emit exactly one external module each and index.html's
-    # only inline block is application/ld+json, which is data and never
-    # executed. That is what makes this policy worth having — a stored XSS in a
-    # review, an ad title, a contact message or a team member's display name has
-    # nowhere to execute. Adding 'unsafe-inline' here would give all of that
-    # back, so if a future build inlines a script, hash it instead.
+    # the Vite builds emit exactly one external module each, and index.html
+    # has exactly one inline script — the boot screen + theme stamp — which is
+    # allowed by its SHA-256 hash, not by 'unsafe-inline'. That is what makes
+    # this policy worth having: a stored XSS in a review, an ad title, a
+    # contact message or a team member's display name has nowhere to execute.
+    # The hash covers the script's exact bytes, so editing that block in
+    # frontend/index.html changes it: deploy/build-and-upload.sh recomputes the
+    # hash from the built dist/index.html and refuses to deploy until this line
+    # carries the new value (it prints it). Without the hash the browser
+    # silently drops the script: no boot screen, and a flash of the wrong
+    # theme on every load — which is exactly what happened before it was added.
     #
     # The four third parties are the ones the site actually loads:
     #   accounts.google.com    Google Identity Services ("Continue with Google")
@@ -85,7 +91,7 @@ DirectoryIndex index.html index.php
     #
     # After changing this, reload the site, /admin and /root and check the
     # browser console for "Refused to load" — a CSP mistake is invisible to curl.
-    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; frame-src 'self' https://accounts.google.com https://challenges.cloudflare.com; worker-src 'self' blob:; manifest-src 'self'; upgrade-insecure-requests"
+    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' 'sha256-gTJlH1j1zBW3bJNmeY8MITvgoMNk1ceLegLxLb0A19A=' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; frame-src 'self' https://accounts.google.com https://challenges.cloudflare.com; worker-src 'self' blob:; manifest-src 'self'; upgrade-insecure-requests"
 
     # nginx parity: the /admin and /root mounts are never indexed. NDM_NOINDEX
     # is set by the rewrite rules below; after an internal rewrite the engine
@@ -162,6 +168,15 @@ DirectoryIndex index.html index.php
 
     # ACME / host verification must stay reachable, over plain HTTP too.
     RewriteRule ^\.well-known/ - [L]
+
+    # One canonical host. www. served the whole site as a second origin: its
+    # session cookies were separate from the apex's, and Google Sign-In refused
+    # it outright ("origin is not allowed for the given client ID"). Every
+    # shell already declares the apex as canonical; this makes the redirect
+    # match. Ordered before the HTTPS rule so http://www. lands on the apex
+    # over https in a single hop.
+    RewriteCond %{HTTP_HOST} ^www\.(.+)$ [NC]
+    RewriteRule ^ https://%1%{REQUEST_URI} [R=301,L]
 
     # nginx parity: plain HTTP exists only to redirect. TLS terminates at this
     # same LiteSpeed, so %{HTTPS} is authoritative - no forwarded-proto games.

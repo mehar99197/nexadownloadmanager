@@ -1,0 +1,5 @@
+# The CSP in deploy/hostinger/public_html.htaccess allows the inline boot script
+# in this file by SHA-256 hash, and the hash covers the exact bytes served —
+# including line endings. Pin LF so a Windows checkout (autocrlf) and a Linux one
+# build byte-identical shells and the one hash in .htaccess holds everywhere.
+ndm-website/frontend/index.html text eol=lf
