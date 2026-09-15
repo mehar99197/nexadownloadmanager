@@ -62,7 +62,7 @@ jobs:
     name: Build + .deb package (Ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain
         run: |
@@ -408,7 +408,7 @@ jobs:
         shell: msys2 {0}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup MSYS2 + MinGW64
         uses: msys2/setup-msys2@v2
@@ -783,7 +783,7 @@ jobs:
     name: macOS app bundle
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain
         run: |
@@ -1006,7 +1006,7 @@ jobs:
           --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_password_1234"
           --health-interval=10s --health-timeout=5s --health-retries=12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install C++ dependencies
         run: |
           sudo apt-get update
