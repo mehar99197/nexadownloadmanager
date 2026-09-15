@@ -104,6 +104,7 @@ export default function ResetPassword() {
             <Input
               label="New password"
               name="password"
+              placeholder="At least 8 characters"
               type="password"
               autoComplete="new-password"
               required
@@ -114,6 +115,7 @@ export default function ResetPassword() {
             <Input
               label="Confirm password"
               name="confirm"
+              placeholder="Re-enter password"
               type="password"
               autoComplete="new-password"
               required

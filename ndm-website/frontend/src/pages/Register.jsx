@@ -163,6 +163,7 @@ export default function Register() {
             <Input
               label="Name"
               name="name"
+              placeholder="John Doe"
               type="text"
               autoComplete="name"
               required
@@ -172,6 +173,7 @@ export default function Register() {
             <Input
               label="Email"
               name="email"
+              placeholder="you@example.com"
               type="email"
               autoComplete="email"
               required
@@ -181,6 +183,7 @@ export default function Register() {
             <Input
               label="Password"
               name="password"
+              placeholder="At least 8 characters"
               type="password"
               autoComplete="new-password"
               required

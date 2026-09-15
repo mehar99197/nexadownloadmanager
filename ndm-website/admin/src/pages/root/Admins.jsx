@@ -245,11 +245,11 @@ export default function Admins() {
         )}
       >
         <div className="space-y-4">
-          <Input label="Name" name="adminName" value={createForm.name}
+          <Input label="Name" name="adminName" placeholder="John Doe" value={createForm.name}
             onChange={(e) => setCreateForm((c) => ({ ...c, name: e.target.value }))} />
-          <Input label="Email" name="adminEmail" type="email" value={createForm.email}
+          <Input label="Email" name="adminEmail" type="email" placeholder="you@example.com" value={createForm.email}
             onChange={(e) => setCreateForm((c) => ({ ...c, email: e.target.value }))} />
-          <Input label="Temporary password" name="adminPassword" type="password"
+          <Input label="Temporary password" name="adminPassword" type="password" placeholder="At least 12 characters"
             hint={`At least ${MIN_PASSWORD} characters`} value={createForm.password}
             onChange={(e) => setCreateForm((c) => ({ ...c, password: e.target.value }))} />
           <p className="text-xs text-admin-faint">
@@ -272,7 +272,7 @@ export default function Admins() {
         )}
       >
         <div className="space-y-4">
-          <Input label="New password" name="newAdminPassword" type="password"
+          <Input label="New password" name="newAdminPassword" type="password" placeholder="At least 12 characters"
             hint={`At least ${MIN_PASSWORD} characters`} value={resetPassword}
             onChange={(e) => setResetPassword(e.target.value)} />
           <p className="text-xs text-admin-faint">All of their active sessions are revoked immediately.</p>

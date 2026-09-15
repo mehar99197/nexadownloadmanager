@@ -135,6 +135,7 @@ function DataCard({ user }) {
               <Input
                 label="Password"
                 name="deletePassword"
+                placeholder="Enter your password"
                 type="password"
                 autoComplete="current-password"
                 value={password}
@@ -265,6 +266,7 @@ export default function Profile() {
             <Input
               label="Email"
               name="email"
+              placeholder="you@example.com"
               type="email"
               value={user.email || ''}
               disabled
@@ -280,6 +282,7 @@ export default function Profile() {
             <Input
               label="Name"
               name="name"
+              placeholder="John Doe"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -309,6 +312,7 @@ export default function Profile() {
             <Input
               label="Current password"
               name="currentPassword"
+              placeholder="Enter your current password"
               type="password"
               autoComplete="current-password"
               value={currentPassword}
@@ -317,6 +321,7 @@ export default function Profile() {
             <Input
               label="New password"
               name="newPassword"
+              placeholder="At least 8 characters"
               type="password"
               autoComplete="new-password"
               hint="At least 8 characters — not your email, and not one seen in a data breach"

@@ -361,6 +361,7 @@ export default function Security() {
             label="Password"
             name="password"
             type="password"
+            placeholder="Enter your password"
             autoComplete="current-password"
             value={disableForm.password}
             onChange={(e) => setDisableForm((f) => ({ ...f, password: e.target.value }))}
@@ -368,6 +369,7 @@ export default function Security() {
           <Input
             label="Authenticator or recovery code"
             name="code"
+            placeholder="123456 or a recovery code"
             autoComplete="one-time-code"
             value={disableForm.code}
             onChange={(e) => setDisableForm((f) => ({ ...f, code: e.target.value }))}

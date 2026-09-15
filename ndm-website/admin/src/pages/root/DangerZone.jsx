@@ -195,7 +195,7 @@ export default function DangerZone() {
           </div>
           <Input
             label={`Type ${target?.email || ''} to confirm`}
-            name="confirmEmail" value={confirmEmail}
+            name="confirmEmail" placeholder={target?.email || 'user@example.com'} value={confirmEmail}
             onChange={(e) => setConfirmEmail(e.target.value)}
             autoComplete="off"
           />

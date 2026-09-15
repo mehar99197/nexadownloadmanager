@@ -182,6 +182,7 @@ export default function Login() {
               <Input
                 label="Verification code"
                 name="code"
+                placeholder="123456"
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 autoFocus
@@ -210,6 +211,7 @@ export default function Login() {
             <Input
               label="Email"
               name="email"
+              placeholder="you@example.com"
               type="email"
               autoComplete="email"
               required
@@ -219,6 +221,7 @@ export default function Login() {
             <Input
               label="Password"
               name="password"
+              placeholder="Enter your password"
               type="password"
               autoComplete="current-password"
               required

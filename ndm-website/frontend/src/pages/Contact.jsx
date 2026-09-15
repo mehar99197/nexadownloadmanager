@@ -134,6 +134,7 @@ export default function Contact() {
               <Input
                 label="Name"
                 name="name"
+                placeholder="John Doe"
                 type="text"
                 autoComplete="name"
                 value={name}
@@ -142,6 +143,7 @@ export default function Contact() {
               <Input
                 label="Email"
                 name="email"
+                placeholder="you@example.com"
                 type="email"
                 autoComplete="email"
                 value={email}

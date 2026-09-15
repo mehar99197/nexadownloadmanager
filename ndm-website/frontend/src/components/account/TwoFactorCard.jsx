@@ -180,6 +180,7 @@ export default function TwoFactorCard({ user }) {
           <Input
             label="Code from the app"
             name="totpCode"
+            placeholder="123456"
             inputMode="numeric"
             autoComplete="one-time-code"
             pattern="[0-9]{6}"
@@ -213,6 +214,7 @@ export default function TwoFactorCard({ user }) {
                 <Input
                   label="Password"
                   name="disablePassword"
+                  placeholder="Enter your password"
                   type="password"
                   autoComplete="current-password"
                   required
@@ -223,6 +225,7 @@ export default function TwoFactorCard({ user }) {
               <Input
                 label="Code from the app (or a recovery code)"
                 name="disableCode"
+                placeholder="123456 or a recovery code"
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 required

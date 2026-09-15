@@ -67,6 +67,7 @@ export default function ForgotPassword() {
               <Input
                 label="Email"
                 name="email"
+                placeholder="you@example.com"
                 type="email"
                 autoComplete="email"
                 required

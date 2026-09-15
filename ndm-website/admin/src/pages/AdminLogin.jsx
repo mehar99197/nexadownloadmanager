@@ -128,6 +128,7 @@ export default function AdminLogin() {
           <Input
             label={IS_ROOT ? 'Creator email' : 'Admin email'}
             name="email"
+            placeholder="you@example.com"
             type="email"
             autoComplete="username"
             required
@@ -137,6 +138,7 @@ export default function AdminLogin() {
           <Input
             label="Password"
             name="password"
+            placeholder="Enter your password"
             type="password"
             autoComplete="current-password"
             required
