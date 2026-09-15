@@ -142,7 +142,7 @@
     <context>
         <name>LicenseManager</name>
         <message numerus="yes">
-            <location filename="../src/license/LicenseManager.cpp" line="330" />
+            <location filename="../src/license/LicenseManager.cpp" line="433" />
             <source>All %n seat(s) on this license are in use on other devices</source>
             <translation type="unfinished">
                 <numerusform />
@@ -150,12 +150,27 @@
             </translation>
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="807" />
+            <location filename="../src/license/LicenseManager.cpp" line="1234" />
+            <source>Could not reach nexadownloadmanager.com. Check your connection and try again.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1247" />
+            <source>Could not start signing in. Please try again in a minute.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="586" />
             <source>Free plan</source>
             <translation type="unfinished" />
         </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="462" />
+            <source>Free plan — no active plan on your account (%1)</source>
+            <translation type="unfinished" />
+        </message>
         <message numerus="yes">
-            <location filename="../src/license/LicenseManager.cpp" line="557" />
+            <location filename="../src/license/LicenseManager.cpp" line="723" />
             <source>Seat not available on this license — all %n seat(s) are in use on other devices</source>
             <translation type="unfinished">
                 <numerusform />
@@ -163,8 +178,53 @@
             </translation>
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="556" />
+            <location filename="../src/license/LicenseManager.cpp" line="722" />
             <source>Seat not available on this license — it was freed from your account</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1373" />
+            <source>Sign-in cancelled.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1344" />
+            <source>Signed in as %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1345" />
+            <source>Signed in as %1 (this session only; OS credential store unavailable)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="463" />
+            <source>Signed in as %1 — Free plan (%2)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="459" />
+            <source>Signed out — sign in again in Settings</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1318" />
+            <source>Signing in did not complete. Please try again.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1211" />
+            <source>Signing in needs a secure connection to nexadownloadmanager.com</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1268" />
+            <source>That code expired. Start signing in again.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/license/LicenseManager.cpp" line="1307" />
+            <source>That sign-in was denied on the website.</source>
             <translation type="unfinished" />
         </message>
     </context>
@@ -444,11 +504,6 @@
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1459" />
-            <source>Enter license key</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
             <location filename="../src/ui/MainWindow.cpp" line="1607" />
             <source>F&amp;ilter by status…</source>
             <translation type="unfinished" />
@@ -676,6 +731,11 @@
         <message>
             <location filename="../src/ui/MainWindow.cpp" line="1591" />
             <source>Shut down computer when done (this session)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1459" />
+            <source>Sign in</source>
             <translation type="unfinished" />
         </message>
         <message>
@@ -942,7 +1002,7 @@ Free includes Nexa Dark and Nexa Light. Start the free 7-day trial in Settings, 
             <location filename="../src/ui/MainWindow.cpp" line="827" />
             <source>This device's seat was freed from your Nexa account, so it has dropped to the Free plan.
 
-Enter your license key again in Settings to take a seat back, if one is available.</source>
+Sign in again in Settings to take a seat back, if one is available.</source>
             <translation type="unfinished" />
         </message>
         <message numerus="yes">
@@ -979,322 +1039,377 @@ Close Nexa on another machine, or manage your devices at nexadownloadmanager.com
     <context>
         <name>SettingsDialog</name>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="180" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="182" />
             <source> (Pro)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="482" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="610" />
             <source>AI features need an active Pro or Team license.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="448" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="555" />
             <source>Activate</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="372" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="374" />
             <source>Address</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="199" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="201" />
             <source>Appearance</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="478" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="492" />
+            <source>Approve this computer in the browser window that opened, after checking it shows this code:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="606" />
             <source>Auto-rename files to clean names on completion</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="194" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="196" />
             <source>Browse themes…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="146" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="148" />
             <source>Browse…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="272" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="507" />
+            <source>Cancel</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="274" />
             <source>Check for updates automatically (once a day)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="491" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="619" />
             <source>Command to run, with %1 standing for the downloaded file. Leave empty to use your system's scanner.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="362" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="364" />
             <source>Connection</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="419" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="506" />
+            <source>Copy code</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="421" />
             <source>Copy link</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="177" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="179" />
             <source>Dark</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="152" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="154" />
             <source>Do nothing</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="343" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="345" />
             <source>Don't seed</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="309" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="311" />
             <source>Download and embed subtitles</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="150" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="152" />
             <source>Download folder</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="337" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="339" />
             <source>Download limit</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="291" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="293" />
             <source>Global speed limit</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="299" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="301" />
             <source>HLS stream connections</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="355" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="357" />
             <source>HTTP proxy</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="647" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="808" />
             <source>Included with Pro — upgrade to use this theme</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="251" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="253" />
             <source>Language</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="452" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="559" />
             <source>License key</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="177" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="179" />
             <source>Light</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="283" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="285" />
             <source>Max simultaneous downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="258" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="260" />
             <source>Monitor the clipboard for download links</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="443" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="550" />
             <source>NDM-XXXX-XXXX-XXXX</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="353" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="355" />
             <source>No proxy (direct)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="500" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="628" />
             <source>No scanner found yet — install ClamAV (or set a command above) to use this.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="153" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="155" />
             <source>Open the download folder</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="296" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="505" />
+            <source>Open the page again</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="298" />
             <source>Parallel segment fetches for login-gated streams, which Nexa downloads itself. Public streams are handled by FFmpeg, which manages its own connections.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="184" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="186" />
             <source>Part of the Pro theme collection.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="379" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="381" />
             <source>Password</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="304" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="306" />
             <source>Playlist videos in parallel</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="408" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="410" />
             <source>Port</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="228" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="230" />
             <source>Pro theme</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="154" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="156" />
             <source>Put the computer to sleep</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="410" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="412" />
             <source>Reachable from other devices on my network (needs NEXA_TLS_CERT / NEXA_TLS_KEY)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="449" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="556" />
             <source>Remove</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="400" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="402" />
             <source>Run the web dashboard while Nexa is open</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="160" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="162" />
             <source>Runs once, after the last active download finishes (60-second countdown you can cancel).</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="356" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="358" />
             <source>SOCKS5 proxy</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="514" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="642" />
             <source>Save</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="504" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="632" />
             <source>Save error logs to a file (for troubleshooting)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="486" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="614" />
             <source>Scan finished downloads for malware</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="499" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="627" />
             <source>Scanner found on this computer.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="196" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="198" />
             <source>See every theme as a live preview.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="345" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="347" />
             <source>Seed to ratio</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="106" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="108" />
             <source>Settings</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="265" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="267" />
             <source>Show a dialog when a download completes</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="268" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="270" />
             <source>Show desktop notifications when a download finishes or fails</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="270" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="272" />
             <source>Shown from the tray icon when Nexa is in the background.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="155" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="157" />
             <source>Shut down the computer</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="456" />
-            <source>Status</source>
+            <location filename="../src/ui/SettingsDialog.cpp" line="461" />
+            <source>Sign in with Nexa</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="316" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="535" />
+            <source>Sign out</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="685" />
+            <source>Signed in as %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="684" />
+            <source>Signed in on this computer</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="477" />
+            <source>Starting sign-in…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="318" />
             <source>Subtitle languages</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="250" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="252" />
             <source>Takes effect the next time Nexa starts.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="289" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="291" />
             <source>Unlimited</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="338" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="340" />
             <source>Upload limit</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="354" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="462" />
+            <source>Use a license key instead</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="356" />
             <source>Use the system proxy</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="375" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="377" />
             <source>Username</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="161" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="590" />
+            <source>Waiting for you to approve this computer…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="163" />
             <source>When all downloads finish</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="315" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="469" />
+            <source>Your plan follows your account — there is no key to copy. A browser window opens so you can approve this computer.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SettingsDialog.cpp" line="317" />
             <source>e.g. en,en-US,ur</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SettingsDialog.cpp" line="229" />
+            <location filename="../src/ui/SettingsDialog.cpp" line="231" />
             <source>“%1” is part of the Pro theme collection.
 
 Free includes Nexa Dark and Nexa Light. Start the free 7-day trial, or see nexadownloadmanager.com/pricing to unlock all themes.</source>

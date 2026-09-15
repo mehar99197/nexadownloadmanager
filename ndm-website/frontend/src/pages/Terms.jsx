@@ -61,12 +61,13 @@ export default function Terms() {
           <p>
             A paid plan is licensed to the account that bought it, not to a person or a company in
             general. Each seat may be active on one device at a time; Pro includes 1 seat and Team
-            includes 5. The app registers a device fingerprint when you activate a key, and the
-            license server refuses activations beyond your seat count. You can deactivate a device
-            from inside the app (Settings &rarr; License &rarr; Remove) to free its seat.
+            includes 5. The app registers a device fingerprint when you sign in (or activate a key),
+            and the license server refuses activations beyond your seat count. You can sign a
+            device out from inside the app (Settings &rarr; Account &rarr; Sign out) or from your
+            dashboard to free its seat.
           </p>
           <p>
-            Do not share, resell or publish license keys. We may revoke keys that are being shared
+            Do not share your account or resell or publish license keys. We may revoke keys that are being shared
             or that were obtained through fraud or a chargeback.
           </p>
         </Clause>

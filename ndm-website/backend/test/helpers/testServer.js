@@ -91,6 +91,7 @@ async function reset() {
     // rate_limits is durable now (middleware/rateLimitStore.js), so leftovers
     // from an earlier run would otherwise start a suite already throttled.
     'rate_limits', 'user_sessions', 'security_events', 'used_id_tokens',
+    'device_codes', 'device_tokens',
     // Ad-event budgets. A nonce left over from an earlier run makes the first
     // report of a "new" token look like a replay, which is a confusing way to
     // fail — the counters are the thing under test.

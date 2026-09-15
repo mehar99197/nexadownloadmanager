@@ -261,7 +261,7 @@ DirectoryIndex index.html index.php
     # Add a client-only route to the router and forget this file, and the test
     # says so rather than the route quietly starting to 404 in production.
     RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteRule ^(dashboard|billing|profile|verify-email|forgot-password|reset-password|team/join)/?$ index.html [L]
+    RewriteRule ^(dashboard|billing|profile|activate|verify-email|forgot-password|reset-password|team/join)/?$ index.html [L]
 
     # ---- Everything else: a real 404 -------------------------------------------
     # There used to be a `RewriteRule ^ index.html [L]` catch-all here, so EVERY

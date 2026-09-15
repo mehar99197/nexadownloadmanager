@@ -201,6 +201,13 @@ bool verify(const QString &token, Claims *out, QString *error)
     claims.licenseKey = payload.value(QStringLiteral("sub")).toString();
     claims.plan       = payload.value(QStringLiteral("plan")).toString();
     claims.device     = payload.value(QStringLiteral("device")).toString();
+    // The server sends the account id as a number; accept a string too rather
+    // than silently losing the claim if that ever changes.
+    const QJsonValue account = payload.value(QStringLiteral("acct"));
+    if (account.isDouble())
+        claims.account = QString::number(qint64(account.toDouble()));
+    else if (account.isString())
+        claims.account = account.toString();
     claims.issuedAt   = timeFromClaim(payload.value(QStringLiteral("iat")));
     claims.expiresAt  = expires;
     claims.features   = payload.value(QStringLiteral("features")).toObject();

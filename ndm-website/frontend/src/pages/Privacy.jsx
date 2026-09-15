@@ -61,7 +61,7 @@ export default function Privacy() {
   usePageMeta({
     title: 'Privacy Policy',
     description:
-      'What Nexa Download Manager collects and why: account details on the website, a license key and device fingerprint from the app, and nothing from the browser extension — cookies stay on your machine.',
+      'What Nexa Download Manager collects and why: account details on the website, a sign-in token or license key and a device fingerprint from the app, and nothing from the browser extension — cookies stay on your machine.',
   });
 
   return (
@@ -96,12 +96,14 @@ export default function Privacy() {
 
         <Block title="2. The desktop app">
           <p>
-            The Windows and Linux app works fully offline for downloading. The only request it
-            makes to our servers is <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>,
-            sent when you activate a key and periodically afterwards to confirm the plan. That
-            request carries exactly two things: your license key and a device fingerprint (a
-            hash derived from hardware and OS identifiers, so we can enforce seats). It does not
-            include your download history, URLs, filenames, or anything about the files on your computer.
+            The Windows and Linux app works fully offline for downloading. The only requests it
+            makes to our servers concern your plan: <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>
+            (sent when you sign in or activate a key, and periodically afterwards) and the
+            sign-in handshake under <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">/api/device</code>.
+            They carry your sign-in token or license key, a device fingerprint (a hash derived
+            from hardware and OS identifiers, so we can count seats), the computer&apos;s name and the
+            app version. They do not include your download history, URLs, filenames, or anything
+            about the files on your computer.
           </p>
           <p>
             Download history, cookies exported for authenticated sites, and settings are stored in

@@ -252,6 +252,15 @@ blocks a bundle returns a perfectly good 200 to curl and a blank page to users.
 `DEPLOY_HTACCESS=1 ./deploy/build-and-upload.sh` does the backup-and-upload
 above for you (backups land in `~/domains/nexadownloadmanager.com/htaccess-backups/`).
 
+It also carries the list of **client-only routes** — the pages that are never
+prerendered and must fall through to `index.html` (`dashboard`, `billing`,
+`profile`, `activate`, `verify-email`, `forgot-password`, `reset-password`,
+`team/join`). Adding one to `App.jsx` without adding it there gives a 404 on a
+hard refresh, which is exactly how somebody arrives: `/activate?code=…` is
+opened by the desktop app, not clicked inside the site. `frontend/scripts/check-routes.mjs`
+fails the build when the two lists disagree, and this file is only uploaded with
+`DEPLOY_HTACCESS=1`.
+
 ### The one inline script and its hash
 
 `frontend/index.html` has exactly one inline `<script>` — the first-visit boot

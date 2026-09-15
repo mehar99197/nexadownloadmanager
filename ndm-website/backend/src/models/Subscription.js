@@ -58,13 +58,19 @@ const Subscription = {
     try {
       await connection.beginTransaction();
       const [rows] = await connection.execute(
-        'SELECT seats FROM subscriptions WHERE id = ? FOR UPDATE', [id]
+        'SELECT seats, plan FROM subscriptions WHERE id = ? FOR UPDATE', [id]
       );
       if (!rows.length) {
         await connection.rollback();
         return { ok: false, reason: 'not_found' };
       }
       const seats = Math.max(1, Number(rows[0].seats) || 1);
+      // A seat is a unit of something paid for. The Free plan has nothing to
+      // ration — every machine on it gets the same Free entitlements the app
+      // defaults to anyway — so it never answers seat_limit: an account signed
+      // in on a laptop and a desktop is not "sharing" anything. The row is
+      // still written, so the device list stays truthful.
+      const unlimited = rows[0].plan === 'free';
 
       // Seats held by OTHER devices right now. Excluding this device is what
       // makes a renewal free — a returning client must never be counted twice.
@@ -126,7 +132,7 @@ const Subscription = {
 
       // Renewing an unexpired lease always succeeds. Taking a *new* one (first
       // run, or after this device's lease lapsed) needs a free seat.
-      if (!holdsLease && busy >= seats) {
+      if (!holdsLease && !unlimited && busy >= seats) {
         await connection.rollback();
         return { ok: false, reason: 'seat_limit', seats, activeSeats: busy };
       }

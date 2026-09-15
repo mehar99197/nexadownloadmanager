@@ -14,6 +14,9 @@ const { isTrialActive, SEAT_LEASE_SECONDS } = require('../utils/license');
 const { assessSharing, autoSuspendReason, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
 const config = require('../config/env');
 const { entitlementsFor } = require('../config/plans');
+const DeviceAuth = require('../models/DeviceAuth');
+const { subscriptionForUser } = require('../utils/accountPlan');
+const security = require('../utils/securityEvents');
 
 // LITERAL response shape consumed by the C++ app — never the envelope.
 // `trial` is always present so the client can show trial state.
@@ -27,6 +30,62 @@ function invalid(res, reason, sub = null, extra = {}) {
     features: entitlementsFor('free'),
     ...extra,
   });
+}
+
+// A resolved subscription is usable only in the states somebody left it in
+// on purpose; everything that merely ran out was already folded to Free by
+// Subscription.current (see resolveSubscription).
+function usabilityReason(sub) {
+  if (sub.status === 'cancelled') return 'cancelled';
+  if (sub.status === 'expired') return 'expired';
+  if (sub.status !== 'active') return 'invalid';
+  if (sub.sharing_suspended_at) return 'seat_limit';
+  return null;
+}
+
+/**
+ * Resolve the request's credential — a licence key, or a signed-in machine's
+ * device token (routes/device.js) — to the subscription it may use.
+ *
+ * Returns { reason, sub, account, tokenSubject }. `tokenSubject` is what goes
+ * in the licence token's `sub`: the key for a key, `user:<id>` for an
+ * account, so a signed-in Team member's machine never learns the owner's key
+ * from its own token. `account` is set for device tokens only.
+ *
+ * A device token is refused (reason `signed_out`, the one answer that makes
+ * the app forget it) when it is unknown, revoked, or presented by a machine
+ * other than the one it was issued to — that last case also revokes it: a
+ * copied token is dead everywhere, and the legitimate machine signs in again.
+ */
+async function resolveCredential(req) {
+  const { license_key, device_token, device_fingerprint, device_name, app_version } = req.body;
+  if (!device_token) {
+    const resolved = await resolveSubscription(license_key);
+    return { ...resolved, account: null, tokenSubject: license_key };
+  }
+
+  const row = await DeviceAuth.findLiveToken(device_token);
+  if (!row) return { reason: 'signed_out', sub: null, account: null };
+  const account = { id: row.user_id, email: row.user_email, name: row.user_name };
+  if (row.device_fingerprint !== device_fingerprint) {
+    await DeviceAuth.revoke(row.id, 'device_mismatch');
+    await security.record('device.token_misuse', {
+      req, user: { id: row.user_id, email: row.user_email }, severity: 'critical',
+      detail: `device token issued to "${row.device_name || 'a device'}" was presented by a different machine and has been revoked`,
+    });
+    return { reason: 'signed_out', sub: null, account: null };
+  }
+  // A banned account, or one promoted to the control panel since it signed
+  // in, is signed out on the spot — the same line /api/auth draws.
+  if (row.user_banned || row.user_role !== 'user') {
+    await DeviceAuth.revoke(row.id, row.user_banned ? 'banned' : 'role');
+    return { reason: 'signed_out', sub: null, account: null };
+  }
+  await DeviceAuth.touch(row.id, { deviceName: device_name || null, appVersion: app_version || null });
+
+  const sub = await subscriptionForUser(row.user_id);
+  if (!sub) return { reason: 'not_found', sub: null, account, tokenSubject: `user:${row.user_id}` };
+  return { reason: usabilityReason(sub), sub, account, tokenSubject: `user:${row.user_id}` };
 }
 
 // Resolve a licence key to a usable subscription, or the reason it is not.
@@ -47,10 +106,8 @@ async function resolveSubscription(licenseKey) {
   //
   // What remains are the two states somebody chose: an admin expiring a licence
   // (which is also how a replaced key is retired) and a cancellation.
-  if (sub.status === 'cancelled') return { reason: 'cancelled', sub };
-  if (sub.status === 'expired') return { reason: 'expired', sub };
-  if (sub.status !== 'active') return { reason: 'invalid', sub };
-  // A licence the sharing check suspended answers exactly like a full one.
+  // A licence the sharing check suspended answers exactly like a full one
+  // (usabilityReason → `seat_limit`).
   //
   // Two reasons it is `seat_limit` and not a reason of its own. Practically:
   // the desktop client already handles it well — it keeps the stored key, stops
@@ -58,16 +115,19 @@ async function resolveSubscription(licenseKey) {
   // or `expired` would make it delete the key, which is not something to do to
   // someone a heuristic merely suspects. And a distinct reason would teach
   // whoever is sharing the key exactly what was detected and what to change.
-  if (sub.sharing_suspended_at) return { reason: 'seat_limit', sub };
-  return { reason: null, sub };
+  return { reason: usabilityReason(sub), sub };
 }
+
+// The account block a signed-in machine shows ("Signed in as …"); absent for
+// a licence key. Display only — the entitlement is inside the signed token.
+const accountBlock = (account) => (account ? { account: { id: account.id, email: account.email, name: account.name } } : {});
 
 router.post(
   '/validate', licenseLimiter, validate(validateLicenseSchema),
   asyncHandler(async (req, res) => {
-    const { license_key, device_fingerprint, device_name } = req.body;
-    const { reason, sub } = await resolveSubscription(license_key);
-    if (reason) return invalid(res, reason, sub);
+    const { device_fingerprint, device_name } = req.body;
+    const { reason, sub, account, tokenSubject } = await resolveCredential(req);
+    if (reason) return invalid(res, reason, sub, accountBlock(account));
 
     const seat = await Subscription.acquireSeat(sub.id, device_fingerprint, {
       deviceName: device_name || null,
@@ -79,6 +139,7 @@ router.post(
       return invalid(res, seat.reason === 'seat_limit' ? 'seat_limit' : seat.reason, sub, {
         seats: seat.seats,
         activeSeats: seat.activeSeats,
+        ...accountBlock(account),
       });
     }
 
@@ -92,8 +153,10 @@ router.post(
     // seat limit is still doing the real enforcement underneath; this exists so
     // a human can see which keys have leaked and revoke them deliberately.
     //
-    // Wrapped because a failure here must never break an activation.
-    if (seat.reason === 'acquired') {
+    // Wrapped because a failure here must never break an activation. The Free
+    // plan is skipped: it has no seats to share, so a household with three
+    // machines on it is not a "spread" of anything.
+    if (seat.reason === 'acquired' && sub.plan !== 'free') {
       try {
         const spread = await Subscription.deviceSpread(sub.id, SHARING_WINDOW_DAYS);
         const verdict = assessSharing({ seats: seat.seats, ...spread });
@@ -116,12 +179,12 @@ router.post(
             await Subscription.releaseSeat(sub.id, device_fingerprint);
             if (suspended) {
               console.warn(
-                `[SECURITY] licence ${license_key} auto-suspended for sharing: ${reason}`
+                `[SECURITY] licence ${sub.license_key} auto-suspended for sharing: ${reason}`
               );
             }
             // Take effect on this very request rather than the next one.
             return invalid(res, 'seat_limit', sub, {
-              seats: seat.seats, activeSeats: seat.activeSeats,
+              seats: seat.seats, activeSeats: seat.activeSeats, ...accountBlock(account),
             });
           }
         }
@@ -138,14 +201,19 @@ router.post(
       // The entitlements ride inside the signed token as well as beside it, so
       // a client that rewrites its local copy still cannot make a plan-gated
       // server endpoint agree.
+      // `acct` rides in the signature for a signed-in machine so the app can
+      // refuse a token minted for another account, the way it refuses one
+      // minted for another key.
       token: signLicenseToken({
-        sub: license_key, plan: sub.plan, device: device_fingerprint, features,
+        sub: tokenSubject, plan: sub.plan, device: device_fingerprint, features,
+        ...(account ? { acct: account.id } : {}),
       }),
       trial: isTrialActive(sub),
       features,
       seats: seat.seats,
       activeSeats: seat.activeSeats,
       leaseSeconds: seat.leaseSeconds,
+      ...accountBlock(account),
     });
   })
 );
@@ -165,9 +233,9 @@ router.post(
 router.post(
   '/heartbeat', apiLimiter, validate(heartbeatSchema),
   asyncHandler(async (req, res) => {
-    const { license_key, device_fingerprint, device_name } = req.body;
-    const { reason, sub } = await resolveSubscription(license_key);
-    if (reason) return invalid(res, reason, sub);
+    const { device_fingerprint, device_name } = req.body;
+    const { reason, sub, account, tokenSubject } = await resolveCredential(req);
+    if (reason) return invalid(res, reason, sub, accountBlock(account));
 
     // renewOnly: a beat keeps a seat this device already holds, but must never
     // take one back after it was deliberately freed. Re-taking it is what made
@@ -184,7 +252,7 @@ router.post(
       // assessment it was avoiding actually runs.
       const wire = seat.reason === 'seat_unknown_device' ? 'seat_limit' : seat.reason;
       return invalid(res, wire, sub, {
-        seats: seat.seats, activeSeats: seat.activeSeats,
+        seats: seat.seats, activeSeats: seat.activeSeats, ...accountBlock(account),
       });
     }
     const features = entitlementsFor(sub.plan);
@@ -195,11 +263,13 @@ router.post(
       // mid-session downgrade reaches the client on the next beat rather than
       // waiting for the six-hourly revalidation.
       token: signLicenseToken({
-        sub: license_key, plan: sub.plan, device: device_fingerprint, features,
+        sub: tokenSubject, plan: sub.plan, device: device_fingerprint, features,
+        ...(account ? { acct: account.id } : {}),
       }),
       features,
       seats: seat.seats, activeSeats: seat.activeSeats,
       leaseSeconds: seat.leaseSeconds,
+      ...accountBlock(account),
     });
   })
 );
@@ -209,8 +279,15 @@ router.post(
 router.post(
   '/release', apiLimiter, validate(releaseSeatSchema),
   asyncHandler(async (req, res) => {
-    const { license_key, device_fingerprint } = req.body;
-    const sub = await Subscription.findByLicenseKey(license_key);
+    const { license_key, device_token, device_fingerprint } = req.body;
+    let sub = null;
+    if (device_token) {
+      const row = await DeviceAuth.findLiveToken(device_token);
+      if (row && row.device_fingerprint === device_fingerprint)
+        sub = await subscriptionForUser(row.user_id);
+    } else {
+      sub = await Subscription.findByLicenseKey(license_key);
+    }
     if (!sub) return res.json({ released: false });
     const result = await Subscription.releaseSeat(sub.id, device_fingerprint);
     return res.json({ released: result.released, leaseSeconds: SEAT_LEASE_SECONDS });

@@ -626,6 +626,59 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  // Desktop-app account sign-in (routes/device.js) — the OAuth "device
+  // authorization" shape. The app asks for a code, the person approves it on
+  // the website while signed in, the app collects a long-lived device token
+  // and from then on validates with that instead of a licence key.
+  //
+  // device_codes is the short-lived half: one row per sign-in attempt, gone
+  // ten minutes later whatever happened. Only hashes of the secret the app
+  // polls with are stored; the human-readable user_code is what the person
+  // sees and types.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS device_codes (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      device_code_hash CHAR(64) NOT NULL,
+      user_code CHAR(9) NOT NULL,
+      device_fingerprint VARCHAR(255) NOT NULL,
+      device_name VARCHAR(120) NULL DEFAULT NULL,
+      app_version VARCHAR(40) NULL DEFAULT NULL,
+      ip VARCHAR(45) NULL DEFAULT NULL,
+      status ENUM('pending', 'approved', 'denied', 'consumed') NOT NULL DEFAULT 'pending',
+      user_id INT UNSIGNED NULL DEFAULT NULL,
+      expires_at DATETIME NOT NULL,
+      last_polled_at DATETIME NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_device_code_hash (device_code_hash),
+      UNIQUE KEY uq_device_user_code (user_code),
+      INDEX idx_device_codes_expiry (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // device_tokens is the durable half: one row per machine signed in to an
+  // account. The token itself is a CSPRNG secret the app keeps in the OS
+  // credential store; only its SHA-256 lives here. It is bound to the device
+  // fingerprint it was issued to, so a copied token is refused (and revoked)
+  // on any other machine. Cascades with the account.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS device_tokens (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id INT UNSIGNED NOT NULL,
+      token_hash CHAR(64) NOT NULL,
+      device_fingerprint VARCHAR(255) NOT NULL,
+      device_name VARCHAR(120) NULL DEFAULT NULL,
+      app_version VARCHAR(40) NULL DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at DATETIME NULL DEFAULT NULL,
+      revoked_at DATETIME NULL DEFAULT NULL,
+      revoked_reason VARCHAR(40) NULL DEFAULT NULL,
+      UNIQUE KEY uq_device_token_hash (token_hash),
+      INDEX idx_device_tokens_user (user_id),
+      INDEX idx_device_tokens_device (device_fingerprint),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   await execute(`
     CREATE TABLE IF NOT EXISTS rate_limits (
       id VARCHAR(191) NOT NULL PRIMARY KEY,

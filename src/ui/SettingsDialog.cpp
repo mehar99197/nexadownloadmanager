@@ -29,6 +29,8 @@
 #include <QApplication>
 #include <QStandardItemModel>
 #include <QSignalBlocker>
+#include <QDesktopServices>
+#include <QFont>
 #include "license/LicenseManager.h"
 
 namespace nexa {
@@ -435,43 +437,169 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     });
     connect(this, &SettingsDialog::settingsApplied, this, refreshDashUrl);
 
-    // ---- License -----------------------------------------------------------
-    v->addWidget(sectionHeader(QStringLiteral("License"), plate));
-    auto *licenseForm = new QFormLayout;
-    licenseForm->setLabelAlignment(Qt::AlignRight);
-    m_licenseKey = new QLineEdit(plate);
-    m_licenseKey->setPlaceholderText(tr("NDM-XXXX-XXXX-XXXX"));
-    m_licenseKey->setEchoMode(QLineEdit::Password);
-    m_licenseKey->setText(QString());
-    auto *licenseRow = new QHBoxLayout;
-    licenseRow->addWidget(m_licenseKey, 1);
-    auto *activate = new QPushButton(tr("Activate"), plate);
-    auto *remove = new QPushButton(tr("Remove"), plate);
-    licenseRow->addWidget(activate);
-    licenseRow->addWidget(remove);
-    licenseForm->addRow(tr("License key"), licenseRow);
-    m_licenseStatus = new QLabel(m_engine->license()->status(), plate);
+    // ---- Account -----------------------------------------------------------
+    //
+    // Signing in is the way in: the plan follows the account, so a trial, an
+    // upgrade or a team invitation reaches this machine with nothing to paste
+    // and no key to keep secret. Manual activation still exists — an older
+    // build, or a machine set up without a browser — but it is folded away
+    // behind a link rather than being the first thing anybody sees.
+    v->addWidget(sectionHeader(QStringLiteral("Account"), plate));
+    LicenseManager *license = m_engine->license();
+
+    m_licenseStatus = new QLabel(license->status(), plate);
     m_licenseStatus->setWordWrap(true);
     m_licenseStatus->setObjectName(QStringLiteral("Muted"));
-    licenseForm->addRow(tr("Status"), m_licenseStatus);
-    v->addLayout(licenseForm);
-    connect(activate, &QPushButton::clicked, this, [this]() {
-        m_engine->license()->activate(m_licenseKey->text());
-    });
-    connect(remove, &QPushButton::clicked, this, [this]() {
-        m_engine->license()->deactivate();
-        m_licenseKey->clear();
-    });
-    connect(m_engine->license(), &LicenseManager::statusChanged,
+    v->addWidget(m_licenseStatus);
+
+    // --- signed out: sign in, or reveal the key row
+    m_accountSignedOut = new QWidget(plate);
+    {
+        auto *col = new QVBoxLayout(m_accountSignedOut);
+        col->setContentsMargins(0, 0, 0, 0);
+        auto *buttons = new QHBoxLayout;
+        auto *signIn = new QPushButton(tr("Sign in with Nexa"), m_accountSignedOut);
+        auto *useKey = new QPushButton(tr("Use a license key instead"), m_accountSignedOut);
+        useKey->setFlat(true);
+        useKey->setCursor(Qt::PointingHandCursor);
+        buttons->addWidget(signIn);
+        buttons->addWidget(useKey);
+        buttons->addStretch(1);
+        col->addLayout(buttons);
+        auto *hint = new QLabel(tr("Your plan follows your account — there is no key to copy. "
+                                   "A browser window opens so you can approve this computer."),
+                                m_accountSignedOut);
+        hint->setObjectName(QStringLiteral("Muted"));
+        hint->setWordWrap(true);
+        col->addWidget(hint);
+        connect(signIn, &QPushButton::clicked, this, [this]() {
+            if (m_licenseStatus)
+                m_licenseStatus->setText(tr("Starting sign-in…"));
+            m_engine->license()->beginSignIn();
+        });
+        connect(useKey, &QPushButton::clicked, this, [this]() {
+            if (m_keyRow)
+                m_keyRow->setVisible(!m_keyRow->isVisible());
+        });
+    }
+    v->addWidget(m_accountSignedOut);
+
+    // --- waiting: the code has to match what the website shows
+    m_accountWaiting = new QWidget(plate);
+    {
+        auto *col = new QVBoxLayout(m_accountWaiting);
+        col->setContentsMargins(0, 0, 0, 0);
+        auto *ask = new QLabel(tr("Approve this computer in the browser window that opened, "
+                                  "after checking it shows this code:"), m_accountWaiting);
+        ask->setWordWrap(true);
+        col->addWidget(ask);
+        m_signInCode = new QLabel(m_accountWaiting);
+        QFont codeFont = m_signInCode->font();
+        codeFont.setPointSize(codeFont.pointSize() + 6);
+        codeFont.setBold(true);
+        codeFont.setLetterSpacing(QFont::AbsoluteSpacing, 3);
+        m_signInCode->setFont(codeFont);
+        m_signInCode->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        col->addWidget(m_signInCode);
+        auto *buttons = new QHBoxLayout;
+        auto *openAgain = new QPushButton(tr("Open the page again"), m_accountWaiting);
+        auto *copyCode = new QPushButton(tr("Copy code"), m_accountWaiting);
+        auto *cancel = new QPushButton(tr("Cancel"), m_accountWaiting);
+        buttons->addWidget(openAgain);
+        buttons->addWidget(copyCode);
+        buttons->addWidget(cancel);
+        buttons->addStretch(1);
+        col->addLayout(buttons);
+        connect(openAgain, &QPushButton::clicked, this, [this]() {
+            if (!m_signInUrl.isEmpty())
+                QDesktopServices::openUrl(QUrl(m_signInUrl));
+        });
+        connect(copyCode, &QPushButton::clicked, this, [this]() {
+            if (m_signInCode)
+                QApplication::clipboard()->setText(m_signInCode->text());
+        });
+        connect(cancel, &QPushButton::clicked, this, [this]() {
+            m_engine->license()->cancelSignIn();
+        });
+    }
+    v->addWidget(m_accountWaiting);
+
+    // --- signed in
+    m_accountSignedIn = new QWidget(plate);
+    {
+        auto *row = new QHBoxLayout(m_accountSignedIn);
+        row->setContentsMargins(0, 0, 0, 0);
+        m_accountWho = new QLabel(m_accountSignedIn);
+        m_accountWho->setWordWrap(true);
+        row->addWidget(m_accountWho, 1);
+        auto *signOut = new QPushButton(tr("Sign out"), m_accountSignedIn);
+        row->addWidget(signOut);
+        connect(signOut, &QPushButton::clicked, this, [this]() {
+            m_engine->license()->signOut();
+        });
+    }
+    v->addWidget(m_accountSignedIn);
+
+    // --- manual activation, hidden until asked for
+    m_keyRow = new QWidget(plate);
+    {
+        auto *licenseForm = new QFormLayout(m_keyRow);
+        licenseForm->setContentsMargins(0, 0, 0, 0);
+        licenseForm->setLabelAlignment(Qt::AlignRight);
+        m_licenseKey = new QLineEdit(m_keyRow);
+        m_licenseKey->setPlaceholderText(tr("NDM-XXXX-XXXX-XXXX"));
+        m_licenseKey->setEchoMode(QLineEdit::Password);
+        m_licenseKey->setText(QString());
+        auto *licenseRow = new QHBoxLayout;
+        licenseRow->addWidget(m_licenseKey, 1);
+        auto *activate = new QPushButton(tr("Activate"), m_keyRow);
+        auto *remove = new QPushButton(tr("Remove"), m_keyRow);
+        licenseRow->addWidget(activate);
+        licenseRow->addWidget(remove);
+        licenseForm->addRow(tr("License key"), licenseRow);
+        connect(activate, &QPushButton::clicked, this, [this]() {
+            m_engine->license()->activate(m_licenseKey->text());
+        });
+        connect(remove, &QPushButton::clicked, this, [this]() {
+            m_engine->license()->deactivate();
+            m_licenseKey->clear();
+        });
+    }
+    m_keyRow->setVisible(false);
+    v->addWidget(m_keyRow);
+
+    connect(license, &LicenseManager::statusChanged,
             this, [this](const QString &status) {
         if (m_licenseStatus)
             m_licenseStatus->setText(status);
     });
-    connect(m_engine->license(), &LicenseManager::activationFinished,
+    connect(license, &LicenseManager::activationFinished,
             this, [this](bool, const QString &message) {
         if (m_licenseStatus)
             m_licenseStatus->setText(message);
+        updateAccountSection();
     });
+    // The browser is opened from here, not from LicenseManager: the licence
+    // layer links no GUI module, which is what keeps it testable headless.
+    connect(license, &LicenseManager::signInCodeReady, this,
+            [this](const QString &code, const QString &url) {
+        m_signInUrl = url;
+        if (m_signInCode)
+            m_signInCode->setText(code);
+        if (m_licenseStatus)
+            m_licenseStatus->setText(tr("Waiting for you to approve this computer…"));
+        updateAccountSection();
+        QDesktopServices::openUrl(QUrl(url));
+    });
+    connect(license, &LicenseManager::signInFinished, this,
+            [this](bool, const QString &message) {
+        if (m_licenseStatus)
+            m_licenseStatus->setText(message);
+        updateAccountSection();
+    });
+    connect(license, &LicenseManager::accountChanged, this,
+            [this](const QString &) { updateAccountSection(); });
+    updateAccountSection();
 
     // ---- AI + history -----------------------------------------------------
     v->addWidget(sectionHeader(QStringLiteral("AI & history"), plate));
@@ -528,6 +656,39 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
         if (theme::savedId() != m_themeOnOpen)
             applyThemePreview(m_themeOnOpen);
     });
+}
+
+// Exactly one of the three account rows is visible at a time. Driven from the
+// licence manager's own state rather than from what this dialog last did, so a
+// sign-in finished (or revoked) while Settings is open redraws correctly.
+void SettingsDialog::updateAccountSection()
+{
+    const LicenseManager *license = m_engine ? m_engine->license() : nullptr;
+    if (!license || !m_accountSignedOut || !m_accountWaiting || !m_accountSignedIn)
+        return;
+    const bool waiting = license->signInInProgress();
+    const bool signedIn = license->isSignedIn();
+    // A sign-in started before this dialog was opened has already emitted its
+    // code, so take it from the manager rather than showing an empty card.
+    if (waiting) {
+        if (m_signInCode && m_signInCode->text().isEmpty())
+            m_signInCode->setText(license->signInCode());
+        if (m_signInUrl.isEmpty())
+            m_signInUrl = license->signInUrl();
+    }
+    m_accountWaiting->setVisible(waiting);
+    m_accountSignedIn->setVisible(signedIn && !waiting);
+    m_accountSignedOut->setVisible(!signedIn && !waiting);
+    if (m_accountWho) {
+        m_accountWho->setText(license->accountEmail().isEmpty()
+            ? tr("Signed in on this computer")
+            : tr("Signed in as %1").arg(license->accountEmail()));
+    }
+    // Manual activation belongs to the signed-out state only: a signed-in
+    // machine has no use for a key, and leaving the field on screen invites
+    // somebody to paste one that would then be ignored.
+    if (m_keyRow && (signedIn || waiting))
+        m_keyRow->setVisible(false);
 }
 
 void SettingsDialog::apply()

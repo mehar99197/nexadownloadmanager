@@ -50,9 +50,9 @@ function LicenseCard({ license, onRotated }) {
   const handleRotate = async () => {
     const sure = await confirm({
       title: 'Replace this license key?',
-      message: 'The current key stops working immediately and every machine using it '
-        + 'drops to Free. You will need to paste the new key into Nexa on each of your own '
-        + 'machines. Do this if the key has been shared or you have removed someone from your team.',
+      message: 'The current key stops working immediately and every machine activated with it '
+        + 'drops to Free. Machines signed in with an account are not affected. Do this if the key '
+        + 'has been shared or you have removed someone from your team.',
       confirmLabel: 'Replace key',
       danger: true,
     });
@@ -83,9 +83,35 @@ function LicenseCard({ license, onRotated }) {
     );
   }
 
+  // The Free plan has nothing a key would unlock — the app starts on Free by
+  // itself — so there is no key to show, only the way the account reaches the
+  // app: signing in inside it. A trial or upgrade then follows on its own.
+  if (license.plan === 'free' && !license.trial) {
+    return (
+      <Card className="card-hover !p-6" data-testid="account-signin-card">
+        <h3 className="font-semibold text-white">Use your account in the app</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          No licence key needed. In Nexa Download Manager open{' '}
+          <span className="font-medium text-slate-200">Settings &rarr; Account &rarr; Sign in with Nexa</span>, approve the
+          code that opens here, and this account&rsquo;s plan follows you &mdash; a trial or an upgrade reaches the app on
+          its own.
+        </p>
+        <p className="mt-3 text-xs leading-5 text-slate-500">
+          No Account section in Settings? That machine is on an older version &mdash;{' '}
+          <Link to="/download" className="text-slate-300 hover:text-brand-300">update Nexa</Link> and it appears.{' '}
+          <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How signing in works</Link>
+        </p>
+      </Card>
+    );
+  }
+
   return (
     <Card className="card-hover !p-6">
       <h3 className="font-semibold text-white">License key</h3>
+      <p className="mt-2 text-xs leading-5 text-slate-500">
+        Signing in inside the app (Settings &rarr; Account) is all you need. This key is only for activating by
+        hand &mdash; an older version of Nexa, or a machine you set up without signing in.
+      </p>
       <div className="mt-3 flex items-center gap-3">
         <code className="flex-1 break-all rounded-xl border border-white/5 bg-surface-2 px-3 py-2 text-sm text-brand-100 font-mono">
           {keyShown ? license.licenseKey : license.licenseKey.replace(/[^-]/g, '\u2022')}
@@ -115,7 +141,7 @@ function LicenseCard({ license, onRotated }) {
         )}
       </div>
       <p className="mt-3 text-xs text-slate-500">
-        Paste this key in the app under Settings &rarr; License.{' '}
+        Manual activation: Settings &rarr; Account &rarr; &ldquo;Use a licence key instead&rdquo;.{' '}
         <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
       </p>
       {canRotate && (
@@ -180,10 +206,10 @@ function DevicesCard({ onChanged }) {
   }, []);
 
   const release = async (device) => {
-    setBusyId(device.id);
+    setBusyId(device.shortId);
     try {
       await api.delete(`/user/devices/${device.id}`);
-      toast.success(`Signed ${device.name} out. The seat is free.`);
+      toast.success(`Freed the seat ${device.name} was holding.`);
       await load();
       onChanged?.();
     } catch (err) {
@@ -193,8 +219,24 @@ function DevicesCard({ onChanged }) {
     }
   };
 
+  // Signing a machine out revokes its device token: the app on it drops to
+  // Free at its next check and forgets the account. Its seat is freed too.
+  const signOut = async (device) => {
+    setBusyId(device.shortId);
+    try {
+      await api.delete(`/user/devices/tokens/${device.tokenId}`);
+      toast.success(`Signed ${device.name} out.`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not sign that device out.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   if (!data) return null;
-  const { seats = 0, activeSeats = 0, devices = [] } = data;
+  const { seats = 0, activeSeats = 0, seatsEnforced = seats > 0, devices = [] } = data;
 
   return (
     <Card className="card-hover !p-6">
@@ -202,12 +244,16 @@ function DevicesCard({ onChanged }) {
         <div>
           <h3 className="font-semibold text-white">Your devices</h3>
           <p className="mt-1 text-xs text-slate-500">
-            {seats} seat{seats === 1 ? '' : 's'} · {activeSeats} in use right now. A seat frees itself 15 minutes after the app closes.
+            {seatsEnforced
+              ? `${seats} seat${seats === 1 ? '' : 's'} · ${activeSeats} in use right now. A seat frees itself 15 minutes after the app closes.`
+              : 'Every computer signed in to this account. The Free plan has no seat limit.'}
           </p>
         </div>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${activeSeats >= seats && seats > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
-          {activeSeats}/{seats} in use
-        </span>
+        {seatsEnforced && (
+          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${activeSeats >= seats && seats > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+            {activeSeats}/{seats} in use
+          </span>
+        )}
       </div>
       {devices.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
@@ -215,29 +261,39 @@ function DevicesCard({ onChanged }) {
             <rect x="2" y="3" width="20" height="14" rx="2" />
             <path d="M8 21h8M12 17v4" />
           </svg>
-          <p className="text-sm font-semibold text-slate-300">No device has activated this key yet</p>
+          <p className="text-sm font-semibold text-slate-300">No computer is signed in yet</p>
           <p className="max-w-xs text-sm leading-6 text-slate-500">
-            Paste your licence key in the app under Settings &rarr; License, and the machine
-            will appear here.
+            In the app, open Settings &rarr; Account and sign in with this account. It appears
+            here within seconds.
           </p>
         </div>
       ) : (
-        <ul className="mt-4 divide-y divide-[var(--color-surface-border)]">
+        <ul className="mt-4 divide-y divide-[var(--color-surface-border)]" data-testid="device-list">
           {devices.map((d) => (
-            <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+            <li key={d.shortId} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-white">
                   {d.name}
                   <span className="ml-2 font-mono text-[0.7rem] font-normal text-slate-500">{d.shortId}</span>
+                  {d.signedIn && (
+                    <span className="ml-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-200">
+                      Signed in
+                    </span>
+                  )}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  {d.active ? 'Holding a seat' : 'Not holding a seat'}
+                  {d.signedIn ? (d.appVersion ? `Nexa ${d.appVersion}` : 'Signed in with your account') : 'Activated with a licence key'}
+                  {seatsEnforced ? (d.active ? ' · holding a seat' : ' · not holding a seat') : ''}
                   {d.lastSeenAt ? ` · last seen ${timeAgo(d.lastSeenAt)}` : ''}
                 </p>
               </div>
-              {d.active && (
-                <Button variant="ghost" onClick={() => release(d)} disabled={busyId === d.id}>
-                  {busyId === d.id ? 'Freeing…' : 'Free this seat'}
+              {d.signedIn ? (
+                <Button variant="ghost" onClick={() => signOut(d)} disabled={busyId === d.shortId}>
+                  {busyId === d.shortId ? 'Signing out…' : 'Sign out'}
+                </Button>
+              ) : d.active && (
+                <Button variant="ghost" onClick={() => release(d)} disabled={busyId === d.shortId}>
+                  {busyId === d.shortId ? 'Freeing…' : 'Free this seat'}
                 </Button>
               )}
             </li>
@@ -473,7 +529,7 @@ function TrialBanner({ subscription, onStart, starting }) {
 }
 
 export default function Dashboard() {
-  usePageMeta({ title: 'Dashboard', description: 'Your Nexa Download Manager account: plan, license key and billing.' });
+  usePageMeta({ title: 'Dashboard', description: 'Your Nexa Download Manager account: plan, signed-in devices and billing.' });
 
   const { user, refreshMe } = useAuth();
   const toast = useToast();

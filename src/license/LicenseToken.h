@@ -18,6 +18,11 @@ struct Claims {
     QString     licenseKey;   // "sub" — the key this token was issued for
     QString     plan;         // "free" | "pro" | "team"
     QString     device;       // the device fingerprint it was issued to
+    // "acct" — the account id, present only for a token minted for a signed-in
+    // machine. Empty for a licence-key token. It is inside the signature so a
+    // signed-in app can refuse a token minted for somebody else's account the
+    // same way it refuses one minted for another key.
+    QString     account;
     QDateTime   issuedAt;     // "iat", UTC — server-attested, unforgeable
     QDateTime   expiresAt;    // "exp", UTC
     QJsonObject features;     // the entitlements object

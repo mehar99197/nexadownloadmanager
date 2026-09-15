@@ -510,8 +510,31 @@ if(NEXA_BUILD_TESTS)
         src/license/CredentialStore.cpp
     )
     target_include_directories(nexa_offline_grace_test PRIVATE src)
-    target_compile_definitions(nexa_offline_grace_test PRIVATE NEXA_DEV_BUILD)
+    # NEXA_TEST_CREDENTIAL_STORE swaps the OS credential store for an in-process
+    # one. Without it these tests store the fake server's licence key in the
+    # developer's real Windows Credential Manager / login keyring, where the
+    # installed copy of Nexa reads it on its next launch.
+    target_compile_definitions(nexa_offline_grace_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
     target_link_libraries(nexa_offline_grace_test PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+
+    # Account sign-in (the device-authorization flow) against a real socket:
+    # the code, the approval, which credential goes on the wire, and the
+    # asymmetry between `signed_out` (forget the token) and a lapsed plan
+    # (keep it, drop to Free).
+    add_executable(nexa_account_signin_test
+        tests/AccountSignInTest.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_account_signin_test PRIVATE src)
+    target_compile_definitions(nexa_account_signin_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
+    target_link_libraries(nexa_account_signin_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
     # The licence guard, compiled BOTH ways from the same source, each asserting
@@ -546,6 +569,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME download_core COMMAND nexa_download_core_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)
     add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
+    add_test(NAME account_signin COMMAND nexa_account_signin_test)
     add_test(NAME guard COMMAND nexa_guard_test)
     add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()

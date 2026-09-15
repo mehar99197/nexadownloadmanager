@@ -215,8 +215,36 @@ const licenseRotateLimiter = makeDurableLimiter('license-rotate', {
   message: 'Too many licence key rotations today. Please try again tomorrow.',
 });
 
+// Desktop-app account sign-in (routes/device.js).
+//
+// Starting a sign-in mints a code somebody has to approve; ten an hour from
+// one address is plenty for a person and useless for a script that wants to
+// spray codes at people. Polling is cheap and legitimately frequent (one
+// call every five seconds per waiting app), so it stays in memory with room
+// for a couple of apps behind one NAT. Approving is a signed-in action and
+// the code space is 27^8, but the budget is small anyway: guessing a live
+// code is the only attack this surface has.
+const deviceCodeLimiter = makeDurableLimiter('device-code', {
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => req.ip,
+  message: 'Too many sign-in attempts from this address. Please try again later.',
+});
+const devicePollLimiter = makeLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => req.ip,
+});
+const deviceApproveLimiter = makeDurableLimiter('device-approve', {
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => `${req.ip}|${req.user ? req.user.id : ''}`,
+  message: 'Too many code attempts. Please wait a few minutes.',
+});
+
 module.exports = {
   authLimiter, loginLimiter, authIpLimiter, licenseRotateLimiter,
+  deviceCodeLimiter, devicePollLimiter, deviceApproveLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
   loginKey,

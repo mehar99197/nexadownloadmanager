@@ -9,7 +9,7 @@ export const DOCS_NAV = [
   { to: '/docs/courses', label: 'Courses', blurb: 'Udemy and Coursera courses you are enrolled in.' },
   { to: '/docs/torrents', label: 'Torrents', blurb: 'Magnet links, .torrent files, seed ratio and limits.' },
   { to: '/docs/remote', label: 'Remote dashboard', blurb: 'Control the queue from your phone.' },
-  { to: '/docs/license', label: 'License & seats', blurb: 'Activating a key, seats and offline behaviour.' },
+  { to: '/docs/license', label: 'Signing in & seats', blurb: 'Signing in to the app, seats, manual keys and offline behaviour.' },
 ];
 
 /** Prose helpers so every guide reads the same. */

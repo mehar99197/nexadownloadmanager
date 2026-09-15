@@ -188,13 +188,29 @@ test('backend API', async (t) => {
       assert.equal(Number(rows[0].n), 1, 'one activation row for one device');
     });
 
-    await t2.test('a second device exceeds a 1-seat plan', async () => {
+    // The Free plan has no seat limit: there is nothing to sell on it, a
+    // household running Free on three machines is not sharing anything, and an
+    // account signed in on Free has to work on every machine somebody owns.
+    await t2.test('a second device on Free is not refused — Free has no seat limit', async () => {
       const res = await api.post('/api/license/validate', {
         license_key: key, device_fingerprint: 'b'.repeat(64),
       });
       assert.equal(res.status, 200);
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'free');
+    });
+
+    await t2.test('a paid plan does count seats', async () => {
+      await srv.query("UPDATE subscriptions SET plan = 'pro', seats = 1 WHERE id = ?", [sub.id]);
+      // The two devices above still hold live leases, so on a 1-seat paid plan
+      // a third one is exactly one too many.
+      const res = await api.post('/api/license/validate', {
+        license_key: key, device_fingerprint: 'c'.repeat(64),
+      });
+      assert.equal(res.status, 200);
       assert.equal(res.body.valid, false);
       assert.equal(res.body.reason, 'seat_limit');
+      await srv.query("UPDATE subscriptions SET plan = 'free' WHERE id = ?", [sub.id]);
     });
 
     // A period that runs out is no longer reported as `expired`: the desktop

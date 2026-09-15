@@ -20,6 +20,8 @@ const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
 const { stripSensitive } = require('../utils/sanitize');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
+const DeviceAuth = require('../models/DeviceAuth');
+const { subscriptionForUser } = require('../utils/accountPlan');
 const { hashRefreshToken } = require('../utils/jwt');
 const UserSession = require('../models/UserSession');
 const security = require('../utils/securityEvents');
@@ -295,27 +297,105 @@ router.get(
 router.get(
   '/devices', requireAuth,
   asyncHandler(async (req, res) => {
-    const sub = await findUserSubscription(req.user.id);
-    if (!sub) return ok(res, { seats: 0, activeSeats: 0, devices: [] });
-    const [devices, activeSeats] = await Promise.all([
-      Subscription.listActivations(sub.id),
-      Subscription.activeSeatCount(sub.id),
+    // Two views of "my machines", merged by fingerprint: the seat leases on
+    // the subscription those machines actually use, and the machines signed
+    // in to this account with the desktop app (which a licence key never
+    // produces, so they would otherwise be invisible here).
+    //
+    // "The subscription those machines use" is the team's for a member, their
+    // own otherwise. Reading their own row told a Team member their machines
+    // held no seat and their plan had no seat limit — both false, because
+    // their seat lives on the owner's plan.
+    const [own, tokens] = await Promise.all([
+      findUserSubscription(req.user.id),
+      DeviceAuth.listForUser(req.user.id),
     ]);
-    return ok(res, {
-      seats: Number(sub.seats) || 1,
-      activeSeats,
-      devices: devices.map((d) => ({
+    const sub = (await subscriptionForUser(req.user.id)) || own;
+    const onSomebodyElsesPlan = Boolean(sub && own && sub.id !== own.id);
+    const [allActivations, activeSeats] = await Promise.all([
+      sub ? Subscription.listActivations(sub.id) : [],
+      sub ? Subscription.activeSeatCount(sub.id) : 0,
+    ]);
+    // A team plan's activation rows belong to every member. Show only this
+    // account's own machines: which computers a colleague runs is none of a
+    // member's business, and the seat COUNT already says how full the plan is.
+    const mine = new Set(tokens.map((t) => t.device_fingerprint));
+    const activations = onSomebodyElsesPlan
+      ? allActivations.filter((d) => mine.has(d.device_fingerprint))
+      : allActivations;
+    const byFingerprint = new Map();
+    for (const d of activations) {
+      byFingerprint.set(d.device_fingerprint, {
         id: d.id,
+        tokenId: null,
         // Never expose the full fingerprint — a short prefix is enough for the
         // user to tell two machines apart.
         shortId: String(d.device_fingerprint).slice(0, 8),
         name: d.device_name || 'Unnamed device',
+        signedIn: false,
+        appVersion: null,
         active: Boolean(Number(d.active)),
         leaseExpiresAt: toIso(d.lease_expires_at),
         lastSeenAt: toIso(d.last_seen_at),
         firstSeenAt: toIso(d.created_at),
-      })),
+      });
+    }
+    for (const t of tokens) {
+      const seen = toIso(t.last_seen_at);
+      const entry = byFingerprint.get(t.device_fingerprint);
+      if (entry) {
+        entry.tokenId = t.id;
+        entry.signedIn = true;
+        entry.appVersion = t.app_version || null;
+        if (entry.name === 'Unnamed device' && t.device_name) entry.name = t.device_name;
+        if (seen && (!entry.lastSeenAt || seen > entry.lastSeenAt)) entry.lastSeenAt = seen;
+      } else {
+        byFingerprint.set(t.device_fingerprint, {
+          id: null,
+          tokenId: t.id,
+          shortId: String(t.device_fingerprint).slice(0, 8),
+          name: t.device_name || 'Unnamed device',
+          signedIn: true,
+          appVersion: t.app_version || null,
+          active: false,
+          leaseExpiresAt: null,
+          lastSeenAt: seen,
+          firstSeenAt: toIso(t.created_at),
+        });
+      }
+    }
+    const devices = [...byFingerprint.values()].sort((a, b) =>
+      Number(b.active) - Number(a.active)
+      || Number(b.signedIn) - Number(a.signedIn)
+      || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+    return ok(res, {
+      seats: sub ? Number(sub.seats) || 1 : 0,
+      activeSeats,
+      // The Free plan does not ration seats (Subscription.acquireSeat), so the
+      // "n/m in use" badge would only confuse on it.
+      seatsEnforced: Boolean(sub && sub.plan !== 'free'),
+      devices,
     });
+  })
+);
+
+/**
+ * Sign a machine out of the account: its device token is revoked, so the
+ * app's next validation answers `signed_out` and it forgets the token, and
+ * the seat it holds is freed. The activation row stays (device history).
+ */
+router.delete(
+  '/devices/tokens/:id', requireAuth, validate(deviceParamsSchema),
+  asyncHandler(async (req, res) => {
+    const token = (await DeviceAuth.listForUser(req.user.id)).find((t) => t.id === Number(req.params.id));
+    if (!token) return fail(res, 'NOT_FOUND', 'That device is not signed in to this account', 404);
+    await DeviceAuth.revoke(token.id, 'dashboard');
+    const sub = await subscriptionForUser(req.user.id);
+    if (sub) await Subscription.releaseSeat(sub.id, token.device_fingerprint);
+    await security.record('device.signed_out', {
+      req, user: req.user, detail: `"${token.device_name || 'a device'}" signed out from the dashboard`,
+    });
+    return ok(res, { signedOut: true });
   })
 );
 
@@ -421,8 +501,24 @@ router.delete(
 router.delete(
   '/devices/:id', requireAuth, validate(deviceParamsSchema),
   asyncHandler(async (req, res) => {
-    const sub = await findUserSubscription(req.user.id);
+    // The same subscription GET /devices listed the seat on — a Team member's
+    // seat is a row on the owner's plan, so their own row would never match.
+    const own = await findUserSubscription(req.user.id);
+    const sub = (await subscriptionForUser(req.user.id)) || own;
     if (!sub) return fail(res, 'NOT_FOUND', 'No subscription for this account', 404);
+    // …but a member may only free their OWN machines. The rows on a team plan
+    // belong to every member and their ids are sequential, so without this a
+    // member could knock a colleague off their seat by guessing a number.
+    if (own && sub.id !== own.id) {
+      const [rows, tokens] = await Promise.all([
+        Subscription.listActivations(sub.id),
+        DeviceAuth.listForUser(req.user.id),
+      ]);
+      const mine = new Set(tokens.map((t) => t.device_fingerprint));
+      const row = rows.find((d) => Number(d.id) === Number(req.params.id));
+      if (!row || !mine.has(row.device_fingerprint))
+        return fail(res, 'NOT_FOUND', 'Device not found on this licence', 404);
+    }
     const released = await Subscription.releaseSeatById(sub.id, Number(req.params.id));
     if (!released) return fail(res, 'NOT_FOUND', 'Device not found on this licence', 404);
     return ok(res, { released: true, activeSeats: await Subscription.activeSeatCount(sub.id) });

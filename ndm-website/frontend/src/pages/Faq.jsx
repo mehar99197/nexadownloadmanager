@@ -44,7 +44,7 @@ const FAQS = [
         The extension reads cookies only for the site you are downloading from and sends them to the
         Nexa app on your own computer over the browser&apos;s native messaging channel — a local
         pipe, not the internet. Nothing about your downloads is sent to our servers;
-        the app only contacts us to validate a license key. Full details in the{' '}
+        the app only contacts us to check your plan (sign-in or licence key). Full details in the{' '}
         <Link to="/privacy" className="text-brand-300 hover:underline">privacy policy</Link>.
       </>
     ),

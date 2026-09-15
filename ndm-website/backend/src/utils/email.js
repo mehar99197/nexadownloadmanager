@@ -142,6 +142,30 @@ async function sendAccountLockedEmail(user, { minutes }) {
   });
 }
 
+/**
+ * A machine was just connected to the account from the desktop app. Sent to
+ * the account's address whatever the outcome later — this is how the owner
+ * of a mailbox learns that somebody with their website session added a
+ * device they do not recognise.
+ */
+async function sendDeviceSignedInEmail(user, { deviceName, ip }) {
+  const name = escapeHtml(user.name || '');
+  const device = deviceName || 'a device';
+  const where = ip ? ` from ${ip}` : '';
+  const dashboard = `${config.FRONTEND_URL}/dashboard`;
+  return send({
+    to: user.email,
+    subject: 'A new device signed in to your NexaDownloadManager account',
+    text: `Hi ${user.name || ''},
+
+Nexa Download Manager was just signed in on "${device}"${where}.
+
+If that was you, there is nothing to do. If it was not, open your dashboard, sign that device out and change your password:
+${dashboard}`,
+    html: `<p>Hi ${name},</p><p>Nexa Download Manager was just signed in on <strong>${escapeHtml(device)}</strong>${escapeHtml(where)}.</p><p>If that was you, there is nothing to do. If it was not, <a href="${escapeHtml(dashboard)}">open your dashboard</a>, sign that device out and change your password.</p>`,
+  });
+}
+
 /** Plain-text operator alert from utils/securityEvents.js. */
 async function sendSecurityAlertEmail(to, subject, text) {
   return send({ to, subject: `${subject} — Nexa Download Manager`, text });
@@ -163,11 +187,12 @@ async function sendLicenseEmail(user, licenseKey, plan) {
   const name = escapeHtml(user.name);
   const safeLicenseKey = escapeHtml(licenseKey);
   const safePlan = escapeHtml(plan);
+  const url = escapeHtml(config.FRONTEND_URL);
   return send({
     to: user.email,
-    subject: `Your NexaDownloadManager ${plan} license key`,
-    text: `Hi ${user.name || ''},\n\nThank you for subscribing to the ${plan} plan!\n\nYour license key:\n${licenseKey}\n\nEnter this key in the NDM app to unlock premium features.`,
-    html: `<p>Hi ${name},</p><p>Thank you for subscribing to the <strong>${safePlan}</strong> plan!</p><p>Your license key:</p><pre>${safeLicenseKey}</pre><p>Enter this key in the NDM app to unlock premium features.</p>`,
+    subject: `Your NexaDownloadManager ${plan} plan is active`,
+    text: `Hi ${user.name || ''},\n\nThank you for subscribing to the ${plan} plan!\n\nTo use it, open Nexa Download Manager and go to Settings > Account > Sign in with Nexa. Approve the code that opens in your browser and this plan follows your account — there is nothing to paste.\n\nYour license key, for activating by hand on a machine you cannot sign in on:\n${licenseKey}\n\nIt is always on your dashboard: ${config.FRONTEND_URL}/dashboard`,
+    html: `<p>Hi ${name},</p><p>Thank you for subscribing to the <strong>${safePlan}</strong> plan!</p><p>To use it, open Nexa Download Manager and go to <strong>Settings &rarr; Account &rarr; Sign in with Nexa</strong>. Approve the code that opens in your browser and this plan follows your account &mdash; there is nothing to paste.</p><p>Your license key, for activating by hand on a machine you cannot sign in on:</p><pre>${safeLicenseKey}</pre><p>It is always on your <a href="${url}/dashboard">dashboard</a>.</p>`,
   });
 }
 
@@ -200,8 +225,8 @@ async function sendWelcomeEmail(user) {
   return send({
     to: user.email,
     subject: 'Welcome to Nexa — here is how to start',
-    text: `Hi ${user.name || ''},\n\nYour Nexa account is ready.\n\n1. Download the app: ${config.FRONTEND_URL}/download\n2. Add the browser extension: ${config.FRONTEND_URL}/docs/extension\n3. Your license key is on your dashboard: ${config.FRONTEND_URL}/dashboard\n\nEvery account includes a 7-day Pro trial — no card needed.`,
-    html: `<p>Hi ${name},</p><p>Your Nexa account is ready.</p><ol><li><a href="${url}/download">Download the app</a></li><li><a href="${url}/docs/extension">Add the browser extension</a></li><li><a href="${url}/dashboard">Find your license key</a></li></ol><p>Every account includes a <strong>7-day Pro trial</strong> — no card needed.</p>`,
+    text: `Hi ${user.name || ''},\n\nYour Nexa account is ready.\n\n1. Download the app: ${config.FRONTEND_URL}/download\n2. Add the browser extension: ${config.FRONTEND_URL}/docs/extension\n3. In the app, open Settings > Account and sign in — your plan follows your account, with no key to copy.\n\nEvery account includes a 7-day Pro trial — no card needed.`,
+    html: `<p>Hi ${name},</p><p>Your Nexa account is ready.</p><ol><li><a href="${url}/download">Download the app</a></li><li><a href="${url}/docs/extension">Add the browser extension</a></li><li>In the app, open <strong>Settings &rarr; Account</strong> and sign in &mdash; your plan follows your account, with no key to copy</li></ol><p>Every account includes a <strong>7-day Pro trial</strong> — no card needed.</p>`,
   });
 }
 
@@ -330,4 +355,5 @@ module.exports = {
   sendTrialEndingEmail,
   sendAccountLockedEmail,
   sendSecurityAlertEmail,
+  sendDeviceSignedInEmail,
 };

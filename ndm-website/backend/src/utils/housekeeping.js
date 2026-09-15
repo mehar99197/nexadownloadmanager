@@ -13,6 +13,7 @@
 
 const { execute } = require('../config/db');
 const UserSession = require('../models/UserSession');
+const DeviceAuth = require('../models/DeviceAuth');
 const security = require('./securityEvents');
 
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -32,6 +33,7 @@ async function step(name, fn) {
 async function runOnce() {
   const results = await Promise.all([
     step('sessions', () => UserSession.pruneDead()),
+    step('device_auth', () => DeviceAuth.prune()),
     step('security_events', () => security.prune(SECURITY_EVENT_DAYS)),
     step('used_id_tokens', async () => (await execute('DELETE FROM used_id_tokens WHERE expires_at <= NOW()')).affectedRows || 0),
     step('rate_limits', async () => (await execute('DELETE FROM rate_limits WHERE expires_at <= NOW()')).affectedRows || 0),

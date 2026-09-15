@@ -18,6 +18,7 @@ import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
 import Billing from './pages/Billing';
 import Profile from './pages/Profile';
+import Activate from './pages/Activate';
 import Terms from './pages/Terms';
 import Privacy from './pages/Privacy';
 import Faq from './pages/Faq';
@@ -138,6 +139,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/activate"
+            element={
+              <ProtectedRoute>
+                <Activate />
               </ProtectedRoute>
             }
           />

@@ -33,6 +33,19 @@ constexpr auto kDeviceSeed     = "license/deviceSeed";
 // `cachedPlan=pro` into this file used to be a complete, permanent bypass.
 constexpr auto kCachedToken    = "license/cachedToken";
 constexpr auto kCachedTrial    = "license/cachedTrial";
+// Display only: which address this machine is signed in as, so Settings can
+// say "Signed in as …" before the first validation answers. The credential
+// itself lives in the OS credential store and never here — this string grants
+// nothing, and editing it changes nothing but a label.
+constexpr auto kAccountEmail   = "license/accountEmail";
+// Which account this machine signed in as, so the `acct` claim can still be
+// checked after a restart — without it a fresh process knows only "some
+// account", and a token minted for a different one would pass. Not a secret
+// and not a grant: editing it can only make this install refuse tokens.
+constexpr auto kAccountId      = "license/accountId";
+// How often a waiting sign-in asks whether it has been approved yet. The
+// server sends its own interval; this is only the fallback.
+constexpr int  kSignInPollMs   = 5000;
 constexpr int  kRevalidateMs   = 6 * 60 * 60 * 1000;   // 6 hours
 // The server holds a seat for 15 minutes past the last heartbeat, so beating
 // every 5 leaves room for two dropped requests before a seat is lost.
@@ -106,6 +119,54 @@ bool endpointAllowed(const QUrl &endpoint)
     return endpoint.isValid()
         && (endpoint.scheme() == QLatin1String("https") || insecureDevelopment);
 }
+
+// The account sign-in endpoints (/api/device/code, /token, /signout) are a
+// sibling family of the licence ones, derived from the same configured URL so
+// a dev override points the whole app at localhost rather than half of it.
+QUrl deviceEndpoint(const QString &action)
+{
+    const QUrl base = licenseEndpoint(QStringLiteral("validate"));   // …/api/license/validate
+    QUrl url(base);
+    QString path = base.path();
+    int slash = path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        path.truncate(slash);                                        // …/api/license
+    slash = path.lastIndexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        path.truncate(slash + 1);                                    // …/api/
+    url.setPath(path + QStringLiteral("device/") + action);
+    return url;
+}
+
+QNetworkRequest jsonRequest(const QUrl &endpoint, int timeoutMs = 15000)
+{
+    QNetworkRequest request(endpoint);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+                      QStringLiteral("Nexa/%1").arg(QCoreApplication::applicationVersion()));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(timeoutMs);
+    return request;
+}
+
+// The /api/device/* calls answer the website's usual {ok,data} envelope, not
+// the bare body the licence endpoints use. Returns the data object, empty when
+// the answer is not one.
+QJsonObject envelopeData(const QByteArray &response)
+{
+    const QJsonObject envelope = QJsonDocument::fromJson(response).object();
+    if (!envelope.value(QStringLiteral("ok")).toBool())
+        return QJsonObject();
+    return envelope.value(QStringLiteral("data")).toObject();
+}
+
+QString envelopeError(const QByteArray &response)
+{
+    return QJsonDocument::fromJson(response).object()
+        .value(QStringLiteral("error")).toObject()
+        .value(QStringLiteral("message")).toString();
+}
 }
 
 LicenseManager::LicenseManager(QObject *parent)
@@ -116,7 +177,7 @@ LicenseManager::LicenseManager(QObject *parent)
     m_revalidate = new QTimer(this);
     m_revalidate->setInterval(kRevalidateMs);
     connect(m_revalidate, &QTimer::timeout, this, [this]() {
-        if (!m_licenseKey.isEmpty() && !m_reply)
+        if ((!m_licenseKey.isEmpty() || !m_accountToken.isEmpty()) && !m_reply)
             validate(m_licenseKey, false);
     });
     m_revalidate->start();
@@ -127,6 +188,12 @@ LicenseManager::LicenseManager(QObject *parent)
     m_heartbeat = new QTimer(this);
     m_heartbeat->setInterval(kHeartbeatMs);
     connect(m_heartbeat, &QTimer::timeout, this, &LicenseManager::sendHeartbeat);
+
+    // Only runs during the couple of minutes a sign-in is waiting for somebody
+    // to approve it on the website; the server sets the cadence.
+    m_signInPoll = new QTimer(this);
+    m_signInPoll->setInterval(kSignInPollMs);
+    connect(m_signInPoll, &QTimer::timeout, this, &LicenseManager::pollSignIn);
 
     // Re-derive entitlements from the signed token on a short cycle. Everything
     // in the UI reads the cached struct for speed, and this is what stops that
@@ -215,10 +282,24 @@ void LicenseManager::start()
     // pre-answer state is already Free (Entitlements defaults to the Free set),
     // so the app gates rather than leaks while the key is being read.
     QTimer::singleShot(0, this, [this]() {
+        // The account token is read first: it is how a current install is
+        // meant to be licensed, and a machine somebody signed in should not be
+        // outranked by a key left behind from before.
+        const QString accountToken = credentialstore::readAccountToken();
+        if (!accountToken.isEmpty()) {
+            m_accountToken = accountToken;
+            const QSettings settings;
+            m_accountEmail = settings.value(QLatin1String(kAccountEmail)).toString();
+            m_accountId = settings.value(QLatin1String(kAccountId)).toString();
+            if (!m_accountEmail.isEmpty())
+                emit accountChanged(m_accountEmail);
+            validate(QString(), false);
+            return;
+        }
         const QString key = credentialstore::readLicenseKey();
         if (key.isEmpty()) {
             setPlan(QStringLiteral("free"),
-                    QStringLiteral("Free plan — enter a license key in Settings"));
+                    QStringLiteral("Free plan — sign in from Settings to use your plan"));
             return;
         }
         m_licenseKey = key;
@@ -234,6 +315,12 @@ void LicenseManager::activate(const QString &licenseKey)
         emit activationFinished(false, QStringLiteral("Invalid license key format"));
         return;
     }
+    // A key and an account token are mutually exclusive on the wire, so
+    // activating by hand signs this machine out first. Otherwise the next
+    // launch would silently prefer the account and the key would look like it
+    // had not worked.
+    if (!m_accountToken.isEmpty())
+        signOut();
     validate(key, true);
 }
 
@@ -248,6 +335,10 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
         m_reply->deleteLater();
         m_reply = nullptr;
     }
+
+    // No key to send and a token in hand: this is a signed-in machine asking
+    // what its account is entitled to.
+    const bool accountMode = licenseKey.isEmpty() && !m_accountToken.isEmpty();
 
     const QUrl endpoint = licenseEndpoint(QStringLiteral("validate"));
     if (!endpointAllowed(endpoint)) {
@@ -266,11 +357,23 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(15000);
 
-    const QByteArray body = QJsonDocument(QJsonObject{
-        {QStringLiteral("license_key"), licenseKey},
+    QJsonObject payload{
         {QStringLiteral("device_fingerprint"), deviceFingerprint()},
         {QStringLiteral("device_name"), deviceName()},
-    }).toJson(QJsonDocument::Compact);
+    };
+    if (accountMode) {
+        payload.insert(QStringLiteral("device_token"), m_accountToken);
+        // Shown beside the machine in the account's device list, so somebody
+        // can tell which of their computers is running what. Omitted rather
+        // than sent blank: the server's schema refuses an empty string, and a
+        // build that set no version must still be able to validate.
+        const QString version = QCoreApplication::applicationVersion();
+        if (!version.isEmpty())
+            payload.insert(QStringLiteral("app_version"), version);
+    } else {
+        payload.insert(QStringLiteral("license_key"), licenseKey);
+    }
+    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
     // Status only — don't drop the plan while we wait (a startup re-check would
     // otherwise flicker Pro → Free → Pro and re-cap the queue for a moment).
@@ -278,7 +381,7 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
     emit statusChanged(m_status);
     m_reply = m_network->post(request, body);
     connect(m_reply, &QNetworkReply::finished, this,
-            [this, licenseKey, userInitiated]() {
+            [this, licenseKey, userInitiated, accountMode]() {
         QNetworkReply *reply = m_reply;
         m_reply = nullptr;
         if (!reply)
@@ -335,6 +438,36 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
                 return;
             }
 
+            // Signed in: the token is thrown away only when the server
+            // says this machine is signed out. A plan that merely stopped
+            // (cancelled, expired, or no subscription at all) leaves the
+            // account connected on Free, so a renewal reaches the app at its
+            // next check with nothing for anyone to re-enter.
+            if (accountMode) {
+                m_licenseToken.clear();
+                m_trial = false;
+                m_expires = QDateTime();
+                m_heartbeat->stop();
+                // The server has spoken about this install just now, so the
+                // cached token must not hand the plan back the moment the
+                // network drops.
+                clearCache();
+                setFeaturesForPlan(QStringLiteral("free"));
+                QString message;
+                if (reason == QLatin1String("signed_out")) {
+                    forgetAccount();
+                    message = tr("Signed out — sign in again in Settings");
+                } else {
+                    message = m_accountEmail.isEmpty()
+                        ? tr("Free plan — no active plan on your account (%1)").arg(reason)
+                        : tr("Signed in as %1 — Free plan (%2)").arg(m_accountEmail, reason);
+                }
+                setPlan(QStringLiteral("free"), message);
+                if (userInitiated)
+                    emit activationFinished(false, message);
+                return;
+            }
+
             credentialstore::removeLicenseKey();
             clearCache();
             m_licenseKey.clear();
@@ -376,14 +509,24 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
                 emit activationFinished(false, message);
             return;
         }
-        // …and for the key we actually asked about, so a token minted for one
-        // licence cannot answer for another.
-        if (!claims.licenseKey.isEmpty() && claims.licenseKey != licenseKey) {
-            const QString message = QStringLiteral("License token does not match this key");
+        // …and for the credential we actually asked about, so a token minted
+        // for one licence cannot answer for another. A signed-in machine has
+        // no key to compare against: its equivalent is the signed `acct`
+        // claim, the account the token was minted for.
+        const QString subjectError = accountMode
+            ? (claims.account.isEmpty()
+                   ? QStringLiteral("License token is not bound to an account")
+                   : ((!m_accountId.isEmpty() && claims.account != m_accountId)
+                          ? QStringLiteral("License token was issued to a different account")
+                          : QString()))
+            : ((!claims.licenseKey.isEmpty() && claims.licenseKey != licenseKey)
+                   ? QStringLiteral("License token does not match this key")
+                   : QString());
+        if (!subjectError.isEmpty()) {
             setFeaturesForPlan(QStringLiteral("free"));
-            setPlan(QStringLiteral("free"), message);
+            setPlan(QStringLiteral("free"), subjectError);
             if (userInitiated)
-                emit activationFinished(false, message);
+                emit activationFinished(false, subjectError);
             return;
         }
         // Tolerant on purpose. Tokens live 15 minutes, so a machine whose clock
@@ -402,8 +545,23 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
         }
 
         const QString plan = claims.plan;
-        const bool stored = credentialstore::writeLicenseKey(licenseKey);
-        m_licenseKey = licenseKey;
+        // Nothing to store for an account: the token was written to the
+        // credential store when the sign-in completed and does not change here.
+        const bool stored = accountMode || credentialstore::writeLicenseKey(licenseKey);
+        if (accountMode) {
+            m_accountId = claims.account;
+            QSettings().setValue(QLatin1String(kAccountId), m_accountId);
+            // Display only — the entitlement itself came from the signature.
+            const QString email = object.value(QStringLiteral("account")).toObject()
+                                      .value(QStringLiteral("email")).toString();
+            if (!email.isEmpty() && email != m_accountEmail) {
+                m_accountEmail = email;
+                QSettings().setValue(QLatin1String(kAccountEmail), email);
+                emit accountChanged(m_accountEmail);
+            }
+        } else {
+            m_licenseKey = licenseKey;
+        }
         m_licenseToken = token;
         // `trial` and `expires` only shape the status text — the entitlements
         // they used to imply now come from the token — so they may keep coming
@@ -424,9 +582,13 @@ void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
             const qint64 daysLeft = qMax<qint64>(0, (hoursLeft + 23) / 24);
             message = QStringLiteral("%1 trial — %2 day%3 left")
                 .arg(planLabel(plan)).arg(daysLeft).arg(daysLeft == 1 ? QString() : QStringLiteral("s"));
+        } else if (plan == QLatin1String("free")) {
+            message = tr("Free plan");
         } else {
             message = QStringLiteral("%1 license active").arg(planLabel(plan));
         }
+        if (accountMode && !m_accountEmail.isEmpty())
+            message = QStringLiteral("Signed in as %1 · %2").arg(m_accountEmail, message);
         if (!stored)
             message += QStringLiteral(" (this session only; OS credential store unavailable)");
         setPlan(plan, message);
@@ -492,7 +654,7 @@ void LicenseManager::applyFeatures(const QJsonObject &f, const QString &plan)
 // seat_limit answer is surfaced so the user learns why the app went Free.
 void LicenseManager::sendHeartbeat()
 {
-    if (m_licenseKey.isEmpty() || m_heartbeatReply)
+    if ((m_licenseKey.isEmpty() && m_accountToken.isEmpty()) || m_heartbeatReply)
         return;
     const QUrl endpoint = licenseEndpoint(QStringLiteral("heartbeat"));
     if (!endpointAllowed(endpoint))
@@ -504,11 +666,15 @@ void LicenseManager::sendHeartbeat()
                          QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setTransferTimeout(15000);
 
-    const QByteArray body = QJsonDocument(QJsonObject{
-        {QStringLiteral("license_key"), m_licenseKey},
+    QJsonObject payload{
         {QStringLiteral("device_fingerprint"), deviceFingerprint()},
         {QStringLiteral("device_name"), deviceName()},
-    }).toJson(QJsonDocument::Compact);
+    };
+    if (m_accountToken.isEmpty())
+        payload.insert(QStringLiteral("license_key"), m_licenseKey);
+    else
+        payload.insert(QStringLiteral("device_token"), m_accountToken);
+    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
     m_heartbeatReply = m_network->post(request, body);
     connect(m_heartbeatReply, &QNetworkReply::finished, this, [this]() {
@@ -560,6 +726,27 @@ void LicenseManager::sendHeartbeat()
                 emit seatRevoked();
             else
                 emit seatLimitReached(seats);
+            return;
+        }
+
+        // Signed in: the same rule as /validate — only `signed_out` costs this
+        // machine its token. A plan that stopped drops it to Free and leaves
+        // the account connected, ready for the renewal.
+        if (!m_accountToken.isEmpty()) {
+            m_licenseToken.clear();
+            m_trial = false;
+            m_expires = QDateTime();
+            m_heartbeat->stop();
+            clearCache();
+            setFeaturesForPlan(QStringLiteral("free"));
+            if (reason == QLatin1String("signed_out")) {
+                forgetAccount();
+                setPlan(QStringLiteral("free"), tr("Signed out — sign in again in Settings"));
+            } else {
+                setPlan(QStringLiteral("free"), m_accountEmail.isEmpty()
+                    ? tr("Free plan — no active plan on your account (%1)").arg(reason)
+                    : tr("Signed in as %1 — Free plan (%2)").arg(m_accountEmail, reason));
+            }
             return;
         }
 
@@ -831,6 +1018,12 @@ void LicenseManager::adoptRefreshedToken(const QString &token)
     if (!m_licenseKey.isEmpty() && !claims.licenseKey.isEmpty()
         && claims.licenseKey != m_licenseKey)
         return;
+    // The same bar for a signed-in machine: a token minted for a different
+    // account is refused exactly as one minted for a different key is.
+    if (!m_accountToken.isEmpty()
+        && (claims.account.isEmpty()
+            || (!m_accountId.isEmpty() && claims.account != m_accountId)))
+        return;
 
     m_licenseToken = token;
 
@@ -845,9 +1038,12 @@ void LicenseManager::adoptRefreshedToken(const QString &token)
     // it actually changed, so a beat does not churn signals every 5 minutes.
     if (claims.plan != m_plan) {
         applyFeatures(claims.features, claims.plan);
-        setPlan(claims.plan, claims.plan == QLatin1String("free")
-                                 ? tr("Free plan")
-                                 : QStringLiteral("%1 license active").arg(planLabel(claims.plan)));
+        QString message = claims.plan == QLatin1String("free")
+                              ? tr("Free plan")
+                              : QStringLiteral("%1 license active").arg(planLabel(claims.plan));
+        if (!m_accountToken.isEmpty() && !m_accountEmail.isEmpty())
+            message = QStringLiteral("Signed in as %1 · %2").arg(m_accountEmail, message);
+        setPlan(claims.plan, message);
     }
 }
 
@@ -858,7 +1054,7 @@ void LicenseManager::releaseSeat()
 {
     if (m_heartbeat)
         m_heartbeat->stop();
-    if (m_licenseKey.isEmpty())
+    if (m_licenseKey.isEmpty() && m_accountToken.isEmpty())
         return;
     const QUrl endpoint = licenseEndpoint(QStringLiteral("release"));
     if (!endpointAllowed(endpoint))
@@ -868,10 +1064,12 @@ void LicenseManager::releaseSeat()
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setTransferTimeout(3000);
 
-    const QByteArray body = QJsonDocument(QJsonObject{
-        {QStringLiteral("license_key"), m_licenseKey},
-        {QStringLiteral("device_fingerprint"), deviceFingerprint()},
-    }).toJson(QJsonDocument::Compact);
+    QJsonObject payload{{QStringLiteral("device_fingerprint"), deviceFingerprint()}};
+    if (m_accountToken.isEmpty())
+        payload.insert(QStringLiteral("license_key"), m_licenseKey);
+    else
+        payload.insert(QStringLiteral("device_token"), m_accountToken);
+    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
     QNetworkReply *reply = m_network->post(request, body);
     QEventLoop loop;
@@ -943,6 +1141,14 @@ void LicenseManager::applyCachedEntitlement(const QString &offlineReason, bool u
 
 void LicenseManager::deactivate()
 {
+    // Signed in: no key is in play, so this can only be clearing one left over
+    // from before. The account's seat is not this button's business.
+    if (!m_accountToken.isEmpty()) {
+        credentialstore::removeLicenseKey();
+        m_licenseKey.clear();
+        emit activationFinished(true, QStringLiteral("License key removed"));
+        return;
+    }
     if (m_reply) {
         m_reply->abort();
         m_reply->deleteLater();
@@ -983,6 +1189,241 @@ void LicenseManager::setPlan(const QString &plan, const QString &status)
     if (planChanged)
         emit entitlementChanged(m_plan);
     emit statusChanged(m_status);
+}
+
+// --- Account sign-in --------------------------------------------------------
+//
+// OAuth's device-authorization flow, shaped for a desktop app that must not
+// see the account's password and must not ask for a licence key. The app
+// requests a code, the person approves it in a browser where they are already
+// signed in, and the app collects a token bound to this machine.
+//
+// Deliberately: this class never opens the browser itself (the UI does, from
+// signInCodeReady) and never stores anything the person could paste elsewhere.
+
+void LicenseManager::beginSignIn()
+{
+    if (m_signInReply || m_signInPoll->isActive())
+        return;                       // one attempt at a time
+
+    const QUrl endpoint = deviceEndpoint(QStringLiteral("code"));
+    if (!endpointAllowed(endpoint)) {
+        emit signInFinished(false, tr("Signing in needs a secure connection to "
+                                      "nexadownloadmanager.com"));
+        return;
+    }
+
+    QJsonObject request{
+        {QStringLiteral("device_fingerprint"), deviceFingerprint()},
+        {QStringLiteral("device_name"), deviceName()},
+    };
+    if (!QCoreApplication::applicationVersion().isEmpty())
+        request.insert(QStringLiteral("app_version"), QCoreApplication::applicationVersion());
+    const QByteArray body = QJsonDocument(request).toJson(QJsonDocument::Compact);
+
+    m_signInReply = m_network->post(jsonRequest(endpoint), body);
+    connect(m_signInReply, &QNetworkReply::finished, this, [this]() {
+        QNetworkReply *reply = m_signInReply;
+        m_signInReply = nullptr;
+        if (!reply)
+            return;
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        const QByteArray response = reply->readAll();
+        reply->deleteLater();
+        if (!transportOk || response.size() > 64 * 1024) {
+            emit signInFinished(false, tr("Could not reach nexadownloadmanager.com. "
+                                          "Check your connection and try again."));
+            return;
+        }
+
+        const QJsonObject data = envelopeData(response);
+        const QString deviceCode = data.value(QStringLiteral("deviceCode")).toString();
+        const QString userCode = data.value(QStringLiteral("userCode")).toString();
+        const QString url = data.value(QStringLiteral("verificationUrlComplete"))
+                                .toString(data.value(QStringLiteral("verificationUrl")).toString());
+        if (deviceCode.isEmpty() || userCode.isEmpty() || url.isEmpty()) {
+            const QString serverMessage = envelopeError(response);
+            emit signInFinished(false, serverMessage.isEmpty()
+                ? tr("Could not start signing in. Please try again in a minute.")
+                : serverMessage);
+            return;
+        }
+
+        m_deviceCode = deviceCode;
+        m_userCode = userCode;
+        m_verificationUrl = url;
+        m_signInExpires = QDateTime::currentDateTimeUtc()
+                              .addSecs(qMax(30, data.value(QStringLiteral("expiresIn")).toInt(600)));
+        m_signInPoll->setInterval(qBound(1, data.value(QStringLiteral("interval")).toInt(5), 60) * 1000);
+        m_signInPoll->start();
+        emit signInCodeReady(m_userCode, url);
+    });
+}
+
+void LicenseManager::pollSignIn()
+{
+    if (m_deviceCode.isEmpty() || m_signInReply)
+        return;
+    if (QDateTime::currentDateTimeUtc() > m_signInExpires) {
+        endSignIn(false, tr("That code expired. Start signing in again."));
+        return;
+    }
+    const QUrl endpoint = deviceEndpoint(QStringLiteral("token"));
+    if (!endpointAllowed(endpoint)) {
+        endSignIn(false, tr("Signing in needs a secure connection to nexadownloadmanager.com"));
+        return;
+    }
+
+    const QByteArray body = QJsonDocument(QJsonObject{
+        {QStringLiteral("device_code"), m_deviceCode},
+        {QStringLiteral("device_fingerprint"), deviceFingerprint()},
+    }).toJson(QJsonDocument::Compact);
+
+    m_signInReply = m_network->post(jsonRequest(endpoint), body);
+    connect(m_signInReply, &QNetworkReply::finished, this, [this]() {
+        QNetworkReply *reply = m_signInReply;
+        m_signInReply = nullptr;
+        if (!reply)
+            return;
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        const QByteArray response = reply->readAll();
+        reply->deleteLater();
+        // A dropped poll is not a failed sign-in: the code lives for minutes,
+        // so try again on the next tick and let the expiry decide.
+        if (!transportOk || response.size() > 64 * 1024 || m_deviceCode.isEmpty())
+            return;
+
+        const QJsonObject data = envelopeData(response);
+        const QString status = data.value(QStringLiteral("status")).toString();
+        if (status == QLatin1String("pending"))
+            return;
+        if (status == QLatin1String("slow_down")) {
+            // Back off as asked, capped so an odd answer cannot park the poll
+            // past the code's own lifetime.
+            m_signInPoll->setInterval(qMin(30000, m_signInPoll->interval() + 5000));
+            return;
+        }
+        if (status == QLatin1String("denied")) {
+            endSignIn(false, tr("That sign-in was denied on the website."));
+            return;
+        }
+        if (status != QLatin1String("approved")) {
+            // expired, or an answer this build does not know.
+            endSignIn(false, tr("That code expired. Start signing in again."));
+            return;
+        }
+
+        const QString token = data.value(QStringLiteral("deviceToken")).toString();
+        if (token.isEmpty()) {
+            endSignIn(false, tr("Signing in did not complete. Please try again."));
+            return;
+        }
+        const QJsonObject account = data.value(QStringLiteral("account")).toObject();
+        m_signInPoll->stop();
+        m_deviceCode.clear();
+        m_userCode.clear();
+        m_verificationUrl.clear();
+        m_accountToken = token;
+        m_accountId = QString::number(qint64(account.value(QStringLiteral("id")).toDouble()));
+        m_accountEmail = account.value(QStringLiteral("email")).toString();
+        const bool storedToken = credentialstore::writeAccountToken(token);
+        QSettings settings;
+        settings.setValue(QLatin1String(kAccountEmail), m_accountEmail);
+        settings.setValue(QLatin1String(kAccountId), m_accountId);
+        // One credential at a time: a signed-in machine has no use for a typed
+        // key, and leaving one behind would quietly outrank nothing — but it
+        // would still be a copy of a secret this machine no longer needs.
+        credentialstore::removeLicenseKey();
+        m_licenseKey.clear();
+        // Whatever the old credential had cached says nothing about this
+        // account's plan; the validation below replaces it immediately.
+        clearCache();
+        m_licenseToken.clear();
+        emit accountChanged(m_accountEmail);
+        emit signInFinished(true, storedToken
+            ? tr("Signed in as %1").arg(m_accountEmail)
+            : tr("Signed in as %1 (this session only; OS credential store unavailable)")
+                  .arg(m_accountEmail));
+        // Ask what the account is entitled to right away, rather than leaving
+        // the app on Free until the six-hourly re-validation.
+        validate(QString(), false);
+    });
+}
+
+void LicenseManager::endSignIn(bool ok, const QString &message)
+{
+    m_signInPoll->stop();
+    m_deviceCode.clear();
+    m_userCode.clear();
+    m_verificationUrl.clear();
+    m_signInExpires = QDateTime();
+    emit signInFinished(ok, message);
+}
+
+void LicenseManager::cancelSignIn()
+{
+    if (m_signInReply) {
+        m_signInReply->disconnect(this);
+        m_signInReply->abort();
+        m_signInReply->deleteLater();
+        m_signInReply = nullptr;
+    }
+    if (m_deviceCode.isEmpty() && !m_signInPoll->isActive())
+        return;
+    endSignIn(false, tr("Sign-in cancelled."));
+}
+
+void LicenseManager::signOut()
+{
+    if (m_accountToken.isEmpty())
+        return;
+
+    // Tell the server first, while the token still exists: that is what
+    // revokes it and frees this machine's seat, so the dashboard stops listing
+    // a computer that has already gone. Bounded like releaseSeat() — signing
+    // out must not hang on the network.
+    const QUrl endpoint = deviceEndpoint(QStringLiteral("signout"));
+    if (endpointAllowed(endpoint)) {
+        const QByteArray body = QJsonDocument(QJsonObject{
+            {QStringLiteral("device_token"), m_accountToken},
+            {QStringLiteral("device_fingerprint"), deviceFingerprint()},
+        }).toJson(QJsonDocument::Compact);
+        QNetworkReply *reply = m_network->post(jsonRequest(endpoint, 5000), body);
+        QEventLoop loop;
+        QTimer guard;
+        guard.setSingleShot(true);
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        connect(&guard, &QTimer::timeout, &loop, &QEventLoop::quit);
+        guard.start(5000);
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
+        if (reply->isRunning())
+            reply->abort();
+        reply->deleteLater();
+    }
+
+    forgetAccount();
+    setFeaturesForPlan(QStringLiteral("free"));
+    setPlan(QStringLiteral("free"), tr("Free plan"));
+}
+
+void LicenseManager::forgetAccount()
+{
+    credentialstore::removeAccountToken();
+    QSettings settings;
+    settings.remove(QLatin1String(kAccountEmail));
+    settings.remove(QLatin1String(kAccountId));
+    m_accountToken.clear();
+    m_accountId.clear();
+    m_accountEmail.clear();
+    m_licenseToken.clear();
+    m_trial = false;
+    m_expires = QDateTime();
+    if (m_heartbeat)
+        m_heartbeat->stop();
+    // A signed-out machine must not keep running on the plan it had: offline
+    // grace exists for a network outage, not for a revoked credential.
+    clearCache();
+    emit accountChanged(QString());
 }
 
 } // namespace nexa

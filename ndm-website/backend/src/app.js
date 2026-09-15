@@ -97,6 +97,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/subscription', require('./routes/subscription'));
 app.use('/api/license', require('./routes/license'));
+app.use('/api/device', require('./routes/device'));
 app.use('/api/ads', require('./routes/ads'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/reviews', require('./routes/reviews'));

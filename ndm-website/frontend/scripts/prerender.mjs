@@ -42,7 +42,7 @@ const ROUTES = [
   ['/docs/courses', 'Downloading courses', 'Download enrolled Udemy and Coursera courses with the Nexa browser extension.'],
   ['/docs/torrents', 'Torrents', 'Magnet links, .torrent files, seeding ratio and speed limits in Nexa.'],
   ['/docs/remote', 'Phone dashboard', 'Control your downloads from a phone on the same network, and what TLS is required.'],
-  ['/docs/license', 'Licensing', 'Activate a Nexa licence key, how seats work, and what happens offline.'],
+  ['/docs/license', 'Signing in & seats', 'Sign in to Nexa with your account, how seats work, manual licence keys, and what happens offline.'],
   ['/login', 'Sign in', 'Sign in to your Nexa account.'],
   ['/register', 'Create an account', 'Create a Nexa account and start a 7-day Pro trial — no card required.'],
 ];

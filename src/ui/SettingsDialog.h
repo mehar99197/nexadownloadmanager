@@ -38,6 +38,9 @@ signals:
 
 private:
     void apply();   // push the dialog's values to the engine + QSettings
+    // Show whichever of the three account rows matches the licence manager's
+    // state: signed out, waiting for the website, or signed in.
+    void updateAccountSection();
     // Show a theme immediately so it can be judged; Cancel puts back whatever
     // was in force when the dialog opened.
     void applyThemePreview(const QString &id);
@@ -87,6 +90,13 @@ private:
     QCheckBox      *m_errLog = nullptr;     // opt-in troubleshooting log to a file
     QLineEdit      *m_licenseKey = nullptr;
     QLabel         *m_licenseStatus = nullptr;
+    QWidget        *m_accountSignedOut = nullptr;  // "Sign in with Nexa"
+    QWidget        *m_accountWaiting = nullptr;    // the code, while it waits
+    QWidget        *m_accountSignedIn = nullptr;   // "Signed in as …" + sign out
+    QWidget        *m_keyRow = nullptr;            // manual activation, folded away
+    QLabel         *m_accountWho = nullptr;
+    QLabel         *m_signInCode = nullptr;
+    QString         m_signInUrl;                   // the approval page, to re-open
 };
 
 } // namespace nexa

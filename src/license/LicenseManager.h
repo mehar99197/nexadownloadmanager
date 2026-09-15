@@ -46,6 +46,30 @@ public:
     void activate(const QString &licenseKey);
     void deactivate();
 
+    // --- Account sign-in ---------------------------------------------------
+    //
+    // The app's normal way in: no key changes hands. beginSignIn() asks the
+    // server for a short code, emits signInCodeReady() with the page to open,
+    // and polls until the person approves it on the website; what comes back
+    // is a token bound to THIS machine, which the licence endpoints accept in
+    // place of a key. The plan then follows the account — a trial, an upgrade
+    // or a team invitation reaches the app with nothing to paste.
+    //
+    // Opening the browser is left to the caller on purpose: this class links
+    // no GUI module, so the licence layer stays testable without one.
+    bool isSignedIn() const { return !m_accountToken.isEmpty(); }
+    bool signInInProgress() const { return !m_deviceCode.isEmpty(); }
+    QString accountEmail() const { return m_accountEmail; }
+    // The code and page of a sign-in already in progress, so a Settings window
+    // opened after signInCodeReady() fired can still show them.
+    QString signInCode() const { return m_userCode; }
+    QString signInUrl() const { return m_verificationUrl; }
+    void beginSignIn();
+    void cancelSignIn();
+    // Revokes this machine's token server-side (which also frees its seat),
+    // then forgets it. The account itself is untouched.
+    void signOut();
+
     QString plan() const { return m_plan; }
     QString status() const { return m_status; }
     bool isPaid() const { return m_plan == QLatin1String("pro") || m_plan == QLatin1String("team"); }
@@ -111,10 +135,27 @@ signals:
     // Entitlements changed — gates that cache them should re-read.
     void featuresChanged(const Entitlements &features);
 
+    // The sign-in code is ready: show `userCode` and open `verificationUrl`.
+    void signInCodeReady(const QString &userCode, const QString &verificationUrl);
+    // The sign-in attempt ended — approved, denied, expired, or cancelled.
+    void signInFinished(bool ok, const QString &message);
+    // Signed in or out; an empty address means signed out. Separate from
+    // statusChanged so the UI can redraw the account row without parsing text.
+    void accountChanged(const QString &email);
+
 private:
     void validate(const QString &licenseKey, bool userInitiated);
     void setPlan(const QString &plan, const QString &status);
     void clearCache();
+    // One poll of /api/device/token while a sign-in is waiting for approval.
+    void pollSignIn();
+    // Stop polling and report how the attempt ended.
+    void endSignIn(bool ok, const QString &message);
+    // Drop this machine's account credential locally — the credential store,
+    // the cached entitlement and the in-memory account. Does not call the
+    // server; signOut() does that first, and a server-ordered `signed_out`
+    // has already done it by definition.
+    void forgetAccount();
     // Remember the server's signed token so a network outage doesn't drop a
     // paying user to Free; applyCachedEntitlement() replays it within the grace
     // window. The token is stored rather than a plain "pro" string precisely
@@ -162,6 +203,19 @@ private:
     QString m_status = QStringLiteral("Free plan");
     QString m_licenseKey;             // key in use this session (for periodic re-validation)
     QString m_licenseToken;           // server-signed entitlement (24h), for plan-gated APIs
+    // The account credential, when this machine is signed in. Mutually
+    // exclusive with m_licenseKey: the licence endpoints take exactly one, and
+    // holding both would leave which plan applies up to whichever was tried
+    // first. Signing in clears a stored key, activating a key signs out.
+    QString m_accountToken;
+    QString m_accountEmail;           // display only ("Signed in as …")
+    QString m_accountId;              // from the token's signed `acct` claim
+    QString m_deviceCode;             // secret half of a sign-in in progress
+    QString m_userCode;               // the half the person reads out
+    QString m_verificationUrl;        // the page that approves it
+    QDateTime m_signInExpires;        // when the code stops being accepted
+    QTimer *m_signInPoll = nullptr;   // asks whether it has been approved yet
+    QNetworkReply *m_signInReply = nullptr;
     bool m_trial = false;
     QDateTime m_expires;
     QTimer *m_revalidate = nullptr;   // re-checks every few hours so a trial ends on time

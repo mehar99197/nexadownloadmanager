@@ -825,8 +825,8 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     connect(m_engine->license(), &LicenseManager::seatRevoked, this, [this] {
         QMessageBox::warning(this, tr("Seat not available"),
             tr("This device's seat was freed from your Nexa account, so it has "
-               "dropped to the Free plan.\n\nEnter your license key again in "
-               "Settings to take a seat back, if one is available."));
+               "dropped to the Free plan.\n\nSign in again in Settings to take a "
+               "seat back, if one is available."));
     });
     // The theme in use must stay inside the entitlement the server just
     // reported. A paid theme survives a lapsed subscription otherwise — the
@@ -1439,7 +1439,7 @@ void MainWindow::showLinkGrabber(const QString &pageUrl, const QString &pageTitl
 }
 
 // The Free plan runs 3 downloads at once. When a 4th is queued because of that
-// cap, say so once per session and offer the trial / a license key — a silent
+// cap, say so once per session and offer the trial / signing in — a silent
 // queue reads as "Nexa is slow", which is the opposite of what happened.
 void MainWindow::onFreeLimitReached(int id)
 {
@@ -1456,7 +1456,7 @@ void MainWindow::onFreeLimitReached(int id)
     box.setInformativeText(QStringLiteral("Pro removes the limit (up to 16 at once), adds AI file naming, "
                                           "and starts with a free 7-day trial — no card needed."));
     QPushButton *trial = box.addButton(tr("Start free trial"), QMessageBox::AcceptRole);
-    QPushButton *key   = box.addButton(tr("Enter license key"), QMessageBox::ActionRole);
+    QPushButton *key   = box.addButton(tr("Sign in"), QMessageBox::ActionRole);
     box.addButton(tr("Not now"), QMessageBox::RejectRole);
     auto *dontShow = new QCheckBox(tr("Don't remind me again"), &box);
     box.setCheckBox(dontShow);

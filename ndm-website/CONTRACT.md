@@ -50,9 +50,20 @@ This endpoint is consumed by the NDM **C++ app**, so it returns a LITERAL shape,
 ```json
 // valid
 { "valid": true, "plan": "pro", "expires": "2027-01-01T00:00:00.000Z", "token": "<15m Ed25519 jwt>", "trial": false }
+// valid, signed in with an account (no licence key on the wire)
+{ "valid": true, "plan": "pro", "token": "<15m Ed25519 jwt, sub:'user:7', acct:7>", "trial": false,
+  "account": { "id": 7, "email": "owner@example.com", "name": "Owner" } }
 // invalid
-{ "valid": false, "reason": "expired", "trial": false }   // reason ∈ not_found | expired | cancelled | device_mismatch | seat_limit | invalid
+{ "valid": false, "reason": "expired", "trial": false }   // reason in not_found | expired | cancelled | device_mismatch | seat_limit | signed_out | invalid
 ```
+
+**The request carries exactly one credential**: `license_key` (manual activation)
+or `device_token` (a machine signed in to an account — see `routes/device.js`).
+Sending both, or neither, is a `400`. A device token resolves to the account's
+subscription, or to the Team the account belongs to
+(`utils/accountPlan.js#subscriptionForUser`), so a Team member never holds the
+owner's key. The token's `sub` is then `user:<id>` rather than a key, and `acct`
+names the account — the claim the app checks in place of the key comparison.
 Always HTTP 200 with this body (even when `valid:false`) so the C++ client parses it cleanly.
 `trial` is **always present**: `true` while the 7-day no-card Pro trial is running
 (`subscriptions.trial_ends_at` in the future, no `stripe_subscription_id`), else `false`.
@@ -66,6 +77,13 @@ told is expired, so a late renewal webhook used to cost the customer their licen
 stopped (`subscriptions.status`); everything that merely lapses falls back to Free
 with a working key. `utils/license.js#PAID_GRACE_DAYS` (3) is the window that
 absorbs a slow or retried renewal before a plan counts as lapsed.
+
+**`signed_out` is the only reason a signed-in app throws its credential away.**
+It means *this machine* is no longer connected (its token was revoked from the
+dashboard, replaced, or presented by a different machine). A plan that merely
+stopped answers `cancelled`/`expired`, and the app stays signed in on Free so a
+renewal reaches it with nothing for anyone to re-enter — the account equivalent
+of the rule above.
 
 ### EXCEPTION 2 — `GET /api/releases/feed?os=windows|linux`
 
@@ -250,7 +268,8 @@ refuses), never an array or a nested object — and form bodies are parsed
 | `auth.schema.js` | `registerSchema`, `loginSchema`, `verifyEmailSchema`, `forgotPasswordSchema`, `resetPasswordSchema` |
 | `user.schema.js` | `updateProfileSchema` |
 | `subscription.schema.js` | `checkoutSchema` |
-| `license.schema.js` | `validateLicenseSchema` |
+| `license.schema.js` | `validateLicenseSchema`, `heartbeatSchema`, `releaseSeatSchema` |
+| `device.schema.js` | `deviceCodeRequestSchema`, `devicePollSchema`, `deviceUserCodeParamsSchema`, `deviceDecisionSchema`, `deviceSignOutSchema`, `deviceToken` |
 | `review.schema.js` | `createReviewSchema`, `listReviewsQuerySchema` |
 | `admin.schema.js` | `adminLoginSchema`, `updateUserSchema`, `updateReviewSchema`, `createReleaseSchema`, `updateReleaseSchema`, `listQuerySchema`, `idParamSchema`, `sha256` |
 | `root.schema.js` | `rootLoginSchema`, `createAdminSchema`, `updateAdminSchema`, `resetAdminPasswordSchema`, `idParamSchema`, `auditQuerySchema`, `deleteUserSchema` |
@@ -261,7 +280,11 @@ Schema field notes:
 - `registerSchema.body`: `{ name, email, password(min 8) }`
 - `updateProfileSchema.body`: `{ name?, currentPassword?, newPassword?(min 8) }` (newPassword requires currentPassword)
 - `checkoutSchema.body`: `{ plan: pro|team, billingCycle: monthly|yearly }`
-- `validateLicenseSchema.body`: `{ license_key: /^NDM(-[A-Z0-9]{4}){3}$/, device_fingerprint: /^[a-f0-9]{16,64}$/i }`
+- `validateLicenseSchema.body`: `{ license_key?: /^NDM(-[A-Z0-9]{4}){3}$/, device_token?: /^ndt_[A-Za-z0-9_-]{43}$/, device_fingerprint: /^[a-f0-9]{16,64}$/i, device_name?, app_version? }`
+  with a `.refine` — **exactly one** of `license_key` / `device_token`. `heartbeatSchema` is the same
+  without `app_version`; `releaseSeatSchema` is the credential plus `device_fingerprint`
+- `devicePollSchema.body`: `{ device_code: /^[A-Za-z0-9_-]{43}$/, device_fingerprint }`;
+  `deviceDecisionSchema.body`: `{ user_code }` (8-12 chars, normalised server-side)
 - `createReviewSchema.body`: `{ rating: 1..5, comment }`
 - `listReviewsQuerySchema.query`: `{ page=1, limit=10, rating? }` (coerced)
 - admin `updateUserSchema.body`: `{ banned?, emailVerified?, plan? }` — **no `role`**, by design; role changes are creator-only. `updateReviewSchema.body`: `{ status }`
@@ -362,6 +385,9 @@ successful login, so raising the cost later needs no migration.
 | GET | `/sessions` | `requireAuth` — `{ sessions:[{ id, current, userAgent, ip, createdAt, lastUsedAt, expiresAt }] }`, this account's live browser sessions; `current` is the one whose refresh cookie came with the request *(ADDED)* |
 | DELETE | `/sessions/:id` | `requireAuth`, `validate(deviceParamsSchema)` — revoke that session's family (`404` if not this user's or already revoked); `session.revoked` event *(ADDED)* |
 | POST | `/sessions/revoke-others` | `requireAuth` — revoke every family but the current one → `{ revoked }` *(ADDED)* |
+| GET | `/devices` | `requireAuth` — this account's machines, merging seat leases and signed-in devices by fingerprint: `{ seats, activeSeats, seatsEnforced, devices:[{ id, tokenId, shortId, name, signedIn, appVersion, active, leaseExpiresAt, lastSeenAt, firstSeenAt }] }`. `seatsEnforced` is false on Free (no seat limit), so the dashboard shows no seat badge *(ADDED)* |
+| DELETE | `/devices/:id` | `requireAuth` — free that seat lease; the machine keeps its credential |
+| DELETE | `/devices/tokens/:id` | `requireAuth` — sign that machine out: revoke its device token (reason `dashboard`) and release its seat on whichever subscription it used. The app drops to Free at its next check and forgets the account (`signed_out`); event `device.signed_out` *(ADDED)* |
 
 ### `routes/subscription.js` → `/api/subscription`
 | Method | Path | Middleware |
@@ -377,6 +403,40 @@ successful login, so raising the cost later needs no migration.
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
 | POST | `/validate` | `licenseLimiter`, `validate(validateLicenseSchema)` | **LITERAL response** (see §2). `expireTrialIfNeeded` first; bind device on first activation; check expiry/status; `signLicenseToken`; always includes `trial` |
+
+### `routes/device.js` → `/api/device` — account sign-in for the desktop app *(ADDED)*
+
+OAuth's device-authorization flow, so the app never sees a password **and never
+needs a licence key**. The plan follows the account: a trial, an upgrade or a
+team invitation reaches every signed-in machine on its next validation.
+
+| Method | Path | Middleware | Notes |
+|--------|------|-----------|-------|
+| POST | `/code` | `deviceCodeLimiter` (durable, 10/h per IP), `validate(deviceCodeRequestSchema)` | → `{ deviceCode, userCode:"ABCD-1234", verificationUrl, verificationUrlComplete, expiresIn:600, interval:5 }`. Only the **hash** of `deviceCode` is stored |
+| POST | `/token` | `devicePollLimiter` (memory, 60/min per IP), `validate(devicePollSchema)` | The app polls this. → `{ status }` (`pending`, `slow_down`, `denied`, `expired`) or `{ status:'approved', deviceToken, account }`. approved→consumed is atomic, so one code hands out **one** token; a poll from a fingerprint other than the one that asked reads as `expired`. Event `device.signed_in` |
+| GET | `/code/:userCode` | `requireAuth`, `validate(deviceUserCodeParamsSchema)` | What is asking: `{ userCode, deviceName, appVersion, requestedAt, expiresAt }`; `404 CODE_NOT_FOUND` |
+| POST | `/approve` | `requireAuth`, `deviceApproveLimiter` (durable, 10/15min per IP+user), `validate(deviceDecisionSchema)` | `403 EMAIL_NOT_VERIFIED` (`{canResend:true}`) and `403 FORBIDDEN` for a control-panel account — the same bar a licence key has. Event `device.approved`, plus a "new device signed in" email: the way a stolen website session gets noticed |
+| POST | `/deny` | `requireAuth`, `deviceApproveLimiter`, `validate(deviceDecisionSchema)` | Kills the code. Event `device.denied` (warning) |
+| POST | `/signout` | `devicePollLimiter`, `validate(deviceSignOutSchema)` | The app signing itself out: revoke the token, release its seat. Always `{ signedOut:true, wasSignedIn }` — a machine already revoked gets the same answer and forgets its token either way |
+
+The flow states (`pending`, `denied`, `expired`) are `ok:true` **data**, not
+errors: they are the answer, not a failure to answer.
+
+- **`models/DeviceAuth.js`** owns `device_codes` (10-minute TTL, `user_code`
+  unique while pending) and `device_tokens` (`ndt_` + 43 base64url chars, stored
+  hashed, one live token per user+device — a new one retires the old with reason
+  `replaced`). `prune()` runs from `utils/housekeeping.js`.
+- **A device token is bound to its machine.** Presented from a different
+  fingerprint it is revoked on the spot (`device_mismatch`) with a **critical**
+  `device.token_misuse` event, and answers `signed_out` — a copied token is dead
+  everywhere, and the rightful machine simply signs in again.
+- **A banned account, or one promoted to staff/root since it signed in, is
+  signed out at its next validation** — the same line `/api/auth` draws.
+- **The Free plan has unlimited seats** (`Subscription.acquireSeat`): there is no
+  seat limit to sell on it, and a household running Free on three machines is not
+  sharing anything. The sharing assessment skips it for the same reason.
+- Security event kinds: `device.signed_in`, `device.approved`, `device.denied`,
+  `device.signed_out`, `device.token_misuse`.
 
 ### `routes/ads.js` → `/api/ads`
 Consumed by the C++ desktop app. Ads are a **Free-plan** surface: the routes read the
