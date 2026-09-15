@@ -53,17 +53,21 @@ function Cell({ value }) {
     );
   }
   if (value === false) {
+    // aria-label on a role-less <span> is dropped by browsers, so this cell was
+    // announced as an em dash or as nothing at all. The visible mark is hidden
+    // from the tree and the word carried in sr-only text, matching the Yes cell.
     return (
-      <span className="text-slate-600" aria-label="No">
-        —
+      <span className="text-slate-500">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">No</span>
       </span>
     );
   }
   if (value === 'partial') {
-    return <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide text-amber-300">Partial</span>;
+    return <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-300">Partial</span>;
   }
   if (value === 'coming') {
-    return <span className="rounded-full border border-brand-400/25 bg-brand-400/10 px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide text-brand-300">Coming</span>;
+    return <span className="rounded-full border border-brand-400/25 bg-brand-400/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-brand-300">Coming</span>;
   }
   return <span className="text-slate-300">{value}</span>;
 }
@@ -94,16 +98,23 @@ export default function Compare() {
       <Card className="mt-10 overflow-hidden !p-0">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
+            {/* Without a caption and scoped headers a screen reader reads this
+                matrix as 80 loose cells: "Yes", "Yes", "—" with nothing saying
+                which product or which feature. */}
+            <caption className="sr-only">
+              Feature comparison of Nexa Download Manager, IDM, Free Download Manager and JDownloader
+            </caption>
             <thead>
               <tr className="surface-inset !border-x-0 !border-t-0 border-b border-white/10">
-                <th className="px-5 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Feature</th>
+                <th scope="col" className="px-5 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Feature</th>
                 {PRODUCTS.map((p, i) => (
                   <th
                     key={p}
+                    scope="col"
                     className={`px-5 py-4 text-xs font-bold uppercase tracking-[0.14em] ${i === 0 ? 'text-brand-300' : 'text-slate-400'}`}
                   >
                     {p}
-                    {i === 0 && <span className="ml-2 rounded-full border border-brand-400/25 bg-brand-400/10 px-1.5 py-0.5 text-[0.55rem] text-brand-300">beta</span>}
+                    {i === 0 && <span className="ml-2 rounded-full border border-brand-400/25 bg-brand-400/10 px-1.5 py-0.5 text-xs text-brand-300">beta</span>}
                   </th>
                 ))}
               </tr>
@@ -111,10 +122,10 @@ export default function Compare() {
             <tbody>
               {ROWS.map((row) => (
                 <tr key={row.label} className="border-b border-white/5 align-top last:border-0">
-                  <td className="px-5 py-3.5">
+                  <th scope="row" className="px-5 py-3.5 font-normal">
                     <span className="font-semibold text-slate-200">{row.label}</span>
                     {row.note && <p className="mt-1 max-w-xs text-xs leading-5 text-slate-500">{row.note}</p>}
-                  </td>
+                  </th>
                   {row.values.map((v, i) => (
                     <td key={i} className={`px-5 py-3.5 ${i === 0 ? 'bg-brand-500/[0.04]' : ''}`}>
                       <Cell value={v} />
@@ -130,15 +141,16 @@ export default function Compare() {
       <p className="mx-auto mt-5 max-w-3xl text-center text-xs leading-6 text-slate-500">
         Based on publicly documented features as of {new Date().getFullYear()}. &ldquo;Partial&rdquo; means the
         feature exists but with notable limits (fewer sites, a separate app, or a paid add-on). If
-        we got something wrong about another product, <Link to="/contact" className="text-slate-300 hover:text-brand-300">let us know</Link> and we will fix it.
+        we got something wrong about another product, <Link to="/contact" className="text-slate-300 underline underline-offset-2 hover:text-brand-300">let us know</Link> and we will fix it.
       </p>
 
-      <div className="surface-panel mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-between gap-4 rounded-xl px-6 py-5">
-        <div>
-          <p className="text-sm font-bold text-white">Try it on your own downloads.</p>
-          <p className="mt-1 text-xs text-slate-400">Free plan, no card, Windows and Linux.</p>
-        </div>
-        <div className="flex gap-3">
+      {/* Was justify-between on a 3xl panel, which parked the buttons ~380px to
+          the right of the sentence that motivates them — the same split the home
+          page's closing CTA had. Grouped into one left-aligned stack instead. */}
+      <div className="surface-panel mx-auto mt-10 max-w-3xl rounded-[var(--radius-3)] px-6 py-6">
+        <p className="text-sm font-bold text-white">Try it on your own downloads.</p>
+        <p className="mt-1 text-xs text-slate-400">Free plan, no card, Windows and Linux.</p>
+        <div className="mt-5 flex flex-wrap gap-3">
           <Button to="/download">Download free</Button>
           <Button to="/pricing" variant="ghost">Pricing</Button>
         </div>

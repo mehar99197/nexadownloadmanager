@@ -1,6 +1,14 @@
+/**
+ * A date an operator can act on. Bare toLocaleDateString() renders "7/5/2027",
+ * which is 5 July or 7 May depending on who is reading — not a distinction to
+ * leave open on a licence expiry or a deletion date. The month is always a
+ * word; the order still follows the reader's locale.
+ */
 export function formatDate(value, options = {}) {
   if (!value) return '-';
-  return new Date(value).toLocaleDateString(undefined, options);
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', ...options });
 }
 
 export function formatDateTime(value) {

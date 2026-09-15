@@ -70,7 +70,7 @@ export default function AdminLogin() {
         <div className="admin-card relative w-full max-w-md !p-8 sm:!p-10">
           <div className="text-center">
             <img src={LOGO} alt="NexaDownloadManager" className="admin-brand-logo mx-auto h-16 w-16" />
-            <p className={`mt-5 text-xs font-bold uppercase tracking-[0.18em] ${IS_ROOT ? 'text-admin-warning' : 'text-admin-cyan'}`}>Second step</p>
+            <p className={`mt-5 admin-eyebrow ${IS_ROOT ? 'text-admin-warning' : 'text-admin-cyan'}`}>Second step</p>
             <h1 className="mt-2 text-2xl font-extrabold tracking-tight">Enter your authenticator code</h1>
             <p className="mt-3 text-sm leading-6 text-admin-muted">
               Open your authenticator app and type the 6-digit code for <span className="text-admin-text">{email.trim()}</span>.
@@ -113,7 +113,7 @@ export default function AdminLogin() {
       <div className="admin-card relative w-full max-w-md !p-8 sm:!p-10">
         <div className="text-center">
           <img src={LOGO} alt="NexaDownloadManager" className="admin-brand-logo mx-auto h-20 w-20" />
-          <p className={`mt-5 text-xs font-bold uppercase tracking-[0.18em] ${IS_ROOT ? 'text-admin-warning' : 'text-admin-cyan'}`}>
+          <p className={`mt-5 admin-eyebrow ${IS_ROOT ? 'text-admin-warning' : 'text-admin-cyan'}`}>
             {IS_ROOT ? 'Creator access only' : 'Secure control room'}
           </p>
           <h1 className="mt-2 text-3xl font-extrabold tracking-tight">Nexa<span className={`bg-clip-text text-transparent ${IS_ROOT ? 'bg-gradient-to-r from-admin-warning to-admin-danger' : 'bg-gradient-to-r from-accent-400 to-admin-cyan'}`}> {PANEL_LABEL}</span></h1>

@@ -9,6 +9,12 @@
  *  - loading: boolean          (shows a loading row)
  *  - emptyMessage: string      (shown when no rows)
  *  - onRowClick?: (row) => void
+ *  - caption: string           what this table lists, for screen readers
+ *  - rowHeader: boolean        first column is the row's label (default true)
+ *
+ * The caption and the scopes are not decoration. Without them every table in
+ * the panel is read as a flat run of cells with nothing naming the row or the
+ * column it belongs to — "active", "pro", "5" and no idea whose.
  */
 export default function DataTable({
   columns = [],
@@ -17,6 +23,8 @@ export default function DataTable({
   loading = false,
   emptyMessage = 'No records found.',
   onRowClick,
+  caption,
+  rowHeader = true,
 }) {
   const keyFor = (row, i) =>
     rowKey ? rowKey(row, i) : (row?.id ?? row?._id ?? i);
@@ -24,10 +32,11 @@ export default function DataTable({
   return (
     <div className="overflow-x-auto rounded-xl border border-admin-border bg-admin-surface">
       <table className="admin-table">
+        {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
           <tr>
             {columns.map((col) => (
-              <th key={col.key} className={col.className}>
+              <th key={col.key} scope="col" className={col.className}>
                 {col.header}
               </th>
             ))}
@@ -59,11 +68,18 @@ export default function DataTable({
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 className={onRowClick ? 'cursor-pointer' : undefined}
               >
-                {columns.map((col) => (
-                  <td key={col.key} className={col.className}>
-                    {col.render ? col.render(row, i) : row[col.key]}
-                  </td>
-                ))}
+                {columns.map((col, c) => {
+                  const content = col.render ? col.render(row, i) : row[col.key];
+                  return rowHeader && c === 0 ? (
+                    <th key={col.key} scope="row" className={col.className}>
+                      {content}
+                    </th>
+                  ) : (
+                    <td key={col.key} className={col.className}>
+                      {content}
+                    </td>
+                  );
+                })}
               </tr>
             ))
           )}

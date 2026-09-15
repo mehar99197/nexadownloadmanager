@@ -34,6 +34,51 @@ inline QString stateToString(DownloadState s) {
     return QStringLiteral("Unknown");
 }
 
+// Make a filename safe on Windows, wherever it was produced.
+//
+// Two Win32 rules that no amount of character filtering catches:
+//
+//  - A handful of legacy DEVICE names are reserved — CON, PRN, AUX, NUL,
+//    COM0-9, LPT0-9 — and they stay reserved with an extension attached.
+//    Opening "NUL.mp4" for writing does not create a file; it writes to the
+//    null device. A download named that by its Content-Disposition, its page,
+//    or a torrent would report complete with nothing on disk.
+//  - Trailing dots and spaces are silently stripped, so "video." and "video"
+//    are the same file. Two downloads that look distinct then clobber one
+//    another, and a name that ends in a dot never matches what was asked for.
+//
+// Applied on every platform deliberately. A name that is dangerous on Windows
+// is merely odd on Linux, and a Downloads folder is routinely synced or shared
+// between the two — what lands there should not depend on which machine wrote
+// it. A reserved name is prefixed rather than dropped so the user still
+// recognises their file.
+//
+// Callers own their own character filtering: the engine strips shell-ish
+// punctuation from untrusted names, while an explicit user rename keeps
+// parentheses and commas. Only these two rules are shared.
+inline QString makeFileNamePortable(QString name)
+{
+    while (!name.isEmpty() && (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' '))))
+        name.chop(1);
+    if (name.isEmpty())
+        return name;
+
+    static const char *const kReserved[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    // Win32 matches on the stem before the FIRST dot, so "NUL.tar.gz" is the
+    // null device too.
+    const int dot = name.indexOf(QLatin1Char('.'));
+    const QString stem = (dot < 0 ? name : name.left(dot)).toUpper();
+    for (const char *reserved : kReserved) {
+        if (stem == QLatin1String(reserved))
+            return QLatin1Char('_') + name;
+    }
+    return name;
+}
+
 // One byte-range of a download. `end` is inclusive (HTTP Range semantics).
 struct SegmentInfo {
     int    index = 0;

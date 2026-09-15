@@ -27,18 +27,32 @@ function statusSummary(sub) {
   return {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats,
     trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    // "Active, but it ends on the 3rd" is a state the site has to be able to
+    // show — otherwise a cancellation looks like it did nothing.
     cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
   };
 }
 
+// `billing` rides along so the pricing page can say "coming soon" up front
+// instead of letting a visitor click through to a 503 from /checkout.
 router.get(
   '/plans',
-  asyncHandler(async (req, res) => ok(res, PLANS))
+  asyncHandler(async (req, res) => ok(res, { ...PLANS, billing: config.stripeMode }))
 );
+
+// A hardened deployment without Stripe keys runs with billing DISABLED (see
+// config/env.js#stripeMode). The site keeps working — accounts, trials, the
+// free licence, admin-granted plans — but nothing can be bought until live keys
+// are configured, and this says so instead of pretending.
+function billingUnavailable(res) {
+  return fail(res, 'BILLING_UNAVAILABLE',
+    'Payments are not available on this site yet. Please check back soon.', 503);
+}
 
 router.post(
   '/checkout', requireAuth, validate(checkoutSchema),
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const { plan, billingCycle, couponCode } = req.body;
     // Reject a bad code here rather than silently charging full price.
     if (couponCode) {
@@ -58,6 +72,7 @@ router.post(
 router.post(
   '/coupon', requireAuth, validate(couponSchema),
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const promo = await stripe.findPromotionCode(req.body.couponCode);
     if (!promo) return fail(res, 'INVALID_COUPON', 'That code is not valid', 400);
     return ok(res, { code: promo.code, percentOff: promo.percentOff ?? null,
@@ -70,6 +85,7 @@ router.post(
 router.post(
   '/portal', requireAuth,
   asyncHandler(async (req, res) => {
+    if (config.isBillingDisabled) return billingUnavailable(res);
     const sub = (await Subscription.findByUserId(req.user.id))[0] || null;
     if (!sub || !sub.stripe_customer_id)
       return ok(res, { url: null, reason: 'no_stripe_customer' });
@@ -84,8 +100,11 @@ router.post(
 router.post(
   '/mock-complete', requireAuth, validate(mockCompleteSchema),
   asyncHandler(async (req, res) => {
-    if (!config.isStripeMock || config.isProd)
-      return fail(res, 'NOT_AVAILABLE', 'Mock billing is only available in development', 404);
+    // isStripeMock is only ever true for a LOCAL, non-production deployment —
+    // config/env.js picks 'disabled', not 'mock', for a public box without
+    // keys — so this single check is the whole gate.
+    if (!config.isStripeMock)
+      return fail(res, 'NOT_AVAILABLE', 'Mock billing is only available in local development', 404);
     const { plan, billingCycle } = req.body;
     const existing = (await Subscription.findByUserId(req.user.id))[0] || null;
     const mockPaymentId = `mock_${req.user.id}_${plan}_${billingCycle}`;
@@ -113,11 +132,28 @@ router.post(
   })
 );
 
+/**
+ * Cancel — at the END of the period the customer already paid for.
+ *
+ * This used to cancel on the spot: `stripe.subscriptions.cancel()` plus
+ * `status='cancelled'`, so somebody who cancelled on day 2 of a paid month lost
+ * Pro that second, and the desktop app DELETED their key on the `cancelled`
+ * reason. The confirmation dialog on /billing has always promised the
+ * opposite ("your plan stays active until the end of the period you already
+ * paid for"), which is the behaviour implemented here.
+ *
+ * The row therefore stays `active` with its expiry intact and only carries
+ * `cancel_at_period_end`. What ends it is either Stripe's
+ * customer.subscription.deleted at the period boundary, or — for a plan with no
+ * Stripe subscription behind it — the lazy fallback in
+ * Subscription.expireIfLapsed. Either way the customer lands on Free with a
+ * working key, never on a deleted one.
+ */
 router.post(
   '/cancel', requireAuth,
   asyncHandler(async (req, res) => {
     const subs = await Subscription.findByUserId(req.user.id);
-    const subscription = subs[0];
+    const subscription = await Subscription.current(subs[0] || null);
     if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
     // The free plan never renews; marking it cancelled would only make the
     // desktop app treat the user's (free) licence key as invalid.
@@ -125,8 +161,8 @@ router.post(
       return fail(res, 'NOT_A_PAID_PLAN', 'The free plan has nothing to cancel', 400);
     if (subscription.status !== 'active')
       return fail(res, 'ALREADY_INACTIVE', 'This subscription is not active', 400);
-    if (Number(subscription.cancel_at_period_end))
-      return fail(res, 'ALREADY_CANCELLED', 'This subscription is already set to end at the period close', 400);
+    if (subscription.cancel_at_period_end)
+      return fail(res, 'ALREADY_CANCELLING', 'This subscription is already set to end', 400);
 
     // The billing page promises "your plan stays active until the end of the
     // period you already paid for". Marking the row cancelled here broke that
@@ -136,10 +172,42 @@ router.post(
     // stays active until expiry_date, and Stripe's customer.subscription.deleted
     // (sent at the period end) is what finally marks it cancelled.
     if (subscription.stripe_subscription_id)
-      await stripe.cancelAtPeriodEnd(subscription.stripe_subscription_id);
+      await stripe.cancelSubscription(subscription.stripe_subscription_id, { atPeriodEnd: true });
 
     await Subscription.update(subscription.id, { cancelAtPeriodEnd: 1 });
     const sub = await Subscription.findById(subscription.id);
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.cancel_scheduled', entityType: 'subscription',
+      entityId: sub.id, summary: `${req.user.email} cancelled their ${sub.plan} plan`,
+      metadata: { endsAt: toIso(sub.expiry_date) },
+    });
+    return ok(res, statusSummary(sub));
+  })
+);
+
+// Undo a pending cancellation while the period is still running. Without this
+// the only way back was Stripe's hosted portal, which a trial or an
+// admin-granted plan does not even have.
+router.post(
+  '/resume', requireAuth,
+  asyncHandler(async (req, res) => {
+    const subs = await Subscription.findByUserId(req.user.id);
+    const subscription = await Subscription.current(subs[0] || null);
+    if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    if (!subscription.cancel_at_period_end)
+      return fail(res, 'NOT_CANCELLING', 'This subscription is not scheduled to end', 400);
+    if (subscription.status !== 'active' || subscription.plan === 'free')
+      return fail(res, 'ALREADY_INACTIVE', 'This plan has already ended — subscribe again to restart it', 400);
+
+    if (subscription.stripe_subscription_id)
+      await stripe.resumeSubscription(subscription.stripe_subscription_id);
+
+    await Subscription.update(subscription.id, { cancelAtPeriodEnd: 0 });
+    const sub = await Subscription.findById(subscription.id);
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.cancel_revoked', entityType: 'subscription',
+      entityId: sub.id, summary: `${req.user.email} resumed their ${sub.plan} plan`,
+    });
     return ok(res, statusSummary(sub));
   })
 );
@@ -152,6 +220,12 @@ router.post(
     const result = await Subscription.startTrial(req.user.id);
     if (!result.ok) {
       if (result.reason === 'not_found') return fail(res, 'NOT_FOUND', 'Account not found', 404);
+      // Distinct from "you already used your trial": this licence was stopped
+      // by a person, and a trial must not quietly undo that. Saying so sends
+      // the customer to support instead of leaving them retrying a button.
+      if (result.reason === 'subscription_stopped')
+        return fail(res, 'SUBSCRIPTION_STOPPED',
+          'This account\u2019s licence was stopped. Please contact support.', 403);
       return fail(res, 'TRIAL_UNAVAILABLE', 'A free trial is not available for this account', 400);
     }
     const trialEndsAt = toIso(result.subscription.trial_ends_at);
@@ -170,11 +244,10 @@ router.post(
 router.get(
   '/status', requireAuth,
   asyncHandler(async (req, res) => {
-    let sub = await Subscription.findActiveByUserId(req.user.id) ||
-              (await Subscription.findByUserId(req.user.id))[0];
-    if (!sub) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
-    sub = await Subscription.expireTrialIfNeeded(sub);
-    return ok(res, statusSummary(sub));
+    const found = await Subscription.findActiveByUserId(req.user.id) ||
+                  (await Subscription.findByUserId(req.user.id))[0];
+    if (!found) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    return ok(res, statusSummary(await Subscription.current(found)));
   })
 );
 

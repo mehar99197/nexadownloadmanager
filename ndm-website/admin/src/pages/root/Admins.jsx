@@ -207,7 +207,7 @@ export default function Admins() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-warning">Creator only</p>
+          <p className="admin-eyebrow text-admin-warning">Creator only</p>
           <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Admins</h2>
           <p className="mt-2 max-w-2xl text-sm text-admin-muted">
             Staff admins sign in at <code className="text-admin-cyan">/admin</code> and can manage customers,
@@ -225,7 +225,7 @@ export default function Admins() {
       {notice && <div className="rounded-xl border border-admin-success/30 bg-admin-success/10 px-4 py-3 text-sm text-admin-success">{notice}</div>}
 
       <div className="admin-card !p-0">
-        <DataTable columns={columns} rows={admins} loading={loading} emptyMessage="No control-panel accounts yet." />
+        <DataTable columns={columns} rows={admins} loading={loading} emptyMessage="No control-panel accounts yet." caption="Control-panel accounts and their roles" />
       </div>
 
       <Modal

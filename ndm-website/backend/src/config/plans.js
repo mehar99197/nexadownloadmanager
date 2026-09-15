@@ -1,7 +1,7 @@
 'use strict';
 
 // Plan catalog — single source of truth for pricing + features.
-// Feature arrays mirror the pricing table in websiteplan.md.
+// Feature arrays mirror the pricing table in ndm-website/CONTRACT.md §9 (PLANS catalog).
 
 const { isAdFreePlan } = require('../utils/ads');
 

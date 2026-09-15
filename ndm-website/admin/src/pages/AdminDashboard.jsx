@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api, { unwrap } from '../api/client.js';
+import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import StatCard from '../components/StatCard.jsx';
 import BarChart from '../components/BarChart.jsx';
 import Badge from '../components/Badge.jsx';
@@ -26,6 +27,7 @@ function ActivityFeed({ items }) {
 }
 
 export default function AdminDashboard() {
+  const { admin } = useAdminAuth();
   const [stats, setStats] = useState(null);
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -55,10 +57,29 @@ export default function AdminDashboard() {
   const plans = stats?.planDistribution || [];
   const maxPlan = Math.max(...plans.map((item) => Number(item.count) || 0), 1);
 
+  // A control panel that can ban users, issue licences and delete accounts,
+  // reached with a password alone, is one phished password away from all of
+  // that. Nagging is the right amount of pressure here: forcing enrolment at
+  // login would lock the sole operator out of production if anything about the
+  // flow went wrong, and this account is the only way back in.
+  // Strictly `=== false`: when GET /me fails the context falls back to
+  // { authenticated: true } with no flag at all, and "we could not ask" must
+  // not render as "it is off".
+  const needsTwoFactor = admin?.twoFactorEnabled === false;
+
   return (
     <div className="space-y-6">
+      {needsTwoFactor && (
+        <div className="flex flex-col gap-3 rounded-xl border border-admin-warning/30 bg-admin-warning/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-admin-warning">Two-factor authentication is off</p>
+            <p className="mt-1 text-xs text-admin-muted">This account can ban users, issue licences and delete accounts, and a password is currently the only thing in the way.</p>
+          </div>
+          <Link to="/security"><Button size="sm">Turn on 2FA</Button></Link>
+        </div>
+      )}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div><p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Operational overview</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Command center</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-admin-muted">A live view of growth, revenue, user health, moderation, releases, and the services powering NexaDownloadManager.</p></div>
+        <div><p className="admin-eyebrow text-admin-cyan">Operational overview</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Command center</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-admin-muted">A live view of growth, revenue, user health, moderation, releases, and the services powering NexaDownloadManager.</p></div>
         <div className="flex flex-wrap gap-2"><Link to="/users" className="btn-admin-secondary">Manage users</Link><Link to="/releases" className="btn-admin-primary">Publish release</Link><Button variant="secondary" onClick={loadDashboard} disabled={loading}>{loading ? 'Refreshing...' : 'Refresh data'}</Button></div>
       </div>
 
@@ -74,14 +95,14 @@ export default function AdminDashboard() {
       <section className="admin-card flex flex-wrap items-center gap-3 !p-4">
         <span className="mr-1 text-xs font-bold uppercase tracking-[0.16em] text-admin-faint">Service health</span>
         <HealthPill label="Database" value={health?.database || 'checking'} />
-        <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' ? 'warning' : 'success'} />
+        <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' || health?.stripe === 'disabled' ? 'warning' : 'success'} />
         <HealthPill label="Email" value={health?.email || stats?.system?.email || 'checking'} tone={health?.email === 'mock' ? 'warning' : 'success'} />
         <span className="ml-auto text-xs text-admin-faint">{health ? `${health.latencyMs}ms response · ${Math.floor((health.uptimeSeconds || 0) / 60)}m uptime` : 'Connecting...'}</span>
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last 30 days.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
-        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">Revenue trend</h3><p className="mt-1 text-xs text-admin-muted">Paid revenue by month for the latest six months.</p></div><span className="rounded-full border border-admin-success/20 bg-admin-success/10 px-2.5 py-1 text-[0.65rem] font-bold uppercase tracking-[0.12em] text-admin-success">MRR {formatMoney(stats?.mrr)}</span></div><div className="mt-6"><BarChart data={revenueData} height={220} valueFormatter={formatMoney} barClassName="bg-gradient-to-t from-admin-success to-admin-cyan" /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last 30 days.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">Revenue trend</h3><p className="mt-1 text-xs text-admin-muted">Paid revenue by month for the latest six months.</p></div><span className="rounded-full border border-admin-success/20 bg-admin-success/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-success">MRR {formatMoney(stats?.mrr)}</span></div><div className="mt-6"><BarChart data={revenueData} height={220} valueFormatter={formatMoney} barClassName="bg-gradient-to-t from-admin-success to-admin-cyan" /></div></section>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[0.82fr_1.18fr]">
@@ -90,7 +111,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
-        <section className="admin-card !p-0"><div className="flex items-center justify-between border-b border-admin-border px-5 py-4"><div><h3 className="text-base font-bold text-admin-text">Recent payments</h3><p className="mt-1 text-xs text-admin-muted">Latest billing activity across the platform.</p></div><Link to="/subscriptions" className="text-sm font-semibold text-admin-cyan hover:text-white">View subscriptions</Link></div><div className="overflow-x-auto"><table className="admin-table"><thead><tr><th>User</th><th>Plan</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody>{(stats?.recentPayments || []).length === 0 ? <tr><td colSpan="5" className="px-4 py-8 text-center text-admin-muted">No payments yet.</td></tr> : stats.recentPayments.map((payment) => <tr key={payment.id}><td><div className="font-medium text-admin-text">{payment.userName || 'Unknown user'}</div><div className="text-xs text-admin-faint">{payment.userEmail}</div></td><td className="capitalize">{payment.plan}</td><td>{payment.currency?.toUpperCase()} {payment.amount}</td><td>{formatDate(payment.created_at)}</td><td><Badge status={payment.status} /></td></tr>)}</tbody></table></div></section>
+        <section className="admin-card !p-0"><div className="flex items-center justify-between border-b border-admin-border px-5 py-4"><div><h3 className="text-base font-bold text-admin-text">Recent payments</h3><p className="mt-1 text-xs text-admin-muted">Latest billing activity across the platform.</p></div><Link to="/subscriptions" className="text-sm font-semibold text-admin-cyan hover:text-white">View subscriptions</Link></div><div className="overflow-x-auto"><table className="admin-table"><caption className="sr-only">Most recent payments across the platform</caption><thead><tr><th scope="col">User</th><th scope="col">Plan</th><th scope="col">Amount</th><th scope="col">Date</th><th scope="col">Status</th></tr></thead><tbody>{(stats?.recentPayments || []).length === 0 ? <tr><td colSpan="5" className="px-4 py-8 text-center text-admin-muted">No payments yet.</td></tr> : stats.recentPayments.map((payment) => <tr key={payment.id}><th scope="row"><div className="font-medium text-admin-text">{payment.userName || 'Unknown user'}</div><div className="text-xs text-admin-faint">{payment.userEmail}</div></th><td className="capitalize">{payment.plan}</td><td>{payment.currency?.toUpperCase()} {payment.amount}</td><td>{formatDate(payment.created_at)}</td><td><Badge status={payment.status} /></td></tr>)}</tbody></table></div></section>
         <section className="admin-card"><div><h3 className="text-base font-bold text-admin-text">Moderation & publishing</h3><p className="mt-1 text-xs leading-5 text-admin-muted">Keep the public experience fresh without leaving the dashboard.</p></div><div className="mt-5 space-y-3"><Link to="/reviews" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-warning/50"><span><span className="block text-sm font-semibold text-admin-text">Review queue</span><span className="mt-1 block text-xs text-admin-muted">{stats?.pendingReviews || 0} waiting for approval</span></span><span className="text-admin-warning">-&gt;</span></Link><Link to="/contact" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Contact inbox</span><span className="mt-1 block text-xs text-admin-muted">{stats?.contact?.awaiting || 0} awaiting a reply · {stats?.contact?.unread || 0} unread</span></span><span className="text-admin-cyan">-&gt;</span></Link><Link to="/releases" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Release catalog</span><span className="mt-1 block text-xs text-admin-muted">Publish builds and update links</span></span><span className="text-admin-cyan">-&gt;</span></Link></div></section>
       </div>
     </div>

@@ -237,7 +237,7 @@ test('backend flows', async (t) => {
       assert.equal(meNow.body.data.subscription.cancelAtPeriodEnd, true);
       const again = await api.post('/api/subscription/cancel', null, { token });
       assert.equal(again.status, 400);
-      assert.equal(again.body.error.code, 'ALREADY_CANCELLED');
+      assert.equal(again.body.error.code, 'ALREADY_CANCELLING');
     });
 
     await t2.test('reactivating from the Stripe portal clears the flag', async () => {
@@ -256,11 +256,17 @@ test('backend flows', async (t) => {
         id: stripeSub, object: 'subscription', customer,
       }));
       assert.equal(res.status, 200, res.text);
-      assert.equal((await status()).status, 'cancelled');
+      // The account goes back to Free rather than to a dead row: the person can
+      // subscribe again from the same account, and the app sees a Free plan.
+      const after = await status();
+      assert.equal(after.plan, 'free');
+      assert.equal(after.cancelAtPeriodEnd, false);
+      // The key still validates — as Free. Answering `expired` would make the
+      // desktop app delete the key, and the person may well subscribe again.
       const v = await validate();
-      assert.equal(v.body.valid, false);
-      assert.equal(v.body.reason, 'cancelled');
-      assert.equal(v.body.features.authSiteDownloads, false, 'a refused client gets Free entitlements');
+      assert.equal(v.body.valid, true);
+      assert.equal(v.body.plan, 'free');
+      assert.equal(v.body.features.authSiteDownloads, false, 'a Free client gets Free entitlements');
     });
 
     await t2.test('buying again re-activates and clears any period-end flag', async () => {
@@ -483,6 +489,13 @@ test('backend flows', async (t) => {
     await srv.reset();
     const api = srv.client();
     const totp = require('../src/utils/totp');
+    // The verifier refuses a time step it has already accepted (replay guard).
+    // These flow tests present several codes inside one 30 s step, so each use
+    // clears the recorded step first — the guard itself has its own tests.
+    const code = async (email) => {
+      await srv.query('UPDATE users SET totp_last_step = NULL WHERE email = ?', [email]);
+      return totp.totpAt(secret);
+    };
     const admin = await insertAdmin('twofa@example.test');
     let auth;
     let secret;
@@ -500,7 +513,7 @@ test('backend flows', async (t) => {
       const state = await api.get('/api/admin/2fa', auth);
       assert.equal(state.body.data.enabled, false);
       assert.equal(state.body.data.pending, true);
-      const right = await api.post('/api/admin/2fa/enable', { code: totp.totpAt(secret) }, auth);
+      const right = await api.post('/api/admin/2fa/enable', { code: await code(admin.email) }, auth);
       assert.equal(right.status, 200, right.text);
       recoveryCodes = right.body.data.recoveryCodes;
       assert.equal(recoveryCodes.length, 8);
@@ -514,7 +527,7 @@ test('backend flows', async (t) => {
       assert.equal(login.body.data.token, undefined, 'no session before the second factor');
       const bad = await fresh.post('/api/admin/login/2fa', { challenge: login.body.data.challenge, code: '123456' });
       assert.equal(bad.status, 401);
-      const good = await fresh.post('/api/admin/login/2fa', { challenge: login.body.data.challenge, code: totp.totpAt(secret) });
+      const good = await fresh.post('/api/admin/login/2fa', { challenge: login.body.data.challenge, code: await code(admin.email) });
       assert.equal(good.status, 200, good.text);
       assert.ok(good.body.data.token);
       assert.ok(fresh.cookies.get('ndm_admin_refresh'));
@@ -537,18 +550,18 @@ test('backend flows', async (t) => {
 
     await t2.test('a staff challenge cannot complete a root login', async () => {
       const challenge = (await api.post('/api/admin/login', { email: admin.email, password: admin.password })).body.data.challenge;
-      const res = await api.post('/api/root/login/2fa', { challenge, code: totp.totpAt(secret) });
+      const res = await api.post('/api/root/login/2fa', { challenge, code: await code(admin.email) });
       assert.equal(res.status, 401);
     });
 
     await t2.test('disabling needs the password and a code', async () => {
       const fresh = srv.client();
       const challenge = (await fresh.post('/api/admin/login', { email: admin.email, password: admin.password })).body.data.challenge;
-      const session = await fresh.post('/api/admin/login/2fa', { challenge, code: totp.totpAt(secret) });
+      const session = await fresh.post('/api/admin/login/2fa', { challenge, code: await code(admin.email) });
       const a = { token: session.body.data.token };
-      const wrongPw = await fresh.post('/api/admin/2fa/disable', { password: 'nope-nope-nope', code: totp.totpAt(secret) }, a);
+      const wrongPw = await fresh.post('/api/admin/2fa/disable', { password: 'nope-nope-nope', code: await code(admin.email) }, a);
       assert.equal(wrongPw.status, 400);
-      const off = await fresh.post('/api/admin/2fa/disable', { password: admin.password, code: totp.totpAt(secret) }, a);
+      const off = await fresh.post('/api/admin/2fa/disable', { password: admin.password, code: await code(admin.email) }, a);
       assert.equal(off.status, 200, off.text);
       const plain = await fresh.post('/api/admin/login', { email: admin.email, password: admin.password });
       assert.ok(plain.body.data.token, 'password alone signs in again');
@@ -559,7 +572,7 @@ test('backend flows', async (t) => {
   await t.test('creator panel', async (t2) => {
     await srv.reset();
     const api = srv.client();
-    const root = await insertAdmin('root@example.test', 'root', 'creator-password-123');
+    const root = await insertAdmin('creator@example.test', 'root', 'creator-password-123');
     const staff = await insertAdmin('staff@example.test');
     const customer = await srv.makeUser(srv.client(), 'customer');
     let rootAuth;
@@ -593,7 +606,7 @@ test('backend flows', async (t) => {
       const rows = await srv.query("SELECT id, role FROM users WHERE email = 'newstaff@example.test'");
       assert.equal(rows[0].role, 'admin');
       newAdminId = rows[0].id;
-      const rootRow = (await srv.query("SELECT id FROM users WHERE email = 'root@example.test'"))[0];
+      const rootRow = (await srv.query("SELECT id FROM users WHERE email = 'creator@example.test'"))[0];
       const self = await api.put(`/api/root/admins/${rootRow.id}`, { banned: true }, rootAuth);
       assert.equal(self.status, 400, 'no self lockout');
       const demote = await api.del(`/api/root/admins/${newAdminId}`, rootAuth);
@@ -604,7 +617,7 @@ test('backend flows', async (t) => {
     await t2.test('staff cannot change roles or ban another admin, root can', async () => {
       const staffLogin = await srv.client().post('/api/admin/login', { email: staff.email, password: staff.password });
       const staffAuth = { token: staffLogin.body.data.token };
-      const rootRow = (await srv.query("SELECT id FROM users WHERE email = 'root@example.test'"))[0];
+      const rootRow = (await srv.query("SELECT id FROM users WHERE email = 'creator@example.test'"))[0];
       const roleChange = await api.put(`/api/admin/users/${newAdminId}`, { role: 'admin' }, staffAuth);
       assert.equal(roleChange.status, 400, 'role is not an accepted field');
       const banRoot = await api.put(`/api/admin/users/${rootRow.id}`, { banned: true }, staffAuth);

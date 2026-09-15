@@ -3,32 +3,8 @@
 const { query, queryOne, insert, execute, getPool, withTransaction } = require('../config/db');
 const {
   generateLicenseKey, planSeats, planExpiry, TRIAL_PLAN, trialEndsAt, isTrialExpired,
-  SEAT_LEASE_SECONDS,
+  isPaidPlanLapsed, SEAT_LEASE_SECONDS,
 } = require('../utils/license');
-
-// Columns update()/updateByUserId() may touch. The name is interpolated into
-// the statement, so it must never come from user input — see User.js. Seat
-// leases live in license_activations and have their own methods.
-const UPDATABLE_COLUMNS = new Set([
-  'plan', 'status', 'license_key', 'device_fingerprint', 'seats', 'start_date',
-  'expiry_date', 'trial_ends_at', 'trial_reminder_sent_at',
-  'stripe_subscription_id', 'stripe_customer_id', 'cancel_at_period_end',
-]);
-
-// Shared by both update flavours: turns {camelCase: value} into SET clauses,
-// refusing any column outside the allowlist.
-function setClauses(fields, what) {
-  const sets = [];
-  const vals = [];
-  for (const [k, v] of Object.entries(fields)) {
-    const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
-    if (!UPDATABLE_COLUMNS.has(col))
-      throw new Error(`${what}: "${k}" is not an updatable column`);
-    sets.push(`${col} = ?`);
-    vals.push(v);
-  }
-  return { sets, vals };
-}
 
 const Subscription = {
   async findById(id) {
@@ -54,9 +30,12 @@ const Subscription = {
     return queryOne('SELECT * FROM subscriptions WHERE stripe_subscription_id = ?', [id]);
   },
 
+  // Fallback link for a renewal invoice that names the customer but not the
+  // subscription (older API shapes put the subscription only on the line item).
   async findByStripeCustomerId(id) {
     return queryOne(
-      'SELECT * FROM subscriptions WHERE stripe_customer_id = ? ORDER BY created_at DESC LIMIT 1', [id]
+      'SELECT * FROM subscriptions WHERE stripe_customer_id = ? ORDER BY created_at DESC LIMIT 1',
+      [id]
     );
   },
 
@@ -123,6 +102,28 @@ const Subscription = {
         return { ok: false, reason: 'seat_revoked', seats, activeSeats: busy };
       }
 
+      // A heartbeat may not REGISTER a machine either. Refusing a revoked row
+      // above but falling through to the INSERT below when there was no row at
+      // all left the larger hole: a client that simply never calls /validate
+      // could take a seat and collect a signed licence token from /heartbeat,
+      // on the general API limiter instead of the strict licence one — and,
+      // far worse, /validate is the ONLY place the key-sharing assessment and
+      // auto-suspend run (routes/license.js). A key posted on a forum and used
+      // by 500 people leaves 500 activation rows, and that all-time count is
+      // the one signal seat limits cannot see; beating straight past
+      // /validate meant the rows were still written but nothing ever read
+      // them. Enforcement that a modified client can skip by choosing a
+      // different endpoint is not enforcement.
+      //
+      // A legitimate client always has a row here: LicenseManager only starts
+      // its heartbeat after a /validate that succeeded (which creates the row),
+      // and nothing ever deletes one — releaseSeat and the admin's "free seat"
+      // both keep the row and clear the lease.
+      if (renewOnly && !existing.length) {
+        await connection.rollback();
+        return { ok: false, reason: 'seat_unknown_device', seats, activeSeats: busy };
+      }
+
       // Renewing an unexpired lease always succeeds. Taking a *new* one (first
       // run, or after this device's lease lapsed) needs a free seat.
       if (!holdsLease && busy >= seats) {
@@ -182,6 +183,172 @@ const Subscription = {
       [id, deviceFingerprint]
     );
     return { ok: true, released: (result.affectedRows || 0) > 0 };
+  },
+
+  /**
+   * How widely a licence has been activated: distinct machines all time, and
+   * how many of those first appeared inside `windowDays`.
+   *
+   * Counts rows rather than live leases on purpose. A leaked key's users take
+   * turns holding the seat, so the live count stays at the limit and looks
+   * healthy; it is the accumulated rows that give it away. Activation rows are
+   * never deleted (releaseSeat only clears the lease), so this is a true
+   * all-time count.
+   */
+  async deviceSpread(id, windowDays = 7) {
+    const days = Math.max(1, Math.min(365, Number(windowDays) || 7));
+    const rows = await query(
+      `SELECT COUNT(*) AS distinctDevices,
+              SUM(created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)) AS newDevicesInWindow
+         FROM license_activations
+        WHERE subscription_id = ?`,
+      [days, id]
+    );
+    const row = rows[0] || {};
+    return {
+      distinctDevices: Number(row.distinctDevices) || 0,
+      newDevicesInWindow: Number(row.newDevicesInWindow) || 0,
+    };
+  },
+
+  /**
+   * Suspend a licence the sharing check judged beyond argument.
+   *
+   * Deliberately does NOT touch `status`. Setting it to 'cancelled' or
+   * 'expired' would make the desktop client delete the stored key, turning a
+   * reversible measure into a permanent one for anybody caught by a false
+   * positive — and those two reasons are reserved for something a person
+   * decided. The licence instead answers `seat_limit`, which the client already
+   * treats as "close Nexa on another machine" and keeps the key for.
+   *
+   * Idempotent: re-suspending an already-suspended licence does not move the
+   * timestamp, so the record keeps saying when it actually started.
+   */
+  async suspendForSharing(id, reason) {
+    const result = await execute(
+      `UPDATE subscriptions
+          SET sharing_suspended_at = NOW(), sharing_level = 'suspected',
+              sharing_reason = ?, sharing_checked_at = NOW()
+        WHERE id = ? AND sharing_suspended_at IS NULL`,
+      [reason ? String(reason).slice(0, 255) : null, id]
+    );
+    return { suspended: (result.affectedRows || 0) > 0 };
+  },
+
+  /**
+   * Lift a sharing suspension (an admin deciding it was wrong, or the customer
+   * being believed). Also resets the verdict to 'ok' so the same evidence does
+   * not immediately re-suspend on the next new device — the device history is
+   * still there, and without this reset the licence would bounce straight back.
+   */
+  async clearSharingSuspension(id) {
+    const result = await execute(
+      `UPDATE subscriptions
+          SET sharing_suspended_at = NULL, sharing_level = 'ok',
+              sharing_reason = NULL, sharing_checked_at = NOW(),
+              sharing_exempt = 1
+        WHERE id = ?`,
+      [id]
+    );
+    return { cleared: (result.affectedRows || 0) > 0 };
+  },
+
+  /**
+   * Put a licence back under automatic enforcement after it was exempted.
+   * The counterpart to clearSharingSuspension, for when a customer turns out
+   * to have been sharing after all.
+   */
+  async resumeSharingEnforcement(id) {
+    const result = await execute(
+      'UPDATE subscriptions SET sharing_exempt = 0 WHERE id = ?', [id]
+    );
+    return { resumed: (result.affectedRows || 0) > 0 };
+  },
+
+  /** Record what the sharing check concluded. Never changes `status`. */
+  async recordSharingAssessment(id, { level, reason, distinctDevices }) {
+    await execute(
+      `UPDATE subscriptions
+          SET sharing_level = ?, sharing_reason = ?, sharing_devices = ?,
+              sharing_checked_at = NOW()
+        WHERE id = ?`,
+      [level, reason ? String(reason).slice(0, 255) : null, distinctDevices, id]
+    );
+  },
+
+  /** Licences the sharing check has flagged, worst first — for the admin panel. */
+  async listFlaggedForSharing({ limit = 100 } = {}) {
+    const capped = Math.max(1, Math.min(500, Number(limit) || 100));
+    return query(
+      `SELECT s.id, s.license_key, s.plan, s.status, s.seats,
+              s.sharing_level, s.sharing_devices, s.sharing_reason, s.sharing_checked_at,
+              s.sharing_suspended_at, s.sharing_exempt,
+              u.email
+         FROM subscriptions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.sharing_level <> 'ok' OR s.sharing_suspended_at IS NOT NULL
+        ORDER BY FIELD(s.sharing_level, 'suspected', 'watch'), s.sharing_devices DESC
+        LIMIT ${capped}`
+    );
+  },
+
+  /**
+   * Issue a brand-new licence key for a subscription and cut every machine
+   * currently using the old one loose.
+   *
+   * This is the remedy the product was missing. A Team member is handed the
+   * OWNER's real licence key (routes/team.js#memberPayload), and removing them
+   * from the roster does nothing to the copy already sitting in their desktop
+   * app — nothing links an activation row back to the member who created it,
+   * because /license/validate authenticates a key and a device, not a person.
+   * So "remove from team" was cosmetic: the removed member kept a working Pro
+   * seat for as long as the plan lived. The same is true of a key that leaked
+   * any other way.
+   *
+   * Both halves have to happen together. A new key alone leaves the old
+   * devices holding live leases against this subscription until they lapse; a
+   * seat sweep alone lets them re-activate with the key they still have.
+   * Activation ROWS are kept (only revoked + unleased) because they are the
+   * all-time device history the sharing check reads — deleting them would
+   * quietly launder a shared key's record.
+   */
+  async rotateLicenseKey(id) {
+    return withTransaction(async (connection) => {
+      const [rows] = await connection.execute(
+        'SELECT id, license_key FROM subscriptions WHERE id = ? FOR UPDATE', [id]
+      );
+      if (!rows.length) return { ok: false, reason: 'not_found' };
+
+      // The unique index on license_key makes a collision a failed INSERT
+      // rather than a silent overwrite; retrying a few times covers it without
+      // pretending 128 bits of randomness needs a loop.
+      let licenseKey = null;
+      for (let attempt = 0; attempt < 5 && !licenseKey; attempt += 1) {
+        const candidate = generateLicenseKey();
+        const [clash] = await connection.execute(
+          'SELECT id FROM subscriptions WHERE license_key = ?', [candidate]
+        );
+        if (!clash.length) licenseKey = candidate;
+      }
+      if (!licenseKey) return { ok: false, reason: 'key_generation_failed' };
+
+      await connection.execute(
+        'UPDATE subscriptions SET license_key = ? WHERE id = ?', [licenseKey, id]
+      );
+      // revoked_at, not just a cleared lease: a machine still running with the
+      // old key would otherwise renew straight through its next heartbeat.
+      const [freed] = await connection.execute(
+        `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
+          WHERE subscription_id = ?`,
+        [id]
+      );
+      return {
+        ok: true,
+        licenseKey,
+        previousKey: rows[0].license_key,
+        devicesRevoked: freed.affectedRows || 0,
+      };
+    });
   },
 
   /** Devices for a subscription, newest lease first, with live/idle state. */
@@ -254,17 +421,29 @@ const Subscription = {
   },
 
   async update(id, fields) {
-    const { sets, vals } = setClauses(fields, 'Subscription.update');
+    const sets = [];
+    const vals = [];
+    for (const [k, v] of Object.entries(fields)) {
+      const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
+      sets.push(`${col} = ?`);
+      vals.push(v);
+    }
     if (sets.length === 0) return;
     vals.push(id);
     await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE id = ?`, vals);
   },
 
-  async updateByUserId(userId, fields) {
-    const { sets, vals } = setClauses(fields, 'Subscription.updateByUserId');
-    if (sets.length === 0) return;
-    vals.push(userId);
-    await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE user_id = ?`, vals);
+  /**
+   * Update the user's CURRENT subscription — the newest row, which is the one
+   * every read path (`findByUserId()[0]`, `findActiveByUserId`) resolves to.
+   * It used to write to every row the user had, so a second licence issued by
+   * an admin silently moved in lockstep with the first.
+   */
+  async updateCurrentByUserId(userId, fields) {
+    const current = (await Subscription.findByUserId(userId))[0] || null;
+    if (!current) return null;
+    await Subscription.update(current.id, fields);
+    return Subscription.findById(current.id);
   },
 
   async count(filter = {}) {
@@ -325,6 +504,48 @@ const Subscription = {
     );
   },
 
+  /**
+   * The row as it should be read RIGHT NOW: lazy trial expiry, then lazy paid
+   * lapse. One call so no route has to remember both, and every read path in
+   * the app agrees on what a subscription currently is.
+   */
+  async current(sub) {
+    return Subscription.expireIfLapsed(await Subscription.expireTrialIfNeeded(sub));
+  },
+
+  /**
+   * A paid plan whose period ended and was never renewed falls back to Free
+   * rather than sitting there as an `active` row with a past date — which
+   * /api/license/validate reported as `expired`, and the desktop client deletes
+   * a key it is told is expired. See utils/license.js#isPaidPlanLapsed for the
+   * grace period that keeps a slow renewal webhook from downgrading anyone.
+   */
+  async expireIfLapsed(sub) {
+    if (!isPaidPlanLapsed(sub)) return sub;
+    await execute(
+      `UPDATE subscriptions
+          SET plan = 'free', status = 'active', seats = ?, expiry_date = ?,
+              cancel_at_period_end = 0
+        WHERE id = ? AND plan IN ('pro', 'team') AND status = 'active'`,
+      [planSeats('free'), planExpiry('free'), sub.id]
+    );
+    return Subscription.findById(sub.id);
+  },
+
+  /**
+   * Retire every OTHER subscription a user holds, so issuing a new licence by
+   * hand cannot leave the previous key still validating. Without this an admin
+   * "upgrade" handed the customer two working licences.
+   */
+  async retireOthers(userId, keepId) {
+    const result = await execute(
+      `UPDATE subscriptions SET status = 'expired', cancel_at_period_end = 0
+        WHERE user_id = ? AND id <> ? AND status <> 'expired'`,
+      [userId, keepId]
+    );
+    return result.affectedRows || 0;
+  },
+
   // Lazy trial expiry: when trial_ends_at has passed and the row is not a paid
   // Stripe subscription, downgrade to free/active. Returns the (possibly
   // refreshed) row; a non-trial or still-running trial is returned untouched.
@@ -357,6 +578,17 @@ const Subscription = {
       if (current && (current.plan === 'pro' || current.plan === 'team') &&
           current.status === 'active' && !current.trial_ends_at)
         return { ok: false, reason: 'paid_plan' };
+
+      // `cancelled` and `expired` are the two states somebody CHOSE — an admin
+      // stopping a licence, or a cancellation. Nothing that merely runs out
+      // ever lands here (Subscription.current downgrades a lapsed plan to
+      // free/active instead), so a row in one of these states is an
+      // administrative decision. The trial used to overwrite it in place,
+      // reusing the same subscription id and the same licence key, which turned
+      // "stop this licence" into "seven days of Pro on the very key that was
+      // stopped".
+      if (current && (current.status === 'cancelled' || current.status === 'expired'))
+        return { ok: false, reason: 'subscription_stopped' };
 
       const endsAt = trialEndsAt(now);
       let id;

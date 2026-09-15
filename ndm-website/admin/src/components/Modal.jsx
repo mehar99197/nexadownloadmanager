@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useId } from 'react';
+import useDialogFocus from '../useDialogFocus.js';
 
 /**
  * Modal — centered dialog over a dimmed backdrop.
@@ -10,6 +11,8 @@ import { useEffect } from 'react';
  *  - footer?: node         (rendered in a right-aligned action row)
  *  - children: body
  *  - size?: 'sm' | 'md' | 'lg'
+ *
+ * Keyboard behaviour lives in useDialogFocus, shared with ConfirmDialog.
  */
 const SIZES = {
   sm: 'max-w-sm',
@@ -25,34 +28,32 @@ export default function Modal({
   children,
   size = 'md',
 }) {
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKey(e) {
-      if (e.key === 'Escape') onClose?.();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const titleId = useId();
+  const panel = useDialogFocus(open, onClose);
 
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close"
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
       <div
-        className={`relative w-full ${SIZES[size] || SIZES.md} rounded-xl border border-admin-border bg-admin-surface shadow-xl`}
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={-1}
+        className={`relative w-full ${SIZES[size] || SIZES.md} rounded-xl border border-admin-border bg-admin-surface shadow-xl outline-none`}
       >
         {title && (
           <div className="flex items-center justify-between border-b border-admin-border px-5 py-4">
-            <h3 className="text-base font-semibold text-admin-text">{title}</h3>
+            <h3 id={titleId} className="text-base font-semibold text-admin-text">{title}</h3>
             <button
+              type="button"
               onClick={onClose}
               className="text-admin-muted transition-colors hover:text-admin-text"
               aria-label="Close"

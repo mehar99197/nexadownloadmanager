@@ -1,6 +1,5 @@
 import axios from 'axios';
 
-export const TOKEN_KEY = 'ndm_token';
 let accessToken = null;
 let refreshPromise = null;
 

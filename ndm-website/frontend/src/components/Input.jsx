@@ -27,6 +27,7 @@ const Input = forwardRef(function Input(
   ref
 ) {
   const inputId = id || rest.name;
+  const describedBy = error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined;
   const Field = as;
   const isPassword = as === 'input' && type === 'password';
   const [visible, setVisible] = useState(false);
@@ -36,6 +37,11 @@ const Input = forwardRef(function Input(
       ref={ref}
       id={inputId}
       type={isPassword ? (visible ? 'text' : 'password') : type}
+      // Without these the red ring is the only signal that a field was
+      // rejected, and the reason sits in a <span> nothing points at — so a
+      // screen reader announces the field as valid and never reads the message.
+      aria-invalid={error ? 'true' : undefined}
+      aria-describedby={describedBy}
       className={`input-field ${isPassword ? 'pr-11' : ''} ${
         error
           ? 'border-red-400/70 focus:border-red-400 focus:ring-red-400/20'
@@ -53,7 +59,7 @@ const Input = forwardRef(function Input(
         // own aria-label into the input's accessible name ("Password Show
         // password"). Associating by htmlFor instead keeps the input's name
         // just "Password".
-        <label htmlFor={inputId} className="mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-slate-300">
+        <label htmlFor={inputId} className="mb-2 block text-xs font-semibold tracking-wide text-slate-300">
           {label}
         </label>
       )}
@@ -74,9 +80,9 @@ const Input = forwardRef(function Input(
         field
       )}
       {error ? (
-        <span className="mt-1 block text-xs text-red-400">{error}</span>
+        <span id={`${inputId}-error`} className="mt-1 block text-xs text-red-300">{error}</span>
       ) : hint ? (
-        <span className="mt-1.5 block text-xs text-slate-500">{hint}</span>
+        <span id={`${inputId}-hint`} className="mt-1.5 block text-xs text-slate-500">{hint}</span>
       ) : null}
     </div>
   );

@@ -78,6 +78,11 @@ public:
     // ranges like "http://x/file[1-20].jpg" into individual downloads.
     QList<int> addBatch(const QString &text, const HeaderList &headers = {});
     QList<int> addRemoteBatch(const QString &text);
+    // The single sanitiser every untrusted name goes through before it becomes a
+    // path: browser suggestions, Content-Disposition, torrent names. Public and
+    // static so the rules can be tested directly.
+    static QString sanitizeFileName(const QString &name);
+
     static QStringList expandPattern(const QString &token);
 
     // Schedule a download to start at a future time (IDM-style scheduler).
@@ -144,7 +149,8 @@ public:
     int    torrentDownloadLimit() const { return m_torrentDlLimit; }
     int    torrentUploadLimit() const { return m_torrentUlLimit; }
 
-    // AI helpers (require $ANTHROPIC_API_KEY). aiAvailable() reflects key presence.
+    // AI helpers. These run server-side and are entitlement-gated, so
+    // aiAvailable() reflects whether this install holds a licence token.
     bool aiAvailable() const;
     void setAiRename(bool on);
     bool aiRename() const { return m_aiRename; }

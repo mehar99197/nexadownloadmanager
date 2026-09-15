@@ -16,14 +16,21 @@ out_dir="${1:-${BACKUP_DIR:-$here/backups}}"
 keep_days="${BACKUP_KEEP_DAYS:-14}"
 
 # Pull MYSQL_* out of .env without executing it (values may contain spaces).
+# A temp file, not process substitution: some shared-hosting shells (e.g.
+# Hostinger's CloudLinux) don't mount /dev/fd, which silently breaks `< <(...)`.
 if [ -f "$here/.env" ]; then
+  env_tmp="$(mktemp)"
+  trap 'rm -f "$env_tmp"' EXIT
+  grep -E '^MYSQL_(HOST|PORT|USER|PASS|DB)=' "$here/.env" > "$env_tmp" || true
   while IFS='=' read -r key value; do
     case "$key" in
       MYSQL_HOST|MYSQL_PORT|MYSQL_USER|MYSQL_PASS|MYSQL_DB)
         value="${value%\"}"; value="${value#\"}"
         export "$key=$value" ;;
     esac
-  done < <(grep -E '^MYSQL_(HOST|PORT|USER|PASS|DB)=' "$here/.env" || true)
+  done < "$env_tmp"
+  rm -f "$env_tmp"
+  trap - EXIT
 fi
 
 : "${MYSQL_HOST:=127.0.0.1}"
@@ -32,6 +39,11 @@ fi
 : "${MYSQL_DB:?MYSQL_DB is not set (check .env)}"
 
 mkdir -p "$out_dir"
+# A dump holds every password hash, licence key and customer address, so it is
+# never world-readable even for the moment between creation and the chmod
+# below (umask covers the window; the explicit chmod covers a lax umask).
+chmod 700 "$out_dir" 2>/dev/null || true
+umask 077
 stamp="$(date +%Y%m%d-%H%M)"
 file="$out_dir/nexa-$stamp.sql.gz"
 
@@ -50,6 +62,7 @@ if [ ! -s "$file" ]; then
   exit 1
 fi
 gunzip -t "$file"
+chmod 600 "$file" 2>/dev/null || true
 size="$(du -h "$file" | cut -f1)"
 echo "[backup] ok ($size)"
 

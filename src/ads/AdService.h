@@ -22,6 +22,10 @@ struct Ad {
     QString targetUrl;     // https only; opened in the user's own browser
     QString ctaLabel;
     int     weight = 1;    // how often it comes up in the rotation
+    // Short-lived proof that the server served us this ad. Handed straight back
+    // when we report an impression or a click, so the counters cannot be run up
+    // by anything that never showed the ad. Opaque to us.
+    QString eventToken;
 };
 
 // Fetches the ads a FREE install should show and rotates through them.
@@ -58,7 +62,7 @@ signals:
 private:
     void fetch();
     void applyPlan(const QString &plan);
-    void report(const QString &type, int adId);
+    void report(const QString &type, const Ad &ad);
     QUrl endpoint(const QString &path) const;
 
     LicenseManager        *m_license = nullptr;

@@ -177,6 +177,15 @@ void HlsGrabber::cancel()
 
 void HlsGrabber::fetchPlaylist(const QUrl &u)
 {
+    // Unconditional, even for a trusted local download: a master playlist names
+    // its variant URI, and QNetworkAccessManager will happily GET a file:// one.
+    // The public-network rule below is the untrusted-caller policy; this is the
+    // floor underneath it.
+    const QString scheme = u.scheme().toLower();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https")) {
+        setState(DownloadState::Error, QStringLiteral("playlist target is not HTTP(S)"));
+        return;
+    }
     if (m_publicNetworkOnly && !isPublicHttpUrl(u)) {
         setState(DownloadState::Error,
                  QStringLiteral("playlist target is not a public HTTP(S) address"));
@@ -295,6 +304,16 @@ void HlsGrabber::handleMaster(const QString &text)
     fetchPlaylist(m_url);
 }
 
+// A tag carrying a URI= attribute is refused. See the long note at its call
+// site in handleMedia() for why: FFmpeg's HLS demuxer opens the URI on several
+// tags, and only #EXT-X-KEY and #EXT-X-MAP are inspected before that point.
+bool HlsGrabber::tagIsSafeToMirror(const QString &tagLine)
+{
+    if (!tagLine.startsWith(QLatin1Char('#')))
+        return false;
+    return !tagLine.contains(QLatin1String("URI="), Qt::CaseInsensitive);
+}
+
 void HlsGrabber::handleMedia(const QString &text)
 {
     const QStringList lines = text.split('\n');
@@ -363,8 +382,28 @@ void HlsGrabber::handleMedia(const QString &text)
             out += fixed + '\n';
             continue;
         }
+        // Every OTHER tag is mirrored verbatim — but only if it carries no URI.
+        //
+        // This is the hole that used to be here. Exactly two tags were inspected
+        // above (#EXT-X-KEY and #EXT-X-MAP); everything else beginning with '#'
+        // was copied straight into the local index.m3u8 that FFmpeg is then
+        // handed with `-protocol_whitelist file,crypto,http,https,tcp,tls`.
+        // HLS has several other URI-bearing tags — #EXT-X-MEDIA,
+        // #EXT-X-I-FRAME-STREAM-INF, #EXT-X-SESSION-KEY/DATA, and the LL-HLS
+        // trio #EXT-X-PART / #EXT-X-PRELOAD-HINT / #EXT-X-RENDITION-REPORT — and
+        // FFmpeg's HLS demuxer opens the URI on several of them. So a hostile
+        // playlist could smuggle a target past BOTH checks that guard this path:
+        // the http(s)-only rule and isPublicHttpUrl(). Verified against
+        // ffmpeg 8.1: a rendition URI of http://127.0.0.1:9911/ was fetched, and
+        // one of file:///... was opened for reading.
+        //
+        // Nothing legitimate is lost by dropping them. By this point every
+        // segment has been downloaded and rewritten to a local file, so the
+        // playlist we emit is self-contained; alternate renditions, I-frame
+        // streams and low-latency hints are not part of what we mux.
         if (line.startsWith('#')) {
-            out += line + '\n';
+            if (tagIsSafeToMirror(line))
+                out += line + '\n';
             continue;
         }
 

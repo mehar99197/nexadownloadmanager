@@ -1,6 +1,6 @@
 'use strict';
 
-const { query, queryOne, insert } = require('../config/db');
+const { query, queryOne, insert, execute } = require('../config/db');
 
 const Payment = {
   async findByUserId(userId, { page = 1, limit = 20 } = {}) {
@@ -21,6 +21,20 @@ const Payment = {
       [userId, amount, currency || 'usd', plan, billingCycle, stripePaymentId || null, status || 'paid']
     );
     return queryOne('SELECT * FROM payments WHERE id = ?', [id]);
+  },
+
+  /**
+   * Mark a charge refunded. `payments.status` has always had this value and
+   * nothing ever wrote it, so a refunded month kept counting toward the revenue
+   * chart (`revenueByMonth` filters on status='paid') and the MRR tile.
+   * Returns true when a row was actually updated.
+   */
+  async markRefunded(stripePaymentId) {
+    const result = await execute(
+      "UPDATE payments SET status = 'refunded' WHERE stripe_payment_id = ? AND status <> 'refunded'",
+      [stripePaymentId]
+    );
+    return (result.affectedRows || 0) > 0;
   },
 
   async listRecent(limit = 10) {

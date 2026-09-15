@@ -12,11 +12,38 @@ import Spinner from '../components/Spinner';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
+/** "pro" -> "Pro". Plan names are proper nouns in the UI. */
+function planLabel(id) {
+  return id ? id.charAt(0).toUpperCase() + id.slice(1) : 'your plan';
+}
+
+/**
+ * A plan the visitor cannot act on states its status; it does not render a
+ * dead button. "Current plan" as a disabled .btn-primary was the loudest
+ * element in the table and did nothing when clicked.
+ */
+function PlanState({ label, current }) {
+  return (
+    <p className={`flex min-h-11 w-full items-center justify-center gap-2 rounded-[var(--radius-2)] border px-4 text-sm font-semibold ${
+      current
+        ? 'border-brand-400/35 bg-brand-400/10 text-brand-300'
+        : 'border-[var(--color-surface-border)] text-slate-400'
+    }`}>
+      {current && (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+      )}
+      {label}
+    </p>
+  );
+}
+
 /**
  * Decide what the plan's button should say and do, based on who is looking.
  * Returns { label, action: 'register' | 'trial' | 'checkout' | 'none', to?, disabled }.
  */
-function resolveCta(plan, user) {
+function resolveCta(plan, user, billingOpen = true) {
   const sub = user?.subscription;
   const currentPlan = sub?.plan || (user ? 'free' : null);
   const trialUsed = Boolean(sub?.trialEndsAt);
@@ -24,29 +51,33 @@ function resolveCta(plan, user) {
 
   if (plan.id === 'free') {
     if (!user) return { label: 'Get started free', action: 'link', to: '/register' };
-    if (currentPlan === 'free') return { label: 'Current plan', action: 'none', disabled: true };
-    return { label: 'Included in your plan', action: 'none', disabled: true };
+    if (currentPlan === 'free') return { label: 'Current plan', action: 'none', current: true };
+    return { label: `Included in ${planLabel(currentPlan)}`, action: 'none' };
   }
 
   if (plan.id === 'pro') {
     if (!user) return { label: 'Start 7-day free trial', action: 'link', to: '/register?trial=1' };
-    if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', disabled: true };
-    if (currentPlan === 'pro' && onTrial) return { label: 'Keep Pro after trial', action: 'checkout' };
+    if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', current: true };
     if (currentPlan === 'free' && !trialUsed) return { label: 'Start 7-day free trial', action: 'trial' };
+    // Nothing can be bought until Stripe is configured on the server; say so on
+    // the button rather than after a click (the API answers 503 either way).
+    if (!billingOpen) return { label: 'Paid plans coming soon', action: 'none' };
+    if (currentPlan === 'pro' && onTrial) return { label: 'Keep Pro after trial', action: 'checkout' };
     return { label: 'Upgrade to Pro', action: 'checkout' };
   }
 
   // team
+  if (currentPlan === 'team') return { label: 'Current plan', action: 'none', current: true };
+  if (!billingOpen) return { label: 'Coming soon', action: 'none' };
   if (!user) return { label: 'Get Team', action: 'link', to: '/register' };
-  if (currentPlan === 'team') return { label: 'Current plan', action: 'none', disabled: true };
   return { label: 'Get Team', action: 'checkout' };
 }
 
-function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
+function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy, billingOpen }) {
   const price =
     billingCycle === 'yearly' ? plan.yearly || plan.price : plan.monthly || plan.price;
   const isFree = price === 0;
-  const cta = resolveCta(plan, user);
+  const cta = resolveCta(plan, user, billingOpen);
   const highlight = plan.id === 'pro';
 
   const handleClick = () => {
@@ -55,14 +86,12 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
   };
 
   const buttonProps =
-    cta.action === 'link'
-      ? { to: cta.to }
-      : { onClick: handleClick, disabled: busy || cta.disabled };
+    cta.action === 'link' ? { to: cta.to } : { onClick: handleClick, disabled: busy };
 
   return (
     <Card className={`relative flex flex-col !p-7 ${highlight ? '!overflow-visible border-accent-400/60 shadow-[0_0_44px_-16px_rgba(150,92,244,0.72)]' : ''}`}>
       {highlight && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 bg-gradient-to-r from-accent-500 to-brand-500 px-4 py-1 badge-on-brand text-[0.65rem] font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
+        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-white/20 on-brand px-4 py-1 text-xs font-bold uppercase tracking-[0.12em] shadow-[0_8px_18px_-8px_rgba(150,92,244,0.9)]">
           Most popular
         </span>
       )}
@@ -88,13 +117,17 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy }) {
         ))}
       </ul>
       <div className="mt-7">
-        <Button
-          className="w-full"
-          variant={highlight ? 'primary' : 'ghost'}
-          {...buttonProps}
-        >
-          {cta.label}
-        </Button>
+        {cta.action === 'none' ? (
+          <PlanState label={cta.label} current={cta.current} />
+        ) : (
+          <Button
+            className="w-full"
+            variant={highlight ? 'primary' : 'ghost'}
+            {...buttonProps}
+          >
+            {cta.label}
+          </Button>
+        )}
         {plan.id === 'pro' && user?.subscription?.trial && (
           <p className="mt-2 text-center text-xs text-slate-500">
             You&apos;re on the Pro trial — pick a billing cycle to keep it.
@@ -117,6 +150,9 @@ export default function Pricing() {
   const toast = useToast();
 
   const [plans, setPlans] = useState(null);
+  // 'live' | 'mock' | 'disabled' — from /subscription/plans. Absent (an older
+  // API) counts as open, which is what the page always assumed before.
+  const billingOpen = !plans || plans.billing !== 'disabled';
   const [billingCycle, setBillingCycle] = useState('yearly');
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -245,14 +281,20 @@ export default function Pricing() {
                   type="button"
                   className={`rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
                     billingCycle === c
-                      ? 'bg-gradient-to-r from-accent-500 to-brand-500 text-white shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
+                      ? 'on-brand shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
                       : 'text-slate-400 hover:text-white'
                   }`}
                   onClick={() => setBillingCycle(c)}
                 >
                   {c}
+                  {/* No text-white on the active chip: the light theme redefines
+                      --color-white to near-black ("strongest text"), so on a
+                      brand-coloured surface that utility paints the opposite of
+                      what it says. .on-brand already sets #fff — inherit it. */}
                   {c === 'yearly' && plans.pro?.monthly && plans.pro?.yearly && (
-                    <span className="ml-1.5 rounded bg-brand-400/15 px-1.5 py-0.5 text-[11px] text-brand-300">
+                    <span className={`ml-1.5 rounded px-1.5 py-0.5 text-xs ${
+                      billingCycle === c ? 'bg-black/20' : 'bg-brand-400/15 text-brand-300'
+                    }`}>
                       Save {Math.round(((plans.pro.monthly * 12 - plans.pro.yearly) / (plans.pro.monthly * 12)) * 100)}%
                     </span>
                   )}
@@ -309,15 +351,25 @@ export default function Pricing() {
                 onCheckout={handleCheckout}
                 onTrial={handleTrial}
                 busy={checking}
+                billingOpen={billingOpen}
               />
             ))}
           </div>
 
           <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
-            Every account gets a 7-day Pro trial — no card needed. Payment
-            processing is handled securely by Stripe. Cancel anytime from your
-            billing dashboard; refunds within 14 days of a charge, see the{' '}
-            <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
+            {billingOpen ? (
+              <>
+                Every account gets a 7-day Pro trial — no card needed. Payment
+                processing is handled securely by Stripe. Cancel anytime from your
+                billing dashboard; refunds within 14 days of a charge, see the{' '}
+                <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
+              </>
+            ) : (
+              <>
+                Every account gets a 7-day Pro trial — no card needed. Paid plans
+                open soon; until then nothing can be bought here and nobody is charged.
+              </>
+            )}
           </p>
         </>
       ) : null}

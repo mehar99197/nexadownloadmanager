@@ -11,9 +11,10 @@
     "create-admin": "node src/scripts/createAdmin.js",
     "create-root": "node src/scripts/createRoot.js",
     "trial-reminders": "node src/scripts/sendTrialReminders.js",
+    "license:keygen": "node src/scripts/generateLicenseKeypair.js",
     "migrate": "node src/scripts/migrate.js",
     "backup": "bash src/scripts/backup.sh",
-    "test:unit": "node --test test/ads.test.js test/config.test.js test/entitlements.test.js test/googleAuth.test.js test/jwt.test.js test/license.test.js test/releaseFeed.test.js test/rootTier.test.js test/schemas.test.js test/totp.test.js test/stats.test.js test/turnstile.test.js"
+    "test:unit": "node --test test/ads.test.js test/config.test.js test/entitlements.test.js test/googleAuth.test.js test/jwt.test.js test/license.test.js test/licenseAbuse.test.js test/tokenAbuse.test.js test/aiProxy.test.js test/licenseToken.test.js test/releaseFeed.test.js test/downloadLimiter.test.js test/rootTier.test.js test/schemas.test.js test/totp.test.js test/stats.test.js test/stripeInvoice.test.js test/turnstile.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -33,5 +34,8 @@
     "nodemailer": "^9.0.5",
     "stripe": "^16.9.0",
     "zod": "^3.23.8"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
   }
 }

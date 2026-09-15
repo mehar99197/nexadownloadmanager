@@ -17,7 +17,14 @@ function resolve(mode) {
   return window.matchMedia?.(MEDIA)?.matches ? 'light' : 'dark';
 }
 
-/** Stamp the resolved theme on <html> so the CSS variables in index.css apply. */
+/**
+ * Stamp the resolved theme on <html> so the CSS variables in index.css apply.
+ *
+ * index.html runs this same resolution in an inline script before the first
+ * paint — this hook only ever runs after the bundle has parsed, which was one
+ * full dark page too late for anyone on the light theme. The two must agree:
+ * same key, same values, and dark carries no attribute.
+ */
 function paint(mode) {
   const resolved = resolve(mode);
   const root = document.documentElement;

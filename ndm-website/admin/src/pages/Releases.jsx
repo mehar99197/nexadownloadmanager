@@ -6,7 +6,7 @@ import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
-import { formatBytes } from '../utils.js';
+import { formatBytes, formatDate } from '../utils.js';
 
 // Metadata only. The installer itself is uploaded separately (see the Installers
 // panel) because a multi-hundred-MB file cannot ride along in a JSON body.
@@ -18,7 +18,7 @@ const OSES = [
 ];
 
 function date(value) {
-  return value ? new Date(value).toLocaleDateString() : '-';
+  return value ? formatDate(value) : '-';
 }
 
 function count(value) {
@@ -244,7 +244,7 @@ export default function Releases() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-cyan">Distribution</p>
+          <p className="admin-eyebrow text-admin-cyan">Distribution</p>
           <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Releases</h2>
           <p className="mt-2 max-w-2xl text-sm text-admin-muted">
             Upload the installer for each platform and choose which version the public download page
@@ -264,7 +264,7 @@ export default function Releases() {
         <div className="border-b border-admin-border px-5 py-4">
           <p className="text-sm text-admin-muted"><span className="font-bold text-admin-text">{releases.length}</span> releases in the catalog</p>
         </div>
-        <DataTable columns={columns} rows={releases} loading={loading} emptyMessage="No releases have been published." />
+        <DataTable columns={columns} rows={releases} loading={loading} emptyMessage="No releases have been published." caption="Published desktop app releases" />
       </div>
 
       {/* ---- metadata ---- */}

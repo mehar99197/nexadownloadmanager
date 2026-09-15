@@ -127,21 +127,29 @@ void AdService::applyPlan(const QString &plan)
     fetch();
 }
 
+// The production ad endpoint, fixed at compile time — see the matching comment
+// in LicenseManager.cpp. This one mattered as much as the licence URL: the
+// reply is trusted to say `adFree`, so pointing it at your own server that
+// answers {"ok":true,"data":{"adFree":true}} removed the ads outright. Only a
+// developer build (-DNEXA_DEV_BUILD=ON) reads the override.
 QUrl AdService::endpoint(const QString &path) const
 {
-    // The environment override exists for developers pointing a build at
-    // localhost and is compiled in only with -DNEXA_DEV_OVERRIDES=ON. A shipped
-    // binary never consults it: the banner renders whatever this endpoint
-    // returns, so redirecting it is a way to put arbitrary content in the app.
-    static const QString kProduction = QStringLiteral("https://nexadownloadmanager.com/api/ads");
-#if NEXA_DEV_OVERRIDES
-    const QString base = qEnvironmentVariable("NEXA_ADS_API_URL", kProduction);
+#ifdef NEXA_DEV_BUILD
+    // qEnvironmentVariable takes a const char* name, not a QString — the same
+    // slip that was fixed in LicenseManager.cpp. It survived here for the same
+    // reason: this branch only exists under NEXA_DEV_BUILD, so no shipped build
+    // ever compiled it, and `cmake -DNEXA_DEV_BUILD=ON` failed outright.
+    const QString base = qEnvironmentVariable(
+        "NEXA_ADS_API_URL", QStringLiteral("https://nexadownloadmanager.com/api/ads"));
+#else
+    const QString base = QStringLiteral("https://nexadownloadmanager.com/api/ads");
+#endif
     QUrl url(base + path);
+#ifdef NEXA_DEV_BUILD
     const bool insecureDevelopment = qEnvironmentVariableIntValue("NEXA_ALLOW_INSECURE_LICENSE_API") == 1 &&
         (url.host() == QLatin1String("localhost") || url.host() == QLatin1String("127.0.0.1"));
 #else
-    QUrl url(kProduction + path);
-    const bool insecureDevelopment = false;
+    constexpr bool insecureDevelopment = false;
 #endif
     if (!url.isValid() || (url.scheme() != QLatin1String("https") && !insecureDevelopment))
         return QUrl();
@@ -208,6 +216,7 @@ void AdService::fetch()
             ad.targetUrl = object.value(QStringLiteral("targetUrl")).toString().trimmed();
             ad.ctaLabel  = object.value(QStringLiteral("ctaLabel")).toString().trimmed();
             ad.weight    = qBound(1, object.value(QStringLiteral("weight")).toInt(1), 100);
+            ad.eventToken = object.value(QStringLiteral("token")).toString();
             if (ad.id <= 0 || ad.title.isEmpty() || !isHttpsUrl(ad.targetUrl))
                 continue;
             if (!ad.imageUrl.isEmpty() && !isHttpsUrl(ad.imageUrl))
@@ -231,11 +240,12 @@ void AdService::fetch()
     });
 }
 
-void AdService::reportImpression() { report(QStringLiteral("impression"), current().id); }
-void AdService::reportClick()      { report(QStringLiteral("click"), current().id); }
+void AdService::reportImpression() { report(QStringLiteral("impression"), current()); }
+void AdService::reportClick()      { report(QStringLiteral("click"), current()); }
 
-void AdService::report(const QString &type, int adId)
+void AdService::report(const QString &type, const Ad &ad)
 {
+    const int adId = ad.id;
     if (m_adFree || adId <= 0)
         return;
     const QUrl url = endpoint(QStringLiteral("/%1/event").arg(adId));
@@ -250,9 +260,12 @@ void AdService::report(const QString &type, int adId)
     if (!token.isEmpty())
         request.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
 
-    const QByteArray payload = QJsonDocument(QJsonObject{
-        {QStringLiteral("type"), type},
-    }).toJson(QJsonDocument::Compact);
+    QJsonObject body{{QStringLiteral("type"), type}};
+    // The server counts nothing without this; an ad served by an older build
+    // simply has none, and the report is a harmless no-op.
+    if (!ad.eventToken.isEmpty())
+        body.insert(QStringLiteral("token"), ad.eventToken);
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
     QNetworkReply *reply = m_network->post(request, payload);
     // Fire and forget: counting is the server's problem, not the user's.
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);

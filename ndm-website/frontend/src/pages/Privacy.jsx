@@ -97,7 +97,7 @@ export default function Privacy() {
         <Block title="2. The desktop app">
           <p>
             The Windows and Linux app works fully offline for downloading. The only request it
-            makes to our servers is <code className="surface-inset rounded px-1 font-mono text-[0.8em] text-brand-100">POST /api/license/validate</code>,
+            makes to our servers is <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>,
             sent when you activate a key and periodically afterwards to confirm the plan. That
             request carries exactly two things: your license key and a device fingerprint (a
             hash derived from hardware and OS identifiers, so we can enforce seats). It does not
@@ -126,24 +126,26 @@ export default function Privacy() {
           <p>
             The extension has no server component. It never contacts nexadownloadmanager.com or
             any other remote host, never uploads cookies, and does not track the sites you visit.
-            You can confirm this in the source, which is public on{' '}
-            <a href="https://github.com/mehar99197/nexadownloadmanager" target="_blank" rel="noreferrer" className="text-slate-200 hover:text-brand-300">GitHub</a>.
+            The permissions it asks for are listed on its store page, and what it does with them
+            is described in the{' '}
+            <Link to="/docs/extension" className="text-slate-200 hover:text-brand-300">extension guide</Link>.
           </p>
         </Block>
 
         <Block title="4. What the extension can access and why">
           <div className="mt-3 overflow-x-auto rounded-xl border border-white/5">
             <table className="w-full text-left text-sm">
+              <caption className="sr-only">Browser extension permissions and why each one is needed</caption>
               <thead>
                 <tr className="surface-inset !border-x-0 !border-t-0 border-b border-white/10 text-xs uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3 font-semibold">Permission</th>
-                  <th className="px-4 py-3 font-semibold">Why it&apos;s needed</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">Permission</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">Why it&apos;s needed</th>
                 </tr>
               </thead>
               <tbody>
                 {PERMISSIONS.map((p) => (
                   <tr key={p.name} className="border-b border-white/5 align-top last:border-0">
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-brand-100">{p.name}</td>
+                    <th scope="row" className="whitespace-nowrap px-4 py-3 text-left font-mono text-xs font-normal text-brand-100">{p.name}</th>
                     <td className="px-4 py-3 leading-6 text-slate-400">{p.why}</td>
                   </tr>
                 ))}

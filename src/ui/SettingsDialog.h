@@ -41,6 +41,13 @@ private:
     // Show a theme immediately so it can be judged; Cancel puts back whatever
     // was in force when the dialog opened.
     void applyThemePreview(const QString &id);
+    // Grey out the themes this licence does not include and snap the selection
+    // back if the one in force stopped being allowed. Runs when the dialog is
+    // built and again whenever entitlements change, so a lapsed subscription
+    // does not leave a paid theme selectable.
+    void refreshThemeEntitlement();
+    // True when this licence may use `id`. Mirrors ThemeGalleryDialog.
+    bool allowsTheme(const QString &id) const;
 
     QString m_themeOnOpen;   // restored if the dialog is cancelled
 

@@ -30,6 +30,10 @@ process.env.STATS_MIN_USERS = process.env.STATS_MIN_USERS || '0';
 process.env.STATS_MIN_DOWNLOADS = process.env.STATS_MIN_DOWNLOADS || '0';
 // Loopback so the admin IP allowlist lets the tests through.
 process.env.ADMIN_ALLOWED_IPS = process.env.ADMIN_ALLOWED_IPS || '127.0.0.1,::1,::ffff:127.0.0.1';
+// The creator's address. It is what `requireRoot` matches on and what
+// utils/reservedEmail.js keeps out of the public sign-up flow, so the suites
+// need a known value to assert against.
+process.env.ROOT_ADMIN_EMAIL = process.env.ROOT_ADMIN_EMAIL || 'creator@example.test';
 
 const app = require('../../src/app');
 const { getPool, query } = require('../../src/config/db');
@@ -81,8 +85,15 @@ async function stop() {
 async function reset() {
   await query('SET FOREIGN_KEY_CHECKS = 0');
   for (const table of [
-    'user_sessions', 'team_members',
+    // rate_limits is durable now (middleware/rateLimitStore.js), so leftovers
+    // from an earlier run would otherwise start a suite already throttled.
+    'rate_limits',
+    // Ad-event budgets. A nonce left over from an earlier run makes the first
+    // report of a "new" token look like a replay, which is a confusing way to
+    // fail — the counters are the thing under test.
+    'ad_event_nonces',
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
+    'team_members',
     'contact_replies', 'contact_messages',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',
   ]) {
@@ -141,10 +152,20 @@ function client() {
 }
 
 /** Register a user and return { email, password, token, id }. */
+/**
+ * A registered, VERIFIED, signed-in user — the ordinary state of an account
+ * that has been through sign-up.
+ *
+ * The verification step is not decoration: an unverified account is refused its
+ * licence key (routes/user.js) and, once EMAIL_VERIFICATION_REQUIRED is on,
+ * every authenticated request. Suites that want the unverified case build it
+ * explicitly — see accountSecurity.integration.test.js.
+ */
 async function makeUser(api, suffix = Date.now()) {
   const email = `user${suffix}${Math.floor(Math.random() * 1e6)}@example.test`;
   const password = 'a-strong-password';
   await api.post('/api/auth/register', { name: 'Test User', email, password });
+  await query('UPDATE users SET email_verified = 1 WHERE email = ?', [email]);
   const login = await api.post('/api/auth/login', { email, password });
   return { email, password, token: login.body?.data?.token, login };
 }

@@ -379,11 +379,14 @@ bool WebServer::tryParse(const QByteArray &buf, Request &req, bool &needMore) co
 
 void WebServer::dispatch(QTcpSocket *sock, const Request &req)
 {
-    // CORS preflight: answered before the auth gate (the browser sends OPTIONS
-    // with no Authorization header). No Access-Control-Allow-* headers are sent
-    // anywhere, deliberately — the dashboard is same-origin, so cross-origin
-    // callers get nothing back and a hostile page cannot read this API even if
-    // it somehow learned the token.
+    // CORS preflight: answered before the auth gate, because a browser sends
+    // OPTIONS with no Authorization header.
+    //
+    // No Access-Control-Allow-* header is sent, here or anywhere else — and that
+    // is the policy, not an oversight. Without one the preflight fails and a page
+    // on another origin cannot read any response from this server. The dashboard
+    // itself is same-origin, so it never needs one. (An earlier comment here
+    // claimed "the CORS headers ride on every response"; they never did.)
     if (req.method == QLatin1String("OPTIONS")) {
         sendResponse(sock, 204, QStringLiteral("text/plain"), QByteArray());
         return;
@@ -447,6 +450,17 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         return;
     }
 
+    // What this can add: whatever the desktop app can. addRemoteDownload() hands
+    // off to DownloadEngine::addDownload() with publicNetworkOnly=true, so a
+    // stream, a video page and a magnet all resolve through the same grabbers
+    // the local UI uses — under the same policy IpcServer applies to the browser
+    // extension. It used to build a bare DownloadTask instead, which is why a
+    // .m3u8 arrived as the playlist text and a magnet was refused.
+    //
+    // The token gate above is what keeps this honest: a caller who has it can
+    // make this machine start a yt-dlp subprocess or a libtorrent session, which
+    // is the point of a remote control and the reason the token is 128 bits,
+    // compared in constant time, and rate-limited per IP.
     if (req.method == QLatin1String("POST") && req.path == QLatin1String("/api/add")) {
         QString url;
         const QString ctype = req.headers.value(QStringLiteral("content-type"));
@@ -487,7 +501,7 @@ void WebServer::dispatch(QTcpSocket *sock, const Request &req)
         }
         m_lastAiMs = nowMs;
         if (!m_engine->aiAvailable()) {
-            sendJson(sock, 400, R"({"ok":false,"error":"AI not configured; set ANTHROPIC_API_KEY"})");
+            sendJson(sock, 400, R"({"ok":false,"error":"AI needs an active Pro or Team license"})");
             return;
         }
         QString text;
@@ -553,6 +567,13 @@ void WebServer::sendResponse(QTcpSocket *sock, int code, const QString &contentT
     resp += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
     resp += "Cache-Control: no-store\r\n";
     resp += "Referrer-Policy: no-referrer\r\n";   // keep ?token= out of Referer
+    resp += "X-Content-Type-Options: nosniff\r\n";
+    resp += "X-Frame-Options: DENY\r\n";          // nothing here belongs in a frame
+    // The dashboard is one self-contained page: its own <style> and <script>,
+    // no external anything. Say so, so an injected reference cannot load.
+    resp += "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'\r\n";
     resp += "Connection: close\r\n";
     resp += "\r\n";
     resp += body;

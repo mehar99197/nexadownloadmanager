@@ -27,9 +27,12 @@ function errorHandler(err, req, res, next) {
     status = 401; code = 'INVALID_TOKEN'; message = 'Invalid token';
   } else if (err.code === 'ER_DUP_ENTRY') {
     status = 409; code = 'DUPLICATE'; message = 'Duplicate entry';
-    // The driver's message names the table and index; useful locally, not
-    // something to hand a stranger in production.
-    if (!config.isProd) details = err.sqlMessage;
+    // err.sqlMessage is MySQL's own text: it names the index and quotes the
+    // value that collided ("Duplicate entry 'a@b.com' for key
+    // 'users.uq_users_email'"), which hands out both the schema and, on a
+    // public endpoint, a confirmation that the value already exists. Keep it
+    // for local debugging only — the same switch that governs stack traces.
+    if (config.exposeStackTraces) details = err.sqlMessage;
   } else if (err.code === 'ER_NO_REFERENCED_ROW_2') {
     status = 400; code = 'BAD_REQUEST'; message = 'Referenced record does not exist';
   }
@@ -44,7 +47,7 @@ function errorHandler(err, req, res, next) {
 
   const error = { code, message };
   if (details !== undefined) error.details = details;
-  if (!config.isProd && status >= 500) error.stack = err.stack;
+  if (config.exposeStackTraces && status >= 500) error.stack = err.stack;
 
   return res.status(status).json({ ok: false, error });
 }

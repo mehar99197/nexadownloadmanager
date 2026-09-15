@@ -6,11 +6,11 @@ const asyncHandler = require('../utils/asyncHandler');
 const validate = require('../middleware/validate');
 const { contactLimiter } = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
+const { optionalAuth } = require('../middleware/auth');
 const { ok } = require('../utils/respond');
 const { sendContactMessage } = require('../utils/email');
 const { contactSchema } = require('../schemas/contact.schema');
 const ContactMessage = require('../models/ContactMessage');
-const User = require('../models/User');
 
 const TOPIC_LABEL = {
   general: 'General question', bug: 'Bug report', billing: 'Billing & refunds',
@@ -24,17 +24,26 @@ const TOPIC_LABEL = {
 // outage instead of vanishing with it. The notification email is best-effort and
 // its outcome is recorded on the row.
 router.post(
-  '/', contactLimiter, requireTurnstile, validate(contactSchema),
+  '/', contactLimiter, optionalAuth, requireTurnstile, validate(contactSchema),
   asyncHandler(async (req, res) => {
     const { name, email, topic, message } = req.body;
     const userAgent = String(req.headers['user-agent'] || '').slice(0, 300);
 
-    // Attach the thread to an account when the address belongs to one, so an
-    // admin sees who is writing without a second lookup. Anonymous is fine.
-    const existing = await User.findByEmail(email);
+    // Attach the thread to an account ONLY when the sender is signed in as it.
+    //
+    // This used to attach on a bare email match, so anybody could type a
+    // customer's address into a public form and have the message land in the
+    // admin inbox labelled as coming from that customer's account — a very
+    // good pretext for talking an admin into a refund, a plan change or a
+    // password reset. The lookup is gone entirely rather than merely relabelled:
+    // an admin can still search by address, and a link that means "this person
+    // was authenticated" is worth more than one that means "somebody typed
+    // this".
+    const authenticatedSender = req.user
+      && String(req.user.email).toLowerCase() === String(email).toLowerCase();
 
     const stored = await ContactMessage.create({
-      userId: existing ? existing.id : null,
+      userId: authenticatedSender ? req.user.id : null,
       name, email, topic, message,
       ip: String(req.ip || '').slice(0, 45),
       userAgent,

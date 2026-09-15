@@ -16,10 +16,13 @@
 #   public_html/admin/          (protected during the frontend sync; admin has its own sync)
 #   public_html/.well-known/    (host-managed, e.g. ACME/verification files)
 #   nexa-api/.env               (server secrets; written once on the server, never clobbered)
+#   nexa-api/.env.bak-*         (pre-cutover copies of .env)
 #   nexa-api/.api.pid           (written by the keepalive run-api.sh; deleting it double-starts the API)
 #   nexa-api/.run-api.lock      (the keepalive's flock file; deleting it breaks single-instance)
 #   nexa-api/logs/              (runtime logs)
 #   nexa-api/uploads/           (admin-uploaded release installers; RELEASE_UPLOAD_DIR default)
+#   nexa-api/backups/           (nightly DB dumps written by daily-maintenance.sh)
+#   nexa-api/.daily-maintenance.lock  (that script's flock file; deleting it breaks single-instance)
 #
 # Process model on the server (owned by the keepalive deploy step, not here):
 #   ~/domains/nexadownloadmanager.com/run-api.sh runs every minute (cron or the
@@ -29,6 +32,12 @@
 #   an upload. (The process cmdline is just "node src/server.js", and other
 #   sites on this account run their own node processes, so a broad pkill would
 #   either miss it or kill the wrong site.)
+#
+#   ~/domains/nexadownloadmanager.com/daily-maintenance.sh (top level, a
+#   sibling of run-api.sh/supervisor.sh, deployed by hand like they are) runs
+#   once a day from an hPanel Cron Job — a nightly DB backup + trial-reminder
+#   emails, replacing the two jobs the old docker-compose.yml "cron" service
+#   used to run.
 #
 # Usage (from the repo root):
 #   ./deploy/build-and-upload.sh
@@ -259,12 +268,23 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   # deleting the lock file breaks its single-instance flock), logs/ and
   # uploads/ (admin-uploaded installers). node_modules IS shipped (pure-JS
   # deps; the host has no usable system npm workflow for this).
+  #
+  # backups/, .env.bak-* and .daily-maintenance.lock were named in this
+  # script's header as "never touched" but were NOT in this list, so
+  # --delete-after removed them on every single deploy. That silently destroyed
+  # the nightly database dumps daily-maintenance.sh had just verified: the
+  # backups appeared to be working (a good log line every night) while no dump
+  # ever survived to the next deploy. Anything server-only MUST be listed here,
+  # not merely described above.
   rsync -az --delete-after \
     --exclude='.env' \
+    --exclude='.env.bak-*' \
     --exclude='.api.pid' \
     --exclude='.run-api.lock' \
+    --exclude='.daily-maintenance.lock' \
     --exclude='logs/' \
     --exclude='uploads/' \
+    --exclude='backups/' \
     -e "${RSH}" \
     "${STAGE}/" "${REMOTE}:${API_DIR}/"
   echo "Backend uploaded."
@@ -303,7 +323,7 @@ cat <<EOF
 Uploaded:
   frontend -> ${REMOTE}:${WEBROOT}/            (kept: .htaccess, api-proxy.php, admin/, .well-known/)
   admin    -> ${REMOTE}:${WEBROOT}/admin/      (one dist, mounted at /admin and /root)
-  backend  -> ${REMOTE}:${API_DIR}/            (kept: .env, .api.pid, .run-api.lock, logs/, uploads/)
+  backend  -> ${REMOTE}:${API_DIR}/            (kept: .env, .env.bak-*, .api.pid, .run-api.lock, logs/, uploads/, backups/)
 
 Not handled here (separate deploy steps):
   - public_html/.htaccess and api-proxy.php

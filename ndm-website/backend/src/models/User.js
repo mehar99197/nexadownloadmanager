@@ -2,19 +2,6 @@
 
 const { query, queryOne, insert, execute } = require('../config/db');
 
-// Every column update() may touch. The column NAME is interpolated into the
-// statement (only values are bound), so it must never come from user input —
-// today every caller passes hardcoded keys or a Zod-stripped object, but that is
-// a property of each caller's discipline, not of this function. An allowlist
-// makes it a property of the code: an unknown key throws instead of becoming
-// SQL. Keep in step with the users table in config/schema.js.
-const UPDATABLE_COLUMNS = new Set([
-  'name', 'email', 'password_hash', 'role', 'email_verified', 'banned',
-  'google_id', 'avatar_url', 'refresh_token_hash', 'admin_refresh_token_hash',
-  'root_refresh_token_hash', 'trial_used', 'totp_secret', 'totp_enabled',
-  'totp_recovery',
-]);
-
 const User = {
   async findById(id) {
     return queryOne('SELECT * FROM users WHERE id = ?', [id]);
@@ -57,6 +44,29 @@ const User = {
     await execute('DELETE FROM users WHERE id = ?', [id]);
   },
 
+  /**
+   * End every live session for this account.
+   *
+   * Incremented in SQL rather than read-modify-written, so two concurrent
+   * revocations cannot land on the same number. Clearing the three refresh
+   * hashes at the same time is what stops a new token being minted from a
+   * cookie; the bump is what kills the access tokens already out there.
+   * Returns the new value.
+   */
+  async revokeSessions(id) {
+    await execute(
+      `UPDATE users
+          SET token_version = token_version + 1,
+              refresh_token_hash = NULL,
+              admin_refresh_token_hash = NULL,
+              root_refresh_token_hash = NULL
+        WHERE id = ?`,
+      [id]
+    );
+    const row = await queryOne('SELECT token_version FROM users WHERE id = ?', [id]);
+    return row ? Number(row.token_version) || 0 : 0;
+  },
+
   async create({ name, email, passwordHash, role, emailVerified, googleId, avatarUrl }) {
     const id = await insert(
       `INSERT INTO users (name, email, password_hash, role, email_verified, google_id, avatar_url)
@@ -72,8 +82,6 @@ const User = {
     const vals = [];
     for (const [k, v] of Object.entries(fields)) {
       const col = k.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
-      if (!UPDATABLE_COLUMNS.has(col))
-        throw new Error(`User.update: "${k}" is not an updatable column`);
       sets.push(`${col} = ?`);
       vals.push(v);
     }
@@ -118,7 +126,9 @@ const User = {
     return { users: rows, totalCount: total ? total.cnt : 0 };
   },
 
-  async listAll({ q, role, banned, emailVerified } = {}) {
+  // `limit` is not optional in practice: this feeds the CSV export, and an
+  // uncapped SELECT over every user is a memory event waiting for growth.
+  async listAll({ q, role, banned, emailVerified, limit = 5000 } = {}) {
     const where = [];
     const vals = [];
     if (q) {
@@ -129,9 +139,10 @@ const User = {
     if (banned !== undefined) { where.push('banned = ?'); vals.push(banned ? 1 : 0); }
     if (emailVerified !== undefined) { where.push('email_verified = ?'); vals.push(emailVerified ? 1 : 0); }
     const w = where.length ? ' WHERE ' + where.join(' AND ') : '';
+    const cap = Math.min(50000, Math.max(1, Number(limit) || 5000));
     return query(
       `SELECT id, name, email, role, email_verified, banned, created_at, updated_at
-       FROM users${w} ORDER BY created_at DESC`,
+       FROM users${w} ORDER BY created_at DESC LIMIT ${cap}`,
       vals
     );
   },

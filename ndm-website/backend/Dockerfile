@@ -19,6 +19,10 @@ RUN addgroup -S nexa && adduser -S nexa -G nexa \
 USER nexa
 
 ENV NODE_ENV=production
+# server.js binds 127.0.0.1 unless told otherwise (every non-container deployment
+# sits behind a reverse proxy on the same host); a container must be reachable
+# from its network, so opt in explicitly.
+ENV BIND_HOST=0.0.0.0
 EXPOSE 3001
 
 # The app exposes /api/health; compose uses it as the readiness gate.

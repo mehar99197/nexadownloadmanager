@@ -181,6 +181,11 @@ bool DownloadTask::renameTo(const QString &newFileName)
             c == QLatin1Char('|'))
             c = QLatin1Char('_');
     }
+    // Deliberately a lighter character filter than the engine's: this is the
+    // user renaming their own file, so parentheses and commas stay. The Win32
+    // device-name and trailing-dot rules are not optional either way, and the
+    // length cap keeps a pasted-in title from failing at the syscall.
+    safeName = makeFileNamePortable(safeName.left(240));
     if (safeName.isEmpty() || safeName == QLatin1String(".") ||
         safeName == QLatin1String(".."))
         return false;

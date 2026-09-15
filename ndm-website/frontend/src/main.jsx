@@ -28,3 +28,16 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     </ErrorBoundary>
   </React.StrictMode>
 );
+
+// Tell the first-run boot screen in index.html that the app is up. Two frames,
+// not zero: render() only schedules the work, so calling straight after it
+// would dismiss the screen while the page behind is still blank — the one
+// moment the screen exists to cover. The second frame is the first one after
+// React has actually painted.
+//
+// index.html does not depend on this arriving. It dismisses itself on a timer
+// regardless, because a chunk that 404s or a module that throws would otherwise
+// leave a reader looking at a spinner for ever.
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => window.__ndmBootDone?.());
+});

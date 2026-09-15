@@ -95,8 +95,10 @@ LinkGrabberDialog::LinkGrabberDialog(DownloadEngine *engine, const QString &page
     v->setContentsMargins(18, 16, 18, 16);
     v->setSpacing(10);
 
+    // The page title comes from the page, by way of the extension. PlainText.
     auto *title = new QLabel(pageTitle.isEmpty() ? QStringLiteral("Links found on page") : pageTitle, plate);
     title->setObjectName(QStringLiteral("Dd_title"));
+    title->setTextFormat(Qt::PlainText);
     title->setWordWrap(true);
     auto *sub = new QLabel(tr("%1 link%2 on %3")
                                .arg(links.size()).arg(links.size() == 1 ? QString() : QStringLiteral("s"))

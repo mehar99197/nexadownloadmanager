@@ -46,7 +46,7 @@ export default function Navbar() {
 
   const linkClass = ({ isActive }) =>
     `relative text-sm font-semibold transition-colors ${
-      isActive ? 'text-white after:absolute after:-bottom-[1.3rem] after:left-1/2 after:h-0.5 after:w-5 after:-translate-x-1/2 after:rounded-full after:bg-gradient-to-r after:from-accent-400 after:to-brand-400 after:shadow-[0_0_12px_rgba(53,201,255,0.7)]' : 'text-slate-400 hover:text-white'
+      isActive ? 'text-white after:absolute after:-bottom-[1.3rem] after:left-0 after:right-0 after:h-px after:rounded-full after:bg-gradient-to-r after:from-accent-400 after:to-brand-400 after:shadow-[0_0_6px_rgba(53,201,255,0.35)]' : 'text-slate-400 hover:text-white'
     }`;
 
   const onLogout = async () => {
@@ -77,10 +77,10 @@ export default function Navbar() {
           <ThemeToggle resolved={resolved} onToggle={toggle} />
           {isAuthenticated ? (
             <>
-              <Link to="/dashboard" className="btn btn-ghost">
+              <Link to="/dashboard" className="btn btn-soft">
                 Dashboard
               </Link>
-              <button type="button" className="btn btn-primary" onClick={onLogout}>
+              <button type="button" className="btn btn-ghost" onClick={onLogout}>
                 Logout
               </button>
             </>
@@ -89,7 +89,7 @@ export default function Navbar() {
               <Link to="/login" className="btn btn-ghost">
                 Login
               </Link>
-              <Link to="/register" className="btn btn-primary">
+              <Link to="/register" className="btn btn-soft">
                 Register
               </Link>
             </>
@@ -132,7 +132,7 @@ export default function Navbar() {
                   `rounded-lg px-3 py-2 text-sm font-medium ${
                     isActive
                       ? 'bg-[var(--color-surface-2)] text-white'
-                      : 'text-zinc-300 hover:bg-[var(--color-surface-2)]'
+                      : 'text-slate-300 hover:bg-[var(--color-surface-2)]'
                   }`
                 }
               >
@@ -142,10 +142,10 @@ export default function Navbar() {
             <div className="mt-3 flex flex-col gap-2">
               {isAuthenticated ? (
                 <>
-                  <Link to="/dashboard" className="btn btn-ghost" onClick={() => setOpen(false)}>
+                  <Link to="/dashboard" className="btn btn-soft" onClick={() => setOpen(false)}>
                     Dashboard
                   </Link>
-                  <button type="button" className="btn btn-primary" onClick={onLogout}>
+                  <button type="button" className="btn btn-ghost" onClick={onLogout}>
                     Logout
                   </button>
                 </>
@@ -154,7 +154,7 @@ export default function Navbar() {
                   <Link to="/login" className="btn btn-ghost" onClick={() => setOpen(false)}>
                     Login
                   </Link>
-                  <Link to="/register" className="btn btn-primary" onClick={() => setOpen(false)}>
+                  <Link to="/register" className="btn btn-soft" onClick={() => setOpen(false)}>
                     Register
                   </Link>
                 </>

@@ -388,10 +388,19 @@ QWidget *buildFileCell(const QString &name, const QString &host)
     auto *col = new QVBoxLayout;
     col->setContentsMargins(0, 0, 0, 0);
     col->setSpacing(1);
+    // PlainText, not the QLabel default of AutoText. These two carry a name and
+    // a host that came from outside: a torrent's display name is whatever the
+    // magnet's dn= said, and libtorrent hands it back verbatim (verified). Under
+    // AutoText, Qt::mightBeRichText() sees the markup and renders it, so a
+    // torrent named "<h1 style='color:red'>VERIFIED SAFE</h1>" shows as a red
+    // heading instead of its real name — filename spoofing in the one place the
+    // user decides whether to trust a file. No legitimate name is markup.
     auto *nm = new QLabel(name, w);
     nm->setObjectName(QStringLiteral("f_name"));
+    nm->setTextFormat(Qt::PlainText);
     auto *hs = new QLabel(host, w);
     hs->setObjectName(QStringLiteral("f_host"));
+    hs->setTextFormat(Qt::PlainText);
     col->addWidget(nm);
     col->addWidget(hs);
 
@@ -1909,8 +1918,8 @@ void MainWindow::promptSmartAdd()
 {
     if (!m_engine->aiAvailable()) {
         QMessageBox::information(this, QStringLiteral("Smart add"),
-            QStringLiteral("Smart add needs an Anthropic API key.\n\nSet ANTHROPIC_API_KEY in your "
-                           "environment and restart Nexa."));
+            QStringLiteral("Smart add needs an active Pro or Team license.\n\nIt runs on Nexa's "
+                           "servers, so it is unavailable on the Free plan."));
         return;
     }
     if (m_engine->licensePlan() == QLatin1String("free")) {

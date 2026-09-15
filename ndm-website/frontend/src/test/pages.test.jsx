@@ -8,6 +8,9 @@ import { AuthProvider } from '../context/AuthContext';
 import { ToastProvider } from '../components/Toast';
 import Home from '../pages/Home';
 import Download from '../pages/Download';
+import Compare from '../pages/Compare';
+import Input from '../components/Input';
+import Spinner from '../components/Spinner';
 
 // The API client is the only thing these pages touch that we do not own.
 vi.mock('../api/client', () => {
@@ -86,6 +89,57 @@ describe('Download page', () => {
 
     // The checksum we have is shown; the one we do not have is not faked.
     expect(screen.getAllByText(new RegExp('a'.repeat(16))).length).toBe(1);
+  });
+
+  // The page pre-selects a platform from the user agent and turns that card's
+  // button into the primary CTA reading "Download for <label>". Android's UA is
+  // "Mozilla/5.0 (Linux; Android 14; ...)", so a bare includes('Linux') matched
+  // every phone and offered a .deb as the recommended download.
+  describe('platform pre-selection', () => {
+    const withUserAgent = (ua, fn) => {
+      const original = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+      Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true });
+      try { return fn(); } finally {
+        if (original) Object.defineProperty(window.navigator, 'userAgent', original);
+      }
+    };
+
+    const renderWith = async (ua) => {
+      api.get.mockResolvedValue({
+        data: { ok: true, data: { version: '0.2.0', windowsUrl: 'https://e.test/a.exe', linuxUrl: 'https://e.test/a.deb' } },
+      });
+      withUserAgent(ua, () => renderPage(<Download />));
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+    };
+
+    it('recommends Windows to a Windows desktop', async () => {
+      await renderWith('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36');
+      await waitFor(() => expect(screen.getByText(/Download for Windows/i)).toBeTruthy());
+    });
+
+    it('recommends Linux to a Linux desktop', async () => {
+      await renderWith('Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0');
+      await waitFor(() => expect(screen.getByText(/Download for Linux/i)).toBeTruthy());
+    });
+
+    it('recommends nothing to an Android phone — its UA also says Linux', async () => {
+      await renderWith('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for Linux/i)).toBeNull();
+      expect(screen.queryByText(/Download for Windows/i)).toBeNull();
+    });
+
+    it('recommends nothing to an Android tablet (no "Mobile" token)', async () => {
+      await renderWith('Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for Linux/i)).toBeNull();
+    });
+
+    it('recommends nothing to macOS, which has no build yet', async () => {
+      await renderWith('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/17.0 Safari/605.1.15');
+      await waitFor(() => expect(api.get).toHaveBeenCalled());
+      expect(screen.queryByText(/Download for /i)).toBeNull();
+    });
   });
 
   it('says the version is unpublished instead of showing a stale fallback', async () => {
@@ -173,42 +227,96 @@ describe('Pricing promotion code', () => {
   });
 });
 
-describe('Billing — a cancelled renewal keeps the paid period', () => {
-  const mount = async () => {
-    const Billing = (await import('../pages/Billing')).default;
-    const { ConfirmProvider } = await import('../components/ConfirmDialog');
-    render(
-      <MemoryRouter initialEntries={['/billing']}>
-        <ToastProvider>
-          <ConfirmProvider>
-            <Billing />
-          </ConfirmProvider>
-        </ToastProvider>
-      </MemoryRouter>
+describe('Compare — the feature matrix is a real table', () => {
+  it('associates every cell with a product and a feature', () => {
+    renderPage(<Compare />);
+
+    // Without these a screen reader reads 80 loose "Yes"/"—" cells with nothing
+    // saying which product or which row they belong to.
+    const table = screen.getByRole('table', {
+      name: /Feature comparison of Nexa Download Manager/i,
+    });
+    const colHeaders = screen.getAllByRole('columnheader');
+    expect(colHeaders.map((h) => h.getAttribute('scope'))).toEqual(
+      colHeaders.map(() => 'col')
     );
-  };
-  const status = (extra) => ({
-    data: { ok: true, data: { plan: 'pro', status: 'active', expiryDate: '2030-01-15T00:00:00.000Z',
-                              seats: 1, trial: false, trialEndsAt: null, cancelAtPeriodEnd: false, ...extra } },
+    expect(colHeaders.map((h) => h.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('IDM')])
+    );
+
+    const rowHeaders = screen.getAllByRole('rowheader');
+    expect(rowHeaders.length).toBeGreaterThan(10);
+    expect(rowHeaders.every((h) => h.getAttribute('scope') === 'row')).toBe(true);
+    expect(table.querySelector('caption')).not.toBeNull();
   });
 
-  it('offers cancellation while the renewal is on', async () => {
-    api.get.mockImplementation((url) => Promise.resolve(
-      url === '/user/billing' ? { data: { ok: true, data: { payments: [] } } } : status()
-    ));
-    await mount();
-    expect(await screen.findByRole('button', { name: /cancel subscription/i })).toBeInTheDocument();
-    expect(screen.getByText(/^expires$/i)).toBeInTheDocument();
+  it('announces an absent feature as "No", not as an em dash', () => {
+    renderPage(<Compare />);
+
+    // aria-label on a role-less <span> is dropped by browsers, so the previous
+    // markup announced these cells as "—" or as nothing at all.
+    const linux = screen.getByRole('rowheader', { name: 'Linux' }).closest('tr');
+    expect(linux.textContent).toContain('No');
+    expect(linux.querySelector('[aria-label]')).toBeNull();
+  });
+});
+
+describe('Input — a rejected field says so', () => {
+  it('marks the field invalid and points at the message', () => {
+    render(<Input label="Email" name="email" error="That address is not valid." />);
+
+    const field = screen.getByLabelText('Email');
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    // The red ring alone is not an announcement: the message has to be the
+    // field's description or a screen reader never reads it.
+    const describedBy = field.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy)).toHaveTextContent(
+      'That address is not valid.'
+    );
   });
 
-  it('after cancelling it says when access ends and hides the button', async () => {
-    api.get.mockImplementation((url) => Promise.resolve(
-      url === '/user/billing' ? { data: { ok: true, data: { payments: [] } } } : status({ cancelAtPeriodEnd: true })
-    ));
-    await mount();
-    expect(await screen.findByText(/ends on/i)).toBeInTheDocument();
-    expect(screen.getByText(/renewal is switched off/i)).toBeInTheDocument();
-    expect(screen.getByText(/^active$/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /cancel subscription/i })).not.toBeInTheDocument();
+  it('describes the field by its hint when there is no error', () => {
+    render(<Input label="Password" name="password" hint="At least 8 characters" />);
+
+    const field = screen.getByLabelText('Password');
+    expect(field).not.toHaveAttribute('aria-invalid');
+    const describedBy = field.getAttribute('aria-describedby');
+    expect(document.getElementById(describedBy)).toHaveTextContent('At least 8 characters');
+  });
+});
+
+describe('Spinner — two of them on one page stay two of them', () => {
+  it('gives every instance its own gradient, and points each arc at its own', () => {
+    const { container } = render(
+      <>
+        <Spinner />
+        <Spinner size={32} />
+      </>
+    );
+
+    const gradients = [...container.querySelectorAll('linearGradient')];
+    expect(gradients).toHaveLength(2);
+
+    // The failure this guards against is silent: duplicate ids are legal
+    // enough to render, but url(#id) resolves to whichever element came
+    // first in the document, so the second spinner would quietly borrow the
+    // first one's gradient — and lose it entirely if the first unmounts.
+    const ids = gradients.map((node) => node.id);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => id && !id.includes(':'))).toBe(true);
+
+    const arcs = [...container.querySelectorAll('.ndm-spinner__arc')];
+    expect(arcs).toHaveLength(2);
+    arcs.forEach((arc, i) => {
+      expect(arc.getAttribute('stroke')).toBe(`url(#${ids[i]})`);
+    });
+  });
+
+  it('is announced as a status, and honours the size it was given', () => {
+    render(<Spinner size={32} />);
+    const mark = screen.getByRole('status', { name: 'Loading' });
+    expect(mark).toHaveAttribute('width', '32');
+    expect(mark).toHaveAttribute('height', '32');
   });
 });

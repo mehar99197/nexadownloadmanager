@@ -49,15 +49,23 @@ This endpoint is consumed by the NDM **C++ app**, so it returns a LITERAL shape,
 
 ```json
 // valid
-{ "valid": true, "plan": "pro", "expires": "2027-01-01T00:00:00.000Z", "token": "<24h jwt>", "trial": false }
+{ "valid": true, "plan": "pro", "expires": "2027-01-01T00:00:00.000Z", "token": "<15m Ed25519 jwt>", "trial": false }
 // invalid
-{ "valid": false, "reason": "expired", "trial": false }   // reason ∈ not_found | expired | cancelled | device_mismatch | invalid
+{ "valid": false, "reason": "expired", "trial": false }   // reason ∈ not_found | expired | cancelled | device_mismatch | seat_limit | invalid
 ```
 Always HTTP 200 with this body (even when `valid:false`) so the C++ client parses it cleanly.
 `trial` is **always present**: `true` while the 7-day no-card Pro trial is running
 (`subscriptions.trial_ends_at` in the future, no `stripe_subscription_id`), else `false`.
-The handler calls `Subscription.expireTrialIfNeeded(sub)` first, so a finished trial
-validates as `plan:"free"` (lazy downgrade — no cron).
+The handler calls `Subscription.current(sub)` first — lazy trial expiry, then lazy
+paid-plan lapse — so a finished trial *and* a lapsed paid plan both validate as
+`plan:"free"` (no cron).
+
+**A period running out is never `expired`.** The desktop client deletes a key it is
+told is expired, so a late renewal webhook used to cost the customer their licence.
+`expired` and `cancelled` are now reserved for a licence somebody deliberately
+stopped (`subscriptions.status`); everything that merely lapses falls back to Free
+with a working key. `utils/license.js#PAID_GRACE_DAYS` (3) is the window that
+absorbs a slow or retried renewal before a plan counts as lapsed.
 
 ### EXCEPTION 2 — `GET /api/releases/feed?os=windows|linux`
 
@@ -66,7 +74,8 @@ Update feed polled by the desktop app. LITERAL body, never the envelope:
 ```json
 // HTTP 200, Cache-Control: public, max-age=300
 { "version": "0.1.0", "url": "https://<PUBLIC_API_URL>/api/releases/download/windows",
-  "notes": "<changelog>", "sha256": "<64 hex or empty string>", "publishedAt": "2026-08-01T12:34:56.000Z" }
+  "notes": "<changelog>", "sha256": "<64 hex or empty string>",
+  "publishedAt": "2026-08-01T12:34:56.000Z", "signature": "<base64url Ed25519>" }
 // HTTP 404 — no latest release, or no artifact URL for that OS
 { "error": "no_release" }
 ```
@@ -74,6 +83,22 @@ Update feed polled by the desktop app. LITERAL body, never the envelope:
 `config.PUBLIC_API_URL`, which defaults to `FRONTEND_URL`) so app-driven downloads are
 counted. `sha256` is `""` when the admin has not recorded a checksum — never fabricated.
 Shaping lives in the pure helper `utils/releaseFeed.js` → `buildFeed(release, os, baseUrl)`.
+
+**`signature` is required, and the desktop app refuses a feed without a valid one.** It is an
+Ed25519 signature (same key as licence tokens) over exactly:
+
+```
+nexa-update-v1\n<version>\n<url>\n<sha256>
+```
+
+This exists because the feed names an installer *and* the checksum it is verified against, and the
+app then executes what it downloads — so whoever controls this response controls both halves and the
+checksum alone proves nothing. `notes` and `publishedAt` are deliberately outside the signature, so a
+changelog can be corrected without re-signing a release. Produced by `signFeed(feed, privateKey)`;
+verified client-side by `feedSignatureValid()` in `src/core/UpdateChecker.cpp`.
+
+Rollout order when changing this: **deploy the backend first** (older clients ignore the extra
+field), then ship the client that requires it.
 
 ---
 
@@ -88,7 +113,23 @@ Header: `Authorization: Bearer <token>`.
 | root (creator) | 4h | `JWT_ROOT_SECRET` | `signRootToken(user)` | `verifyRoot` / `requireRoot` |
 | email verify | 1h | `JWT_SECRET` | `signEmailToken(user)` | `verifyEmailToken` |
 | password reset | 1h | `JWT_SECRET` | `signResetToken(user)` | `verifyResetToken` |
-| license | 24h | `LICENSE_JWT_SECRET` | `signLicenseToken(payload)` | `verifyLicense` |
+| license | 15m | `LICENSE_JWT_PRIVATE_KEY` (Ed25519) | `signLicenseToken(payload)` | `verifyLicense`, **and the desktop app itself** |
+
+The licence token is the odd one out: it is **Ed25519, not HMAC**, because the
+desktop app verifies it locally against a public key compiled into the binary.
+Everything the app gates on — `plan`, `features`, the `device` it was issued to,
+`iat` — is inside that signature, so a fake licence server, a rewritten response
+body, or a hand-edited settings file cannot manufacture a paid plan. Verification
+pins the algorithm to `EdDSA`; accepting an HMAC algorithm would let anyone sign
+a token using the published public key as the secret.
+
+Its TTL matches `SEAT_LEASE_SECONDS`, and **`POST /api/license/heartbeat` re-issues
+one on every beat**. That pairing is the point: the client re-validates only every
+six hours, so without re-issuing it would spend most of a session holding an
+expired token — which is why the TTL used to be 24h, and why a token captured from
+a revoked licence stayed usable on plan-gated endpoints for a day. A beat has
+already resolved the subscription and renewed the seat, so minting costs one
+signature and cuts that window to 15 minutes.
 
 **Refresh token:** opaque random string in an **httpOnly cookie named `ndm_refresh`**.
 Only the SHA-256 hash is stored on `User.refreshTokenHash`. Generate with
@@ -195,6 +236,9 @@ Schema field notes:
 - `createReviewSchema.body`: `{ rating: 1..5, comment }`
 - `listReviewsQuerySchema.query`: `{ page=1, limit=10, rating? }` (coerced)
 - admin `updateUserSchema.body`: `{ banned?, emailVerified?, plan? }` — **no `role`**, by design; role changes are creator-only. `updateReviewSchema.body`: `{ status }`
+- admin `updateSubscriptionSchema.body`: `{ plan?, status?, seats?, expiryDate? }`. `expiryDate` is an ISO
+  datetime and always wins over the date a plan change implies — it is how support extends a customer
+  whose renewal webhook went missing, or shortens one after a refund.
 - admin `idParamSchema.params` / `*ReleaseSchema.params` / `updateUserSchema.params`: positive numeric MySQL id
 - admin `createReleaseSchema.body` / `updateReleaseSchema.body` also accept optional `windowsSha256`, `linuxSha256`
   (`sha256` = trimmed, lower-cased, `/^[a-f0-9]{64}$/`; `updateReleaseSchema` additionally allows `null` to clear)
@@ -226,12 +270,12 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 ### `routes/auth.js` → `/api/auth`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/register` | `authLimiter`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email |
-| POST | `/login` | `authLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie |
+| POST | `/register` | `authLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
+| POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account with the ordinary `401 INVALID_CREDENTIALS`** — identical body to a wrong password, to a right password on a staff row, and to an address with no account at all. Every branch runs a real cost-12 bcrypt, including the unknown-address one, so neither the code nor the clock answers "does this address have an account?" or "is this one the administrator?". The owner is told in their own inbox (`sendControlPanelSignInAttemptEmail`), never on the wire *(ADDED)* |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
-| POST | `/forgot-password` | `authLimiter`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email |
+| POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
-| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token *(ADDED)* |
+| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row additionally has its stale `refreshTokenHash` nulled and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued, so the session ends rather than being retried on every page load *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
@@ -241,7 +285,8 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 |--------|------|-----------|
 | GET | `/me` | `requireAuth` — profile + subscription; `subscription` includes `trial: boolean`, `trialEndsAt: ISO\|null` (after `expireTrialIfNeeded`) |
 | PUT | `/profile` | `requireAuth`, `validate(updateProfileSchema)` |
-| GET | `/license` | `requireAuth` — license key (+ `trial`, `trialEndsAt`) |
+| GET | `/license` | `requireAuth` — license key (+ `trial`, `trialEndsAt`). `403 EMAIL_NOT_VERIFIED` with `{canResend:true}` for an unverified address |
+| POST | `/license/rotate` | `requireAuth`, `licenseRotateLimiter` (5/day, durable) — issue a NEW licence key and stamp `revoked_at` on every activation. Paid + `active` only (`400 NOT_ROTATABLE`), audit `license.rotated`, best-effort licence email. → `{ licenseKey, plan, devicesRevoked }`. **This is the only way to take a leaked key back**: a Team member is handed the owner's real key and no activation row records who created it, so removing them from the roster revokes nothing *(ADDED)* |
 | GET | `/billing` | `requireAuth` — payment history |
 
 ### `routes/subscription.js` → `/api/subscription`
@@ -249,9 +294,10 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 |--------|------|-----------|
 | GET | `/plans` | PUBLIC — return `PLANS` |
 | POST | `/checkout` | `requireAuth`, `validate(checkoutSchema)` — `stripe.createCheckoutSession` |
-| POST | `/cancel` | `requireAuth` — `stripe.cancelAtPeriodEnd` + `cancel_at_period_end=1`; the row stays `active` until `expiry_date` (the desktop licence keeps working for the paid period) and the `customer.subscription.deleted` webhook marks it `cancelled`. `400 ALREADY_CANCELLED` on a repeat |
-| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt, cancelAtPeriodEnd }` (after `expireTrialIfNeeded`) |
-| POST | `/start-trial` | `requireAuth` — 7-day no-card Pro trial. `400 TRIAL_UNAVAILABLE` if `users.trial_used=1` or the current subscription is an active paid pro/team plan (no trial). Otherwise ONE transaction: `plan='pro', status='active', seats=planSeats('pro'), start_date=now, expiry_date=trial_ends_at=now+7d, stripe_subscription_id=NULL`, `users.trial_used=1`; audit `subscription.trial_started`. → `{ plan:'pro', trial:true, trialEndsAt }` *(ADDED)* |
+| POST | `/cancel` | `requireAuth` — cancels **at period end**: `stripe.cancelSubscription(id, { atPeriodEnd: true })` and `cancel_at_period_end = 1`. The row stays `active` with its expiry intact, so the customer keeps what they paid for; `customer.subscription.deleted` (or the lazy lapse, for a plan with no Stripe subscription) is what finally returns them to Free. `400 ALREADY_CANCELLING` if one is already pending |
+| POST | `/resume` | `requireAuth` — undo a pending cancellation while the period is still running. `400 NOT_CANCELLING` *(ADDED)* |
+| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt, cancelAtPeriodEnd }` (after `Subscription.current`) |
+| POST | `/start-trial` | `requireAuth` — 7-day no-card Pro trial. `400 TRIAL_UNAVAILABLE` if `users.trial_used=1` or the current subscription is an active paid pro/team plan (no trial); `403 SUBSCRIPTION_STOPPED` if its status is `cancelled`/`expired`, which only ever means a person stopped it — the trial used to overwrite that row in place and hand back seven days of Pro on the very key that had been stopped. Otherwise ONE transaction: `plan='pro', status='active', seats=planSeats('pro'), start_date=now, expiry_date=trial_ends_at=now+7d, stripe_subscription_id=NULL`, `users.trial_used=1`; audit `subscription.trial_started`. → `{ plan:'pro', trial:true, trialEndsAt }` *(ADDED)* |
 
 ### `routes/license.js` → `/api/license`
 | Method | Path | Middleware | Notes |
@@ -268,7 +314,26 @@ never "silently entitled to ad-free".
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
 | GET | `/` | PUBLIC, `adsLimiter`, `validate(serveAdsSchema)` | `?placement=app_banner`. → `{ adFree, ads:[{ id, title, body, imageUrl, targetUrl, ctaLabel, placement, weight }] }`. Paid licence ⇒ `{ adFree:true, ads:[] }`. Counters, schedule and authorship are never sent |
-| POST | `/:id/event` | PUBLIC, `adsLimiter`, `validate(adEventSchema)` | `{ type: impression\|click }` → `{ counted }`. An unknown or paused id counts nothing and is **not** an error; a paid licence counts nothing |
+| POST | `/:id/event` | PUBLIC, `adsLimiter`, `validate(adEventSchema)` | `{ type: impression\|click, token }` → `{ counted }`. An unknown or paused id counts nothing and is **not** an error; a paid licence counts nothing |
+
+`token` is `expires.nonce.hmac` (`utils/ads.js#signAdEventToken`, keyed by
+`config.adEventSecret`, 45-minute TTL) issued with each ad by `GET /api/ads` and
+echoed back by the client. Without a valid one the event counts nothing: the
+route is otherwise open, so anybody could inflate the counters — and the CTR the
+admin panel computes from them — with a loop of curl calls. An older desktop
+build simply sends no token and its events are ignored rather than rejected.
+
+The signature alone was not enough, because the same valid token could be
+replayed for the whole of its life. `ad_event_nonces` gives each token a
+**budget** per event type (`models/Ad.js#claimEventNonce`: at most one event per
+30 s, ≤80 impressions and ≤5 clicks), so a replay buys no more than the client
+it was stolen from would have reported. It is a rate and not single-use on
+purpose: the desktop app holds one token for a whole 30-minute refresh cycle,
+reports an impression on every 45-second rotation and reuses the same token for
+the click. Over budget answers `{ counted:false, reason:'rate_limited' }`.
+
+Two-part (pre-nonce) tokens are refused rather than grandfathered — accepting
+them would leave the replay open to anyone who sent the old shape.
 
 ### `routes/reviews.js` → `/api/reviews`
 | Method | Path | Middleware |
@@ -305,6 +370,7 @@ checksum computed at upload time.
 | GET | `/users` | `requireAdmin`, `validate(listQuerySchema)` |
 | PUT | `/users/:id` | `requireAdmin`, `validate(updateUserSchema)` — a `plan` change also sets `trial_ends_at=NULL`. `403` if the target is an `admin`/`root` and the caller is not the creator; **no `role` field** |
 | POST | `/users/:id/revoke-sessions` | `requireAdmin` — nulls `refreshTokenHash` **and** `adminRefreshTokenHash`; `403` on a control-panel target unless the caller is the creator |
+| DELETE | `/users/:id` | `requireAdmin`, `validate(deleteUserSchema)` — **irreversible**. Body must carry the target's exact `confirmEmail` (`400 CONFIRM_MISMATCH`). Refuses the caller's own account (`400 SELF_LOCKOUT`), any creator (`403`), and — for a staff caller — any control-panel account (`blockedStaffTarget`). The audit row is written *before* the delete because `audit_logs.admin_user_id` is `ON DELETE SET NULL`. Data removal is the schema's cascade, not the route's: subscriptions, payments, reviews and (through subscriptions) `license_activations` + `team_members` are `ON DELETE CASCADE`; audit logs, ads and contact messages are `ON DELETE SET NULL`, so what was done outlives who did it. The creator's `/api/root/users/:id` is the same rule with a wider reach *(ADDED)* |
 | GET | `/subscriptions` | `requireAdmin`, `validate(listQuerySchema)` |
 | GET | `/reviews/pending` | `requireAdmin` |
 | PUT | `/reviews/:id` | `requireAdmin`, `validate(updateReviewSchema)` |
@@ -330,7 +396,7 @@ so nothing needs admin intervention.
 | Endpoint | Effect |
 |---|---|
 | `POST /api/license/validate` | takes or renews a seat, mints the token |
-| `POST /api/license/heartbeat` | renews the lease only (cheap, `apiLimiter`) |
+| `POST /api/license/heartbeat` | renews the lease of a device that **already has an activation row**, and re-issues the token (cheap, `apiLimiter`). It may never create one: `acquireSeat({renewOnly:true})` answers `seat_unknown_device` (sent on the wire as `seat_limit`) for a machine that never called `/validate`. Registering here would take a seat and mint a signed token while skipping the key-sharing assessment, which runs **only** in `/validate` |
 | `POST /api/license/release` | drops the lease now; always 200 |
 
 `Subscription.acquireSeat` does the whole check in one transaction with the
@@ -342,6 +408,89 @@ client keeps the key on `seat_limit` instead of deleting it.
 
 Users free their own seats at `GET/DELETE /api/user/devices`; an admin drops all
 of them with `POST /api/admin/subscriptions/:id/revoke-device`.
+
+### AI helpers are server-side so the entitlement is real
+
+```
+POST /api/ai/rename    { filename, url?, contentType? }  -> { name }
+POST /api/ai/command   { text }                          -> { downloads, schedule }
+```
+
+Both require `Authorization: Bearer <licence token>` for a plan whose
+`entitlementsFor(plan).aiRename` is true; anything else is `AI_NOT_ENTITLED`
+(403). With no `ANTHROPIC_API_KEY` configured they answer `AI_UNAVAILABLE`
+(503) and the app simply leaves filenames alone.
+
+**The prompts live in `utils/aiProxy.js`, never in the request.** These are two
+narrow endpoints rather than one prompt-forwarding proxy for a specific reason:
+a proxy that relayed a client-supplied prompt would be a free Claude gateway to
+anyone who extracted a token, so the entitlement would gate *who* pays nothing
+rather than *what* they can ask. Inputs are length-capped and `max_tokens` is
+small, and `aiLimiter` counts in MySQL because these calls cost real money.
+
+### Seat limits cap concurrency; sharing detection catches distribution
+
+A leaked key does not trip the seat limit — five hundred people sharing one key
+still show N concurrent seats, because they take turns. What gives it away is
+that every distinct machine leaves a permanent `license_activations` row
+(`releaseSeat` clears the lease, not the row), so the **all-time** device count
+diverges from the seat count even though the live count never does.
+
+`utils/licenseAbuse.js#assessSharing({seats, distinctDevices, newDevicesInWindow})`
+grades that into `ok` / `watch` / `suspected`, evaluated on `/license/validate`
+only when a **new** device takes a seat, and stored on the subscription
+(`sharing_level`, `sharing_devices`, `sharing_reason`, `sharing_checked_at`).
+
+```
+GET /api/admin/subscriptions/flagged      → { subscriptions: [...], thresholds }
+GET /api/admin/security/token-rejections  → { totals, attackTotal, buckets, ... }
+```
+
+The second is the other half of the picture: licence tokens that arrived but did
+not verify. A genuine client never produces one — it holds a token this server
+signed and replaces it every five minutes — so `bad_signature` and
+`bad_algorithm` counts are people building tokens by hand, i.e. the visible
+trace of somebody testing a crack. `expired` is tracked separately and is *not*
+treated as an attack: a skewed clock or a long sleep produces those honestly.
+Counts live in hourly buckets (`license_token_rejections`) rather than a row per
+rejection, so flooding the endpoint cannot grow the table.
+
+Above a **much** higher bar — `30x seats + 3` distinct devices, or `20x seats + 3`
+inside the window — `autoSuspendReason()` suspends the licence outright
+(`LICENSE_AUTO_SUSPEND=false` turns just that off). The two bars are deliberately
+far apart: flagging asks "worth a look?" and should stay sensitive, while
+suspending cuts off paid software with no human in the loop and should stay rare.
+
+A suspension:
+- sets `sharing_suspended_at`, and **never touches `status`** — `cancelled` or
+  `expired` would make the desktop client delete the stored key;
+- answers `{valid:false, reason:'seat_limit'}`, which the client already handles
+  by keeping the key and saying "close Nexa elsewhere" — and which tells whoever
+  is sharing the key nothing about what was detected;
+- releases the seat it just granted, so the rightful owner is not locked out for
+  a further lease period once it is lifted;
+- is reversible: `POST /api/admin/subscriptions/:id/sharing/clear` lifts it and
+  sets `sharing_exempt`, because the device history that triggered it does not go
+  away and the next activation would otherwise re-suspend within minutes.
+  `.../sharing/resume` puts the licence back under automatic enforcement.
+
+Flagging still **records a verdict and nothing else**. Fingerprints
+change for innocent reasons (a reinstall, a replaced NIC, a reimaged laptop), so
+acting on the flag is a human decision made with the existing "Free seats" or
+cancel controls. Thresholds are `4×seats+3` to watch and `10×seats+3` to suspect,
+plus a 7-day burst rule so a key published this week is caught before its
+all-time count catches up.
+
+### Plan changes move the expiry with the plan
+
+`utils/license.js#expiryForPlanChange(fromPlan, toPlan, currentExpiry)` decides
+the date whenever an admin moves a subscription between plans
+(`PUT /api/admin/users/:id`, `PUT /api/admin/subscriptions/:id`). The free
+plan's expiry is deliberately ~100 years out, so carrying a date across a change
+is wrong in **both** directions: free → pro kept the far-future date and quietly
+granted a permanent Pro licence, while pro → free kept the paid date, so the
+customer's FREE licence expired a month later and the desktop app deleted their
+key. A lateral paid move (pro ⇄ team) keeps its date — that period is paid for.
 
 ### Feature entitlements
 
@@ -386,7 +535,31 @@ is therefore only ever changed by the `create-root` CLI.
 ### `routes/webhooks.js` → `/api/webhooks`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Handle `checkout.session.completed` → create Payment + activate Subscription (**clears `trial_ends_at`** and `cancel_at_period_end`) + email license; `invoice.paid` / `invoice.payment_succeeded` → **renewal**: push `expiry_date` to the invoice line's `period.end` (never backwards), record the Payment, receipt on a `subscription_cycle`; `customer.subscription.updated` → mirror `cancel_at_period_end` and a later `current_period_end`; `customer.subscription.deleted` → `status='cancelled'`; `invoice.payment_failed` → failed Payment. Respond `200 { received: true }` (plain, not envelope, for Stripe). |
+| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Respond `200 { received: true }` (plain, not envelope, for Stripe). |
+
+Events handled, and what each one writes:
+
+| Event | Effect |
+|---|---|
+| `checkout.session.completed` | create Payment + activate Subscription (**clears `trial_ends_at`**) + email licence and receipt — but ONLY when `payment_status` is `paid`/`no_payment_required`/absent. A delayed method (ACH, SEPA) completes the session with the debit still in flight |
+| `checkout.session.async_payment_succeeded` | the settlement of the above; same handler, so the grant happens once, when the money actually arrives |
+| `checkout.session.async_payment_failed` | logged; nothing was granted, so nothing to undo |
+| `invoice.payment_succeeded` / `invoice.paid` | **renewal** — push `expiry_date` to the period end Stripe just billed, record the Payment, email a receipt (only when `billing_reason === 'subscription_cycle'`, so the first invoice is not thanked twice) |
+| `invoice.payment_failed` | record a `failed` Payment. The subscription is untouched: Stripe retries for days, and `customer.subscription.deleted` is what actually ends access |
+| `customer.subscription.updated` | sync from Stripe's own billing portal: period end, `cancel_at_period_end`, and the plan when the price matches one of ours (an unrecognised price leaves the stored plan alone). `past_due`/`unpaid` change nothing — Stripe is still retrying |
+| `customer.subscription.deleted` | the subscription ended: downgrade to **`plan='free', status='active'`**, NOT `cancelled`. `reason:"cancelled"` makes the desktop client delete the key, so ending a subscription used to destroy the free licence underneath it. The churn event is kept as an audit row (`subscription.ended`) |
+| `charge.refunded` | mark the `payments` row `refunded` (nothing ever wrote that status, so refunded months kept counting toward MRR). A FULL refund also cancels the Stripe subscription and returns the account to Free |
+
+**Invoices carry none of the Checkout Session's metadata.** `plan` and
+`billingCycle` were set on the session, so the invoice handlers read the plan
+from OUR subscription row and the cycle/period/amount from the invoice's own
+line item — `utils/stripeInvoice.js` holds those pure readers and accepts every
+field position Stripe has used across API versions. Reading them from
+`invoice.metadata` throws on every real invoice.
+
+**Without the renewal handler `expiry_date` is never extended**: a monthly
+subscriber's licence validates as `expired` on day 31 while Stripe keeps
+charging, and the desktop client *deletes* a key it is told is expired.
 
 **Public endpoints already in `app.js` (do NOT redefine):** `GET /api/health`,
 `GET /api/stats` → `{ users, downloads }` where `users = COUNT(users)` and
@@ -398,10 +571,18 @@ is therefore only ever changed by the `create-root` CLI.
 
 | Method | Path | Auth | Body | Response |
 |--------|------|------|------|----------|
-| POST | `/` | none, `contactLimiter` (5/hour/IP) | `{ name?, email, topic?, message, website? }` — `website` is a honeypot and must be empty | `{ sent: true }` |
+| POST | `/` | `optionalAuth`, `contactLimiter` (5/hour/IP), `requireTurnstile` | `{ name?, email, topic?, message, website? }` — `website` is a honeypot and must be empty | `{ sent: true }` |
 
 Delivers to `SUPPORT_EMAIL` (falls back to `FROM_EMAIL`) with `Reply-To` set to the
 visitor. Mock email mode logs it like every other message.
+
+`contact_messages.user_id` is set **only** when the sender is signed in as that
+address. It used to be set on a bare email match, so anyone could type a
+customer's address into the public form and have the message reach the admin
+inbox labelled as coming from that customer's account — a good pretext for
+talking an admin into a refund or a reset. `optionalAuth` (middleware/auth.js)
+identifies a caller who happens to be signed in and leaves `req.user` unset
+otherwise; it never rejects, so the form stays open to anonymous visitors.
 
 ### Public release history — `GET /api/releases/history`
 
@@ -426,9 +607,9 @@ member's account. Roster cap = `subscriptions.seats` including the owner.
 |---|---|---|
 | `GET /invites/:token` | none (`apiLimiter`) | `{ ownerName, email, plan }` for the join page, 404 `INVITE_NOT_FOUND` |
 | `GET /` | user | `{ role:'owner', seats, used, canInvite, usable, members[] }` · `{ role:'member', owner, licenseKey, plan, status, usable }` · `{ role:'none' }` |
-| `POST /invites` `{email}` | owner, `teamInviteLimiter` 20/h | 403 `NOT_TEAM_OWNER`, 400 `TEAM_INACTIVE`/`SELF_INVITE`/`TEAM_FULL`, 409 `ALREADY_INVITED`; sends `sendTeamInviteEmail` (link `/team/join?token=`, 32 random bytes base64url, only the SHA-256 stored) |
+| `POST /invites` `{email}` | owner, `teamInviteLimiter` 20/h | 403 `NOT_TEAM_OWNER`, 400 `TEAM_INACTIVE`/`SELF_INVITE`/`TEAM_FULL`, 409 `ALREADY_INVITED`; sends `sendTeamInviteEmail` (link `/team/join?token=`, 32 random bytes base64url, only the SHA-256 stored). The **subject is fixed** — the inviter's display name is attacker-chosen text going out from our domain to an address they pick, so it appears only in the escaped body, beside their email address |
 | `POST /invites/:id/resend` | owner | rotates the token |
-| `DELETE /members/:id` | owner | removes an invite or a member |
+| `DELETE /members/:id` | owner | removes an invite or a member. Returns `{removed:true, keyStillValid:true, rotateHint}`: the roster edit revokes **nothing**, because the member holds the owner's real licence key and no activation row records who created it. `POST /api/user/license/rotate` is the actual remedy |
 | `POST /join` `{token}` | user | the signed-in email MUST equal the invited one (403 `EMAIL_MISMATCH`); 409 `ALREADY_ON_TEAM` |
 | `POST /leave` | member | |
 
@@ -452,15 +633,125 @@ hashes; a code is removed when used).
 - `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
 - Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/disable { password, code }`.
 - `GET <realm>/me` adds `twoFactorEnabled`; `User.listStaff` includes `totp_enabled`; root `POST /api/root/admins/:id/reset-2fa` clears a staff admin's second factor and revokes sessions.
+- **A code is spent once.** `users.totp_last_step` is a monotonic high-water mark
+  and `checkCode` refuses `step <= totp_last_step` with `401 CODE_ALREADY_USED`.
+  Without it a code stayed usable for its own step plus the drift step either
+  side — up to 90 seconds, which is exactly the window a real-time phishing
+  proxy works in. Enrolment burns its step too, so the code that switched 2FA on
+  cannot be turned round on `/2fa/disable`; setup and disable clear the mark.
+
+### Reserved identities — `utils/reservedEmail.js`
+
+The creator's address identifies the creator, and nothing else. Two rules,
+closing two different gaps:
+
+- **`isReservedEmail(email)`** — matches `ROOT_ADMIN_EMAIL`, and works when no
+  row exists. The unique index on `users.email` is what stops a second account
+  today, so registration on that address fails only because the creator's row is
+  sitting there; delete it (an accident, an older restore) and the address
+  becomes claimable by whoever registers first. Enforced in `POST /auth/register`
+  (**silently** — same `201 {ok:true,data:{}}` as any other sign-up, because a
+  distinct error would point a stranger at the administrator's address),
+  `POST /auth/google`, and `POST /admin/users` (a plain `400 RESERVED_ADDRESS`;
+  the caller is already authenticated there).
+- **`isControlPanelAccount(user)`** — `role` is `admin` or `root`. **A
+  control-panel row is not a customer**, so the public auth surface may neither
+  authenticate it nor write to it:
+  - `POST /auth/login` refuses it, and so does `POST /auth/refresh`.
+  - `requireAuth` (and `optionalAuth`) refuse it on **every** request, which is
+    what kills a bearer token minted before the rule existed or before the
+    account was promoted — access tokens live seven days and are stateless, so
+    a check only at the mint point would have left the hole open that long.
+  - **Every one of those refusals is indistinguishable from an ordinary one**:
+    `401 INVALID_CREDENTIALS` at login (byte-identical to a wrong password),
+    `401 INVALID_REFRESH_TOKEN` at refresh (identical to a cookie nobody
+    issued), `401 SESSION_REVOKED` at `requireAuth`. Nothing on the public API
+    ever says the words "control-panel", because a named refusal is worse than
+    the hole it closes: credential-stuffing a leaked password would answer
+    "wrong password" for thousands of ordinary addresses and "this one is the
+    administrator" for exactly one — the single address on the site worth
+    attacking, given away for free. Holding the password is not a reason to
+    confirm anything; a reused password from an unrelated breach is exactly how
+    somebody would be holding it. `/admin/login` and `/root/login` have always
+    answered a *customer's* correct credentials with the same flat
+    `INVALID_CREDENTIALS`; this is that rule pointed the other way.
+  - The explanation is not withheld, only moved. `sendControlPanelSignInAttemptEmail`
+    tells the mailbox that owns the account — which is both the answer its owner
+    needs and, since the branch is only reached on a **correct** password, the
+    alarm that somebody is holding a working panel password. The customer login
+    page carries the standing hint ("Staff and creator accounts sign in from the
+    admin console, not here") shown after *any* failed sign-in, beside the
+    existing Google and no-password hints, so it guides without confirming.
+  - `POST /auth/google` will not link a second credential to it, and
+    `POST /auth/forgot-password` will not mint a reset link for it (answering
+    `sent:true` as always, so the refusal itself reveals nothing).
+    `POST /auth/reset-password` re-checks at redemption, so a link minted before
+    the account was promoted still cannot be spent.
+  - Any role change through `PUT /api/root/admins/:id`, and both
+    `npm run create-admin` / `create-root`, call `User.revokeSessions` — a
+    promotion has to end the customer session the account is holding, exactly as
+    a demotion ends the panel one.
+
+  `POST /auth/google` is the ONE public endpoint that names the reason
+  (`403 RESERVED_ADDRESS`, `CONTROL_PANEL_MESSAGE`), and the difference is who
+  is asking. A password proves only that somebody once typed it — it travels in
+  breach dumps. Google has just proved the caller *reads that mailbox*, which is
+  the same mailbox the password form's refusal is explained in, so there is
+  nobody left to hide it from and a vague answer would only waste the creator's
+  time.
+
+Why these rules matter, and why login is the important one: there is **one**
+`users` table and **one** `password_hash`, and `/admin/login` and `/root/login`
+verify the very column the customer site reads and writes. The panels sit behind
+an IP allowlist and a second factor; `/api/auth/login` has neither. While it did
+not check the role, the creator's own credentials opened a customer session from
+any address — and `PUT /api/user/profile` then rewrote that hash, so the customer
+site was a way to *set* the panel password. The refusal is placed after the
+password compare on purpose, and it is silent on purpose. Creator recovery is
+`npm run create-root` on the server, which updates the existing row — something
+you must already be on the box to do.
+
+### What never leaves the server — `utils/sanitize.js`
+
+`stripSensitive(row)` is the ONE filter every user row passes through
+(`routes/admin.js`, `routes/root.js`, `routes/user.js` all alias it). There were
+three hand-rolled copies and they had drifted: the admin one removed three
+password/refresh hashes and nothing else, so `GET /api/admin/users/:id/details`
+— which reads the row with `SELECT *` — handed a *staff* admin the creator's
+`totp_secret`, the SHA-256 hashes of the creator's recovery codes and
+`root_refresh_token_hash`. The recovery codes are plain SHA-256 of a ten-character
+alphanumeric and crack offline, so that omission was a route from staff to
+creator.
+
+It strips an explicit list **and** anything matching
+`/(password|secret|recovery|_hash$|token_version)/i`, so a credential column
+added later is removed before anyone remembers this file exists. `license_key`
+is deliberately not matched: it is the customer's own property and both panels
+show it.
+
+### Origin gate — `middleware/originGuard.js`
+Mounted on `/api` for `POST/PUT/PATCH/DELETE`. A mutating request that **carries**
+an `Origin` must carry one in `CORS_ORIGINS` or the request's own origin, else
+`403 BAD_ORIGIN`. A **missing** Origin is allowed on purpose: that is every
+non-browser client — the desktop app, Stripe webhooks, curl, the tests — and none
+of them can be a CSRF vector, since CSRF is precisely an attack that borrows a
+*browser's* ambient credentials. This is a second layer under `SameSite=Lax`, not
+a replacement for it.
 
 ### Turnstile — `middleware/turnstile.js`
 `requireTurnstile` runs BEFORE `validate()` on `POST /auth/register`,
 `POST /auth/forgot-password`, `POST /reviews`, `POST /contact`: it reads and
 deletes `body.turnstileToken` (the schemas are `.strict()`), verifies it at
 Cloudflare when `TURNSTILE_SECRET_KEY` is set, and answers 400
-`CAPTCHA_FAILED` on failure. No secret = gate off (dev, tests). A Cloudflare
-outage degrades open. The site sends the token only when built with
-`VITE_TURNSTILE_SITE_KEY`.
+`CAPTCHA_FAILED` on failure. No secret = gate off (dev, tests). The site sends
+the token only when built with `VITE_TURNSTILE_SITE_KEY`.
+
+A token Cloudflare *answers* about is always trusted — `success:false` fails
+closed and always did. The only open branch is Cloudflare being **unreachable**,
+which nobody outside Cloudflare can cause on demand, so by default sign-up, the
+contact form and reviews stay up through their outage; the attempt is logged as
+`[SECURITY]`. `TURNSTILE_FAIL_CLOSED=true` reverses that and answers
+`503 CAPTCHA_UNAVAILABLE` instead.
 
 ### Statistics floor — `utils/stats.js`
 `GET /api/stats` omits `users` / `downloads` below `STATS_MIN_USERS` (50) /
@@ -494,7 +785,20 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
   `ROOT_ALLOWED_IPS` is empty, so the creator console is never *less* restricted.
 - `isRootUser(user)` — the creator predicate: `role === 'root'` **and** the email matches
   `ROOT_ADMIN_EMAIL`. Use it instead of comparing `role` directly.
-- `authLimiter` 5/15min · `licenseLimiter` 10/hour per source IP · `adminLoginLimiter` 5/15min (shared by `/admin/login` and `/admin/refresh`) · `downloadLimiter` 30/15min (`/releases/download/:os`) · `adsLimiter` 120/15min (`/api/ads` serve + event) · `apiLimiter` (global, already mounted on `/api` in app.js).
+**Durable counters.** `authLimiter`, `loginLimiter`, `authIpLimiter`,
+`licenseLimiter`, `adminLoginLimiter`, `contactLimiter`, `twoFactorLimiter` and
+`teamInviteLimiter` count in MySQL (`rate_limits`, `middleware/rateLimitStore.js`)
+so a restart — which the keepalive cron performs whenever the API looks hung — does
+not hand an attacker a fresh budget. The high-volume ones (`apiLimiter` on all of
+`/api`, `adsLimiter`, `downloadLimiter`) stay in memory: a database round-trip per
+API request would cost far more than those counters are worth.
+
+**Sign-in is keyed per (IP, email)**, not per IP: a single per-IP budget meant one
+person mistyping their password locked out everybody behind the same office NAT.
+`loginLimiter` (5/15min per account per address) is paired with `authIpLimiter`
+(50/15min per address), so cycling through emails is not a way around it.
+
+- `authLimiter` 5/15min · `loginLimiter` 5/15min per (IP,email) · `authIpLimiter` 50/15min · `licenseLimiter` 10/hour per source IP · `adminLoginLimiter` 5/15min (shared by `/admin/login` and `/admin/refresh`) · `downloadLimiter` 30/15min (`/releases/download/:os`) · `adsLimiter` 120/15min (`/api/ads` serve + event) · `apiLimiter` (global, already mounted on `/api` in app.js).
 - Always wrap async handlers: `asyncHandler(async (req,res)=>{...})`.
 
 ---
@@ -554,7 +858,7 @@ is the single source of truth, read by `/api/ads` on every request.
 
 ## 10. Graceful degradation (boots with no external keys)
 
-- No `STRIPE_SECRET_KEY` ⇒ `config.isStripeMock = true`; `utils/stripe.js` exports the mock.
+- No `STRIPE_SECRET_KEY` ⇒ `config.stripeMode` is `'mock'` on a local deployment (`utils/stripe.js` exports the mock) and `'disabled'` on production or any public `FRONTEND_URL` (checkout, portal and webhook answer `503 BILLING_UNAVAILABLE`; `GET /api/health` reports `billing`). `config.isStripeMock` / `config.isBillingDisabled` are the booleans.
 - No `SMTP_HOST` ⇒ `config.isEmailMock = true`; `utils/email.js` logs emails to the console.
 - `EMAIL_VERIFICATION_REQUIRED=false` lets users log in without verifying (dev default).
 - `PUBLIC_API_URL` (optional) is the public origin fronting `/api`; defaults to `FRONTEND_URL`

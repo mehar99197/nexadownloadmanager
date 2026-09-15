@@ -42,6 +42,9 @@ add_executable(nexa
     resources.qrc
     $<$<BOOL:${WIN32}>:packaging/nexa.rc>
     src/main.cpp
+    src/license/LicenseToken.cpp
+    src/license/KeyIntegrity.cpp
+    src/license/Guard.cpp
     src/core/Database.cpp
     src/core/RateLimiter.cpp
     src/core/UpdateChecker.cpp
@@ -96,6 +99,158 @@ target_link_libraries(nexa PRIVATE
     OpenSSL::Crypto
 )
 
+# Developer builds only: honour the NEXA_* endpoint overrides
+# (NEXA_LICENSE_API_URL, NEXA_ADS_API_URL, NEXA_UPDATE_URL, and the
+# plain-HTTP-on-loopback escape hatch NEXA_ALLOW_INSECURE_LICENSE_API).
+#
+# A shipped build MUST NOT read them. Pointing the licence endpoint at a
+# server you control is otherwise a complete, no-reverse-engineering licence
+# bypass: return {"valid":true,"plan":"pro",...} and the client believes it.
+# The same applies to the ad endpoint (adFree) and the update feed, where a
+# fake feed supplies both the installer URL and the SHA-256 it is checked
+# against — i.e. arbitrary code execution, not just a lost sale.
+#
+# Configure a dev build with:  cmake -B build -DNEXA_DEV_BUILD=ON
+option(NEXA_DEV_BUILD "Allow NEXA_* endpoint overrides (developer builds only)" OFF)
+if(NEXA_DEV_BUILD)
+    target_compile_definitions(nexa PRIVATE NEXA_DEV_BUILD)
+    message(WARNING
+        "NEXA_DEV_BUILD=ON — this build honours NEXA_LICENSE_API_URL / "
+        "NEXA_ADS_API_URL / NEXA_UPDATE_URL and is NOT fit to ship.")
+endif()
+
+# The Ed25519 public key that licence tokens are verified against.
+#
+# Supply it as 64 hex characters, either with -DNEXA_LICENSE_PUBLIC_KEY=... or
+# by writing it to packaging/license-public-key.txt. Generate a pair with
+# `npm run license:keygen` in ndm-website/backend: the private half goes in the
+# server environment, this is the public half.
+#
+# The key file is committed on purpose — a verification key is not a secret,
+# and checking it in is what lets CI and a fresh clone build a shippable binary.
+#
+# A release build without one is a hard error on purpose. The fallback baked
+# into LicenseToken.cpp is derived from the development seed that is committed
+# to this repository, so a shipped binary trusting it could be handed a
+# self-signed "Pro" token by anybody. Better to fail at configure time than to
+# ship that silently.
+set(NEXA_LICENSE_PUBLIC_KEY "" CACHE STRING
+    "Ed25519 licence-token public key, 64 hex chars")
+set(NEXA_LICENSE_KEY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/license-public-key.txt")
+if(NOT NEXA_LICENSE_PUBLIC_KEY AND EXISTS "${NEXA_LICENSE_KEY_FILE}")
+    file(READ "${NEXA_LICENSE_KEY_FILE}" NEXA_LICENSE_PUBLIC_KEY)
+    string(STRIP "${NEXA_LICENSE_PUBLIC_KEY}" NEXA_LICENSE_PUBLIC_KEY)
+endif()
+
+if(NEXA_LICENSE_PUBLIC_KEY)
+    # Checked in two steps because CMake's regex engine has no {n} quantifier.
+    string(LENGTH "${NEXA_LICENSE_PUBLIC_KEY}" NEXA_LICENSE_KEY_LENGTH)
+    if(NOT NEXA_LICENSE_KEY_LENGTH EQUAL 64
+       OR NOT NEXA_LICENSE_PUBLIC_KEY MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR
+            "NEXA_LICENSE_PUBLIC_KEY must be exactly 64 hex characters (a 32-byte "
+            "Ed25519 public key); got ${NEXA_LICENSE_KEY_LENGTH} characters: "
+            "${NEXA_LICENSE_PUBLIC_KEY}")
+    endif()
+    # A digest of the key, kept in a different translation unit (KeyIntegrity.cpp)
+    # so that swapping the embedded public key for an attacker's own — much
+    # cheaper than defeating Ed25519, and invisible to the verifier itself —
+    # requires a second, separate edit. Derived here from the same value that is
+    # compiled in, so the two can never disagree by accident.
+    string(SHA256 NEXA_LICENSE_KEY_DIGEST "${NEXA_LICENSE_PUBLIC_KEY}")
+    target_compile_definitions(nexa PRIVATE
+        NEXA_LICENSE_PUBLIC_KEY="${NEXA_LICENSE_PUBLIC_KEY}"
+        NEXA_LICENSE_KEY_DIGEST="${NEXA_LICENSE_KEY_DIGEST}")
+    message(STATUS "Licence tokens verified against key ${NEXA_LICENSE_PUBLIC_KEY}")
+elseif(NEXA_DEV_BUILD)
+    message(WARNING
+        "No NEXA_LICENSE_PUBLIC_KEY set — falling back to the PUBLIC development "
+        "key. Anyone can mint a Pro licence against it. Developer builds only.")
+else()
+    message(FATAL_ERROR
+        "NEXA_LICENSE_PUBLIC_KEY is required for a release build.\n"
+        "  Generate a keypair:  cd ndm-website/backend && npm run license:keygen\n"
+        "  Then either:         echo <public-key-hex> > packaging/license-public-key.txt\n"
+        "  or configure with:   cmake -B build -DNEXA_LICENSE_PUBLIC_KEY=<public-key-hex>\n"
+        "  For local work only: cmake -B build -DNEXA_DEV_BUILD=ON\n"
+        "Without this the binary would trust the development key that is committed "
+        "to this repository, and licence tokens could be forged by anyone.")
+endif()
+
+# --- Licence-check obfuscation + per-release rotation -------------------------
+#
+# The guard behind verifiedFeatures() (src/license/Guard.cpp) combines several
+# independent, redundant checks. Two build knobs shape how it compiles:
+#
+#   NEXA_OBFUSCATE_LICENSE  — flatten the guard's control flow, wrap its branches
+#     in opaque predicates and carry its booleans masked, so the "is this paid?"
+#     decision is not one readable branch to find and flip. ON for shipping
+#     builds, OFF for dev and every test target (which then compile the plain,
+#     debuggable, identical-in-result path — GuardTest proves the two agree).
+#
+#   NEXA_CHECK_ROTATION_SEED — a compile-time seed that permutes the check order,
+#     the opaque-predicate constants and the masks. Derived from PROJECT_VERSION
+#     so every release compiles the guard into a DIFFERENT shape: a byte patch
+#     crafted for one build lands on differently arranged code in the next.
+#     Override with -DNEXA_CHECK_ROTATION_SEED=0x... to rotate out of band.
+#
+# Neither is a barrier on its own (nothing client-side is). They raise the price
+# of reading and patching the gate, which is the point once the value that
+# matters lives on the server.
+option(NEXA_OBFUSCATE_LICENSE "Obfuscate the licence guard's control flow in shipping builds" ON)
+
+set(NEXA_CHECK_ROTATION_SEED "" CACHE STRING
+    "32-bit hex seed (0x...) for licence-check rotation; empty = derive from version")
+if(NOT NEXA_CHECK_ROTATION_SEED)
+    string(SHA256 NEXA_ROTATION_HASH "nexa-license-guard-${PROJECT_VERSION}")
+    string(SUBSTRING "${NEXA_ROTATION_HASH}" 0 8 NEXA_ROTATION_HEX)
+    set(NEXA_CHECK_ROTATION_SEED "0x${NEXA_ROTATION_HEX}u")
+endif()
+# The seed is a plain compile-time constant with no runtime cost; it is compiled
+# into every build (dev included) so a given source + seed is reproducible.
+target_compile_definitions(nexa PRIVATE
+    NEXA_CHECK_ROTATION_SEED=${NEXA_CHECK_ROTATION_SEED})
+message(STATUS "Licence-check rotation seed: ${NEXA_CHECK_ROTATION_SEED}")
+
+# The obfuscated shape is applied to the shipping executable only, and never to a
+# developer build (which must stay debuggable) — the same reasoning as the symbol
+# stripping below. Announced when skipped so "I built RelWithDebInfo" does not
+# quietly ship the readable guard.
+if(NEXA_OBFUSCATE_LICENSE AND NOT NEXA_DEV_BUILD
+   AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
+    target_compile_definitions(nexa PRIVATE NEXA_OBFUSCATE_LICENSE)
+    message(STATUS "Licence guard obfuscation on")
+
+    # Optional machine-level control-flow flattening via an Obfuscator-LLVM
+    # toolchain, applied to the licence sources only. Strictly opt-in and
+    # feature-detected: it is a no-op on a stock GCC/Clang/MSVC (the flag check
+    # simply fails and nothing is added), so the default build is untouched. The
+    # portable, always-on obfuscation is the source-level one above; this is a
+    # bonus when a capable toolchain is present.
+    option(NEXA_LLVM_OBFUSCATION "Apply OLLVM control-flow flattening to licence sources (needs an OLLVM toolchain)" OFF)
+    if(NEXA_LLVM_OBFUSCATION)
+        include(CheckCXXSourceCompiles)
+        set(CMAKE_REQUIRED_FLAGS "-mllvm -fla")
+        check_cxx_source_compiles("int main(){return 0;}" NEXA_OLLVM_FLA_OK)
+        unset(CMAKE_REQUIRED_FLAGS)
+        if(NEXA_OLLVM_FLA_OK)
+            set_source_files_properties(
+                src/license/Guard.cpp
+                src/license/LicenseToken.cpp
+                src/license/KeyIntegrity.cpp
+                src/license/LicenseManager.cpp
+                PROPERTIES COMPILE_OPTIONS "-mllvm;-fla;-mllvm;-bcf;-mllvm;-sub")
+            message(STATUS "OLLVM control-flow flattening applied to licence sources")
+        else()
+            message(STATUS "NEXA_LLVM_OBFUSCATION requested but the toolchain has no -fla; skipping")
+        endif()
+    endif()
+elseif(NEXA_OBFUSCATE_LICENSE AND NOT NEXA_DEV_BUILD)
+    message(WARNING
+        "Licence guard obfuscation is OFF because CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}. "
+        "Build with -DCMAKE_BUILD_TYPE=Release for anything you ship.")
+endif()
+
 # On Windows, build the GUI as a windows-subsystem (GUI) app so launching it does
 # NOT pop up a black console window. Qt6::Core supplies the WinMain entry point
 # automatically for WIN32_EXECUTABLE targets. NOTE: only nexa gets this — the
@@ -110,20 +265,6 @@ endif()
 # extension's ping. Defined from the project version so it can never drift from
 # the installer / package version again (main.cpp carried its own "0.2.0").
 target_compile_definitions(nexa PRIVATE NEXA_VERSION="${PROJECT_VERSION}")
-
-# Developer overrides for the network endpoints the app trusts — the licence
-# API (NEXA_LICENSE_API_URL, NEXA_ALLOW_INSECURE_LICENSE_API), the ad feed
-# (NEXA_ADS_API_URL) and the update feed (NEXA_UPDATE_URL). They exist so a
-# developer can point a build at localhost. In a shipped binary the same
-# variables let anyone redirect licence validation to a server that answers
-# "pro" — or, worse, the updater to a feed that hands it an installer to run.
-# OFF by default, so a release build compiles every one of those lookups out;
-# turn it on for a local dev build: cmake -DNEXA_DEV_OVERRIDES=ON ...
-option(NEXA_DEV_OVERRIDES "Honour NEXA_*_URL environment overrides (dev builds only)" OFF)
-if(NEXA_DEV_OVERRIDES)
-    target_compile_definitions(nexa PRIVATE NEXA_DEV_OVERRIDES=1)
-    message(WARNING "NEXA_DEV_OVERRIDES is ON: this build trusts NEXA_* endpoint overrides. Never ship it.")
-endif()
 
 # macOS: build a real .app bundle so Finder/Launchpad treat it as an app and the
 # icon + identifier are right. nexa-host stays a plain command-line binary; the
@@ -281,6 +422,9 @@ if(NEXA_BUILD_TESTS)
         src/auth/CookieFile.cpp
         src/auth/CloudProviders.cpp
         src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
         src/license/CredentialStore.cpp
         src/web/PublicUrlPolicy.cpp
         resources.qrc
@@ -342,6 +486,49 @@ if(NEXA_BUILD_TESTS)
     )
     target_include_directories(nexa_download_core_test PRIVATE src)
     target_link_libraries(nexa_download_core_test PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
+    # Deliberately built WITHOUT NEXA_LICENSE_PUBLIC_KEY: the forgery cases sign
+    # tokens with the published development key, so the verifier under test has
+    # to be the one that trusts it. A release binary's key is guaranteed by the
+    # configure-time check above, not by this target.
+    add_executable(nexa_license_token_test
+        tests/LicenseTokenTest.cpp
+        src/license/LicenseToken.cpp
+    )
+    target_include_directories(nexa_license_token_test PRIVATE src)
+    target_link_libraries(nexa_license_token_test PRIVATE Qt6::Core OpenSSL::Crypto)
+
+    # Drives the real LicenseManager against a real socket to prove offline
+    # grace still works for a paying customer. NEXA_DEV_BUILD so the endpoint
+    # can be pointed at a local fake server; no NEXA_LICENSE_PUBLIC_KEY so the
+    # test can mint tokens with the published development key.
+    add_executable(nexa_offline_grace_test
+        tests/OfflineGraceTest.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_offline_grace_test PRIVATE src)
+    target_compile_definitions(nexa_offline_grace_test PRIVATE NEXA_DEV_BUILD)
+    target_link_libraries(nexa_offline_grace_test PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+
+    # The licence guard, compiled BOTH ways from the same source, each asserting
+    # the same results. No Qt: the guard depends only on the standard library.
+    #   nexa_guard_test      — the plain, debuggable path (what dev/test builds use)
+    #   nexa_guard_obf_test  — the flattened/opaque/masked path a release ships,
+    #                          proving the obfuscation never changes the answer.
+    add_executable(nexa_guard_test
+        tests/GuardTest.cpp
+        src/license/Guard.cpp)
+    target_include_directories(nexa_guard_test PRIVATE src)
+
+    add_executable(nexa_guard_obf_test
+        tests/GuardTest.cpp
+        src/license/Guard.cpp)
+    target_include_directories(nexa_guard_obf_test PRIVATE src)
+    target_compile_definitions(nexa_guard_obf_test PRIVATE NEXA_OBFUSCATE_LICENSE)
 
     enable_testing()
     add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
@@ -357,11 +544,74 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
     add_test(NAME download_task COMMAND nexa_download_task_test)
     add_test(NAME download_core COMMAND nexa_download_core_test)
+    add_test(NAME license_token COMMAND nexa_license_token_test)
+    add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
+    add_test(NAME guard COMMAND nexa_guard_test)
+    add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()
 
 # ===========================================================================
 # Packaging (CPack): Debian .deb on Linux, NSIS .exe installer on Windows.
 # ===========================================================================
+# --- Release hardening -------------------------------------------------------
+#
+# None of this stops a determined reverse engineer — nothing client-side can.
+# It raises the price: today `nm build/nexa | grep -i licens` lists ~90 named
+# symbols, which walks an attacker straight to the entitlement checks. Hiding
+# and stripping them means finding those branches by reading disassembly
+# instead of reading a symbol table.
+#
+# Applied to the shipped executables only. Tests keep their symbols so a
+# failure is still debuggable, and a debug build is left completely alone.
+option(NEXA_HARDEN_RELEASE "Strip symbols and hide visibility in release builds" ON)
+
+# Release and MinSizeRel are the shipping configurations. RelWithDebInfo keeps
+# its symbols on purpose (that is what it is for), so hardening is skipped there
+# — announced rather than silent, because "I built RelWithDebInfo and shipped it"
+# is exactly how an unstripped binary escapes.
+if(NEXA_HARDEN_RELEASE AND NOT NEXA_DEV_BUILD
+   AND (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel"))
+    set(NEXA_HARDENED TRUE)
+    foreach(shipped_target nexa nexa-host)
+        set_target_properties(${shipped_target} PROPERTIES
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON)
+    endforeach()
+
+    # -s asks the linker to drop the symbol table outright. Kept separate from
+    # visibility because visibility alone still leaves local symbols behind.
+    if(NOT MSVC)
+        foreach(shipped_target nexa nexa-host)
+            target_link_options(${shipped_target} PRIVATE -s)
+        endforeach()
+    endif()
+
+    # Link-time optimisation also inlines small functions away, which dissolves
+    # some of the one-to-one mapping between a gate and a call site. Enabled
+    # only when the toolchain actually supports it, since it is not universal
+    # across the MinGW/macOS/Linux matrix this ships on.
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT NEXA_IPO_OK OUTPUT NEXA_IPO_WHY)
+    if(NEXA_IPO_OK)
+        foreach(shipped_target nexa nexa-host)
+            set_target_properties(${shipped_target} PROPERTIES
+                INTERPROCEDURAL_OPTIMIZATION TRUE)
+        endforeach()
+    else()
+        message(STATUS "LTO unavailable, skipping: ${NEXA_IPO_WHY}")
+    endif()
+    message(STATUS "Release hardening on: symbols hidden and stripped")
+elseif(NEXA_HARDEN_RELEASE AND NOT NEXA_DEV_BUILD)
+    message(WARNING
+        "Release hardening is OFF because CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}. "
+        "This binary keeps its full symbol table, so every licence gate is "
+        "findable by name with `nm`. Build with -DCMAKE_BUILD_TYPE=Release "
+        "for anything you ship.")
+endif()
+
+# Strip anything CPack copies into a package as well.
+set(CPACK_STRIP_FILES TRUE)
+
 set(CPACK_PACKAGE_NAME "nexa")
 set(CPACK_PACKAGE_VENDOR "Nexa")
 set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
@@ -375,7 +625,10 @@ segmented downloads, HLS video streams, BitTorrent, and site-specific media \
 extraction via yt-dlp. It ships with a Qt6 GUI and a native-messaging host \
 for browser integration.")
 set(CPACK_PACKAGE_CONTACT "Nexa Maintainers <tauseeqtufail649@gmail.com>")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/")
+# The product's own site. This becomes the .deb's Homepage: field and both
+# NSIS links ("help" and "about"), so a placeholder here sent every installer
+# user to github.com's front page.
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://nexadownloadmanager.com")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "Nexa")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")

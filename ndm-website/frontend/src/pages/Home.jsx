@@ -8,6 +8,15 @@ import { BrandMark } from '../components/Brand';
 import WarpField from '../components/WarpField';
 import CountUp from '../components/CountUp';
 
+/** The arrow both primary CTAs carry. Decorative — the label says where it goes. */
+function CtaArrow() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
+  );
+}
+
 const FEATURES = [
   {
     icon: (
@@ -137,9 +146,7 @@ export default function Home() {
               <div className="rise rise-4 mt-9 flex flex-wrap items-center gap-3">
                 <Button to="/download" className="btn-breathe px-7 py-3.5 text-base">
                   Download free
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M5 12h14M13 6l6 6-6 6" />
-                  </svg>
+                  <CtaArrow />
                 </Button>
                 <Button to="/pricing" variant="ghost" className="px-7 py-3.5 text-base">
                   Explore plans
@@ -157,7 +164,7 @@ export default function Home() {
             </div>
 
             <div className="rise rise-3 relative mx-auto w-full max-w-xl lg:ml-auto">
-              <div className="absolute -inset-7 rounded-[2rem] bg-[radial-gradient(circle,rgba(153,92,244,0.24),transparent_65%)] blur-2xl" />
+              <div className="absolute -inset-7 rounded-[var(--radius-5)] bg-[radial-gradient(circle,rgba(153,92,244,0.24),transparent_65%)] blur-2xl" />
               <div className="hero-console">
                 <div className="console-bar">
                   <div className="console-dots"><span /><span /><span /></div>
@@ -169,7 +176,7 @@ export default function Home() {
                     <p>NexaDownloadManager</p>
                     <p>Unified download queue</p>
                   </div>
-                  <span className="ml-auto rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-[0.6rem] font-bold uppercase tracking-[0.12em] text-emerald-300">Live</span>
+                  <span className="ml-auto rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em] text-emerald-300">Live</span>
                 </div>
                 <div className="download-row">
                   <div className="download-row-top"><span>nexa-launcher-0.1.0.exe</span><span>82%</span></div>
@@ -186,7 +193,7 @@ export default function Home() {
                   <div className="progress-track"><span style={{ width: '23%' }} /></div>
                   <div className="download-row-bottom"><span>BitTorrent / 12 peers</span><span>6.2 MB/s</span></div>
                 </div>
-                <div className="mt-4 flex items-center justify-between px-1 text-[0.65rem] font-semibold text-slate-500">
+                <div className="mt-4 flex items-center justify-between px-1 text-xs font-semibold text-slate-500">
                   <span>3 active downloads</span>
                   <span className="text-brand-300">34.3 MB/s total</span>
                 </div>
@@ -203,7 +210,7 @@ export default function Home() {
               <div className="text-2xl font-extrabold tracking-tight text-white md:text-3xl">
                 {typeof s.value === 'number' ? <CountUp value={s.value} /> : s.value}
               </div>
-              <div className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.13em] text-slate-500">{s.label}</div>
+              <div className="mt-1 text-xs font-semibold tracking-wide text-slate-500">{s.label}</div>
             </div>
           ))}
         </div>
@@ -231,19 +238,20 @@ export default function Home() {
 
       <Section full className="!pt-0">
         <div className="container-x">
-          <Card className="relative overflow-hidden !p-8 md:!p-12">
+          <Card className="relative mx-auto max-w-4xl overflow-hidden !p-8 md:!p-12">
             <div className="absolute -right-24 -top-32 h-80 w-80 rounded-full bg-accent-500/15 blur-3xl" />
-            <div className="relative z-10 grid items-center gap-8 md:grid-cols-[1fr_auto]">
-              <div>
-                <span className="text-xs font-bold uppercase tracking-[0.18em] text-brand-300">Your bandwidth, your rules</span>
-                <h2 className="mt-3 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">Make every download feel instant.</h2>
-                <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-400">
-                  Nexa is in beta and free to start. Grab the app, send us what
-                  breaks, and help shape what ships next.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-3 md:justify-end">
-                <Button to="/download" className="btn-breathe">Get started</Button>
+            <div className="relative z-10 max-w-2xl">
+              <span className="text-xs font-bold tracking-wide text-brand-300">Your bandwidth, your rules</span>
+              <h2 className="mt-3 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">Make every download feel instant.</h2>
+              <p className="mt-3 text-sm leading-7 text-slate-400">
+                Nexa is in beta and free to start. Grab the app, send us what
+                breaks, and help shape what ships next.
+              </p>
+              <div className="mt-7 flex flex-wrap gap-3">
+                <Button to="/download" className="btn-breathe">
+                  Get started
+                  <CtaArrow />
+                </Button>
                 <Button to="/compare" variant="ghost">Compare with IDM</Button>
               </div>
             </div>

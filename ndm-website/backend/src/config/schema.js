@@ -42,6 +42,23 @@ async function ensureColumnDefinition(table, column, expectedColumnType, definit
   await execute(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
 }
 
+/**
+ * Is this index already on the table?
+ *
+ * Used to skip the one-off de-duplication passes below. They exist only to
+ * clear the way for a UNIQUE index on a database that predates it, so once the
+ * index is there the duplicates they delete cannot exist — and re-running a
+ * self-join DELETE over payments/releases on every single boot is pure waste.
+ */
+async function indexExists(table, indexName) {
+  const rows = await query(
+    `SELECT 1 FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ? LIMIT 1`,
+    [table, indexName]
+  );
+  return rows.length > 0;
+}
+
 async function addIndexIfMissing(table, definition) {
   try {
     await execute(`ALTER TABLE ${table} ADD INDEX ${definition}`);
@@ -114,6 +131,13 @@ async function initSchema() {
   await addColumnIfMissing('users', 'root_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL');
   await addIndexIfMissing('users', 'idx_root_refresh_token (root_refresh_token_hash)');
 
+  // Session generation. Every access token carries the value it was minted
+  // with; middleware/auth.js refuses a token whose copy is stale. Bumping this
+  // is what actually ENDS a session — before it existed, "revoke sessions", a
+  // password change and a password reset only cleared the refresh-token hash,
+  // so the 7-day bearer token in an attacker's hands kept working for a week.
+  await addColumnIfMissing('users', 'token_version INT UNSIGNED NOT NULL DEFAULT 0');
+
   // Control-panel two-factor auth. The TOTP secret is AES-GCM encrypted
   // (utils/totp.js); `totp_enabled` flips only after a first code verifies, so
   // a half-finished setup never locks anyone out. Recovery codes are stored as
@@ -121,29 +145,10 @@ async function initSchema() {
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
-
-  // Site sessions: one row per signed-in browser, keyed by the SHA-256 of its
-  // refresh token. This replaces users.refresh_token_hash, which was a single
-  // slot per account — signing in on a second device silently signed the first
-  // one out, and two tabs refreshing at once raced for it. The old column is
-  // kept (and read as a fallback in /auth/refresh) so a cookie issued before
-  // this table existed still works once, migrating itself into a row here.
-  await execute(`
-    CREATE TABLE IF NOT EXISTS user_sessions (
-      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      user_id INT UNSIGNED NOT NULL,
-      token_hash CHAR(64) NOT NULL,
-      user_agent VARCHAR(255) NULL DEFAULT NULL,
-      ip VARCHAR(45) NULL DEFAULT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      expires_at DATETIME NOT NULL,
-      UNIQUE KEY uq_user_sessions_token (token_hash),
-      INDEX idx_user_sessions_user (user_id),
-      INDEX idx_user_sessions_expiry (expires_at),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
+  // The last TOTP step this account successfully used. A monotonic high-water
+  // mark, so the same six digits cannot be presented twice inside their
+  // 90-second validity window (RFC 6238 §5.2). See routes/twoFactor.js.
+  await addColumnIfMissing('users', 'totp_last_step BIGINT UNSIGNED NULL DEFAULT NULL');
 
   // "Continue with Google". `google_id` is Google's immutable subject claim —
   // never the email, which a user can change at Google. It is UNIQUE so one
@@ -155,8 +160,10 @@ async function initSchema() {
   // An account created through Google has no password at all. Storing a random
   // hash instead would be indistinguishable from a real one, so the column is
   // nullable and NULL is read as "password sign-in not available for this
-  // account" (routes/auth.js answers PASSWORD_NOT_SET). Such a user can still
-  // adopt a password through the ordinary forgot-password flow.
+  // account". Sign-in still answers the generic INVALID_CREDENTIALS for it —
+  // a distinct code would tell any passer-by that the address is registered —
+  // after a dummy bcrypt compare so the two branches take the same time. Such a
+  // user adopts a password through the ordinary forgot-password flow.
   await ensureColumnNullable('users', 'password_hash', 'VARCHAR(255) NULL DEFAULT NULL');
 
   await execute(`
@@ -172,6 +179,7 @@ async function initSchema() {
       expiry_date DATETIME NULL DEFAULT NULL,
       trial_ends_at DATETIME NULL DEFAULT NULL,
       trial_reminder_sent_at DATETIME NULL DEFAULT NULL,
+      cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0,
       stripe_subscription_id VARCHAR(255) DEFAULT NULL,
       stripe_customer_id VARCHAR(255) DEFAULT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -185,18 +193,44 @@ async function initSchema() {
   `);
 
   // TIMESTAMP overflows in 2038, while free licenses intentionally live far
-  // into the future. Keep this column compatible with that policy on existing DBs.
-  await ensureColumnType('subscriptions', 'expiry_date', 'datetime', 'DATETIME NULL');
-  // Set by POST /api/subscription/cancel: Stripe stops renewing at the end of
-  // the paid period, the row stays active until expiry_date, and the
-  // customer.subscription.deleted webhook flips status to cancelled then.
-  await addColumnIfMissing('subscriptions', 'cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0');
+  // into the future. Keep this column compatible with that policy on existing
+  // DBs — but only when it is not already DATETIME: an unconditional MODIFY
+  // rebuilt the whole subscriptions table on every single process start.
+  await ensureColumnType('subscriptions', 'expiry_date', 'datetime', 'DATETIME NULL DEFAULT NULL');
 
   // Existing databases: end of the no-card Pro trial (NULL = not a trial).
   await addColumnIfMissing('subscriptions', 'trial_ends_at DATETIME NULL DEFAULT NULL');
   // Existing databases: stamped when the "trial ending" email went out, so the
   // nightly job can never mail the same person twice.
   await addColumnIfMissing('subscriptions', 'trial_reminder_sent_at DATETIME NULL DEFAULT NULL');
+  // Cancelling stops the RENEWAL, not the plan: the customer keeps what they
+  // paid for until expiry_date, and this flag is what the site reads to say
+  // "ends on the 3rd" instead of pretending nothing happened.
+  await addColumnIfMissing('subscriptions', 'cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0');
+  // Key-sharing detection. Seats cap how many machines run at once, not how
+  // many people hold the key, so a leaked key looks perfectly normal to seat
+  // enforcement while quietly accumulating activation rows. These record what
+  // the check last concluded, so an admin can review rather than the server
+  // silently punishing someone whose fingerprint changed for innocent reasons.
+  // See utils/licenseAbuse.js.
+  await addColumnIfMissing('subscriptions',
+    "sharing_level ENUM('ok','watch','suspected') NOT NULL DEFAULT 'ok'");
+  await addColumnIfMissing('subscriptions', 'sharing_devices INT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('subscriptions', 'sharing_checked_at DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('subscriptions', 'sharing_reason VARCHAR(255) NULL DEFAULT NULL');
+  // Set when the sharing check suspended a licence on its own. Deliberately a
+  // separate column rather than a `status` value: `status` reaching 'cancelled'
+  // or 'expired' makes the desktop client DELETE the stored key, which would
+  // turn a reversible anti-piracy measure into a support problem for anyone
+  // caught by a false positive. Suspension instead presents as `seat_limit`,
+  // which the client treats as "close Nexa elsewhere" and keeps the key.
+  await addColumnIfMissing('subscriptions', 'sharing_suspended_at DATETIME NULL DEFAULT NULL');
+  // Set when an admin lifts a suspension. The device history that triggered it
+  // does not go away, so without this the very next new device would re-suspend
+  // the licence and the admin's decision would last minutes. Flagging continues
+  // — the licence still appears in the review queue if it keeps spreading — but
+  // the server stops acting on its own for this one.
+  await addColumnIfMissing('subscriptions', 'sharing_exempt TINYINT(1) NOT NULL DEFAULT 0');
 
   await execute(`
     CREATE TABLE IF NOT EXISTS license_activations (
@@ -273,17 +307,22 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
-  await execute(`
-    DELETE p1 FROM payments p1
-    JOIN payments p2
-      ON p1.stripe_payment_id IS NOT NULL
-     AND p1.stripe_payment_id = p2.stripe_payment_id
-     AND p1.id > p2.id
-  `);
-  try {
-    await execute('ALTER TABLE payments ADD UNIQUE INDEX uq_payments_stripe_id (stripe_payment_id)');
-  } catch (err) {
-    if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+  // One payment row per Stripe payment id. The DELETE only clears duplicates a
+  // database from before the index could still be carrying, so it is skipped
+  // entirely once the index exists.
+  if (!(await indexExists('payments', 'uq_payments_stripe_id'))) {
+    await execute(`
+      DELETE p1 FROM payments p1
+      JOIN payments p2
+        ON p1.stripe_payment_id IS NOT NULL
+       AND p1.stripe_payment_id = p2.stripe_payment_id
+       AND p1.id > p2.id
+    `);
+    try {
+      await execute('ALTER TABLE payments ADD UNIQUE INDEX uq_payments_stripe_id (stripe_payment_id)');
+    } catch (err) {
+      if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+    }
   }
 
   await execute(`
@@ -379,18 +418,20 @@ async function initSchema() {
   // One row per version. The catalog once held three "0.1.0" rows, which the
   // public changelog listed three times. Keep, per version, the row marked
   // latest, else the one with downloads, else the newest; then enforce it.
-  await execute(`
-    DELETE r1 FROM releases r1
-    JOIN releases r2
-      ON r1.version = r2.version AND r1.id <> r2.id
-     AND (r2.is_latest > r1.is_latest
-          OR (r2.is_latest = r1.is_latest AND r2.download_count > r1.download_count)
-          OR (r2.is_latest = r1.is_latest AND r2.download_count = r1.download_count AND r2.id > r1.id))
-  `);
-  try {
-    await execute('ALTER TABLE releases ADD UNIQUE INDEX uq_releases_version (version)');
-  } catch (err) {
-    if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+  if (!(await indexExists('releases', 'uq_releases_version'))) {
+    await execute(`
+      DELETE r1 FROM releases r1
+      JOIN releases r2
+        ON r1.version = r2.version AND r1.id <> r2.id
+       AND (r2.is_latest > r1.is_latest
+            OR (r2.is_latest = r1.is_latest AND r2.download_count > r1.download_count)
+            OR (r2.is_latest = r1.is_latest AND r2.download_count = r1.download_count AND r2.id > r1.id))
+    `);
+    try {
+      await execute('ALTER TABLE releases ADD UNIQUE INDEX uq_releases_version (version)');
+    } catch (err) {
+      if (err && err.code !== 'ER_DUP_KEYNAME') throw err;
+    }
   }
 
   await execute(`
@@ -423,6 +464,27 @@ async function initSchema() {
   // to UTC, stores exactly the same instants. Re-running the MODIFY is a no-op.
   await ensureColumnType('ads', 'starts_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
   await ensureColumnType('ads', 'ends_at', 'datetime', 'DATETIME NULL DEFAULT NULL');
+
+  // What each ad-event token has already been allowed to report.
+  //
+  // The token's signature proves the server served that ad recently; on its own
+  // it did not stop the SAME token being presented over and over for the whole
+  // of its life, so a loop of curl calls moved the impression and click
+  // counters the admin panel computes a CTR from. One row per (nonce, event
+  // type) records how many events that token has spent and when, which is what
+  // models/Ad.js#claimEventNonce enforces its budget against. Rows live for one
+  // token TTL and are pruned opportunistically.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS ad_event_nonces (
+      nonce VARCHAR(64) NOT NULL,
+      event_type VARCHAR(16) NOT NULL,
+      events INT UNSIGNED NOT NULL DEFAULT 1,
+      last_at DATETIME NOT NULL,
+      expires_at DATETIME NOT NULL,
+      PRIMARY KEY (nonce, event_type),
+      INDEX idx_ad_event_nonce_expiry (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 
   await execute(`
     CREATE TABLE IF NOT EXISTS contact_messages (
@@ -465,6 +527,32 @@ async function initSchema() {
       INDEX idx_contact_reply_message (message_id, created_at),
       FOREIGN KEY (message_id) REFERENCES contact_messages(id) ON DELETE CASCADE,
       FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // Rate-limit counters that survive a restart. The keepalive cron restarts the
+  // API whenever it looks hung, and an in-memory counter handed every attacker
+  // a fresh budget each time. Only the security-critical limiters use this —
+  // see middleware/rateLimitStore.js.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS license_token_rejections (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      -- Hourly buckets, not one row per rejection: a row per rejection would
+      -- let anyone grow this table without limit by sending garbage in a loop.
+      bucket_hour DATETIME NOT NULL,
+      reason VARCHAR(32) NOT NULL,
+      count INT UNSIGNED NOT NULL DEFAULT 0,
+      UNIQUE KEY uq_bucket_reason (bucket_hour, reason),
+      INDEX idx_token_rejection_bucket (bucket_hour)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await execute(`
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      id VARCHAR(191) NOT NULL PRIMARY KEY,
+      hits INT UNSIGNED NOT NULL DEFAULT 0,
+      expires_at DATETIME NOT NULL,
+      INDEX idx_rate_limit_expiry (expires_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 

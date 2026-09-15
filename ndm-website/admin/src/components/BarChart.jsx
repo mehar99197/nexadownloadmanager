@@ -40,7 +40,7 @@ export default function BarChart({
               className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end"
               title={`${d.label}: ${valueFormatter(value)}`}
             >
-              <span className="mb-1 text-[10px] font-medium text-admin-muted opacity-0 transition-opacity group-hover:opacity-100">
+              <span className="mb-1 text-xs font-medium text-admin-muted opacity-0 transition-opacity group-hover:opacity-100">
                 {valueFormatter(value)}
               </span>
               {/* max-w keeps a bar looking like a bar: with one or two days of
@@ -57,7 +57,7 @@ export default function BarChart({
         {data.map((d, i) => (
           <div
             key={d.label ?? i}
-            className="min-w-0 flex-1 truncate text-center text-[11px] text-admin-faint"
+            className="min-w-0 flex-1 truncate text-center text-xs text-admin-faint"
           >
             {d.label}
           </div>

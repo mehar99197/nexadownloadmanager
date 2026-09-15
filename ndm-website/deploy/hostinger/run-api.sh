@@ -3,8 +3,10 @@
 # run-api.sh — keepalive for the NexaDownloadManager API on Hostinger shared
 # hosting (CloudLinux, no root, no systemd).
 #
-# Runs from cron every minute:
-#   * * * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/nexa-api/run-api.sh >/dev/null 2>&1
+# Runs from cron every minute. Deployed by hand to the top level of the
+# domain (a sibling of nexa-api/, NOT inside it — build-and-upload.sh
+# deliberately doesn't manage this file, see its header comment):
+#   * * * * * /bin/bash /home/u941499432/domains/nexadownloadmanager.com/run-api.sh >/dev/null 2>&1
 #
 # Behavior:
 #   - flock guarantees a single instance of this script at a time. The server

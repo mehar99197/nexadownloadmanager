@@ -7,7 +7,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const validate = require('../middleware/validate');
 const { downloadLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
-const { buildFeed, releaseUrlFor } = require('../utils/releaseFeed');
+const { buildFeed, releaseUrlFor, signFeed } = require('../utils/releaseFeed');
+const licenseKeys = require('../config/licenseKeys');
 const { artifactFor, sendFile } = require('../utils/releaseFiles');
 const { downloadOsSchema, feedQuerySchema } = require('../schemas/release.schema');
 const Release = require('../models/Release');
@@ -105,7 +106,10 @@ router.get(
     const feed = buildFeed(release, os, config.PUBLIC_API_URL);
     if (!feed) return res.status(404).json({ error: 'no_release' });
     res.set('Cache-Control', 'public, max-age=300');
-    return res.status(200).json(feed);
+    // Signed with the licence key, because the app executes what this points
+    // at — see signFeed(). Clients from before signing existed ignore the extra
+    // field; clients that expect it refuse an unsigned feed.
+    return res.status(200).json(signFeed(feed, licenseKeys.privateKey));
   })
 );
 

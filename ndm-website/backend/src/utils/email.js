@@ -59,6 +59,69 @@ async function sendVerificationEmail(user, token) {
   });
 }
 
+/**
+ * Sent when somebody tries to register an address that already has an account.
+ *
+ * Registration used to answer 409 EMAIL_EXISTS, which is a free, definitive
+ * "does this person have a Nexa account?" oracle for any address on the
+ * internet. It now answers exactly as it does for a new address, and the truth
+ * goes to the only party entitled to it: the inbox that owns the address. That
+ * also warns the real owner that someone is poking at their account.
+ *
+ * Deliberately carries no link that grants anything — sign-in and password
+ * reset are reached from the site, so a forwarded copy of this is inert.
+ */
+async function sendAccountExistsEmail(user) {
+  const name = escapeHtml(user.name || '');
+  const signIn = `${config.FRONTEND_URL}/login`;
+  const reset = `${config.FRONTEND_URL}/forgot-password`;
+  return send({
+    to: user.email,
+    subject: 'You already have a NexaDownloadManager account',
+    text: `Hi ${user.name || ''},\n\nSomebody just tried to create a Nexa Download Manager account with this email address, but you already have one.\n\nSign in: ${signIn}\nForgotten your password: ${reset}\n\nIf that was you, simply sign in — no new account was created and nothing about your existing one has changed. If it was not you, you can ignore this email; whoever tried was not told whether this address is registered.`,
+    html: `<p>Hi ${name},</p>`
+      + '<p>Somebody just tried to create a Nexa Download Manager account with this email address, but you already have one.</p>'
+      + `<p><a href="${escapeHtml(signIn)}">Sign in</a> &middot; <a href="${escapeHtml(reset)}">Forgotten your password</a></p>`
+      + '<p>If that was you, simply sign in — no new account was created and nothing about your existing one has changed. '
+      + 'If it was not you, you can ignore this email; whoever tried was not told whether this address is registered.</p>',
+  });
+}
+
+/**
+ * Sent when a control-panel account's own password is used at the CUSTOMER
+ * sign-in page.
+ *
+ * The site answers that attempt with the ordinary `INVALID_CREDENTIALS`, byte
+ * for byte, because a distinct answer would tell whoever typed it that this
+ * particular address is the administrator's — the one address on the site worth
+ * attacking, handed over for the price of a password from some unrelated leak.
+ *
+ * So the wire says nothing and the truth goes where it belongs: the mailbox
+ * that owns the account. For the owner it explains a refusal that would
+ * otherwise look like "my password stopped working". For everyone else it is
+ * the alarm you actually want, because reaching this point means the password
+ * matched — somebody, somewhere, is holding a working control-panel password.
+ *
+ * Carries no link that grants anything: the console is reached from a URL the
+ * reader already knows, so a forwarded copy of this is inert.
+ */
+async function sendControlPanelSignInAttemptEmail(user) {
+  const name = escapeHtml(user.name || '');
+  const console_ = `${config.FRONTEND_URL.replace(/\/+$/, '')}${user.role === 'root' ? '/root' : '/admin'}`;
+  const safeConsole = escapeHtml(console_);
+  return send({
+    to: user.email,
+    subject: 'Your control-panel password was used at the customer sign-in page',
+    text: `Hi ${user.name || ''},\n\nSomebody just signed in with this account's password at the CUSTOMER sign-in page. It was refused: control-panel accounts have no customer session, and the customer site never says why.\n\nIf that was you, use the control panel instead:\n${console_}\n\nIf it was NOT you, then somebody else has a working control-panel password for this account. Change it now, and check the audit log once you are in.`,
+    html: `<p>Hi ${name},</p>`
+      + "<p>Somebody just signed in with this account&rsquo;s password at the <strong>customer</strong> sign-in page. "
+      + 'It was refused: control-panel accounts have no customer session, and the customer site never says why.</p>'
+      + `<p>If that was you, use the control panel instead: <a href="${safeConsole}">${safeConsole}</a></p>`
+      + '<p>If it was <strong>not</strong> you, then somebody else has a working control-panel password for this '
+      + 'account. Change it now, and check the audit log once you are in.</p>',
+  });
+}
+
 async function sendPasswordResetEmail(user, token) {
   const link = `${config.FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   const name = escapeHtml(user.name);
@@ -195,25 +258,46 @@ async function sendContactReply({ to, name, topic, replyBody, originalMessage, a
  * invitee must sign in with THIS address to accept, so a forwarded email
  * cannot hand the seat to somebody else.
  */
-async function sendTeamInviteEmail({ to, ownerName, token }) {
+// A display name is whatever its owner typed. Putting it in a SUBJECT line
+// sent from our own domain, to any address they choose, is a phishing kit:
+// "Nexa Security: your licence is suspended, act now" reads as ours in every
+// inbox list. So the subject is fixed, the name appears only in the body (where
+// it is escaped and visibly attributed), and control characters — which are
+// what turns a header value into two headers — are stripped either way.
+function inviterLabel(ownerName) {
+  const cleaned = String(ownerName || '').replace(/[\r\n\t\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ').trim().slice(0, 60);
+  return cleaned || 'A Nexa user';
+}
+
+async function sendTeamInviteEmail({ to, ownerName, ownerEmail, token }) {
   const link = `${config.FRONTEND_URL}/team/join?token=${encodeURIComponent(token)}`;
-  const owner = ownerName || 'A Nexa user';
+  const owner = inviterLabel(ownerName);
+  // The inviter's address is the one piece of provenance the recipient can
+  // actually check, so it goes in the body beside the name they chose.
+  const from = ownerEmail ? ` (${ownerEmail})` : '';
   return send({
     to,
-    subject: `${owner} invited you to their Nexa Team licence`,
-    text: `${owner} has invited you to join their Nexa Download Manager Team plan.\n\nAccept the invitation:\n${link}\n\nSign in (or create an account) with this email address — ${to} — to accept. The team's licence key then appears on your dashboard and unlocks Pro features in the app.\n\nIf you were not expecting this, ignore this email.`,
-    html: `<p><strong>${escapeHtml(owner)}</strong> has invited you to join their Nexa Download Manager <strong>Team</strong> plan.</p>` +
+    subject: 'You have been invited to a Nexa Team licence',
+    text: `${owner}${from} has invited you to join their Nexa Download Manager Team plan.\n\nAccept the invitation:\n${link}\n\nSign in (or create an account) with this email address — ${to} — to accept. The team's licence key then appears on your dashboard and unlocks Pro features in the app.\n\nThe name above was chosen by whoever sent this invitation. Nexa never asks for a password or payment details by email.\n\nIf you were not expecting this, ignore this email.`,
+    html: `<p><strong>${escapeHtml(owner)}</strong>${escapeHtml(from)} has invited you to join their Nexa Download Manager <strong>Team</strong> plan.</p>` +
       `<p><a href="${escapeHtml(link)}">Accept the invitation</a></p>` +
       `<p>Sign in (or create an account) with this email address — <strong>${escapeHtml(to)}</strong> — to accept. The team's licence key then appears on your dashboard and unlocks Pro features in the app.</p>` +
-      '<p>If you were not expecting this, ignore this email.</p>',
+      '<p style="color:#666;font-size:13px">The name above was chosen by whoever sent this invitation. '
+      + 'Nexa never asks for a password or payment details by email.</p>'
+      + '<p>If you were not expecting this, ignore this email.</p>',
   });
 }
 
 module.exports = {
+  sendControlPanelSignInAttemptEmail,
+  // Exported for the test that pins the sanitising rule; nothing else calls it.
+  inviterLabel,
   sendTeamInviteEmail,
   sendContactMessage,
   sendContactReply,
   sendVerificationEmail,
+  sendAccountExistsEmail,
   sendPasswordResetEmail,
   sendLicenseEmail,
   sendReceiptEmail,

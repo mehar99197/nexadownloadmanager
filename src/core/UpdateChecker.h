@@ -15,7 +15,7 @@ namespace nexa {
 //   { "version": "0.2.0", "url": "https://…/download/windows",
 //     "notes": "what's new", "sha256": "<hex or empty>" }
 //
-// In a build configured with -DNEXA_DEV_OVERRIDES=ON, $NEXA_UPDATE_URL overrides
+// In a build configured with -DNEXA_DEV_BUILD=ON, $NEXA_UPDATE_URL overrides
 // the feed URL and "off" disables checking entirely. A release build ignores
 // the variable: the feed decides which installer this app downloads and runs,
 // so it is never something the environment may redirect.

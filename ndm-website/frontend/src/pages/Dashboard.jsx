@@ -6,6 +6,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import api, { unwrap } from '../api/client';
 import { clearPendingTrial, hasPendingTrial, startTrial, trialDaysLeft } from '../api/trial';
 import usePageMeta from '../hooks/usePageMeta';
+import { formatDate } from '../utils/formatDate';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -20,7 +21,7 @@ function StatCard({ label, value, icon }) {
           {icon}
         </div>
         <div className="min-w-0">
-          <p className="text-[0.65rem] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p>
           <p className="truncate text-xl font-bold text-white" title={typeof value === 'string' ? value : undefined}>{value}</p>
         </div>
       </div>
@@ -28,8 +29,12 @@ function StatCard({ label, value, icon }) {
   );
 }
 
-function LicenseCard({ license }) {
+function LicenseCard({ license, onRotated }) {
   const [copied, setCopied] = useState(false);
+  const [keyShown, setKeyShown] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const toast = useToast();
+  const confirm = useConfirm();
 
   const handleCopy = async () => {
     if (!license?.licenseKey) return;
@@ -38,10 +43,41 @@ function LicenseCard({ license }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // The only way to take a key back. Removing somebody from a team does not do
+  // it — they were given the owner's real key, and nothing on the server ties a
+  // machine to the person who activated it — so a key that has leaked, to an
+  // ex-colleague or anywhere else, stays valid until it is replaced.
+  const handleRotate = async () => {
+    const sure = await confirm({
+      title: 'Replace this license key?',
+      message: 'The current key stops working immediately and every machine using it '
+        + 'drops to Free. You will need to paste the new key into Nexa on each of your own '
+        + 'machines. Do this if the key has been shared or you have removed someone from your team.',
+      confirmLabel: 'Replace key',
+      danger: true,
+    });
+    if (!sure) return;
+    setRotating(true);
+    try {
+      const res = unwrap(await api.post('/user/license/rotate'));
+      toast.success(res.devicesRevoked
+        ? `New key issued. ${res.devicesRevoked} device(s) signed out.`
+        : 'New key issued.');
+      onRotated?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not issue a new key.');
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const canRotate = Boolean(license) && !license.viaTeam && license.plan && license.plan !== 'free'
+    && license.status === 'active';
+
   if (!license) {
     return (
       <Card className="card-hover !p-6">
-        <h3 className="font-semibold text-white">License Key</h3>
+        <h3 className="font-semibold text-white">License key</h3>
         <p className="mt-2 text-sm text-zinc-400">No active license found.</p>
       </Card>
     );
@@ -49,26 +85,31 @@ function LicenseCard({ license }) {
 
   return (
     <Card className="card-hover !p-6">
-      <h3 className="font-semibold text-white">License Key</h3>
+      <h3 className="font-semibold text-white">License key</h3>
       <div className="mt-3 flex items-center gap-3">
         <code className="flex-1 break-all rounded-xl border border-white/5 bg-surface-2 px-3 py-2 text-sm text-brand-100 font-mono">
-          {license.licenseKey}
+          {keyShown ? license.licenseKey : license.licenseKey.replace(/[^-]/g, '\u2022')}
         </code>
+        <Button
+          variant="ghost"
+          onClick={() => setKeyShown((v) => !v)}
+          aria-pressed={keyShown}
+        >
+          {keyShown ? 'Hide' : 'Show'}
+        </Button>
         <Button variant="ghost" onClick={handleCopy}>
           {copied ? 'Copied!' : 'Copy'}
         </Button>
       </div>
       <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
-        <span>Plan: <span className="font-medium text-zinc-300 capitalize">{license.plan}</span></span>
         {license.viaTeam && (
           <span>Shared by: <span className="font-medium text-zinc-300">{license.teamOwner}</span></span>
         )}
-        <span>Status: <span className="font-medium text-zinc-300 capitalize">{license.status}</span></span>
         {license.expiryDate && (
           <span>
             Expires:{' '}
             <span className="font-medium text-zinc-300">
-              {new Date(license.expiryDate).toLocaleDateString()}
+              {formatDate(license.expiryDate) || '—'}
             </span>
           </span>
         )}
@@ -77,6 +118,17 @@ function LicenseCard({ license }) {
         Paste this key in the app under Settings &rarr; License.{' '}
         <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
       </p>
+      {canRotate && (
+        <div className="mt-4 border-t border-white/5 pt-4">
+          <Button variant="ghost" onClick={handleRotate} disabled={rotating}>
+            {rotating ? 'Replacing…' : 'Replace key'}
+          </Button>
+          <p className="mt-2 text-xs text-slate-500">
+            Issues a new key and signs every machine out of the old one. Use this if the key
+            has been shared, or after removing someone from your team.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }
@@ -142,7 +194,7 @@ function DevicesCard({ onChanged }) {
   };
 
   if (!data) return null;
-  const { seats, activeSeats, devices } = data;
+  const { seats = 0, activeSeats = 0, devices = [] } = data;
 
   return (
     <Card className="card-hover !p-6">
@@ -158,7 +210,17 @@ function DevicesCard({ onChanged }) {
         </span>
       </div>
       {devices.length === 0 ? (
-        <p className="mt-4 text-sm text-zinc-500">No device has activated this key yet.</p>
+        <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="text-slate-600" aria-hidden="true">
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <path d="M8 21h8M12 17v4" />
+          </svg>
+          <p className="text-sm font-semibold text-slate-300">No device has activated this key yet</p>
+          <p className="max-w-xs text-sm leading-6 text-slate-500">
+            Paste your licence key in the app under Settings &rarr; License, and the machine
+            will appear here.
+          </p>
+        </div>
       ) : (
         <ul className="mt-4 divide-y divide-[var(--color-surface-border)]">
           {devices.map((d) => (
@@ -244,7 +306,11 @@ function TeamCard({ onChanged }) {
       title: pending ? 'Withdraw this invitation?' : `Remove ${member.name || member.email}?`,
       message: pending
         ? `${member.email} will no longer be able to accept.`
-        : 'They lose access to the team licence key; the app on their machine returns to Free at its next check.',
+        // Deliberately blunt: this used to promise that their app "returns to
+        // Free at its next check", which is not true. They were given the
+        // owner's real licence key and it keeps working until it is replaced.
+        : 'They stop appearing on your team, but the licence key they already have keeps working. '
+          + 'To actually cut off their access, use “Replace key” on your License card afterwards.',
       confirmLabel: pending ? 'Withdraw' : 'Remove',
       danger: true,
     });
@@ -252,7 +318,8 @@ function TeamCard({ onChanged }) {
     setBusyId(member.id);
     try {
       await api.delete(`/team/members/${member.id}`);
-      toast.success(pending ? 'Invitation withdrawn.' : `${member.email} removed from the team.`);
+      if (pending) toast.success('Invitation withdrawn.');
+      else toast.success(`${member.email} removed. Replace your license key to revoke the copy they have.`);
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.error?.message || 'Could not remove that person.');
@@ -379,7 +446,7 @@ function TrialBanner({ subscription, onStart, starting }) {
           {days === 0 ? 'ends today' : `${days} day${days === 1 ? '' : 's'} left`}
           {subscription.trialEndsAt && (
             <span className="text-slate-400">
-              {' '}(until {new Date(subscription.trialEndsAt).toLocaleDateString()})
+              {' '}(until {formatDate(subscription.trialEndsAt)})
             </span>
           )}
         </div>
@@ -530,7 +597,7 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} />}
+        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} onRotated={loadLicense} />}
         <DevicesCard />
         <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
       </div>
@@ -539,8 +606,11 @@ export default function Dashboard() {
         <Card className="card-hover !p-6">
           <h3 className="font-semibold text-white">Quick actions</h3>
           <div className="mt-4 flex flex-wrap gap-3">
-            <Link to="/download" className="btn btn-primary">Download App</Link>
-            <Link to="/pricing" className="btn btn-ghost">Upgrade Plan</Link>
+            <Link to="/download" className="btn btn-primary">Download the app</Link>
+            <Link to="/pricing" className="btn btn-ghost">
+              {subscription?.plan === 'team' ? 'Compare plans'
+                : subscription?.plan === 'pro' ? 'Upgrade to Team' : 'Upgrade plan'}
+            </Link>
             <Link to="/docs" className="btn btn-ghost">Docs</Link>
           </div>
         </Card>
@@ -552,7 +622,7 @@ export default function Dashboard() {
           </p>
           <div className="mt-4">
             <Button to="/contact" variant="ghost">
-              Contact Support
+              Contact support
             </Button>
           </div>
         </Card>

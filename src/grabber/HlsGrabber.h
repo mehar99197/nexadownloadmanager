@@ -58,6 +58,12 @@ public:
 
     static bool isStreamUrl(const QUrl &url);   // .m3u8 / .mpd detection
 
+    // Whether a playlist tag may be mirrored verbatim into the local index.m3u8
+    // we hand to FFmpeg. Public and static so it can be tested directly: it is
+    // the guard that keeps a hostile remote playlist from smuggling a URI past
+    // the http(s) rule and isPublicHttpUrl(). See handleMedia().
+    static bool tagIsSafeToMirror(const QString &tagLine);
+
 signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
     void stateChanged(int id, DownloadState state, const QString &detail);

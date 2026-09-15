@@ -2,13 +2,44 @@
 
 const config = require('../config/env');
 
-// Same function names in mock + real mode so route handlers are agnostic.
+// Same function names in every mode so route handlers are agnostic.
+//
+// Three modes, decided in config/env.js#stripeMode:
+//   live     — the real Stripe client, signatures verified.
+//   mock     — LOCAL development only. constructEvent is JSON.parse, so an
+//              unsigned POST is a "webhook"; that is fine on a laptop and
+//              catastrophic on a public box, which is why env.js never picks
+//              this mode for one.
+//   disabled — a hardened deployment with no STRIPE_SECRET_KEY. Nothing is
+//              pretended: every billing operation throws a 503 the routes
+//              (and the error handler) turn into BILLING_UNAVAILABLE, and the
+//              webhook is refused outright.
 let impl;
 
-if (config.isStripeMock) {
-  // ── MOCK ──────────────────────────────────────────────────
+function billingUnavailable() {
+  throw Object.assign(new Error('Billing is not configured on this server'), {
+    status: 503, code: 'BILLING_UNAVAILABLE',
+  });
+}
+
+if (config.isBillingDisabled) {
+  // ── DISABLED ──────────────────────────────────────────────
+  impl = {
+    mock: false,
+    disabled: true,
+    async createCheckoutSession() { return billingUnavailable(); },
+    // "Nothing to manage" is the truthful answer; the route already handles it.
+    async createPortalSession() { return { url: null }; },
+    async findPromotionCode() { return null; },
+    constructEvent() { return billingUnavailable(); },
+    async cancelSubscription() { return billingUnavailable(); },
+    async resumeSubscription() { return billingUnavailable(); },
+  };
+} else if (config.isStripeMock) {
+  // ── MOCK (local development only) ─────────────────────────
   impl = {
     mock: true,
+    disabled: false,
     async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode }) {
       void user;
       void cancelUrl;
@@ -33,11 +64,15 @@ if (config.isStripeMock) {
       const body = Buffer.isBuffer(raw) ? raw.toString('utf8') : raw;
       return JSON.parse(body);
     },
-    async cancelSubscription(id) {
-      return { id, status: 'canceled' };
+    // Mirrors the real signature: cancelling at period end leaves the
+    // subscription ACTIVE and merely stops the next renewal.
+    async cancelSubscription(id, { atPeriodEnd = true } = {}) {
+      return atPeriodEnd
+        ? { id, status: 'active', cancel_at_period_end: true }
+        : { id, status: 'canceled', cancel_at_period_end: false };
     },
-    async cancelAtPeriodEnd(id) {
-      return { id, status: 'active', cancel_at_period_end: true };
+    async resumeSubscription(id) {
+      return { id, status: 'active', cancel_at_period_end: false };
     },
   };
 } else {
@@ -48,6 +83,7 @@ if (config.isStripeMock) {
 
   impl = {
     mock: false,
+    disabled: false,
     async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode }) {
       const catalog = PLANS[plan];
       // A bad code must not silently become "no discount": the route validates
@@ -74,11 +110,7 @@ if (config.isStripeMock) {
             quantity: 1,
           },
         ],
-        metadata: { userId: String(user._id || user.id), plan, billingCycle },
-        // Copied onto the Stripe subscription itself, so every later invoice
-        // (renewals arrive as invoice.paid, not as a checkout session) still
-        // says which plan and cycle it is for.
-        subscription_data: { metadata: { userId: String(user._id || user.id), plan, billingCycle } },
+        metadata: { userId: String(user.id), plan, billingCycle },
         success_url: successUrl,
         cancel_url: cancelUrl,
         // Let Stripe apply a promotion code: either the one the user typed
@@ -115,15 +147,23 @@ if (config.isStripeMock) {
     constructEvent(raw, sig) {
       return stripe.webhooks.constructEvent(raw, sig, config.STRIPE_WEBHOOK_SECRET);
     },
-    // Immediate: used when the account itself is deleted.
-    async cancelSubscription(id) {
-      return stripe.subscriptions.cancel(id);
+    /**
+     * Stop the subscription.
+     *
+     * Cancelling at PERIOD END is the default and the only thing the website
+     * offers: the customer has paid for the current period and keeps it. An
+     * immediate cancel deletes access on the spot and is reserved for account
+     * deletion, where there is no period left to honour.
+     */
+    async cancelSubscription(id, { atPeriodEnd = true } = {}) {
+      return atPeriodEnd
+        ? stripe.subscriptions.update(id, { cancel_at_period_end: true })
+        : stripe.subscriptions.cancel(id);
     },
-    // What "Cancel subscription" on the billing page means: no further renewal,
-    // access until the end of the period already paid for. Stripe then emits
-    // customer.subscription.deleted at that point, which marks the row cancelled.
-    async cancelAtPeriodEnd(id) {
-      return stripe.subscriptions.update(id, { cancel_at_period_end: true });
+
+    /** Undo a pending cancellation while the period is still running. */
+    async resumeSubscription(id) {
+      return stripe.subscriptions.update(id, { cancel_at_period_end: false });
     },
   };
 }

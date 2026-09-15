@@ -31,9 +31,19 @@ async function verifyToken(token, remoteip, fetchImpl = globalThis.fetch) {
     if (data && data.success === true) return { success: true };
     return { success: false, reason: (data && data['error-codes'] || ['unknown']).join(',') };
   } catch (err) {
-    // A Cloudflare outage must not take sign-up down with it: log and allow.
+    // Cloudflare unreachable. Note what this branch is and is not: a JSON
+    // answer of `success: false` — a wrong, reused or missing token — already
+    // fails closed above and always did. This is only the case where OUR
+    // request never got an answer, which nobody outside Cloudflare can cause on
+    // demand, so the default is to let the visitor through rather than take
+    // sign-up, the contact form and reviews down with the outage.
+    //
+    // Loud, because a gate that is silently open is worse than one that is
+    // shut: TURNSTILE_FAIL_CLOSED flips it if a bot wave ever coincides.
     // eslint-disable-next-line no-console
-    console.error('[turnstile] verification request failed:', err.message);
+    console.error('[SECURITY] turnstile verification unreachable, gate is'
+      + ` ${config.TURNSTILE_FAIL_CLOSED ? 'CLOSED' : 'OPEN'} for this request:`, err.message);
+    if (config.TURNSTILE_FAIL_CLOSED) return { success: false, reason: 'verification-unavailable' };
     return { success: true, degraded: true };
   }
 }
@@ -45,6 +55,10 @@ function requireTurnstile(req, res, next) {
   verifyToken(token, req.ip)
     .then((result) => {
       if (result.success) return next();
+      if (result.reason === 'verification-unavailable')
+        return fail(res, 'CAPTCHA_UNAVAILABLE',
+          'Verification is temporarily unavailable. Please try again in a few minutes.', 503,
+          { reason: result.reason });
       return fail(res, 'CAPTCHA_FAILED', 'Please complete the verification challenge and try again', 400,
         { reason: result.reason });
     })

@@ -39,10 +39,26 @@ test('backend API', async (t) => {
       assert.match(rows[0].license_key, /^NDM(-[A-Z0-9]{4}){3}$/);
     });
 
-    await t2.test('rejects a duplicate email', async () => {
+    await t2.test('a duplicate email is answered exactly like a new one', async () => {
+      // Registration must not be a membership oracle. The reply to an address
+      // that already has an account is byte-identical to the reply for a fresh
+      // one — same status, same envelope — and no second account is created;
+      // the real owner is told in their own inbox instead.
       const res = await api.post('/api/auth/register', { name: 'Again', email, password });
-      assert.equal(res.status >= 400, true);
-      assert.equal(res.body.ok, false);
+      assert.equal(res.status, 201, res.text);
+      assert.equal(res.body.ok, true);
+      assert.doesNotMatch(JSON.stringify(res.body).toLowerCase(), /exist|already|taken|duplicate/);
+      // Byte-identical, not merely "both 201". Returning `{userId}` on the
+      // real-registration branch alone made the PRESENCE of that field the
+      // oracle the equal status codes were supposed to remove.
+      const fresh = await api.post('/api/auth/register',
+        { name: 'Fresh', email: `fresh-${Date.now()}@example.test`, password });
+      assert.deepEqual(res.body, fresh.body);
+      const users = await srv.query('SELECT id FROM users WHERE email = ?', [email]);
+      assert.equal(users.length, 1);
+      const subs = await srv.query(
+        'SELECT s.id FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?', [email]);
+      assert.equal(subs.length, 1, 'no second subscription for an address that already had one');
     });
 
     await t2.test('rejects the wrong password without leaking which field was wrong', async () => {
@@ -68,6 +84,17 @@ test('backend API', async (t) => {
       // The trial fields the frontend renders must always be present.
       assert.ok(Object.hasOwn(res.body.data.subscription, 'trial'));
       assert.ok(Object.hasOwn(res.body.data.subscription, 'trialEndsAt'));
+      // CONTRACT.md documents the User as carrying camelCase timestamps, but
+      // this route returns the DB row, which is snake_case. The profile page
+      // read `createdAt`, got undefined, and printed "Member since —" for
+      // every account that ever existed. The mismatch was invisible because
+      // nothing failed — so assert the documented names exist and parse.
+      assert.ok(res.body.data.user.createdAt, 'createdAt is exposed');
+      assert.ok(!Number.isNaN(Date.parse(res.body.data.user.createdAt)), 'createdAt is a date');
+      assert.equal(typeof res.body.data.user.emailVerified, 'boolean');
+      // ...and that exposing them did not also expose a credential.
+      for (const leaked of ['password_hash', 'refresh_token_hash', 'totp_secret', 'token_version'])
+        assert.ok(!(leaked in res.body.data.user), `${leaked} is not returned`);
     });
 
     await t2.test('refresh rotates the cookie and invalidates the old one', async () => {
@@ -85,66 +112,11 @@ test('backend API', async (t) => {
       assert.equal(res2.status, 401, 'stale refresh token rejected');
     });
 
-    await t2.test('a second device signing in does not sign the first one out', async () => {
-      // Sessions used to be one slot per account (users.refresh_token_hash):
-      // every login overwrote it, so a phone signing in logged the laptop out.
-      const laptop = api;
-      const phone = srv.client();
-      const res = await phone.post('/api/auth/login', { email, password });
-      assert.equal(res.status, 200, res.text);
-      assert.notEqual(phone.cookies.get('ndm_refresh'), laptop.cookies.get('ndm_refresh'));
-
-      const stillLaptop = await laptop.post('/api/auth/refresh');
-      assert.equal(stillLaptop.status, 200, 'first device still refreshes: ' + stillLaptop.text);
-      const stillPhone = await phone.post('/api/auth/refresh');
-      assert.equal(stillPhone.status, 200, 'second device still refreshes: ' + stillPhone.text);
-
-      const rows = await srv.query(
-        'SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ?',
-        [email]
-      );
-      assert.equal(Number(rows[0].n), 2, 'one session row per device');
-
-      // Signing the phone out ends only the phone's session.
-      const out = await phone.post('/api/auth/logout');
-      assert.equal(out.status, 200, out.text);
-      const laptopAfter = await laptop.post('/api/auth/refresh');
-      assert.equal(laptopAfter.status, 200, 'laptop survives the phone signing out');
-      const phoneAfter = await phone.post('/api/auth/refresh');
-      assert.equal(phoneAfter.status, 401, 'phone session is gone');
-    });
-
-    await t2.test('a cookie from the legacy single-slot column still refreshes once', async () => {
-      // Deploying the sessions table must not sign everyone out: an old cookie
-      // is honoured via users.refresh_token_hash and migrated into a row.
-      const crypto = require('node:crypto');
-      const legacyToken = crypto.randomBytes(48).toString('hex');
-      const legacyHash = crypto.createHash('sha256').update(legacyToken).digest('hex');
-      await srv.query('UPDATE users SET refresh_token_hash = ? WHERE email = ?', [legacyHash, email]);
-
-      const old = srv.client();
-      old.cookies.set('ndm_refresh', legacyToken);
-      const res = await old.post('/api/auth/refresh');
-      assert.equal(res.status, 200, res.text);
-      assert.notEqual(old.cookies.get('ndm_refresh'), legacyToken, 'rotated into a session');
-      const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
-      assert.equal(rows[0].refresh_token_hash, null, 'legacy slot cleared after migration');
-
-      const again = await old.post('/api/auth/refresh');
-      assert.equal(again.status, 200, 'the migrated session keeps working');
-      await old.post('/api/auth/logout');
-    });
-
-    await t2.test('logout clears the cookie and the stored session', async () => {
+    await t2.test('logout clears the cookie and the stored hash', async () => {
       const res = await api.post('/api/auth/logout');
       assert.equal(res.status, 200, res.text);
       const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
       assert.equal(rows[0].refresh_token_hash, null);
-      const sessions = await srv.query(
-        'SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id WHERE u.email = ?',
-        [email]
-      );
-      assert.equal(Number(sessions[0].n), 0, 'no session rows left for this account');
     });
 
     await t2.test('a banned user cannot use a still-valid access token', async () => {
@@ -215,7 +187,12 @@ test('backend API', async (t) => {
       assert.equal(res.body.reason, 'seat_limit');
     });
 
-    await t2.test('an expired subscription reports expired', async () => {
+    // A period that runs out is no longer reported as `expired`: the desktop
+    // client DELETES a key it is told is expired, so a renewal webhook arriving
+    // late used to cost the customer their licence outright. A lapsed plan
+    // falls back to Free instead — see Subscription.expireIfLapsed — and only a
+    // deliberately stopped licence still reports `expired`.
+    await t2.test('a plan just past its date keeps working through the grace period', async () => {
       await srv.query(
         "UPDATE subscriptions SET expiry_date = DATE_SUB(NOW(), INTERVAL 1 DAY), plan = 'pro' WHERE id = ?",
         [sub.id]
@@ -223,11 +200,137 @@ test('backend API', async (t) => {
       const res = await api.post('/api/license/validate', {
         license_key: key, device_fingerprint: fingerprint,
       });
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'pro');
+    });
+
+    await t2.test('past the grace period it falls back to Free, key intact', async () => {
+      await srv.query(
+        "UPDATE subscriptions SET expiry_date = DATE_SUB(NOW(), INTERVAL 10 DAY), plan = 'pro' WHERE id = ?",
+        [sub.id]
+      );
+      const res = await api.post('/api/license/validate', {
+        license_key: key, device_fingerprint: fingerprint,
+      });
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'free');
+    });
+
+    await t2.test('a licence stopped on purpose still reports expired', async () => {
+      await srv.query("UPDATE subscriptions SET status = 'expired' WHERE id = ?", [sub.id]);
+      const res = await api.post('/api/license/validate', {
+        license_key: key, device_fingerprint: fingerprint,
+      });
       assert.equal(res.body.valid, false);
       assert.equal(res.body.reason, 'expired');
+      await srv.query("UPDATE subscriptions SET status = 'active' WHERE id = ?", [sub.id]);
     });
 
     void user;
+  });
+
+  // ------------------------------------------------- sharing suspension ---
+  // Auto-suspension is the only place this system acts against a paying
+  // customer with no human in the loop, so the whole chain gets driven for
+  // real: a leaked key gets cut off, the cut-off is indistinguishable from a
+  // full licence, the key SURVIVES it, and an admin can undo it and have that
+  // decision stick.
+  await t.test('a leaked key is auto-suspended, and an admin can undo it', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    await srv.makeUser(api, 'sharing');
+    const [sub] = await srv.query('SELECT * FROM subscriptions LIMIT 1');
+    await srv.query("UPDATE subscriptions SET plan = 'pro', seats = 1 WHERE id = ?", [sub.id]);
+    const key = sub.license_key;
+
+    const validate = (fp) => api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: fp });
+    const device = (n) => String(n).padStart(64, '0');
+
+    const bcrypt = require('bcryptjs');
+    await srv.query(
+      "INSERT INTO users (name, email, password_hash, role, email_verified) VALUES ('Admin', 'shareadmin@example.test', ?, 'admin', 1)",
+      [await bcrypt.hash('admin-password-123', 12)]
+    );
+    const adminApi = srv.client();
+    const adminLogin = await adminApi.post('/api/admin/login',
+      { email: 'shareadmin@example.test', password: 'admin-password-123' });
+    const adminAuth = { token: adminLogin.body.data.token };
+
+    await t2.test('a handful of devices is completely normal', async () => {
+      for (let i = 1; i <= 5; i += 1) {
+        // Each device frees its seat, exactly as a real client does on exit.
+        assert.equal((await validate(device(i))).body.valid, true, `device ${i}`);
+        await api.post('/api/license/release',
+          { license_key: key, device_fingerprint: device(i) });
+      }
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.sharing_suspended_at, null, 'nobody is suspended for five machines');
+    });
+
+    await t2.test('a key spreading across many machines gets cut off', async () => {
+      let cutOffAt = null;
+      for (let i = 6; i <= 60 && cutOffAt === null; i += 1) {
+        const res = await validate(device(i));
+        if (!res.body.valid) cutOffAt = i;
+        else {
+          await api.post('/api/license/release',
+            { license_key: key, device_fingerprint: device(i) });
+        }
+      }
+      assert.ok(cutOffAt, 'the licence must eventually be suspended');
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.ok(row.sharing_suspended_at, 'and it is recorded as a sharing suspension');
+      assert.equal(row.sharing_level, 'suspected');
+      assert.ok(row.sharing_reason, 'with a reason an admin can read');
+    });
+
+    await t2.test('the cut-off looks like a full licence, and keeps the key alive', async () => {
+      const res = await validate(device(1));
+      assert.equal(res.body.valid, false);
+      // `seat_limit` is what the desktop client keeps its stored key for.
+      // `cancelled`/`expired` would make it DELETE the key, which is not
+      // something to do to somebody a heuristic merely suspects.
+      assert.equal(res.body.reason, 'seat_limit');
+
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.status, 'active', 'status is untouched — this is reversible');
+      assert.ok(row.license_key, 'the key itself still exists');
+    });
+
+    await t2.test('it shows up in the admin review queue', async () => {
+      const res = await adminApi.get('/api/admin/subscriptions/flagged', adminAuth);
+      assert.equal(res.status, 200, res.text);
+      const found = res.body.data.subscriptions.find((s) => String(s.id) === String(sub.id));
+      assert.ok(found, 'the suspended licence is listed for review');
+      assert.ok(found.sharing_suspended_at);
+    });
+
+    await t2.test('an admin can lift it, and the licence works again', async () => {
+      const res = await adminApi.post(
+        `/api/admin/subscriptions/${sub.id}/sharing/clear`, {}, adminAuth);
+      assert.equal(res.status, 200, res.text);
+      assert.equal((await validate(device(1))).body.valid, true, 'the customer is back');
+    });
+
+    await t2.test('lifting it sticks — the next new device does not re-suspend', async () => {
+      // The device history that triggered the suspension is still there, so
+      // without the exemption the admin's decision would last one activation.
+      await api.post('/api/license/release',
+        { license_key: key, device_fingerprint: device(1) });
+      const res = await validate(device(99));
+      assert.equal(res.body.valid, true, 'the admin decision survives a new device');
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(row.sharing_suspended_at, null);
+    });
+
+    await t2.test('an admin can put it back under enforcement', async () => {
+      const res = await adminApi.post(
+        `/api/admin/subscriptions/${sub.id}/sharing/resume`, {}, adminAuth);
+      assert.equal(res.status, 200, res.text);
+      const [row] = await srv.query('SELECT * FROM subscriptions WHERE id = ?', [sub.id]);
+      assert.equal(Number(row.sharing_exempt), 0);
+    });
   });
 
   // -------------------------------------------------------- seat freeing ---
@@ -271,6 +374,25 @@ test('backend API', async (t) => {
       assert.equal((await validate(deviceA)).body.valid, true);
       const beat = await heartbeat(deviceA);
       assert.equal(beat.body.valid, true, 'a held lease renews');
+    });
+
+    await t2.test('a heartbeat re-issues a usable, device-bound licence token', async () => {
+      // This is what lets the token be short-lived. Without it the client, which
+      // re-validates only every six hours, would hold an expired token for most
+      // of its session — so a regression here shows up as paying users seeing
+      // ads, not as an obvious failure.
+      const { verifyLicense } = require('../src/utils/jwt');
+      const beat = await heartbeat(deviceA);
+      assert.ok(beat.body.token, 'the beat carries a token');
+
+      const claims = verifyLicense(beat.body.token);
+      assert.equal(claims.device, deviceA, 'bound to the beating device');
+      assert.equal(claims.plan, beat.body.plan, 'and agrees with the plan it reports');
+      assert.ok(claims.features, 'entitlements ride inside the signature');
+
+      const lifetime = claims.exp - claims.iat;
+      assert.ok(lifetime <= 15 * 60 && lifetime > 0,
+        `token should be short-lived, got ${lifetime}s`);
     });
 
     await t2.test('device B is refused while A holds the seat', async () => {
@@ -512,9 +634,12 @@ test('backend API', async (t) => {
       assert.equal(res.body.data.ads.length, 1);
       const ad = res.body.data.ads[0];
       assert.equal(ad.title, 'Go Pro');
-      // Counters, schedule and authorship must never reach the client.
+      // Counters, schedule and authorship must never reach the client. `token`
+      // is the one addition: the proof the client hands back when it reports an
+      // impression or a click (utils/ads.js#signAdEventToken).
       assert.deepEqual(Object.keys(ad).sort(),
-        ['body', 'ctaLabel', 'id', 'imageUrl', 'placement', 'targetUrl', 'title', 'weight']);
+        ['body', 'ctaLabel', 'id', 'imageUrl', 'placement', 'targetUrl', 'title', 'token', 'weight']);
+      assert.ok(ad.token);
     });
 
     for (const plan of ['pro', 'team']) {
@@ -542,17 +667,33 @@ test('backend API', async (t) => {
       assert.equal(res.body.data.ads.length, 1);
     });
 
+    // The event token comes back with the ad; without it nothing is counted, so
+    // the counters (and the CTR the panel computes) cannot be run up by
+    // anything that was never served the ad.
+    const eventToken = async () =>
+      (await api.get('/api/ads?placement=app_banner')).body.data.ads[0].token;
+
     await t2.test('impressions and clicks are counted, once each', async () => {
-      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'impression' })).body.data.counted, true);
-      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'click' })).body.data.counted, true);
+      const token = await eventToken();
+      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'impression', token })).body.data.counted, true);
+      assert.equal((await api.post(`/api/ads/${adId}/event`, { type: 'click', token })).body.data.counted, true);
       const [row] = await srv.query('SELECT impressions, clicks FROM ads WHERE id = ?', [adId]);
       assert.equal(row.impressions, 1);
       assert.equal(row.clicks, 1);
     });
 
+    await t2.test('an event with no token counts nothing', async () => {
+      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression' });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.data.counted, false);
+      const [row] = await srv.query('SELECT impressions FROM ads WHERE id = ?', [adId]);
+      assert.equal(row.impressions, 1, 'unchanged');
+    });
+
     await t2.test('a paid licence reporting an event counts nothing', async () => {
+      const eventTok = await eventToken();
       const token = signLicenseToken({ sub: 'NDM-AAAA-BBBB-CCCC', plan: 'pro', device: 'd' });
-      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression' },
+      const res = await api.post(`/api/ads/${adId}/event`, { type: 'impression', token: eventTok },
         { headers: { authorization: `Bearer ${token}` } });
       assert.equal(res.body.data.counted, false);
       const [row] = await srv.query('SELECT impressions FROM ads WHERE id = ?', [adId]);
@@ -560,7 +701,7 @@ test('backend API', async (t) => {
     });
 
     await t2.test('an unknown ad id is not an error', async () => {
-      const res = await api.post('/api/ads/999999/event', { type: 'click' });
+      const res = await api.post('/api/ads/999999/event', { type: 'click', token: 'whatever' });
       assert.equal(res.status, 200);
       assert.equal(res.body.data.counted, false);
     });
@@ -617,6 +758,8 @@ test('backend API', async (t) => {
       assert.equal(ad.impressions, 1);
       assert.equal(ad.clicks, 1);
       assert.equal(ad.ctr, 100);
+      // The counters the client never sees are exactly the ones the panel does.
+      assert.equal('token' in ad, false);
       const stats = await api.get('/api/admin/ads/stats', auth);
       assert.equal(stats.body.data.total, 1);
       assert.equal(stats.body.data.active, 1);

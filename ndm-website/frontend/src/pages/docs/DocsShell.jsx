@@ -55,7 +55,7 @@ export function Bullets({ items }) {
 
 export function Code({ children }) {
   return (
-    <code className="surface-inset rounded-md px-1.5 py-0.5 font-mono text-[0.8em] text-brand-100">
+    <code className="surface-inset rounded-md px-1.5 py-0.5 font-mono text-[0.9em] text-brand-100">
       {children}
     </code>
   );
@@ -116,15 +116,8 @@ export default function DocsShell({ title, intro, children }) {
           <Card className="mt-8 !p-6 sm:!p-8">{children}</Card>
           <p className="mt-6 text-xs text-slate-500">
             Something missing or wrong?{' '}
-            <a
-              href="https://github.com/mehar99197/nexadownloadmanager/issues"
-              target="_blank"
-              rel="noreferrer"
-              className="text-slate-300 hover:text-brand-300"
-            >
-              Open an issue on GitHub
-            </a>{' '}
-            or <Link to="/contact" className="text-slate-300 hover:text-brand-300">contact us</Link>.
+            <Link to="/contact" className="text-slate-300 hover:text-brand-300">Tell us</Link>{' '}
+            and we will fix the page.
           </p>
         </div>
       </div>

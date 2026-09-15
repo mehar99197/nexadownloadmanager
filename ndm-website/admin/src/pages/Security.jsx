@@ -118,7 +118,7 @@ export default function Security() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-admin-faint">Account security</p>
+        <p className="admin-eyebrow text-admin-faint">Account security</p>
         <h2 className="mt-1 text-2xl font-bold tracking-tight">Two-factor authentication</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-admin-muted">
           A second step on {IS_ROOT ? 'the creator' : 'your staff'} sign-in: a 6-digit code from an

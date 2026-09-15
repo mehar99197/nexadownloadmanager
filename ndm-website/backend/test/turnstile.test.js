@@ -94,3 +94,20 @@ test('with a secret configured and no token the request is refused with CAPTCHA_
     config.TURNSTILE_SECRET_KEY = saved;
   }
 });
+
+test('an inviter display name never reaches the subject line', () => {
+  // sendTeamInviteEmail used to put the owner's chosen display name straight
+  // into the Subject of a mail sent from our own domain to any address they
+  // named — "Nexa Security: your licence is suspended" reads as ours in every
+  // inbox list. The name now appears only in the escaped body, and control
+  // characters (the thing that splits one header into two) are stripped either
+  // way.
+  const { inviterLabel } = require('../src/utils/email');
+  assert.equal(inviterLabel('Alice'), 'Alice');
+  assert.equal(inviterLabel(''), 'A Nexa user');
+  assert.equal(inviterLabel(null), 'A Nexa user');
+  assert.equal(inviterLabel('   '), 'A Nexa user');
+  assert.equal(inviterLabel('Bad\r\nBcc: victim@example.test'), 'Bad Bcc: victim@example.test');
+  assert.equal(inviterLabel('a\t\tb'), 'a b');
+  assert.equal(inviterLabel('x'.repeat(200)).length, 60);
+});

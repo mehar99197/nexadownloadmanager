@@ -4,6 +4,8 @@
 // are worth pinning down independently of the engine's I/O.
 #include "core/DownloadEngine.h"
 #include "core/UpdateChecker.h"
+#include "grabber/HlsGrabber.h"
+#include "core/Types.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -107,12 +109,132 @@ static void testVersionCompare()
           || key == QLatin1String("macos"), "platform key is a known value");
 }
 
+
+// A media playlist is attacker-controlled input. HlsGrabber rewrites it into a
+// local index.m3u8 and hands that to FFmpeg with `file` on the protocol
+// whitelist, so any tag mirrored into it is a tag FFmpeg will act on. Only
+// #EXT-X-KEY and #EXT-X-MAP have their URI validated (absolutised + checked
+// against the http(s) rule and isPublicHttpUrl); every other tag is mirrored
+// verbatim, so a URI-bearing one must not be mirrored at all.
+//
+// Regression: a rendition URI of http://127.0.0.1:9911/ was fetched by
+// ffmpeg 8.1, and file:///... was opened for reading — both past every check.
+static void testPlaylistTagMirroring()
+{
+    // The URI-bearing tags FFmpeg's HLS demuxer will open. None may pass.
+    const char *dangerous[] = {
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"x\",URI=\"http://127.0.0.1:9911/\"",
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"x\",URI=\"file:///etc/passwd\"",
+        "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"http://169.254.169.254/latest/meta-data/\"",
+        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"http://10.0.0.1/key\"",
+        "#EXT-X-SESSION-DATA:DATA-ID=\"d\",URI=\"file:///proc/self/environ\"",
+        "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"http://[::1]/x\"",
+        "#EXT-X-RENDITION-REPORT:URI=\"http://192.168.1.1/\"",
+        "#EXT-X-PART:DURATION=1,URI=\"file:///home/u/.ssh/id_rsa\"",
+    };
+    for (const char *line : dangerous) {
+        CHECK(!HlsGrabber::tagIsSafeToMirror(QString::fromLatin1(line)),
+              QStringLiteral("URI-bearing tag must not be mirrored: %1")
+                  .arg(QString::fromLatin1(line).left(28)));
+    }
+
+    // Case must not be a way around it.
+    CHECK(!HlsGrabber::tagIsSafeToMirror(
+              QStringLiteral("#EXT-X-MEDIA:TYPE=AUDIO,uri=\"file:///etc/passwd\"")),
+          "a lower-case uri= attribute is still a URI");
+
+    // The ordinary structural tags carry no URI and must still come through,
+    // or the local playlist stops being playable.
+    const char *safe[] = {
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:10",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXTINF:9.009,",
+        "#EXT-X-DISCONTINUITY",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+        "#EXT-X-ENDLIST",
+    };
+    for (const char *line : safe) {
+        CHECK(HlsGrabber::tagIsSafeToMirror(QString::fromLatin1(line)),
+              QStringLiteral("structural tag must be mirrored: %1")
+                  .arg(QString::fromLatin1(line)));
+    }
+
+    // Only tags. A bare segment line is handled on its own path.
+    CHECK(!HlsGrabber::tagIsSafeToMirror(QStringLiteral("seg00000.ts")),
+          "a non-tag line is not a tag");
+}
+
+
+// Windows keeps a handful of legacy DEVICE names reserved — CON, PRN, AUX, NUL,
+// COM0-9, LPT0-9 — and they stay reserved with an extension attached. Opening
+// "NUL.mp4" for writing does not create a file, it writes to the null device:
+// the download reports complete and nothing is on disk. Win32 also strips
+// trailing dots and spaces, so "video." and "video" collide.
+//
+// Every one of these names can arrive from outside — a Content-Disposition
+// header, a page's suggested name, or a torrent's own file list.
+static void testWindowsFileNameRules()
+{
+    // Device names, bare and with extensions, in any case.
+    const char *devices[] = {
+        "NUL", "CON", "PRN", "AUX", "COM1", "COM9", "LPT1", "LPT9",
+        "nul", "Con", "nUl.mp4", "NUL.mp4", "CON.txt", "COM1.exe",
+        "NUL.tar.gz",           // Win32 matches the stem before the FIRST dot
+    };
+    for (const char *d : devices) {
+        const QString out = nexa::makeFileNamePortable(QString::fromLatin1(d));
+        CHECK(out != QString::fromLatin1(d),
+              QStringLiteral("reserved device name must be escaped: %1").arg(QLatin1String(d)));
+        CHECK(out.startsWith(QLatin1Char('_')),
+              QStringLiteral("escaped name keeps the original, prefixed: %1 -> %2")
+                  .arg(QLatin1String(d), out));
+    }
+
+    // Trailing dots and spaces: Win32 drops them silently.
+    CHECK(nexa::makeFileNamePortable(QStringLiteral("report.")) == QStringLiteral("report"),
+          "a trailing dot is removed");
+    CHECK(nexa::makeFileNamePortable(QStringLiteral("report...  ")) == QStringLiteral("report"),
+          "a run of trailing dots and spaces is removed");
+    CHECK(nexa::makeFileNamePortable(QStringLiteral("video.mp4")) == QStringLiteral("video.mp4"),
+          "an ordinary extension is untouched");
+
+    // Names that merely CONTAIN a device name are perfectly legal.
+    const char *fine[] = { "CONTACT.pdf", "NULL.txt", "console.log", "MyCOM1Report.doc",
+                           "AUXILIARY", "LPT.txt", "COM.txt", "COM10.txt" };
+    for (const char *f : fine) {
+        CHECK(nexa::makeFileNamePortable(QString::fromLatin1(f)) == QString::fromLatin1(f),
+              QStringLiteral("ordinary name must be left alone: %1").arg(QLatin1String(f)));
+    }
+
+    // And the engine's own sanitiser must apply them, not just the helper.
+    CHECK(!DownloadEngine::sanitizeFileName(QStringLiteral("NUL.mp4")).isEmpty(),
+          "engine still yields a usable name");
+    CHECK(DownloadEngine::sanitizeFileName(QStringLiteral("NUL.mp4")) != QStringLiteral("NUL.mp4"),
+          "engine escapes a reserved device name");
+    CHECK(DownloadEngine::sanitizeFileName(QStringLiteral("../../etc/passwd"))
+              == QStringLiteral("passwd"),
+          "engine still reduces a traversal attempt to its basename");
+    CHECK(DownloadEngine::sanitizeFileName(QStringLiteral("clip.")) == QStringLiteral("clip"),
+          "engine strips a trailing dot");
+    // The cap is applied BEFORE the Win32 rules, so truncation cannot reintroduce
+    // a trailing dot or manufacture a device name.
+    const QString longName = QString(300, QLatin1Char('a')) + QStringLiteral(".mp4");
+    CHECK(DownloadEngine::sanitizeFileName(longName).size() <= 240, "long name is capped");
+    CHECK(!DownloadEngine::sanitizeFileName(QString(239, QLatin1Char('a')) + QStringLiteral("."))
+               .endsWith(QLatin1Char('.')),
+          "a cap landing on a dot does not leave one behind");
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     testExpandPattern();
     testCategoryFor();
     testVersionCompare();
+    testPlaylistTagMirroring();
+    testWindowsFileNameRules();
     if (g_failures == 0) {
         qInfo() << "Engine helper tests passed";
         return 0;

@@ -3,7 +3,8 @@
 /**
  * Email everyone whose Pro trial ends soon, once each.
  *
- * Run it from cron (the deploy compose file schedules it daily):
+ * Run it from cron. On Hostinger this is driven by daily-maintenance.sh,
+ * which the hPanel cron job calls once a night (see ndm-website/deploy/README.md):
  *   node src/scripts/sendTrialReminders.js [--days 2] [--dry-run]
  *
  * "Once each" is enforced by subscriptions.trial_reminder_sent_at, which is

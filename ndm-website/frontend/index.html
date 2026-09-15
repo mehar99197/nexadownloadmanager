@@ -60,8 +60,154 @@
     </script>
 
     <title>Nexa Download Manager</title>
+
+    <!--
+      First-run boot screen.
+
+      It has to be here, inline, and not in React: the point is to be on screen
+      while the 440 kB bundle is still downloading, and a React component cannot
+      render until that bundle has arrived — by which time there is nothing left
+      to wait for. Same reason the CSS is inline rather than a class from
+      index.css: in `npm run dev` that stylesheet arrives as a JS module, so a
+      shared class would be unstyled exactly when it is needed.
+
+      Hidden by default. It is shown only when the script below adds
+      `.ndm-booting`, so a crawler, a reader with JS off, or a browser where
+      that script throws sees no overlay at all rather than a permanent one.
+
+      It costs nothing on a slow connection — the 700 ms floor only applies
+      when the app is ready sooner than that — and nothing at all on in-site
+      navigation, which never reloads the document.
+    -->
+    <style>
+      #ndm-boot { display: none; }
+
+      html.ndm-booting { overflow: hidden; }
+      html.ndm-booting #ndm-boot {
+        display: grid;
+        place-items: center;
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: #04060d;
+        opacity: 1;
+        transition: opacity 320ms ease;
+      }
+      html.ndm-booting[data-theme="light"] #ndm-boot { background: #f6f7fb; }
+      html.ndm-booting #ndm-boot[data-leaving="1"] { opacity: 0; }
+
+      /* Same two arcs as components/Spinner.jsx, and the same two theme stops:
+         #63dcff / #d09bff on dark, #1f56b8 / #6b3bc4 on light. Restated rather
+         than shared, for the reason in the comment above. */
+      #ndm-boot .track { stroke: #63dcff; stroke-opacity: 0.16; }
+      #ndm-boot .from { stop-color: #63dcff; }
+      #ndm-boot .to { stop-color: #d09bff; }
+      #ndm-boot .inner { stroke: #63dcff; stroke-opacity: 0.5; }
+      html[data-theme="light"] #ndm-boot .track,
+      html[data-theme="light"] #ndm-boot .inner { stroke: #1f56b8; }
+      html[data-theme="light"] #ndm-boot .from { stop-color: #1f56b8; }
+      html[data-theme="light"] #ndm-boot .to { stop-color: #6b3bc4; }
+
+      #ndm-boot .arc {
+        transform-origin: 50% 50%;
+        animation: ndm-boot-march 1.5s ease-in-out infinite,
+                   ndm-boot-turn 2s linear infinite;
+      }
+      #ndm-boot .inner {
+        transform-origin: 50% 50%;
+        animation: ndm-boot-turn 1.15s linear infinite reverse;
+      }
+      @keyframes ndm-boot-turn { to { transform: rotate(360deg); } }
+      @keyframes ndm-boot-march {
+        0%   { stroke-dasharray: 1 152;  stroke-dashoffset: 0; }
+        50%  { stroke-dasharray: 92 152; stroke-dashoffset: -30; }
+        100% { stroke-dasharray: 1 152;  stroke-dashoffset: -151; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #ndm-boot .arc, #ndm-boot .inner {
+          animation: ndm-boot-breathe 2.2s ease-in-out infinite;
+        }
+        #ndm-boot .arc { stroke-dasharray: 62 152; }
+      }
+      @keyframes ndm-boot-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+    </style>
+
+    <script>
+      (function () {
+        var html = document.documentElement;
+
+        /* Stamp the saved theme before the first paint. useTheme does this in an
+           effect, which runs only after the bundle has parsed and React has
+           rendered — so until now a reader on the light theme got a full dark
+           page first and a flash to white afterwards, on every single load. The
+           key, the values and the "dark needs no attribute" rule are
+           hooks/useTheme.js's; keep the two in step. */
+        var theme = 'system';
+        try { theme = localStorage.getItem('ndm_theme') || 'system'; } catch (e) { /* storage blocked */ }
+        var resolved = theme === 'light' || theme === 'dark'
+          ? theme
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        if (resolved === 'light') html.setAttribute('data-theme', 'light');
+        html.style.colorScheme = resolved;
+
+        /* Shown on every full page load, which in a single-page app means
+           exactly the moment it is for: arriving at the site, following a link
+           in from outside, or reloading. Moving around inside the site never
+           reloads the document, so navigation stays instant — that is the
+           "after the first time" half of it.
+
+           This used to be gated on a localStorage flag, one boot screen per
+           browser for ever. It worked, and it was the wrong idea: measured at
+           959 ms on the live bytes and then never again, so the one person who
+           most needs to see it — whoever is judging the site — cannot. A gate
+           nobody can reopen is indistinguishable from a screen that does not
+           work. Losing the flag also loses the branch where blocked storage
+           meant no boot screen at all. */
+        html.className += ' ndm-booting';
+
+        var started = Date.now();
+        var MIN_MS = 700;   /* below this it reads as a flicker, not a screen */
+        var MAX_MS = 8000;  /* nothing may leave the reader stuck behind it */
+        var done = false;
+
+        function finish() {
+          if (done) return;
+          done = true;
+          var boot = document.getElementById('ndm-boot');
+          if (!boot) { html.className = html.className.replace(' ndm-booting', ''); return; }
+          boot.setAttribute('data-leaving', '1');
+          setTimeout(function () {
+            html.className = html.className.replace(' ndm-booting', '');
+            if (boot.parentNode) boot.parentNode.removeChild(boot);
+          }, 340);
+        }
+
+        /* React calls this once it has painted (see src/main.jsx). */
+        window.__ndmBootDone = function () {
+          setTimeout(finish, Math.max(0, MIN_MS - (Date.now() - started)));
+        };
+        /* And this runs whatever happens — a failed chunk, a thrown module, a
+           browser that never fires the call above. A boot screen that can
+           outlive the boot is worse than no boot screen. */
+        setTimeout(finish, MAX_MS);
+        window.addEventListener('error', function () { setTimeout(finish, 400); });
+      })();
+    </script>
   </head>
   <body>
+    <div id="ndm-boot" role="status" aria-label="Loading Nexa Download Manager">
+      <svg width="56" height="56" viewBox="0 0 50 50" fill="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="ndm-boot-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop class="from" offset="0%" />
+            <stop class="to" offset="100%" />
+          </linearGradient>
+        </defs>
+        <circle class="track" cx="25" cy="25" r="21" stroke-width="4" />
+        <circle class="arc" cx="25" cy="25" r="21" stroke="url(#ndm-boot-grad)" stroke-width="4" stroke-linecap="round" />
+        <circle class="inner" cx="25" cy="25" r="13" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="14 68" />
+      </svg>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

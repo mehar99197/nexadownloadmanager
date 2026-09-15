@@ -4,7 +4,6 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 
 const User = require('../models/User');
-const UserSession = require('../models/UserSession');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
 const Review = require('../models/Review');
@@ -21,7 +20,16 @@ const { requireAdmin, ipWhitelist } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
 const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
-const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
+const { thresholds: sharingThresholdsFor, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
+const { recentRejections } = require('../utils/tokenAbuse');
+
+// Shown alongside the flagged list so an admin can see what the numbers mean
+// rather than having to guess why a licence was flagged.
+const sharingThresholds = {
+  windowDays: SHARING_WINDOW_DAYS,
+  perSeat: sharingThresholdsFor(1),
+};
+const { generateLicenseKey, planSeats, planExpiry, expiryForPlanChange } = require('../utils/license');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
 const { ctr } = require('../utils/ads');
@@ -34,7 +42,7 @@ const ADMIN_REFRESH_PATH = '/api/admin';
 
 function adminRefreshCookieOptions() {
   return {
-    httpOnly: true, sameSite: 'lax', secure: config.isProd,
+    httpOnly: true, sameSite: 'lax', secure: config.secureCookies,
     maxAge: 8 * 60 * 60 * 1000, path: ADMIN_REFRESH_PATH,
   };
 }
@@ -54,6 +62,7 @@ const {
   updateUserSchema, updateReviewSchema, updateSubscriptionSchema,
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
+  idParamSchema, deleteUserSchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -63,6 +72,8 @@ const {
   updateContactStatusSchema, contactReplySchema,
 } = require('../schemas/contact.schema');
 const { sendContactReply } = require('../utils/email');
+const { stripSensitive } = require('../utils/sanitize');
+const { isReservedEmail } = require('../utils/reservedEmail');
 
 function monthlyPrice(plan) {
   if (plan === 'pro') return 5;
@@ -70,14 +81,11 @@ function monthlyPrice(plan) {
   return 0;
 }
 
-function safeUser(user) {
-  if (!user) return null;
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash,
-    totp_secret, totp_recovery, ...safe
-  } = user;
-  return safe;
-}
+// Never hand-roll this list again: /users/:id/details reads the row with
+// SELECT *, so anything missed here reaches a staff admin — including, when it
+// stripped only these three hashes, the creator's TOTP secret and recovery
+// hashes. utils/sanitize.js is the single definition.
+const safeUser = stripSensitive;
 
 /**
  * A staff admin may only act on ordinary customer accounts. Banning, resetting
@@ -107,7 +115,10 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    if (!user || user.role !== 'admin')
+    // A Google-created account has NO password hash. bcrypt.compare against
+    // null throws, so an account promoted to admin that way answered 500 to
+    // every sign-in attempt instead of a plain rejection.
+    if (!user || user.role !== 'admin' || !user.password_hash)
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
@@ -220,7 +231,7 @@ router.get(
       system: {
         node: process.version,
         environment: config.NODE_ENV,
-        stripe: config.isStripeMock ? 'mock' : 'live',
+        stripe: config.stripeMode,
         email: config.isEmailMock ? 'mock' : 'live',
       },
     });
@@ -236,7 +247,7 @@ router.get(
     return ok(res, {
       database: 'connected',
       latencyMs: Date.now() - started,
-      stripe: config.isStripeMock ? 'mock' : 'configured',
+      stripe: config.stripeMode,
       email: config.isEmailMock ? 'mock' : 'configured',
       uptimeSeconds: Math.round(process.uptime()),
       node: process.version,
@@ -255,6 +266,14 @@ router.post(
   '/users', validate(createAdminUserSchema),
   asyncHandler(async (req, res) => {
     const { name, email, password, plan } = req.body;
+    // The creator's address is reserved for the creator. This panel only ever
+    // mints ordinary customers, so handing one that address would either
+    // collide with the creator's row or — if that row is missing — quietly
+    // take over the address the /root gate is keyed to. Plain error: an admin
+    // is already authenticated, so there is nothing to hide from them.
+    if (isReservedEmail(email))
+      return fail(res, 'RESERVED_ADDRESS',
+        'That address is reserved for the creator account and cannot be used for a customer.', 400);
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
     const user = await User.create({
       name,
@@ -277,10 +296,16 @@ router.post(
   })
 );
 
+// Exports are capped so one click cannot pull the whole users table into
+// memory. The cap is shared with /subscriptions/export and reported back, so
+// the panel can say the file is truncated instead of silently losing rows.
+const EXPORT_MAX = 5000;
+
 router.get(
   '/users/export',
   asyncHandler(async (req, res) => {
     const users = await User.listAll({
+      limit: EXPORT_MAX,
       q: req.query.q,
       role: req.query.role,
       banned: req.query.banned === undefined ? undefined : req.query.banned === 'true',
@@ -320,7 +345,7 @@ router.get(
 );
 
 router.get(
-  '/users/:id/details',
+  '/users/:id/details', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
@@ -347,16 +372,21 @@ router.put(
     if (user.id === req.admin.id && banned === true)
       return fail(res, 'SELF_LOCKOUT', 'You cannot disable your own admin account', 400);
     if (Object.keys(updates).length) await User.update(user.id, updates);
-    // A ban must take effect on every device the user is signed in on, not
-    // only the next one that tries to sign in.
-    if (banned === true) await UserSession.removeAllForUser(user.id);
 
     if (plan !== undefined) {
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
       if (currentSubscription) {
         // An explicit admin plan change ends any running trial so lazy trial
-        // expiry cannot silently undo it later.
-        await Subscription.updateByUserId(user.id, { plan, seats: planSeats(plan), trialEndsAt: null });
+        // expiry cannot silently undo it later, and moves the expiry date with
+        // the plan (see expiryForPlanChange — free's is ~100 years out, so
+        // carrying it across a change is wrong in both directions).
+        const implied = expiryForPlanChange(
+          currentSubscription.plan, plan, currentSubscription.expiry_date
+        );
+        await Subscription.updateCurrentByUserId(user.id, {
+          plan, seats: planSeats(plan), trialEndsAt: null,
+          ...(implied === undefined ? {} : { expiryDate: implied }),
+        });
       } else {
         await Subscription.create({
           userId: user.id,
@@ -377,34 +407,76 @@ router.put(
   })
 );
 
+/**
+ * DELETE /admin/users/:id — erase a customer account and everything it owns.
+ *
+ * Irreversible, and the only admin action that destroys data rather than
+ * changing it, so it is fenced three ways:
+ *
+ *  - `blockedStaffTarget` keeps staff to `role:'user'` accounts. A staff admin
+ *    cannot delete a colleague or the creator; only the root console can reach
+ *    those, and a root token passing through here keeps its own reach.
+ *  - the body must repeat the target's exact address, so a mis-clicked row
+ *    cannot destroy an account.
+ *  - the audit row is written BEFORE the delete, because
+ *    `audit_logs.admin_user_id` is ON DELETE SET NULL and the record has to
+ *    outlive the cascade.
+ *
+ * The cascade is the schema's, not this route's: subscriptions, payments,
+ * reviews and (through subscriptions) licence activations and team rows are
+ * ON DELETE CASCADE, while audit logs, ads and contact messages are
+ * ON DELETE SET NULL so the history of what was done survives the person.
+ */
+router.delete(
+  '/users/:id', validate(deleteUserSchema),
+  asyncHandler(async (req, res) => {
+    const user = await User.findById(Number(req.params.id));
+    if (!user) return fail(res, 'NOT_FOUND', 'Account not found', 404);
+    // Self BEFORE the staff-target gate. A staff admin's own row is a
+    // control-panel account, so blockedStaffTarget would answer "only the
+    // creator can modify a control-panel account" — true, but useless advice
+    // for someone who has just tried to delete themselves.
+    if (user.id === (req.admin && req.admin.id))
+      return fail(res, 'SELF_LOCKOUT', 'You cannot delete your own account', 400);
+    // A creator account is never deletable over the API, whoever is asking —
+    // including the creator's own console.
+    if (user.role === 'root')
+      return fail(res, 'FORBIDDEN', 'A creator account cannot be deleted over the API', 403);
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    if (String(user.email).toLowerCase() !== req.body.confirmEmail)
+      return fail(res, 'CONFIRM_MISMATCH', 'The confirmation email does not match this account', 400);
+
+    await audit(req, 'user.deleted', 'user', user.id,
+      `Deleted account ${user.email} and all of its data`, { email: user.email, role: user.role });
+    await User.remove(user.id);
+    return ok(res, { deleted: true });
+  })
+);
+
 router.post(
   '/users/:id/reset-password', validate(resetUserPasswordSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    await User.update(user.id, {
-      passwordHash: await bcrypt.hash(req.body.password, 12),
-      refreshTokenHash: null,
-      adminRefreshTokenHash: null,
-    });
-    await UserSession.removeAllForUser(user.id);
+    await User.update(user.id, { passwordHash: await bcrypt.hash(req.body.password, 12) });
+    // Ends every live session, not just the refresh cookies — see
+    // User.revokeSessions.
+    await User.revokeSessions(user.id);
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
     return ok(res, { reset: true });
   })
 );
 
 router.post(
-  '/users/:id/revoke-sessions',
+  '/users/:id/revoke-sessions', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
-    const sessions = await UserSession.removeAllForUser(user.id);
-    await audit(req, 'user.sessions_revoked', 'user', user.id,
-      `Revoked sessions for ${user.email}`, { sessions });
-    return ok(res, { revoked: true, sessions });
+    await User.revokeSessions(user.id);
+    await audit(req, 'user.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
+    return ok(res, { revoked: true });
   })
 );
 
@@ -417,10 +489,71 @@ router.get(
   })
 );
 
+// Licence tokens that arrived but did not verify, bucketed by hour and reason.
+//
+// A genuine client never produces one: it holds a token this server signed and
+// replaces it every five minutes. So `bad_signature` and `bad_algorithm` counts
+// are people constructing tokens by hand — the visible trace of somebody
+// testing a crack against the API. `expired` is separated out because a client
+// with a skewed clock or a long sleep generates those honestly.
+router.get(
+  '/security/token-rejections',
+  asyncHandler(async (req, res) => {
+    return ok(res, await recentRejections({ hours: req.query.hours }));
+  })
+);
+
+// Lift a sharing suspension — the customer is believed, or the flag was wrong.
+//
+// This also marks the licence exempt from AUTOMATIC suspension, because the
+// device history that triggered it does not go away: without that, the next new
+// device would re-suspend the licence and the decision made here would last
+// minutes. Flagging continues, so a licence that genuinely keeps spreading
+// still comes back to this queue for a person to look at again.
+router.post(
+  '/subscriptions/:id/sharing/clear',
+  asyncHandler(async (req, res) => {
+    const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
+    if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    await audit(req, 'subscription.sharing.clear', 'subscription', req.params.id,
+      'Lifted sharing suspension and exempted from automatic re-suspension');
+    return ok(res, { cleared: true });
+  })
+);
+
+// Put a licence back under automatic enforcement after it was exempted.
+router.post(
+  '/subscriptions/:id/sharing/resume',
+  asyncHandler(async (req, res) => {
+    const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
+    if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    await audit(req, 'subscription.sharing.resume', 'subscription', req.params.id,
+      'Returned licence to automatic sharing enforcement');
+    return ok(res, { resumed: true });
+  })
+);
+
+// Licences that look shared, worst first.
+//
+// This is a review queue, not an enforcement action: nothing here has been
+// suspended. A key with far more distinct devices than seats has very probably
+// leaked, but the honest reasons (a customer who reimages machines, a fleet of
+// VMs from one template) look identical from here, so a person decides. To act
+// on one, use the existing "Free seats" control or cancel the subscription.
+router.get(
+  '/subscriptions/flagged',
+  asyncHandler(async (req, res) => {
+    const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
+    return ok(res, { subscriptions, thresholds: sharingThresholds });
+  })
+);
+
 router.get(
   '/subscriptions/export',
   asyncHandler(async (req, res) => {
-    const { subscriptions } = await Subscription.list({ page: 1, limit: 200, status: req.query.status, plan: req.query.plan, q: req.query.q });
+    const { subscriptions } = await Subscription.list({
+      page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
+    });
     return ok(res, subscriptions);
   })
 );
@@ -440,7 +573,14 @@ router.post(
       startDate: new Date(),
       expiryDate: req.body.expiryDate ? new Date(req.body.expiryDate) : planExpiry(plan),
     });
-    await audit(req, 'subscription.created', 'subscription', subscription.id, `Created ${plan} subscription for ${user.email}`, { userId: user.id, plan });
+    // The previous licence key must stop working, or the customer walks away
+    // holding two that both validate — every read path only ever sees the
+    // newest row, so the old one was invisible here but live at /api/license.
+    const retired = await Subscription.retireOthers(user.id, subscription.id);
+    await audit(req, 'subscription.created', 'subscription', subscription.id,
+      `Created ${plan} subscription for ${user.email}`
+        + (retired ? ` (retired ${retired} earlier licence(s))` : ''),
+      { userId: user.id, plan, retired });
     return ok(res, subscription, 201);
   })
 );
@@ -452,7 +592,7 @@ router.put(
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
 
-    const { plan, status, seats } = req.body;
+    const { plan, status, seats, expiryDate } = req.body;
     const updates = {};
     if (plan !== undefined) updates.plan = plan;
     if (status !== undefined) updates.status = status;
@@ -460,6 +600,13 @@ router.put(
     if (plan !== undefined && seats === undefined) updates.seats = planSeats(plan);
     // See PUT /users/:id — an explicit plan change ends a running trial.
     if (plan !== undefined) updates.trialEndsAt = null;
+    // An explicit expiry always wins over the one a plan change implies — that
+    // is the point of being able to set it.
+    if (plan !== undefined) {
+      const implied = expiryForPlanChange(subscription.plan, plan, subscription.expiry_date);
+      if (implied !== undefined) updates.expiryDate = implied;
+    }
+    if (expiryDate !== undefined) updates.expiryDate = expiryDate;
     await Subscription.update(id, updates);
     const fresh = await Subscription.findById(id);
     await audit(req, 'subscription.updated', 'subscription', id, `Updated subscription ${id}`, req.body);
@@ -468,7 +615,7 @@ router.put(
 );
 
 router.post(
-  '/subscriptions/:id/revoke-device',
+  '/subscriptions/:id/revoke-device', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
@@ -647,7 +794,7 @@ router.delete(
 );
 
 router.delete(
-  '/releases/:id',
+  '/releases/:id', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const release = await Release.findById(id);

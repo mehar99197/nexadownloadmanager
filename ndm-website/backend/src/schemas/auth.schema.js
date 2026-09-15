@@ -60,7 +60,18 @@ const googleSchema = {
     .strict(),
 };
 
+// Ask for the verification link again. Same shape as forgot-password, and the
+// same generic answer, so neither can be used to test which addresses exist.
+const resendVerificationSchema = {
+  body: z
+    .object({
+      email,
+    })
+    .strict(),
+};
+
 module.exports = {
+  resendVerificationSchema,
   registerSchema,
   loginSchema,
   verifyEmailSchema,

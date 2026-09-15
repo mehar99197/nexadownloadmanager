@@ -54,9 +54,14 @@ async function main() {
   if (user) {
     await User.update(user.id, {
       name, role: 'root', emailVerified: true, banned: false, passwordHash,
-      // Any session minted before this account became root is not a root session.
-      refreshTokenHash: null, adminRefreshTokenHash: null, rootRefreshTokenHash: null,
     });
+    // Any session minted before this account became root is not a root session.
+    // revokeSessions, not three nulls: clearing the refresh hashes stops a NEW
+    // token being minted, but the access tokens already issued are stateless
+    // and live another seven days. Only the token_version bump kills those —
+    // and if this row was an ordinary customer a moment ago, one of them is a
+    // customer session on what is now the creator's account.
+    await User.revokeSessions(user.id);
     user = await User.findById(user.id);
   } else {
     user = await User.create({ name, email, passwordHash, role: 'root', emailVerified: true });

@@ -13,6 +13,49 @@ on:
 permissions:
   contents: write
 
+# ── Third-party binaries: pinned, and checked before they are used ──────────
+#
+# Every one of these is downloaded over the network and then either RUN on the
+# runner or BUNDLED into an installer that we go on to Authenticode-sign and
+# notarise. Our signature is what tells SmartScreen and Gatekeeper the contents
+# are ours, so shipping a binary we never verified means vouching for something
+# we did not check.
+#
+# Two problems, both fixed here:
+#   - `latest` / `continuous` are moving tags. Two builds of the same commit
+#     could ship different ffmpeg and yt-dlp, and after the fact there is no way
+#     to say which. Every reference below names an immutable release.
+#   - Nothing was verified. There was no sha256sum, shasum or Get-FileHash
+#     anywhere in this file. Now each download is checked before use and the job
+#     fails loudly if a hash moves.
+#
+# yt-dlp publishes its own signed SHA2-256SUMS with each release, so that is
+# what we check against — a stronger chain of custody than a hash we copied.
+# BtbN and linuxdeploy publish no checksums, so their hashes are recorded here;
+# bump the tag and the hash together.
+#
+# KEEP THESE FRESH. A pinned yt-dlp goes stale and stale yt-dlp means broken
+# extractors, which is the single most common cause of "this video won't
+# download". Bump YTDLP_VERSION on a regular cadence — this pin is for
+# reproducibility and provenance, not for standing still.
+env:
+  YTDLP_VERSION: '2026.08.19'
+  YTDLP_SHA256_LINUX: '1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6'
+  YTDLP_SHA256_WINDOWS: '66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a'
+  YTDLP_SHA256_MACOS: '0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202'
+  # A release-branch build, not master: this one ships to users. ffmpeg 8.x also
+  # carries the `allowed_segment_extensions` guard that stops a hostile HLS
+  # playlist reading local files through a rewritten segment URI.
+  FFMPEG_TAG: 'autobuild-2026-09-08-23-15'
+  FFMPEG_ASSET: 'ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip'
+  FFMPEG_SHA256: '508400eb2ecfab27e2f0383817b54e2bf1946940a8aeda6fe3df9438ff511bf1'
+  # Build-time only — these never reach a user's machine, but they DO execute on
+  # a runner that holds the signing secrets.
+  LINUXDEPLOY_TAG: '1-alpha-20251107-1'
+  LINUXDEPLOY_SHA256: 'c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d'
+  LINUXDEPLOY_QT_TAG: '1-alpha-20250213-1'
+  LINUXDEPLOY_QT_SHA256: '15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724'
+
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
@@ -60,9 +103,16 @@ jobs:
           # harfbuzz, xcb, libpng, …) and bundles the Qt platform / sqldrivers /
           # tls / imageformats / iconengines plugins. AppImages need FUSE (absent
           # on CI), so we --appimage-extract and run the inner AppRun directly.
-          dl() { curl -sSL "$1" -o "$2"; chmod +x "$2"; }
-          dl https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy
-          dl https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage linuxdeploy-plugin-qt
+          # Pinned + verified: these AppImages execute on this runner.
+          dl() {
+            curl -sSL --fail "$1" -o "$2"
+            echo "$3  $2" | sha256sum -c - || { echo "ERROR: $2 failed its checksum"; exit 1; }
+            chmod +x "$2"
+          }
+          dl "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-x86_64.AppImage" \
+             linuxdeploy "$LINUXDEPLOY_SHA256"
+          dl "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/${LINUXDEPLOY_QT_TAG}/linuxdeploy-plugin-qt-x86_64.AppImage" \
+             linuxdeploy-plugin-qt "$LINUXDEPLOY_QT_SHA256"
           ./linuxdeploy            --appimage-extract >/dev/null && mv squashfs-root ld
           ./linuxdeploy-plugin-qt  --appimage-extract >/dev/null && mv squashfs-root ldqt
           # linuxdeploy discovers its qt plugin by name on PATH
@@ -122,9 +172,19 @@ jobs:
 
       - name: Download yt-dlp binary
         run: |
-          sudo curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
-            -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
+          base="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"
+          curl -sSL --fail "$base/yt-dlp" -o yt-dlp
+          # Check against the SUMS file from the same immutable release, then
+          # against our own pin — so a swapped release asset AND a swapped sums
+          # file both have to get past us.
+          curl -sSL --fail "$base/SHA2-256SUMS" -o SHA2-256SUMS
+          grep -E '  yt-dlp$' SHA2-256SUMS | sha256sum -c - \
+            || { echo "ERROR: yt-dlp does not match upstream SHA2-256SUMS"; exit 1; }
+          echo "$YTDLP_SHA256_LINUX  yt-dlp" | sha256sum -c - \
+            || { echo "ERROR: yt-dlp does not match our pinned hash"; exit 1; }
+          sudo install -m 0755 yt-dlp /usr/local/bin/yt-dlp
+          rm -f yt-dlp SHA2-256SUMS
+          yt-dlp --version
 
       - name: Build self-contained .deb (all dependencies bundled)
         run: |
@@ -443,10 +503,17 @@ jobs:
       - name: Bundle yt-dlp
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           Invoke-WebRequest `
-            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/download/$env:YTDLP_VERSION/yt-dlp.exe" `
             -OutFile dist\yt-dlp.exe
-          Write-Host "yt-dlp bundled"
+          # This binary goes inside the installer we Authenticode-sign, so it is
+          # checked before it gets there.
+          $got = (Get-FileHash dist\yt-dlp.exe -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $env:YTDLP_SHA256_WINDOWS) {
+            throw "yt-dlp.exe checksum mismatch: got $got, expected $env:YTDLP_SHA256_WINDOWS"
+          }
+          Write-Host "yt-dlp $env:YTDLP_VERSION bundled and verified"
 
       - name: Bundle ffmpeg (static, self-contained)
         run: |
@@ -462,8 +529,11 @@ jobs:
           # The BtbN "win64-gpl" build is a STATIC, self-contained ffmpeg.exe with
           # no external DLL dependencies — the correct thing to bundle. Grab ffprobe
           # too (yt-dlp uses it for format/duration probing).
-          curl -sL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" \
+          curl -sSL --fail "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" \
             -o ffmpeg.zip
+          # Verified before we unzip it: this ships inside the signed installer.
+          echo "$FFMPEG_SHA256  ffmpeg.zip" | sha256sum -c - \
+            || { echo "ERROR: ffmpeg archive failed its checksum"; exit 1; }
           unzip -j ffmpeg.zip "*/ffmpeg.exe" "*/ffprobe.exe" -d dist/
           rm ffmpeg.zip
           ls -lh dist/ffmpeg.exe dist/ffprobe.exe
@@ -624,6 +694,47 @@ jobs:
           $mb = [math]::Round((Get-Item NexaSetup.exe).Length/1MB, 1)
           Write-Host "NexaSetup.exe ready: $mb MB"
 
+      # Authenticode signing. Without it every download shows a SmartScreen
+      # "unknown publisher" warning, and — the reason it belongs in this
+      # workflow — a cracked build repackaged by someone else is indistinguishable
+      # from the real one to the person installing it. A signature is what makes
+      # tampering visible.
+      #
+      # Runs only when the certificate secrets exist, so forks and PRs still
+      # build. Set WINDOWS_CERT_P12 (base64 of the .pfx) and WINDOWS_CERT_PASSWORD
+      # in the repository secrets to turn it on.
+      - name: Sign installer
+        shell: pwsh
+        env:
+          WINDOWS_CERT_P12: ${{ secrets.WINDOWS_CERT_P12 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERT_P12) {
+            Write-Host "::warning::No WINDOWS_CERT_P12 secret - shipping an UNSIGNED installer. Users will see a SmartScreen warning and a tampered rebuild is indistinguishable from this one."
+            exit 0
+          }
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'nexa-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_P12))
+          try {
+            $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+              Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found on the runner" }
+            # RFC 3161 timestamp so the signature stays valid after the
+            # certificate expires.
+            & $signtool.FullName sign `
+              /f $pfx /p $env:WINDOWS_CERT_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              /d "Nexa Download Manager" `
+              NexaSetup.exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with $LASTEXITCODE" }
+            & $signtool.FullName verify /pa /v NexaSetup.exe
+            if ($LASTEXITCODE -ne 0) { throw "signature verification failed" }
+            Write-Host "Installer signed and verified."
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -663,12 +774,13 @@ jobs:
   # glibc + libstdc++/libgcc + the GL stack come from the base image by design —
   # those are the libraries you cannot relocate.
   # ── macOS CI ───────────────────────────────────────────────────────────────
-  # Produces an UNSIGNED .app/.dmg. Gatekeeper will refuse to open it on another
-  # Mac until it is signed and notarised with an Apple Developer ID, which needs
-  # credentials this workflow deliberately does not hold. Treat this artifact as
-  # a developer/preview build, not a public download.
+  # Signs and notarises when the Developer ID secrets are configured
+  # (MACOS_CERT_P12 / MACOS_CERT_PASSWORD / MACOS_SIGN_IDENTITY, plus
+  # APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD for notarisation). Without
+  # them it still builds, but produces an UNSIGNED bundle that Gatekeeper will
+  # refuse — a developer/preview build, not a public download.
   macos:
-    name: macOS app bundle (unsigned)
+    name: macOS app bundle
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -679,11 +791,19 @@ jobs:
           brew install qt@6 libtorrent-rasterbar boost ninja openssl@3 create-dmg || true
           echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
 
+      # CMAKE_CXX_FLAGS carries boost's include dir because Homebrew's
+      # libtorrent-rasterbar.pc lists only its OWN includedir, while libtorrent's
+      # public headers open with #include <boost/config.hpp>. Boost is a separate
+      # keg under /opt/homebrew/opt/boost, so pkg-config's Cflags leave the
+      # compiler unable to find it and TorrentManager.cpp fails to compile.
+      # CMAKE_PREFIX_PATH alone does not fix this: it steers find_package(), not
+      # the include path of a target found through pkg_check_modules.
       - name: Configure & build
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)" \
+            -DCMAKE_CXX_FLAGS="-I$(brew --prefix boost)/include"
           cmake --build build
 
       - name: Smoke test
@@ -695,7 +815,8 @@ jobs:
       - name: Run unit tests
         run: |
           cmake -B build-tests -G Ninja -DNEXA_BUILD_TESTS=ON \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)"
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix libtorrent-rasterbar);$(brew --prefix boost);$(brew --prefix openssl@3)" \
+            -DCMAKE_CXX_FLAGS="-I$(brew --prefix boost)/include"
           cmake --build build-tests
           ctest --test-dir build-tests --output-on-failure
 
@@ -707,10 +828,59 @@ jobs:
           # The native-messaging host lives inside the bundle so one drag installs both.
           cp build/nexa-host build/nexa.app/Contents/MacOS/nexa-host
           # yt-dlp + ffmpeg make the video features work without a Homebrew install.
-          curl -sL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos" \
+          curl -sSL --fail "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_macos" \
             -o build/nexa.app/Contents/MacOS/yt-dlp
+          # Verified before it is signed into the bundle. macOS ships shasum, not
+          # sha256sum.
+          echo "$YTDLP_SHA256_MACOS  build/nexa.app/Contents/MacOS/yt-dlp" | shasum -a 256 -c - \
+            || { echo "ERROR: yt-dlp_macos failed its checksum"; exit 1; }
           chmod +x build/nexa.app/Contents/MacOS/yt-dlp
           echo "=== bundle contents ==="; ls -la build/nexa.app/Contents/MacOS/
+
+      # Developer ID signing. Runs only when the certificate secrets exist, so
+      # forks and PRs still build unsigned. Set MACOS_CERT_P12 (base64 of the
+      # Developer ID Application .p12), MACOS_CERT_PASSWORD and
+      # MACOS_SIGN_IDENTITY to turn it on.
+      #
+      # Inner binaries are signed before the bundle: codesign seals what it
+      # finds, so anything signed afterwards invalidates the outer signature.
+      - name: Sign app bundle
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -e
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "::warning::No MACOS_CERT_P12 secret - shipping an UNSIGNED bundle. Gatekeeper will block it, and a tampered rebuild is indistinguishable from this one."
+            echo "SIGNED=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          KEYCHAIN="$RUNNER_TEMP/nexa-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          # --options runtime is required for notarisation.
+          for inner in build/nexa.app/Contents/MacOS/nexa-host \
+                       build/nexa.app/Contents/MacOS/yt-dlp; do
+            [ -f "$inner" ] && codesign --force --timestamp --options runtime \
+              --sign "$MACOS_SIGN_IDENTITY" "$inner"
+          done
+          codesign --force --deep --timestamp --options runtime \
+            --sign "$MACOS_SIGN_IDENTITY" build/nexa.app
+          codesign --verify --deep --strict --verbose=2 build/nexa.app
+          echo "SIGNED=1" >> "$GITHUB_ENV"
 
       - name: Create .dmg
         run: |
@@ -720,12 +890,44 @@ jobs:
           ln -s /Applications dmg-staging/Applications
           hdiutil create -volname "Nexa Download Manager" -srcfolder dmg-staging \
             -ov -format UDZO Nexa-macOS.dmg
-          echo "UNSIGNED build - Gatekeeper will block it until signed/notarised." \
-            > Nexa-macOS-README.txt
+          if [ "${SIGNED:-0}" = "1" ]; then
+            echo "Signed with a Developer ID. Notarisation status is reported in the build log." \
+              > Nexa-macOS-README.txt
+          else
+            echo "UNSIGNED build - Gatekeeper will block it until signed/notarised." \
+              > Nexa-macOS-README.txt
+          fi
+
+      # Notarisation is a separate credential set from signing, so it is a
+      # separate step: a repo can sign without notarising while Apple
+      # credentials are being sorted out. Stapling lets the .dmg pass Gatekeeper
+      # offline.
+      - name: Notarise .dmg
+        if: env.SIGNED == '1'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -e
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::warning::Signed but NOT notarised (no Apple ID secrets). Gatekeeper still warns on first open."
+            exit 0
+          fi
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" Nexa-macOS.dmg
+          xcrun notarytool submit Nexa-macOS.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple Nexa-macOS.dmg
+          xcrun stapler validate Nexa-macOS.dmg
+          echo "Notarised and stapled." > Nexa-macOS-README.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nexa-macos-dmg-unsigned
+          name: nexa-macos-dmg
           path: |
             Nexa-macOS.dmg
             Nexa-macOS-README.txt
