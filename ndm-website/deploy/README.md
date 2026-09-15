@@ -49,6 +49,15 @@ Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
   Turnstile widget in the Cloudflare dashboard, and neither half works alone.
   `TURNSTILE_FAIL_CLOSED=true` refuses the gated endpoints while Cloudflare is
   unreachable instead of letting visitors through.
+- `GOOGLE_CLIENT_ID` — optional; blank hides "Continue with Google" on both
+  sides. The deploy reads this value over SSH at preflight and builds the
+  frontend with the same `VITE_GOOGLE_CLIENT_ID` (it is the audience every ID
+  token is checked against, so the two can never be allowed to drift; the ID
+  is public and ships in the page anyway). The OAuth client in Google Cloud
+  Console → APIs & Services → Credentials must list
+  `https://nexadownloadmanager.com` under *Authorised JavaScript origins*, or
+  the button renders and Google refuses every click. No client secret exists
+  for this flow.
 
 ## Going to production (cutover from development mode)
 

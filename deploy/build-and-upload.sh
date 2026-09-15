@@ -49,6 +49,11 @@
 #                            TURNSTILE_SECRET_KEY in the server's nexa-api/.env)
 #   VITE_PLAUSIBLE_DOMAIN    Plausible analytics domain (blank = no analytics script)
 #   VITE_PLAUSIBLE_SRC       self-hosted Plausible script URL (optional)
+#   VITE_GOOGLE_CLIENT_ID    Google Sign-In client ID baked into the frontend. Default:
+#                            the GOOGLE_CLIENT_ID in the server's nexa-api/.env, read over
+#                            SSH at preflight — the two MUST match (it is the audience
+#                            every ID token is checked against), so the server's copy is
+#                            the source of truth. An override that differs is refused.
 #   RESTART_BACKEND=0        skip restarting the remote node process after upload
 #   SKIP_FRONTEND=1 / SKIP_ADMIN=1 / SKIP_BACKEND=1   deploy a subset
 #   DEPLOY_HTACCESS=1        also upload deploy/hostinger/public_html.htaccess (the
@@ -148,6 +153,26 @@ ssh -p "${SSH_PORT}" -o BatchMode=yes -o ConnectTimeout=15 "${REMOTE}" \
   "command -v rsync >/dev/null" \
   || die "cannot reach ${REMOTE}:${SSH_PORT} with key auth (or rsync missing on the host)"
 echo "SSH OK. Site origin: ${VITE_SITE_URL}"
+
+# "Continue with Google": the button renders only when the frontend is built
+# with a client ID, and the backend accepts only tokens minted for ITS client
+# ID (GOOGLE_CLIENT_ID in nexa-api/.env). Read the server's value so the bundle
+# is always built with the same one — the ID is public (it ships in the page),
+# nothing else in .env is read. A blank on the server means the feature is off
+# on both sides, which is consistent.
+SERVER_GOOGLE_CLIENT_ID="$(ssh -p "${SSH_PORT}" -o BatchMode=yes "${REMOTE}" \
+  "grep -E '^GOOGLE_CLIENT_ID=' '${API_DIR}/.env' 2>/dev/null | tail -1 | cut -d= -f2-" || true)"
+SERVER_GOOGLE_CLIENT_ID="$(printf '%s' "${SERVER_GOOGLE_CLIENT_ID}" | tr -d "\"' \r")"   # unquote, drop CR
+if [[ -n "${VITE_GOOGLE_CLIENT_ID:-}" && -n "${SERVER_GOOGLE_CLIENT_ID}" \
+      && "${VITE_GOOGLE_CLIENT_ID}" != "${SERVER_GOOGLE_CLIENT_ID}" ]]; then
+  die "VITE_GOOGLE_CLIENT_ID differs from the server's GOOGLE_CLIENT_ID — every Google sign-in would fail (audience mismatch)"
+fi
+export VITE_GOOGLE_CLIENT_ID="${VITE_GOOGLE_CLIENT_ID:-${SERVER_GOOGLE_CLIENT_ID}}"
+if [[ -n "${VITE_GOOGLE_CLIENT_ID}" ]]; then
+  echo "Google Sign-In: ON (client …${VITE_GOOGLE_CLIENT_ID: -30})"
+else
+  echo "Google Sign-In: OFF (no GOOGLE_CLIENT_ID on the server, none given)"
+fi
 
 # --------------------------------------------------------------------------
 # Phase 1 — build frontend (vite build + prerender)
