@@ -372,7 +372,7 @@ jobs:
       - name: Create GitHub Release (Linux .deb)
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: build-${{ github.run_number }}
           name: "Nexa Download Manager — Build ${{ github.run_number }}"
@@ -745,7 +745,7 @@ jobs:
       - name: Create GitHub Release
         if: github.ref == 'refs/heads/main'
         continue-on-error: true   # Don't fail the build if release permissions are missing
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: build-${{ github.run_number }}
           name: "Nexa Download Manager — Build ${{ github.run_number }}"
