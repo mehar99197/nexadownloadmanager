@@ -121,7 +121,7 @@ export default function Billing() {
     setCancelling(true);
     try {
       await api.post('/subscription/cancel');
-      toast.success('Subscription cancelled.');
+      toast.success('Renewal stopped. Your plan stays active until the end of the paid period.');
       loadData();
     } catch (err) {
       const msg =
@@ -182,7 +182,7 @@ export default function Billing() {
               </div>
               {subStatus.expiryDate && (
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-zinc-400">Expires</span>
+                  <span className="text-sm text-zinc-400">{subStatus.cancelAtPeriodEnd ? 'Ends on' : 'Expires'}</span>
                   <span className="text-sm text-white">
                     {new Date(subStatus.expiryDate).toLocaleDateString()}
                   </span>
@@ -194,7 +194,12 @@ export default function Billing() {
                   <span className="text-sm text-white">{subStatus.seats}</span>
                 </div>
               )}
-              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && (
+              {subStatus.cancelAtPeriodEnd && (
+                <p className="text-sm text-amber-300">
+                  Renewal is switched off — nothing more will be charged, and the account returns to Free after this date.
+                </p>
+              )}
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.cancelAtPeriodEnd && (
                 <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
                   {/* Stripe's own portal handles cards, invoices and receipts —
                       things we deliberately never store ourselves. */}

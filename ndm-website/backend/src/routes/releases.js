@@ -54,7 +54,12 @@ router.get(
     const artifact = artifactFor(release, os);
     if (artifact) {
       const range = req.headers.range;
-      const isFreshStart = !range || /^bytes=0-/.test(String(range).trim());
+      // A fresh start is no Range at all, or one beginning at byte zero — except
+      // the one-byte "bytes=0-0" size probe the desktop app sends before its
+      // real segmented transfer, which would count every app download twice.
+      const rangeText = String(range || '').trim();
+      const isFreshStart = !range
+        || (/^bytes=0-/.test(rangeText) && !/^bytes=0-0$/.test(rangeText));
       if (isFreshStart) await Release.incrementDownloadCount(release.id);
       const sent = sendFile(req, res, artifact);
       // sendFile returns null when the row points at a file that is gone.

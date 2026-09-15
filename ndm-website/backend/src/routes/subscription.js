@@ -27,6 +27,7 @@ function statusSummary(sub) {
   return {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats,
     trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
   };
 }
 
@@ -124,13 +125,22 @@ router.post(
       return fail(res, 'NOT_A_PAID_PLAN', 'The free plan has nothing to cancel', 400);
     if (subscription.status !== 'active')
       return fail(res, 'ALREADY_INACTIVE', 'This subscription is not active', 400);
+    if (Number(subscription.cancel_at_period_end))
+      return fail(res, 'ALREADY_CANCELLED', 'This subscription is already set to end at the period close', 400);
 
+    // The billing page promises "your plan stays active until the end of the
+    // period you already paid for". Marking the row cancelled here broke that
+    // promise twice over: the desktop app's next licence check answered
+    // `cancelled` and dropped the user to Free the same minute, and the paid
+    // weeks that remained were simply lost. Stop the renewal instead; the row
+    // stays active until expiry_date, and Stripe's customer.subscription.deleted
+    // (sent at the period end) is what finally marks it cancelled.
     if (subscription.stripe_subscription_id)
-      await stripe.cancelSubscription(subscription.stripe_subscription_id);
+      await stripe.cancelAtPeriodEnd(subscription.stripe_subscription_id);
 
-    await Subscription.update(subscription.id, { status: 'cancelled' });
+    await Subscription.update(subscription.id, { cancelAtPeriodEnd: 1 });
     const sub = await Subscription.findById(subscription.id);
-    return ok(res, { plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats });
+    return ok(res, statusSummary(sub));
   })
 );
 

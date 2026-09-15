@@ -154,7 +154,15 @@ void HlsGrabber::start()
 void HlsGrabber::cancel()
 {
     m_cancelled = true;
-    if (m_playlistReply) { m_playlistReply->abort(); m_playlistReply = nullptr; }
+    if (QNetworkReply *r = m_playlistReply) {
+        // Null the member BEFORE abort(): it fires finished() synchronously,
+        // and onPlaylistFetched() bailing out on m_cancelled would otherwise
+        // leave the reply undeleted until the grabber itself goes away.
+        m_playlistReply = nullptr;
+        r->disconnect(this);
+        r->abort();
+        r->deleteLater();
+    }
     // Disconnect BEFORE killing: otherwise the killed process's finished() fires
     // onMuxFinished, which would overwrite this "cancelled" state with an Error.
     if (m_ffmpeg) {

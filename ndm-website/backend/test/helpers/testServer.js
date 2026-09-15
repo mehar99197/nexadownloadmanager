@@ -149,4 +149,4 @@ async function makeUser(api, suffix = Date.now()) {
   return { email, password, token: login.body?.data?.token, login };
 }
 
-module.exports = { app, start, stop, reset, client, available, makeUser, query };
+module.exports = { app, start, stop, reset, client, available, makeUser, query, baseUrl: () => baseUrl };

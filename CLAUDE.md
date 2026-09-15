@@ -22,6 +22,9 @@ cmake -B build -G Ninja -DNEXA_DEV_OVERRIDES=ON
 
 # Run unit tests
 ctest --test-dir build --output-on-failure
+# Windows (MSYS2 MinGW64, same toolchain as CI): configure from a path WITHOUT
+# spaces (Qt's LinguistTools macro breaks on them) — e.g. a junction C:/nexa -> the repo.
+#   MSYSTEM=MINGW64 bash -lc "cd /c/nexa && cmake -B build-tests -G Ninja -DNEXA_BUILD_TESTS=ON -DCMAKE_PREFIX_PATH=/mingw64 && cmake --build build-tests && ctest --test-dir build-tests"
 node tests/ExtensionProviderConfigTest.js && node tests/ExtensionSettingsTest.js
 node tests/ExtensionContentTest.js            # on-video button + quality dropdown (jsdom from ndm-website/frontend)
 NEXA_REQUIRE_JSDOM=1 node tests/ExtensionContentTest.js   # what CI runs: a missing jsdom FAILS instead of skipping
@@ -50,7 +53,8 @@ extension-chromium/package.sh   # outputs nexa-chrome.zip + nexa-edge.zip
 | `nexa_format_test` | UI formatter unit tests |
 | `nexa_theme_test` | Every theme: palette completeness, WCAG contrast per role, unique accent + motion trio, every motion style paints |
 | `nexa_mega_crypto_test` | MEGA key folding, attribute decryption, AES-CTR + chunked CBC-MAC vs a reference |
-| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `themes` also run |
+| `nexa_download_core_test` | White-box HTTP core against local servers: pause/resume through the DB, retry budget, chunked unknown-length bodies, ETag change (206 and strict 200), dynamic re-segmentation, speed limits, DB migration |
+| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `themes`, `download_task`, `download_core` also run |
 
 ## Architecture
 

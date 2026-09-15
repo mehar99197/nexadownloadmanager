@@ -36,6 +36,9 @@ if (config.isStripeMock) {
     async cancelSubscription(id) {
       return { id, status: 'canceled' };
     },
+    async cancelAtPeriodEnd(id) {
+      return { id, status: 'active', cancel_at_period_end: true };
+    },
   };
 } else {
   // ── REAL ──────────────────────────────────────────────────
@@ -72,6 +75,10 @@ if (config.isStripeMock) {
           },
         ],
         metadata: { userId: String(user._id || user.id), plan, billingCycle },
+        // Copied onto the Stripe subscription itself, so every later invoice
+        // (renewals arrive as invoice.paid, not as a checkout session) still
+        // says which plan and cycle it is for.
+        subscription_data: { metadata: { userId: String(user._id || user.id), plan, billingCycle } },
         success_url: successUrl,
         cancel_url: cancelUrl,
         // Let Stripe apply a promotion code: either the one the user typed
@@ -108,8 +115,15 @@ if (config.isStripeMock) {
     constructEvent(raw, sig) {
       return stripe.webhooks.constructEvent(raw, sig, config.STRIPE_WEBHOOK_SECRET);
     },
+    // Immediate: used when the account itself is deleted.
     async cancelSubscription(id) {
       return stripe.subscriptions.cancel(id);
+    },
+    // What "Cancel subscription" on the billing page means: no further renewal,
+    // access until the end of the period already paid for. Stripe then emits
+    // customer.subscription.deleted at that point, which marks the row cancelled.
+    async cancelAtPeriodEnd(id) {
+      return stripe.subscriptions.update(id, { cancel_at_period_end: true });
     },
   };
 }

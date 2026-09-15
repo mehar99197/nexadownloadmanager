@@ -172,7 +172,12 @@ function sendFile(req, res, artifact) {
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Accept-Ranges', 'bytes');
-  if (artifact.sha256) res.setHeader('X-Checksum-Sha256', artifact.sha256);
+  if (artifact.sha256) {
+    res.setHeader('X-Checksum-Sha256', artifact.sha256);
+    // A strong validator so a resuming client (the desktop updater sends
+    // If-Range) can tell this file from a newer upload under the same URL.
+    res.setHeader('ETag', `"${artifact.sha256}"`);
+  }
 
   const range = req.headers.range;
   if (!range) {

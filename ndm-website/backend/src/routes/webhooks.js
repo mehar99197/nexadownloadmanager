@@ -72,7 +72,8 @@ async function handleCheckoutCompleted(obj, eventId) {
       await connection.execute(
         `UPDATE subscriptions
             SET plan = ?, status = 'active', seats = ?, expiry_date = ?, start_date = ?,
-                trial_ends_at = NULL, stripe_subscription_id = ?, stripe_customer_id = ?
+                trial_ends_at = NULL, cancel_at_period_end = 0,
+                stripe_subscription_id = ?, stripe_customer_id = ?
           WHERE id = ?`,
         [plan, planSeats(plan), planExpiry(plan, billingCycle), new Date(),
          obj.subscription ? String(obj.subscription) : current.stripe_subscription_id,
@@ -108,6 +109,128 @@ async function handleCheckoutCompleted(obj, eventId) {
     await LicenseEmailDelivery.markFailed(eventId, err).catch(() => {});
     throw err;
   }
+}
+
+// The subscription row a Stripe object refers to: by Stripe subscription id,
+// then customer id, then (metadata / email) the user's newest row.
+async function resolveSubscription(obj) {
+  const subId = obj.subscription ? String(typeof obj.subscription === 'object' ? obj.subscription.id : obj.subscription)
+    : (obj.object === 'subscription' && obj.id ? String(obj.id) : null);
+  if (subId) {
+    const byStripe = await Subscription.findByStripeSubscriptionId(subId);
+    if (byStripe) return byStripe;
+  }
+  const customer = obj.customer ? String(typeof obj.customer === 'object' ? obj.customer.id : obj.customer) : null;
+  if (customer) {
+    const byCustomer = await Subscription.findByStripeCustomerId(customer);
+    if (byCustomer) return byCustomer;
+  }
+  const user = await resolveUser(obj);
+  if (user) return (await Subscription.findByUserId(user.id))[0] || null;
+  return null;
+}
+
+// Billing interval of an invoice line / subscription item → our billing cycle.
+function cycleFromInterval(obj) {
+  const line = obj.lines?.data?.[0] || obj.items?.data?.[0] || null;
+  const interval = line?.price?.recurring?.interval || line?.plan?.interval || null;
+  if (interval === 'year') return 'yearly';
+  if (interval === 'month') return 'monthly';
+  const meta = obj.subscription_details?.metadata || obj.metadata || {};
+  return meta.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+}
+
+// End of the period an invoice/subscription covers, as a Date, or null.
+function periodEndFrom(obj) {
+  const line = obj.lines?.data?.[0] || null;
+  const unix = line?.period?.end || obj.current_period_end || null;
+  return Number.isFinite(Number(unix)) && Number(unix) > 0 ? new Date(Number(unix) * 1000) : null;
+}
+
+/**
+ * A paid invoice — above all a RENEWAL. checkout.session.completed only fires
+ * for the first purchase, and expiry_date was set to "now + one period" then
+ * and never touched again: every monthly Pro customer's licence read `expired`
+ * from month two while Stripe went on charging them. Each paid invoice now
+ * pushes expiry_date to the end of the period it covers (falling back to one
+ * period from the later of now and the current expiry) and records the
+ * payment. Idempotent: the first invoice of a new subscription lands on the
+ * row checkout already activated and just confirms its dates.
+ */
+async function handleInvoicePaid(obj, eventId) {
+  const subscription = await resolveSubscription(obj);
+  if (!subscription) { console.warn('[webhook] invoice.paid: no matching subscription'); return; }
+
+  const meta = obj.subscription_details?.metadata || obj.metadata || {};
+  const plan = meta.plan && PLANS[meta.plan] && meta.plan !== 'free' ? meta.plan
+    : (subscription.plan !== 'free' ? subscription.plan : null);
+  if (!plan) throw new Error('invoice.paid: cannot determine a paid plan');
+  const billingCycle = cycleFromInterval(obj);
+
+  const currentExpiry = subscription.expiry_date ? new Date(subscription.expiry_date) : null;
+  const base = currentExpiry && currentExpiry.getTime() > Date.now() ? currentExpiry : new Date();
+  const fallback = new Date(base);
+  if (billingCycle === 'yearly') fallback.setFullYear(fallback.getFullYear() + 1);
+  else fallback.setMonth(fallback.getMonth() + 1);
+  const periodEnd = periodEndFrom(obj) || fallback;
+  // Never move an expiry backwards: a replayed or out-of-order invoice must
+  // not shorten what a later one already granted.
+  const newExpiry = currentExpiry && currentExpiry.getTime() > periodEnd.getTime() ? currentExpiry : periodEnd;
+
+  const amount = typeof obj.amount_paid === 'number' ? obj.amount_paid / 100
+    : typeof obj.amount_total === 'number' ? obj.amount_total / 100 : 0;
+  const stripePaymentId = obj.payment_intent ? String(obj.payment_intent)
+    : obj.id ? String(obj.id) : null;
+  const stripeSubId = obj.subscription ? String(typeof obj.subscription === 'object' ? obj.subscription.id : obj.subscription) : null;
+  const stripeCustomer = obj.customer ? String(typeof obj.customer === 'object' ? obj.customer.id : obj.customer) : null;
+
+  await withTransaction(async (connection) => {
+    await connection.execute(
+      `UPDATE subscriptions
+          SET plan = ?, status = 'active', seats = ?, expiry_date = ?, trial_ends_at = NULL,
+              stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+              stripe_customer_id = COALESCE(?, stripe_customer_id)
+        WHERE id = ?`,
+      [plan, planSeats(plan), newExpiry, stripeSubId, stripeCustomer, subscription.id]
+    );
+    if (stripePaymentId) {
+      await connection.execute(
+        `INSERT INTO payments
+           (user_id, amount, currency, plan, billing_cycle, stripe_payment_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'paid')
+         ON DUPLICATE KEY UPDATE id = id`,
+        [subscription.user_id, amount, obj.currency || 'usd', plan, billingCycle, stripePaymentId]
+      );
+    }
+  });
+
+  // The first invoice's receipt goes out with the licence email from
+  // checkout.session.completed; a renewal gets its own, best-effort.
+  if (obj.billing_reason && obj.billing_reason !== 'subscription_create') {
+    const user = await User.findById(subscription.user_id);
+    if (user) {
+      await sendReceiptEmail(user, {
+        plan, billingCycle, amount, currency: obj.currency || 'usd',
+        invoiceUrl: obj.hosted_invoice_url || obj.invoice_url || null,
+      }).catch((err) => console.error(`[webhook] renewal receipt failed (${eventId}):`, err.message));
+    }
+  }
+}
+
+/**
+ * customer.subscription.updated: the customer used Stripe's portal. Two facts
+ * matter here — whether the renewal is switched off (cancel_at_period_end,
+ * which the billing page shows as "ends on …") and the current period end.
+ */
+async function handleSubscriptionUpdated(obj) {
+  const subscription = await resolveSubscription(obj);
+  if (!subscription) { console.warn('[webhook] customer.subscription.updated: no match'); return; }
+  const fields = { cancelAtPeriodEnd: obj.cancel_at_period_end ? 1 : 0 };
+  const periodEnd = periodEndFrom(obj);
+  const currentExpiry = subscription.expiry_date ? new Date(subscription.expiry_date) : null;
+  if (periodEnd && obj.status === 'active' && (!currentExpiry || periodEnd.getTime() > currentExpiry.getTime()))
+    fields.expiryDate = periodEnd;
+  await Subscription.update(subscription.id, fields);
 }
 
 async function handleSubscriptionDeleted(obj) {
@@ -167,6 +290,9 @@ router.post(
       const obj = (event.data && event.data.object) || {};
       switch (event.type) {
         case 'checkout.session.completed': await handleCheckoutCompleted(obj, event.id); break;
+        case 'invoice.paid':
+        case 'invoice.payment_succeeded': await handleInvoicePaid(obj, event.id); break;
+        case 'customer.subscription.updated': await handleSubscriptionUpdated(obj); break;
         case 'customer.subscription.deleted': await handleSubscriptionDeleted(obj); break;
         case 'invoice.payment_failed': await handlePaymentFailed(obj); break;
       }

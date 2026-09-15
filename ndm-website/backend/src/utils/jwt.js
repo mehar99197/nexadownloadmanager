@@ -30,8 +30,22 @@ function signEmailToken(user) {
   return jwt.sign({ sub: String(user.id), typ: 'verify-email' }, config.JWT_SECRET, { expiresIn: '1h' });
 }
 
+// A short fingerprint of the current password hash. Baked into every reset
+// token so the token stops working the moment the password changes — a reset
+// link is otherwise replayable for its whole hour, and anyone who saw it
+// (mail forwarded, browser history, a shoulder) could reset the password a
+// second time after the owner had already used it.
+function passwordVersion(user) {
+  return crypto.createHash('sha256')
+    .update(String((user && user.password_hash) || ''))
+    .digest('hex').slice(0, 16);
+}
+
 function signResetToken(user) {
-  return jwt.sign({ sub: String(user.id), typ: 'reset' }, config.JWT_SECRET, { expiresIn: '1h' });
+  return jwt.sign(
+    { sub: String(user.id), typ: 'reset', pv: passwordVersion(user) },
+    config.JWT_SECRET, { expiresIn: '1h' }
+  );
 }
 
 function signLicenseToken(payload) {
@@ -81,6 +95,7 @@ function generateRefreshToken() {
 }
 
 module.exports = {
+  passwordVersion,
   signAccessToken, signAdminToken, signRootToken, signEmailToken, signResetToken, signLicenseToken,
   verifyAccess, verifyAdmin, verifyRoot, verifyEmailToken, verifyResetToken, verifyLicense,
   generateRefreshToken, hashRefreshToken,

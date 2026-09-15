@@ -326,6 +326,23 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_download_task_test PRIVATE src)
     target_link_libraries(nexa_download_task_test PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
 
+    # White-box download core: pause/resume through the database, retry budget,
+    # unknown-length (chunked) bodies, validator changes between sessions,
+    # dynamic re-segmentation, rate limiting and the schema migration.
+    add_executable(nexa_download_core_test
+        tests/DownloadCoreTest.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/core/Database.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/CloudProviders.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_download_core_test PRIVATE src)
+    target_link_libraries(nexa_download_core_test PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
+
     enable_testing()
     add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
     add_test(NAME extension_installer COMMAND nexa_extension_installer_test)
@@ -339,6 +356,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
     add_test(NAME download_task COMMAND nexa_download_task_test)
+    add_test(NAME download_core COMMAND nexa_download_core_test)
 endif()
 
 # ===========================================================================

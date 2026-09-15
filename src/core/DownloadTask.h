@@ -116,6 +116,7 @@ private slots:
     void onSegmentCompleted(int index);
     void onSegmentFailed(int index, const QString &error);
     void onSegmentShortFinish(int index, qint64 received);
+    void onSegmentObjectChanged(int index);   // validator mismatch -> start over
     void emitSpeedTick();
 
 private:

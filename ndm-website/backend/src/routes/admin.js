@@ -72,7 +72,10 @@ function monthlyPrice(plan) {
 
 function safeUser(user) {
   if (!user) return null;
-  const { password_hash, refresh_token_hash, admin_refresh_token_hash, ...safe } = user;
+  const {
+    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash,
+    totp_secret, totp_recovery, ...safe
+  } = user;
   return safe;
 }
 

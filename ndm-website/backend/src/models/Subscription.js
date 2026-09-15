@@ -12,7 +12,7 @@ const {
 const UPDATABLE_COLUMNS = new Set([
   'plan', 'status', 'license_key', 'device_fingerprint', 'seats', 'start_date',
   'expiry_date', 'trial_ends_at', 'trial_reminder_sent_at',
-  'stripe_subscription_id', 'stripe_customer_id',
+  'stripe_subscription_id', 'stripe_customer_id', 'cancel_at_period_end',
 ]);
 
 // Shared by both update flavours: turns {camelCase: value} into SET clauses,
@@ -52,6 +52,12 @@ const Subscription = {
 
   async findByStripeSubscriptionId(id) {
     return queryOne('SELECT * FROM subscriptions WHERE stripe_subscription_id = ?', [id]);
+  },
+
+  async findByStripeCustomerId(id) {
+    return queryOne(
+      'SELECT * FROM subscriptions WHERE stripe_customer_id = ? ORDER BY created_at DESC LIMIT 1', [id]
+    );
   },
 
   /**

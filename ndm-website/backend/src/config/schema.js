@@ -186,7 +186,11 @@ async function initSchema() {
 
   // TIMESTAMP overflows in 2038, while free licenses intentionally live far
   // into the future. Keep this column compatible with that policy on existing DBs.
-  await execute('ALTER TABLE subscriptions MODIFY COLUMN expiry_date DATETIME NULL');
+  await ensureColumnType('subscriptions', 'expiry_date', 'datetime', 'DATETIME NULL');
+  // Set by POST /api/subscription/cancel: Stripe stops renewing at the end of
+  // the paid period, the row stays active until expiry_date, and the
+  // customer.subscription.deleted webhook flips status to cancelled then.
+  await addColumnIfMissing('subscriptions', 'cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0');
 
   // Existing databases: end of the no-card Pro trial (NULL = not a trial).
   await addColumnIfMissing('subscriptions', 'trial_ends_at DATETIME NULL DEFAULT NULL');

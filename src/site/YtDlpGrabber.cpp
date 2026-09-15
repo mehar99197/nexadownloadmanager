@@ -6,6 +6,7 @@
 #include "core/ProxyConfig.h"
 
 #include <QProcess>
+#include <QTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -720,30 +721,50 @@ void YtDlpGrabber::startPlaylistParallel(const QStringList &common, const QUrl &
     }
 }
 
+// Stop a yt-dlp process WITHOUT blocking the GUI thread. The old cancel path
+// did terminate() + waitForFinished(1500) per process: on Windows terminate()
+// only posts WM_CLOSE, which a console yt-dlp never sees, so every pause sat
+// the full 1.5 s before kill() — and a playlist with eight workers froze the
+// window for over ten seconds. The process is disconnected first so a stale
+// finished() from this run can never be mistaken for a completion of the next
+// one, then it deletes itself once it has actually exited.
+static void stopDetached(QProcess *p, QObject *owner)
+{
+    p->disconnect(owner);
+    QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                     p, &QObject::deleteLater);
+    QObject::connect(p, &QProcess::errorOccurred, p, &QObject::deleteLater);
+    if (p->state() == QProcess::NotRunning) {
+        p->deleteLater();
+        return;
+    }
+#ifdef Q_OS_WIN
+    p->kill();                       // the only stop a console process answers to
+#else
+    p->terminate();                  // SIGTERM: yt-dlp keeps its .part for resume
+    QTimer::singleShot(1500, p, [p]() {
+        if (p->state() != QProcess::NotRunning)
+            p->kill();
+    });
+#endif
+}
+
 void YtDlpGrabber::cancel()
 {
     m_cancelled = true;
     if (m_proc) {
-        // Disconnect BEFORE killing: otherwise the killed process's queued
+        // Detach BEFORE stopping: otherwise the killed process's queued
         // finished() can be delivered after a later resume (when m_cancelled is
         // back to false) and be mistaken for a real completion.
-        m_proc->disconnect(this);
-        m_proc->terminate();
-        if (!m_proc->waitForFinished(1500))
-            m_proc->kill();
-        m_proc->deleteLater();
+        stopDetached(m_proc, this);
         m_proc = nullptr;
     }
     for (QProcess *p : m_plProcs) {     // parallel playlist workers
         if (!p) continue;
-        // Same here: disconnect so a stale finished() from an old worker can't
+        // Same here: detach so a stale finished() from an old worker can't
         // bump the NEXT run's finished-count and complete it early (which showed
         // "Complete" at e.g. 318/429 after a pause+resume).
-        p->disconnect(this);
-        p->terminate();
-        if (!p->waitForFinished(1200))
-            p->kill();
-        p->deleteLater();
+        stopDetached(p, this);
     }
     m_plProcs.clear();
     m_plRates.clear();

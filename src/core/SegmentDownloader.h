@@ -52,6 +52,10 @@ signals:
     void progressed(int index, qint64 deltaBytes);   // emitted as bytes arrive
     void completed(int index);
     void failed(int index, const QString &error);    // real (retryable) error
+    // The If-Range validator no longer matches (or the server restarted the
+    // object from byte zero): the bytes already on disk belong to a different
+    // file. Not retryable — the whole download must start over.
+    void objectChanged(int index);
     void shortFinish(int index, qint64 received);     // clean close, fewer bytes than asked
     void sizeDiscovered(qint64 total, bool rangesSupported);  // real size (+ Range support) from live headers
 

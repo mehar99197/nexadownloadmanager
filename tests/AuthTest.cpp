@@ -112,9 +112,14 @@ int main(int argc, char **argv)
         const QStringList a = m.ytDlpArgs(QUrl("https://www.udemy.com/course/x/learn/lecture/1"));
         CHECK(a.size() == 2 && a.at(0) == "--cookies", "cookie data -> {--cookies, tempPath}");
         CHECK(QFile::exists(a.value(1)), "registerCookieData wrote a temp cookies.txt");
+#ifndef Q_OS_WIN
+        // POSIX mode bits only: Qt leaves NTFS ACL lookup off, so on Windows
+        // permissions() always reports group/other read and the check is moot
+        // (the temp dir is already user-private there).
         const auto perms = QFile(a.value(1)).permissions();
         CHECK(!(perms & (QFile::ReadGroup | QFile::ReadOther | QFile::WriteGroup | QFile::WriteOther)),
               "temp cookies.txt is owner-only (0600)");
+#endif
 
         CHECK(m.registerCookieData("x.com", QString()).code == AuthError::EmptyFile,
               "empty cookie text -> EmptyFile");
@@ -179,9 +184,11 @@ int main(int argc, char **argv)
         CHECK(cfg.open(QIODevice::ReadOnly), "auth config readable");
         const QByteArray body = cfg.readAll(); cfg.close();
         CHECK(body.contains("Authorization: Bearer abc.DEF-123_x~"), "config holds the bearer header");
+#ifndef Q_OS_WIN
         const auto perms = QFile(a.at(1)).permissions();
         CHECK(!(perms & (QFile::ReadGroup | QFile::ReadOther | QFile::WriteGroup | QFile::WriteOther)),
               "auth config is owner-only (0600)");
+#endif
         bool argLeak = false; for (const QString &s : a) if (s.contains("abc.DEF-123")) argLeak = true;
         CHECK(!argLeak, "token never appears in the yt-dlp argument list");
     }

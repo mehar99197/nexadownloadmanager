@@ -626,7 +626,13 @@ void DownloadTask::onProbeFinished()
         return;
     r->deleteLater();
 
-    if (r->error() != QNetworkReply::NoError &&
+    const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    // Qt maps a 4xx/5xx to its own error (ContentNotFoundError,
+    // AuthenticationRequiredError, …), so a status the server DID send must be
+    // classified below before the transport error is consulted — otherwise the
+    // 401/403 and "HTTP nnn" branches are unreachable and the user only ever
+    // sees Qt's generic wording.
+    if (status < 400 && r->error() != QNetworkReply::NoError &&
         r->error() != QNetworkReply::OperationCanceledError) {
         if (kDebug)
             qDebug().noquote() << "NEXA PROBE-ERROR" << m_id
@@ -635,7 +641,6 @@ void DownloadTask::onProbeFinished()
         return;
     }
 
-    const int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray ctype =
         r->header(QNetworkRequest::ContentTypeHeader).toByteArray().toLower();
     if (kDebug)
@@ -1159,6 +1164,12 @@ void DownloadTask::launchSegments()
     clearSegments();
     m_completedSegments = 0;
     m_activeSegments = 0;
+    // A new run gets a fresh retry budget. The counters are keyed by segment
+    // index and were never reset, so a task that had errored after kMaxRetries
+    // on segment N came back from Resume with N's budget still spent: its very
+    // next hiccup went straight to Error with no retry at all — and after a
+    // re-probe the same index may belong to a completely different byte range.
+    m_retries.clear();
 
     for (const SegmentInfo &seg : m_segments) {
         if (seg.complete()) {
@@ -1168,7 +1179,11 @@ void DownloadTask::launchSegments()
         makeWorker(seg);
         ++m_activeSegments;
     }
-    for (auto *w : m_workers)
+    // start() can fail synchronously (destination not openable) and re-enter
+    // onSegmentFailed(); iterate a snapshot so nothing that reshapes m_workers
+    // from inside that path invalidates this loop.
+    const QVector<SegmentDownloader*> launched = m_workers;
+    for (auto *w : launched)
         w->start();
 
     if (m_activeSegments == 0)
@@ -1202,6 +1217,7 @@ SegmentDownloader *DownloadTask::makeWorker(const SegmentInfo &seg)
     connect(w, &SegmentDownloader::completed,   this, &DownloadTask::onSegmentCompleted);
     connect(w, &SegmentDownloader::failed,      this, &DownloadTask::onSegmentFailed);
     connect(w, &SegmentDownloader::shortFinish, this, &DownloadTask::onSegmentShortFinish);
+    connect(w, &SegmentDownloader::objectChanged, this, &DownloadTask::onSegmentObjectChanged);
     connect(w, &SegmentDownloader::sizeDiscovered, this, &DownloadTask::onSizeDiscovered);
     m_workers.append(w);
     return w;
@@ -1366,9 +1382,9 @@ void DownloadTask::onSegmentFailed(int index, const QString &error)
     }
     m_speedTimer->stop();
     clearSegments();
-    persist();
     setState(DownloadState::Error,
              QStringLiteral("segment %1: %2").arg(index).arg(error));
+    persist();
 }
 
 void DownloadTask::onSegmentShortFinish(int index, qint64 received)
@@ -1382,7 +1398,18 @@ void DownloadTask::onSegmentShortFinish(int index, qint64 received)
     // kMaxShortReadRetries times — the segment resumes from its current offset.
     // Apple Music CDN in particular cuts connections repeatedly before the file
     // is fully served; a higher cap lets us survive those interruptions.
-    if (m_retries.value(index) < kMaxShortReadRetries) {
+    //
+    // Only when a resume is possible at all, though. An unknown-length body from
+    // a server that ignores Range (a chunked, dynamically generated download —
+    // the single open-ended segment with no Range support) cannot be resumed:
+    // every "bytes=N-" retry comes back as a fresh 200 from byte zero, which the
+    // worker rightly rejects, and the whole download died with "server ignored
+    // the byte-range resume request" even though every byte had already
+    // arrived. For such a server the one clean close IS the end of the object
+    // (RFC 7230 §3.3.3: with no length, the message ends when the connection
+    // closes), so accept it at once instead of burning the retry budget.
+    const bool resumable = m_rangesSupported || m_segments.size() != 1;
+    if (resumable && m_retries.value(index) < kMaxShortReadRetries) {
         retrySegment(index, QStringLiteral("short read"));
         return;
     }
@@ -1396,9 +1423,41 @@ void DownloadTask::onSegmentShortFinish(int index, qint64 received)
     // Multi-segment short read leaves a gap we can't fill — fail clearly.
     m_speedTimer->stop();
     clearSegments();
-    persist();
     setState(DownloadState::Error,
              QStringLiteral("segment %1 ended early (incomplete)").arg(index));
+    persist();
+}
+
+// A resumed connection found a different object behind the URL (the If-Range
+// validator no longer matches, or the server restarted from byte zero). Nothing
+// on disk can be trusted, and no retry can fix it: every attempt would hit the
+// same mismatch, so this used to burn the retry budget and end in an Error that
+// Resume reproduced forever — the only way out was to remove and re-add the
+// download. Do what the probe path does when it sees a changed validator on a
+// fresh start: drop the partial file and layout, then probe again from scratch.
+void DownloadTask::onSegmentObjectChanged(int index)
+{
+    Q_UNUSED(index);
+    if (m_state != DownloadState::Downloading)
+        return;
+    m_speedTimer->stop();
+    clearSegments();                       // stop() closes every worker's handle
+    QFile::remove(m_savePath);
+    m_segments.clear();
+    m_done = 0;
+    m_total = -1;
+    m_rangesSupported = false;
+    m_etag.clear();
+    m_lastModified.clear();
+    m_completedSegments = 0;
+    m_activeSegments = 0;
+    m_retries.clear();
+    // Leave the "downloading" state silently: start() refuses to run while
+    // Downloading/Probing, and announcing Paused here would let the engine hand
+    // this slot to another queued task for the instant before the re-probe.
+    m_state = DownloadState::Queued;
+    persist();
+    start();
 }
 
 void DownloadTask::retrySegment(int index, const QString &reason)
@@ -1649,8 +1708,8 @@ void DownloadTask::pause()
         p->deleteLater();
     }
     clearSegments();
-    persist();
     setState(DownloadState::Paused, QStringLiteral("paused"));
+    persist();   // after the state change, so the row says Paused, not Downloading
 }
 
 void DownloadTask::resume()

@@ -52,9 +52,12 @@ Production refuses to boot on defaults; `backend/src/config/env.js` enforces:
 ## Stripe webhook
 
 Point it at `https://<domain>/api/webhooks/stripe` for
-`checkout.session.completed`, `customer.subscription.deleted` and
-`invoice.payment_failed`. Events are recorded in `stripe_webhook_events`, so
-Stripe's retries cannot double-charge or double-email.
+`checkout.session.completed`, **`invoice.paid`** (renewals — without it every
+monthly licence reads `expired` from month two while Stripe keeps charging),
+`customer.subscription.updated` (portal reactivation / cancel-at-period-end),
+`customer.subscription.deleted` and `invoice.payment_failed`. Events are
+recorded in `stripe_webhook_events`, so Stripe's retries cannot double-charge
+or double-email.
 
 ## Updating
 

@@ -3,7 +3,7 @@
 const { z } = require('zod');
 
 const email = z.string().trim().toLowerCase().email();
-const strongPassword = z.string().min(8, 'Password must be at least 8 characters');
+const strongPassword = z.string().min(8, 'Password must be at least 8 characters').max(128);
 
 const registerSchema = {
   body: z

@@ -27,7 +27,9 @@ function errorHandler(err, req, res, next) {
     status = 401; code = 'INVALID_TOKEN'; message = 'Invalid token';
   } else if (err.code === 'ER_DUP_ENTRY') {
     status = 409; code = 'DUPLICATE'; message = 'Duplicate entry';
-    details = err.sqlMessage;
+    // The driver's message names the table and index; useful locally, not
+    // something to hand a stranger in production.
+    if (!config.isProd) details = err.sqlMessage;
   } else if (err.code === 'ER_NO_REFERENCED_ROW_2') {
     status = 400; code = 'BAD_REQUEST'; message = 'Referenced record does not exist';
   }
@@ -35,6 +37,9 @@ function errorHandler(err, req, res, next) {
   if (status >= 500) {
     // eslint-disable-next-line no-console
     console.error('[error]', err);
+    // A 5xx message is whatever threw — a MySQL column name, a file path, a
+    // third-party SDK's wording. Log it, but do not serve it in production.
+    if (config.isProd) { code = 'INTERNAL_ERROR'; message = 'Something went wrong'; }
   }
 
   const error = { code, message };

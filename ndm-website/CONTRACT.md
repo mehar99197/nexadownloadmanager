@@ -249,8 +249,8 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 |--------|------|-----------|
 | GET | `/plans` | PUBLIC — return `PLANS` |
 | POST | `/checkout` | `requireAuth`, `validate(checkoutSchema)` — `stripe.createCheckoutSession` |
-| POST | `/cancel` | `requireAuth` — `stripe.cancelSubscription` + set status `cancelled` |
-| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt }` (after `expireTrialIfNeeded`) |
+| POST | `/cancel` | `requireAuth` — `stripe.cancelAtPeriodEnd` + `cancel_at_period_end=1`; the row stays `active` until `expiry_date` (the desktop licence keeps working for the paid period) and the `customer.subscription.deleted` webhook marks it `cancelled`. `400 ALREADY_CANCELLED` on a repeat |
+| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt, cancelAtPeriodEnd }` (after `expireTrialIfNeeded`) |
 | POST | `/start-trial` | `requireAuth` — 7-day no-card Pro trial. `400 TRIAL_UNAVAILABLE` if `users.trial_used=1` or the current subscription is an active paid pro/team plan (no trial). Otherwise ONE transaction: `plan='pro', status='active', seats=planSeats('pro'), start_date=now, expiry_date=trial_ends_at=now+7d, stripe_subscription_id=NULL`, `users.trial_used=1`; audit `subscription.trial_started`. → `{ plan:'pro', trial:true, trialEndsAt }` *(ADDED)* |
 
 ### `routes/license.js` → `/api/license`
@@ -386,7 +386,7 @@ is therefore only ever changed by the `create-root` CLI.
 ### `routes/webhooks.js` → `/api/webhooks`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Handle `checkout.session.completed` / payment success → create Payment + activate Subscription (**clears `trial_ends_at`**) + email license; handle cancellation. Respond `200 { received: true }` (plain, not envelope, for Stripe). |
+| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Handle `checkout.session.completed` → create Payment + activate Subscription (**clears `trial_ends_at`** and `cancel_at_period_end`) + email license; `invoice.paid` / `invoice.payment_succeeded` → **renewal**: push `expiry_date` to the invoice line's `period.end` (never backwards), record the Payment, receipt on a `subscription_cycle`; `customer.subscription.updated` → mirror `cancel_at_period_end` and a later `current_period_end`; `customer.subscription.deleted` → `status='cancelled'`; `invoice.payment_failed` → failed Payment. Respond `200 { received: true }` (plain, not envelope, for Stripe). |
 
 **Public endpoints already in `app.js` (do NOT redefine):** `GET /api/health`,
 `GET /api/stats` → `{ users, downloads }` where `users = COUNT(users)` and

@@ -23,7 +23,10 @@ const SESSION_HINT_COOKIE = 'ndm_session';
 
 function sanitizeUser(user) {
   const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
+    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash,
+    // Control-panel 2FA material (an encrypted secret and the recovery-code
+    // hashes) has no business in a profile response, even the owner's.
+    totp_secret, totp_recovery, ...safe
   } = user;
   // The site needs to know whether password sign-in is available for this
   // account without ever seeing the hash: a Google-created account shows
@@ -52,6 +55,7 @@ function subscriptionSummary(sub) {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
     seats: sub.seats, licenseKey: sub.license_key,
     trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
   };
 }
 

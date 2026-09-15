@@ -23,7 +23,7 @@ const {
 
 const {
   signAccessToken, signEmailToken, signResetToken,
-  verifyEmailToken, verifyResetToken, generateRefreshToken, hashRefreshToken,
+  verifyEmailToken, verifyResetToken, generateRefreshToken, hashRefreshToken, passwordVersion,
 } = require('../utils/jwt');
 
 const { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/email');
@@ -304,6 +304,10 @@ router.post(
     catch { return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400); }
     const user = await User.findById(Number(payload.sub));
     if (!user) return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
+    // Single use: the token names the password it was issued against, so once
+    // that password has changed (by this link or any other way) it is dead.
+    if (payload.pv !== passwordVersion(user))
+      return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(password, BCRYPT_COST),
       refreshTokenHash: null,

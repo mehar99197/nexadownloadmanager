@@ -172,3 +172,43 @@ describe('Pricing promotion code', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/not valid/i));
   });
 });
+
+describe('Billing — a cancelled renewal keeps the paid period', () => {
+  const mount = async () => {
+    const Billing = (await import('../pages/Billing')).default;
+    const { ConfirmProvider } = await import('../components/ConfirmDialog');
+    render(
+      <MemoryRouter initialEntries={['/billing']}>
+        <ToastProvider>
+          <ConfirmProvider>
+            <Billing />
+          </ConfirmProvider>
+        </ToastProvider>
+      </MemoryRouter>
+    );
+  };
+  const status = (extra) => ({
+    data: { ok: true, data: { plan: 'pro', status: 'active', expiryDate: '2030-01-15T00:00:00.000Z',
+                              seats: 1, trial: false, trialEndsAt: null, cancelAtPeriodEnd: false, ...extra } },
+  });
+
+  it('offers cancellation while the renewal is on', async () => {
+    api.get.mockImplementation((url) => Promise.resolve(
+      url === '/user/billing' ? { data: { ok: true, data: { payments: [] } } } : status()
+    ));
+    await mount();
+    expect(await screen.findByRole('button', { name: /cancel subscription/i })).toBeInTheDocument();
+    expect(screen.getByText(/^expires$/i)).toBeInTheDocument();
+  });
+
+  it('after cancelling it says when access ends and hides the button', async () => {
+    api.get.mockImplementation((url) => Promise.resolve(
+      url === '/user/billing' ? { data: { ok: true, data: { payments: [] } } } : status({ cancelAtPeriodEnd: true })
+    ));
+    await mount();
+    expect(await screen.findByText(/ends on/i)).toBeInTheDocument();
+    expect(screen.getByText(/renewal is switched off/i)).toBeInTheDocument();
+    expect(screen.getByText(/^active$/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /cancel subscription/i })).not.toBeInTheDocument();
+  });
+});

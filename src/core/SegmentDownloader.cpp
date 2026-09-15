@@ -9,6 +9,16 @@
 
 namespace nexa {
 
+// How much a THROTTLED connection may hold unread before TCP backpressure is
+// applied. The final drain in onFinished() writes whatever is still buffered
+// when the server closes, outside the token budget — so this is also the burst
+// every connection gets for free. At the old 2 MiB a global cap did nothing at
+// all for a file that fit the buffer, and a 32-way download pulled its first
+// 64 MiB at full speed before the limit bit. Throughput at generous limits is
+// unaffected: a connection that is not token-starved is drained on every
+// readyRead and never fills the buffer.
+static constexpr qint64 kThrottledReadBuffer = 256 * 1024;
+
 static bool parseContentRange(const QByteArray &raw, qint64 *start, qint64 *end,
                               qint64 *total)
 {
@@ -57,7 +67,7 @@ SegmentDownloader::SegmentDownloader(const SegmentInfo &seg,
         // (otherwise an unbounded buffer would keep filling at full line speed).
         connect(m_limiter, &RateLimiter::limitedChanged, this, [this](bool limited) {
             if (m_reply)
-                m_reply->setReadBufferSize(limited ? (2 * 1024 * 1024) : 0);
+                m_reply->setReadBufferSize(limited ? kThrottledReadBuffer : 0);
             if (limited)
                 pump();
         });
@@ -145,7 +155,7 @@ void SegmentDownloader::start() {
     // Unlimited downloads keep an unbounded buffer for maximum throughput.
     m_reply->setReadBufferSize((m_limiter && m_limiter->isLimited())
                                    || (m_taskLimiter && m_taskLimiter->isLimited())
-                               ? (2 * 1024 * 1024) : 0);
+                               ? kThrottledReadBuffer : 0);
     connect(m_reply, &QNetworkReply::metaDataChanged, this, &SegmentDownloader::onMetaData);
     connect(m_reply, &QNetworkReply::readyRead, this, &SegmentDownloader::onReadyRead);
     connect(m_reply, &QNetworkReply::finished, this, &SegmentDownloader::onFinished);
@@ -160,6 +170,18 @@ void SegmentDownloader::start() {
 void SegmentDownloader::onMetaData() {
     if (!m_reply)
         return;
+    // RFC 7233 §3.2: when If-Range no longer matches, a conforming server
+    // ignores Range and answers 200 with the WHOLE current object. That is the
+    // object-changed signal, not a server "ignoring" the resume — routing it
+    // through the generic range error below retried the same doomed request
+    // five times and then stuck the download in an Error that Resume repeated.
+    // (Cheap to answer here, before the body streams: it is aborted at once.)
+    if (!m_stopped && !m_ifRangeValidator.isEmpty() && m_requestStart > 0
+        && m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200) {
+        m_validatorMismatch = true;
+        m_reply->abort();
+        return;
+    }
     if (!m_stopped && m_responseError.isEmpty()) {
         m_responseError = responseValidationError();
         if (!m_responseError.isEmpty()) {
@@ -267,6 +289,12 @@ void SegmentDownloader::stop() {
     if (m_reply) {
         m_reply->abort();   // triggers onFinished with OperationCanceledError
     }
+    // Release the destination now rather than at deleteLater() time: a task
+    // restarting from scratch removes the file right after stopping its
+    // workers, and Windows refuses to delete a file another handle holds open.
+    // start() reopens it if this worker is ever resumed.
+    if (m_file.isOpen())
+        m_file.close();
 }
 
 void SegmentDownloader::setEnd(qint64 newEnd) {
@@ -303,7 +331,7 @@ void SegmentDownloader::setTaskRateLimiter(RateLimiter *limiter)
     connect(m_taskLimiter, &RateLimiter::limitedChanged, this, [this](bool limited) {
         if (m_reply)
             m_reply->setReadBufferSize(limited || (m_limiter && m_limiter->isLimited())
-                                           ? (2 * 1024 * 1024) : 0);
+                                           ? kThrottledReadBuffer : 0);
         if (limited)
             pump();
     });
@@ -391,7 +419,8 @@ void SegmentDownloader::onFinished() {
     if (m_validatorMismatch) {
         m_reply->deleteLater();
         m_reply = nullptr;
-        emit failed(m_seg.index, QStringLiteral("remote object changed during resume"));
+        m_validatorMismatch = false;
+        emit objectChanged(m_seg.index);
         return;
     }
     if (!m_stopped && m_responseError.isEmpty())
