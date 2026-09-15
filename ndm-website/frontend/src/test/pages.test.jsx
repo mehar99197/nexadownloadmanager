@@ -227,6 +227,37 @@ describe('Pricing promotion code', () => {
   });
 });
 
+describe('Register with ?trial=1', () => {
+  it('records the trial intent but does not call start-trial without a session', async () => {
+    const Register = (await import('../pages/Register')).default;
+    api.post.mockResolvedValue({ data: { ok: true, data: {} } });   // register: no session
+
+    render(
+      <MemoryRouter initialEntries={['/register?trial=1']}>
+        <ToastProvider>
+          <AuthProvider>
+            <Register />
+          </AuthProvider>
+        </ToastProvider>
+      </MemoryRouter>
+    );
+
+    await userEvent.type(await screen.findByLabelText(/name/i), 'Test Person');
+    await userEvent.type(screen.getByLabelText(/email/i), 'person@example.test');
+    await userEvent.type(screen.getByLabelText('Password', { exact: true }), 'longenough-pw');
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/auth/register', expect.objectContaining({ email: 'person@example.test' })));
+    // Register never answers with a token, so an immediate start-trial is a
+    // guaranteed 401 (plus the interceptor's refresh); the intent is parked
+    // locally for the first authenticated page instead.
+    const urls = api.post.mock.calls.map(([url]) => url);
+    expect(urls).not.toContain('/subscription/start-trial');
+    expect(localStorage.getItem('ndm_pending_trial')).toBe('1');
+    localStorage.removeItem('ndm_pending_trial');
+  });
+});
+
 describe('Pricing while billing is disabled', () => {
   const plans = { free: { id: 'free', name: 'Free', price: 0, features: [] },
                   pro: { id: 'pro', name: 'Pro', monthly: 5, yearly: 45, features: [] },

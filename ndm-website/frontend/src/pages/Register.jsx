@@ -49,17 +49,11 @@ export default function Register() {
     setSubmitting(true);
     try {
       await register({ name, email, password, turnstileToken });
-      if (wantsTrial) {
-        // Register never returns a session, so the trial is redeemed on the
-        // first authenticated page (Dashboard) — or here, if the backend ever
-        // starts logging users in on registration. TRIAL_UNAVAILABLE is ignored.
-        markPendingTrial();
-        try {
-          await startTrial();
-        } catch {
-          // not logged in yet — Dashboard will pick the pending trial up
-        }
-      }
+      // Register never returns a session (CONTRACT.md), so the trial is
+      // redeemed by the first authenticated page — VerifyEmail or Dashboard.
+      // Trying here was a guaranteed 401 plus the interceptor's doomed
+      // /auth/refresh on every single signup.
+      if (wantsTrial) markPendingTrial();
       toast.success(
         wantsTrial
           ? 'Account created! Sign in to start your 7-day Pro trial.'
