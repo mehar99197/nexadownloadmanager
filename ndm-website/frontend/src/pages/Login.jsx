@@ -260,7 +260,7 @@ export default function Login() {
                   account (sendControlPanelSignInAttemptEmail), which is where
                   the explanation belongs.
                 */}
-                {!needsVerification && (
+                {!needsVerification && googleAuthEnabled() && (
                   <p className="mt-2 text-xs text-red-200/80">
                     Created your account with Google? Use “Continue with Google” below.
                     Never set a password? Use “Forgot password”.
