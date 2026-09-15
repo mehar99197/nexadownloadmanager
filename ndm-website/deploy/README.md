@@ -227,6 +227,37 @@ git pull
 the new backend files land. `SKIP_FRONTEND=1` / `SKIP_ADMIN=1` /
 `SKIP_BACKEND=1` deploy a subset — see the script's header for every override.
 
+The restart is a `kill`; the keepalive (below) is what starts the new build.
+If the hPanel cron job is not ticking — `stat nexa-api/.run-api.lock` on the
+server tells you when `run-api.sh` last ran — start it yourself right after
+the script finishes, or the site answers 5xx on `/api` until somebody does:
+
+```bash
+ssh -p 65002 u941499432@145.79.30.42 \
+  '/bin/bash ~/domains/nexadownloadmanager.com/run-api.sh; curl -s http://127.0.0.1:3001/api/health'
+```
+
+### Deploying from Windows
+
+The script needs `rsync`, `zip`, `unzip` and an `ssh` that can find the deploy
+key. Git Bash ships none of the first three, so use MSYS2 (`pacman -S rsync
+openssh zip unzip`), with two Windows-specific traps handled:
+
+- MSYS2's `ssh` resolves `~` from its own passwd database, not `$HOME`, so the
+  key and `known_hosts` must live in `C:\msys64\home\<user>\.ssh\` (copy them
+  there once, `chmod 600`).
+- The MSYS2 runtime rewrites POSIX-looking *environment values* for native
+  programs: `VITE_API_URL=/api` reaches Vite as `C:/msys64/api`, and the bundle
+  then calls that as its API base — every page that touches the API fails with
+  a working curl. The script exports `MSYS2_ENV_CONV_EXCL=VITE_API_URL` and
+  refuses to upload a bundle that contains a local drive path, but keep it in
+  mind for any other path-like value you add.
+
+```bash
+MSYSTEM=MSYS C:/msys64/usr/bin/bash -lc \
+  'export PATH="/c/Program Files/nodejs:$PATH"; cd /c/path/to/nexadownloadmanager && ./deploy/build-and-upload.sh'
+```
+
 ## Keepalive
 
 `run-api.sh` health-checks the API on loopback and (re)starts it if it's
@@ -242,6 +273,17 @@ Add an hPanel Cron Job:
 `supervisor.sh` is a same-directory fallback loop for a shell that can't
 register cron jobs — it coexists safely with the hPanel job (`run-api.sh` has
 its own lock either way). Logs: `~/domains/nexadownloadmanager.com/logs/api.log`.
+Start it detached so it outlives the SSH session:
+
+```bash
+ssh -p 65002 u941499432@145.79.30.42 \
+  'cd ~/domains/nexadownloadmanager.com && nohup setsid /bin/bash ./supervisor.sh >/dev/null 2>&1 </dev/null & disown'
+```
+
+It is a stopgap: the host reaps long-running shells eventually and nothing
+restarts the loop itself. The hPanel cron job is the real keepalive — verify it
+exists (hPanel → Advanced → Cron Jobs) whenever `.run-api.lock` is older than a
+minute while the API is healthy.
 
 ## Backups
 

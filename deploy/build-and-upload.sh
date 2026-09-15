@@ -12,6 +12,7 @@
 #
 # What is deliberately NEVER touched on the server:
 #   public_html/.htaccess       (routing: SPA fallback + /api proxy + /root mount)
+#   public_html/.user.ini       (PHP overrides for api-proxy.php; shipped with DEPLOY_HTACCESS=1)
 #   public_html/api-proxy.php   (streams /api/* to 127.0.0.1:3001)
 #   public_html/admin/          (protected during the frontend sync; admin has its own sync)
 #   public_html/.well-known/    (host-managed, e.g. ACME/verification files)
@@ -51,7 +52,8 @@
 #   RESTART_BACKEND=0        skip restarting the remote node process after upload
 #   SKIP_FRONTEND=1 / SKIP_ADMIN=1 / SKIP_BACKEND=1   deploy a subset
 #   DEPLOY_HTACCESS=1        also upload deploy/hostinger/public_html.htaccess (the
-#                            server copy is backed up OUTSIDE public_html first).
+#                            server copy is backed up OUTSIDE public_html first)
+#                            and public_html.user.ini beside it.
 #                            Off by default: routing + CSP live in that file and
 #                            a bad one takes the whole site down.
 #
@@ -91,6 +93,10 @@ BACKEND="${SITE}/backend"
 # way that guarantees the hydrated bundle (usePageMeta.js) and the prerendered
 # shells agree on the canonical origin.
 export VITE_API_URL="${VITE_API_URL:-/api}"                       # same-origin via api-proxy.php
+# Running from MSYS2/Git Bash on Windows: the runtime rewrites POSIX-looking
+# environment values for native programs, and "/api" reaches Vite as
+# "C:/msys64/api" — the bundle then calls that as its API base. Exclude it.
+export MSYS2_ENV_CONV_EXCL="${MSYS2_ENV_CONV_EXCL:+${MSYS2_ENV_CONV_EXCL};}VITE_API_URL"
 export VITE_SITE_URL="${VITE_SITE_URL:-https://nexadownloadmanager.com}"
 export VITE_TURNSTILE_SITE_KEY="${VITE_TURNSTILE_SITE_KEY:-}"     # blank = widget off
 export VITE_PLAUSIBLE_DOMAIN="${VITE_PLAUSIBLE_DOMAIN:-}"         # blank = no analytics
@@ -190,6 +196,12 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   echo "CSP: inline script hash(es) allowed by .htaccess: ${INLINE_HASHES:-none}"
   grep -q "${VITE_SITE_URL}/sitemap.xml" "${FRONTEND}/dist/robots.txt" \
     || die "dist/robots.txt does not point at ${VITE_SITE_URL}/sitemap.xml"
+  # A build-machine path in the bundle means an environment value was
+  # rewritten on the way into Vite (see MSYS2_ENV_CONV_EXCL above); the site
+  # would then request its API from a Windows drive letter.
+  if grep -lE '[A-Za-z]:/(msys64|Users|Program)' "${FRONTEND}"/dist/assets/*.js >/dev/null 2>&1; then
+    die "frontend bundle contains a local filesystem path — VITE_API_URL is '${VITE_API_URL}', check the build environment"
+  fi
   echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL})."
 else
   phase "Phase 1: SKIPPED (frontend)"
@@ -213,6 +225,9 @@ if [[ "${SKIP_ADMIN}" != "1" ]]; then
     || die "admin dist/index.html does not reference /admin/assets/ — check vite base"
   if grep -Eq '(src|href)="/(assets|src)/' "${ADMIN}/dist/index.html"; then
     die "admin dist/index.html references root-relative assets; /root mount would 404"
+  fi
+  if grep -lE '[A-Za-z]:/(msys64|Users|Program)' "${ADMIN}"/dist/assets/*.js >/dev/null 2>&1; then
+    die "admin bundle contains a local filesystem path — VITE_API_URL is '${VITE_API_URL}', check the build environment"
   fi
   echo "Admin dist verified (all assets absolute under /admin/; safe for the /root mount)."
 else
@@ -272,6 +287,11 @@ if [[ "${DEPLOY_HTACCESS}" == "1" ]]; then
   rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
     "${SITE}/deploy/hostinger/public_html.htaccess" "${REMOTE}:${WEBROOT}/.htaccess"
   echo ".htaccess uploaded (previous copy: ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP})"
+  # The PHP overrides for api-proxy.php travel with it. lsphp reads .user.ini
+  # per directory (php_value in .htaccess is a 500 on this host); the frontend
+  # sync below excludes it, otherwise --delete-after removed it on every deploy.
+  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" "${SITE}/deploy/hostinger/public_html.user.ini" "${REMOTE}:${WEBROOT}/.user.ini"
+  echo ".user.ini uploaded"
 fi
 
 # --------------------------------------------------------------------------
@@ -280,12 +300,13 @@ fi
 if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   phase "Phase 5: uploading frontend dist -> ${WEBROOT}/"
   # --delete-after removes stale hashed assets (and Hostinger's default.php),
-  # but the excludes below are delete-protected: .htaccess, api-proxy.php,
-  # admin/ and .well-known/ live in public_html yet are owned elsewhere
-  # (.well-known by the hosting platform itself).
+  # but the excludes below are delete-protected: .htaccess, .user.ini,
+  # api-proxy.php, admin/ and .well-known/ live in public_html yet are owned
+  # elsewhere (.well-known by the hosting platform itself).
   rsync -az --delete-after \
     --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     --exclude='.htaccess' \
+    --exclude='.user.ini' \
     --exclude='api-proxy.php' \
     --exclude='admin/' \
     --exclude='.well-known/' \
@@ -374,12 +395,12 @@ fi
 phase "Deploy complete"
 cat <<EOF
 Uploaded:
-  frontend -> ${REMOTE}:${WEBROOT}/            (kept: .htaccess, api-proxy.php, admin/, .well-known/)
+  frontend -> ${REMOTE}:${WEBROOT}/            (kept: .htaccess, .user.ini, api-proxy.php, admin/, .well-known/)
   admin    -> ${REMOTE}:${WEBROOT}/admin/      (one dist, mounted at /admin and /root)
   backend  -> ${REMOTE}:${API_DIR}/            (kept: .env, .env.bak-*, .api.pid, .run-api.lock, logs/, uploads/, backups/)
 
 Not handled here (separate deploy steps):
-  - public_html/.htaccess and api-proxy.php
+  - public_html/.htaccess, .user.ini (both: DEPLOY_HTACCESS=1) and api-proxy.php
   - nexa-api/.env secrets and the run-api.sh keepalive (cron/supervisor.sh)
 Smoke test:
   curl -sI https://nexadownloadmanager.com/pricing | head -1

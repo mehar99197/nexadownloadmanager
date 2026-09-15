@@ -3,3 +3,9 @@
 # including line endings. Pin LF so a Windows checkout (autocrlf) and a Linux one
 # build byte-identical shells and the one hash in .htaccess holds everywhere.
 ndm-website/frontend/index.html text eol=lf
+
+# Shell scripts and the files rsync ships verbatim to the Hostinger box must
+# stay LF: bash chokes on a CR in a command line, and the .htaccess/.user.ini
+# are read by LiteSpeed/lsphp as-is.
+*.sh text eol=lf
+ndm-website/deploy/hostinger/* text eol=lf

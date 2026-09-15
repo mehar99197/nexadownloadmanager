@@ -174,7 +174,8 @@ DirectoryIndex index.html index.php
     # it outright ("origin is not allowed for the given client ID"). Every
     # shell already declares the apex as canonical; this makes the redirect
     # match. Ordered before the HTTPS rule so http://www. lands on the apex
-    # over https in a single hop.
+    # over https in one hop here (the CDN edge upgrades http first, so a
+    # client sees two hops on that path; https://www. is a single 301).
     RewriteCond %{HTTP_HOST} ^www\.(.+)$ [NC]
     RewriteRule ^ https://%1%{REQUEST_URI} [R=301,L]
 
