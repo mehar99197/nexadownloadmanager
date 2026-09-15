@@ -363,7 +363,7 @@ jobs:
           echo "✅ Self-contained .deb ready: $(du -sh ${PKG}.deb | cut -f1)"
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nexa-linux-amd64-deb
           path: nexa_${{ env.NEXA_VERSION }}_amd64.deb
@@ -736,7 +736,7 @@ jobs:
           }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: NexaSetup-Windows-x64
           path: NexaSetup.exe
@@ -925,7 +925,7 @@ jobs:
           xcrun stapler validate Nexa-macOS.dmg
           echo "Notarised and stapled." > Nexa-macOS-README.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nexa-macos-dmg
           path: |
@@ -1059,7 +1059,7 @@ jobs:
 
       - name: Upload e2e traces on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-traces
           path: ndm-website/frontend/test-results
