@@ -467,6 +467,10 @@ if(NEXA_BUILD_TESTS)
 
     add_executable(nexa_engine_helpers_test
         tests/EngineHelpersTest.cpp
+        # The batch dialog's expansion is a pure static, so it is tested here
+        # rather than in a target of its own: this one already links the engine
+        # it needs, and no widget is ever constructed.
+        src/ui/BatchDownloadDialog.cpp
         src/core/DownloadEngine.cpp
         src/core/DownloadTask.cpp
         src/core/SegmentDownloader.cpp
@@ -497,7 +501,7 @@ if(NEXA_BUILD_TESTS)
     )
     target_include_directories(nexa_engine_helpers_test PRIVATE src)
     target_link_libraries(nexa_engine_helpers_test PRIVATE
-        Qt6::Core Qt6::Network Qt6::Sql ${LIBTORRENT_TARGET} OpenSSL::Crypto)
+        Qt6::Core Qt6::Network Qt6::Sql Qt6::Widgets ${LIBTORRENT_TARGET} OpenSSL::Crypto)
 
     add_executable(nexa_download_import_test
         tests/DownloadImportTest.cpp

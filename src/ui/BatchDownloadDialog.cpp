@@ -63,7 +63,7 @@ BatchDownloadDialog::BatchDownloadDialog(DownloadEngine *engine, QWidget *parent
     resize(660, 520);
 }
 
-QStringList BatchDownloadDialog::expandInput(bool *truncated) const
+QStringList BatchDownloadDialog::expandInput(const QString &text, bool *truncated)
 {
     if (truncated)
         *truncated = false;
@@ -74,7 +74,6 @@ QStringList BatchDownloadDialog::expandInput(bool *truncated) const
     // one. Same result, and it is the hot path for a 10,000 line paste.
     QStringList tokens;
     QString current;
-    const QString text = m_input->toPlainText();
     for (const QChar &c : text) {
         if (c.isSpace()) {
             if (!current.isEmpty()) { tokens.append(current); current.clear(); }
@@ -94,6 +93,8 @@ QStringList BatchDownloadDialog::expandInput(bool *truncated) const
                     *truncated = true;
                 return out;
             }
+            const bool hasScheme = expanded.contains(QLatin1String("://"))
+                                || expanded.startsWith(QLatin1String("magnet:"), Qt::CaseInsensitive);
             const QUrl url = QUrl::fromUserInput(expanded);
             const QString scheme = url.scheme().toLower();
             // Mirror what addBatch() will accept, so the count is the truth and
@@ -102,6 +103,14 @@ QStringList BatchDownloadDialog::expandInput(bool *truncated) const
                 continue;
             if (scheme != QLatin1String("http") && scheme != QLatin1String("https")
                 && scheme != QLatin1String("magnet"))
+                continue;
+            // QUrl::fromUserInput is deliberately generous: it turns the bare
+            // word "just" into http://just, which is a valid URL with a valid
+            // host. A batch box is exactly where somebody pastes a paragraph,
+            // and without this every word in it became a download. A token is
+            // only taken when it either spells its scheme out or names a host
+            // with a dot in it -- which is every real address, and no prose.
+            if (!hasScheme && !url.host().contains(QLatin1Char('.')))
                 continue;
             out.append(expanded);
         }
@@ -112,7 +121,7 @@ QStringList BatchDownloadDialog::expandInput(bool *truncated) const
 void BatchDownloadDialog::refreshPreview()
 {
     bool truncated = false;
-    const QStringList urls = expandInput(&truncated);
+    const QStringList urls = expandInput(m_input->toPlainText(), &truncated);
 
     m_preview->clear();
     for (int i = 0; i < urls.size() && i < kPreviewRows; ++i)
@@ -143,7 +152,7 @@ void BatchDownloadDialog::refreshPreview()
 void BatchDownloadDialog::queueThem()
 {
     bool truncated = false;
-    const QStringList urls = expandInput(&truncated);
+    const QStringList urls = expandInput(m_input->toPlainText(), &truncated);
     if (urls.isEmpty())
         return;
 

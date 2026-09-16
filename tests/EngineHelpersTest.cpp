@@ -3,6 +3,7 @@
 // gets downloaded, where it lands, and whether an update is offered, so they
 // are worth pinning down independently of the engine's I/O.
 #include "core/DownloadEngine.h"
+#include "ui/BatchDownloadDialog.h"
 #include "core/UpdateChecker.h"
 #include "grabber/HlsGrabber.h"
 #include "core/Types.h"
@@ -301,6 +302,78 @@ static void testRefreshAddressMatching()
           "file-name case does not change the answer");
 }
 
+
+// What the Batch download dialog will actually queue, given what was typed.
+//
+// The dialog's own promise is that the preview equals the outcome, so this is
+// the function both its preview and its Add button read. The interesting parts
+// are the refusals: a batch box is somewhere people paste whole pages of text,
+// and a ceiling that only existed in the preview would be no ceiling at all.
+static void testBatchExpansion()
+{
+    using nexa::BatchDownloadDialog;
+    const auto expand = [](const char *text, bool *truncated = nullptr) {
+        return BatchDownloadDialog::expandInput(QString::fromLatin1(text), truncated);
+    };
+
+    // A numbered range, with the zero-padding of the lower bound preserved --
+    // scan[001-003] must not become scan1, or every filename sorts wrongly.
+    const QStringList range = expand("https://e.com/scan[001-003].jpg");
+    CHECK(range.size() == 3, "a three-wide range expands to three addresses");
+    CHECK(range.first() == QStringLiteral("https://e.com/scan001.jpg"), "zero padding survives");
+    CHECK(range.last() == QStringLiteral("https://e.com/scan003.jpg"), "and the last one is right");
+
+    // Several addresses, split on any whitespace, blank lines ignored. Written
+    // with explicit escapes rather than a raw multi-line literal so the shape of
+    // the input is visible in one line.
+    const QString messy = QStringLiteral("https://a.test/1.zip\n\n  https://b.test/2.zip \t https://c.test/3.zip");
+    CHECK(BatchDownloadDialog::expandInput(messy).size() == 3,
+          "newlines, blank lines and stray tabs all just separate addresses");
+
+    // Magnets are queued; they are a download like any other here.
+    CHECK(expand("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567").size() == 1,
+          "a magnet link is accepted");
+
+    // ---- and what must be dropped ------------------------------------
+    // file:// is the one that matters: a batch box is somewhere people paste
+    // text from anywhere, and reading local files was never what it is for.
+    CHECK(expand("file:///C:/Windows/System32/config/SAM").isEmpty(), "file:// is refused");
+    CHECK(expand("javascript:alert(1)").isEmpty(), "a script URL is refused");
+    CHECK(expand("ftp://old.test/file.bin").isEmpty(), "ftp is not in the accepted set");
+    CHECK(expand("just some prose that is not a link at all").isEmpty(),
+          "prose does not become downloads");
+    CHECK(expand("").isEmpty(), "empty input queues nothing");
+
+    // A line of prose next to a real address must not cost the real one.
+    CHECK(expand("here you go: https://e.com/a.zip").size() == 1,
+          "the one real address in a line of text is still found");
+
+    // A range wider than the engine will expand is left ALONE rather than
+    // expanded: expandPattern returns the token untouched past its own span
+    // limit. So this queues one nonsense address, not ninety-nine thousand
+    // real ones -- and the preview shows that single bracketed line, which is
+    // how the person sees their range was refused.
+    const QStringList tooWide = expand("https://e.com/f[1-99999].bin");
+    CHECK(tooWide.size() == 1, "a range past the engine's span limit is not expanded");
+    CHECK(tooWide.first().contains(QLatin1Char('[')),
+          "and is left with its brackets, rather than silently becoming f1.bin");
+
+    // The dialog's own ceiling is what catches MANY ranges adding up. Each of
+    // these is within the engine's span limit; together they are not.
+    bool truncated = false;
+    QString many;
+    for (int i = 0; i < 3; ++i)
+        many += QStringLiteral("https://e%1.com/f[1-5000].bin ").arg(i);
+    const QStringList huge = expand(many.toLatin1().constData(), &truncated);
+    CHECK(truncated, "fifteen thousand addresses report being cut short");
+    CHECK(huge.size() == BatchDownloadDialog::kPreviewCeiling,
+          "and are cut to exactly the ceiling, not to some other number");
+
+    bool small = true;
+    expand("https://e.com/f[1-3].bin", &small);
+    CHECK(!small, "an ordinary range does not claim to have been truncated");
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -310,6 +383,7 @@ int main(int argc, char **argv)
     testPlaylistTagMirroring();
     testWindowsFileNameRules();
     testRefreshAddressMatching();
+    testBatchExpansion();
     if (g_failures == 0) {
         qInfo() << "Engine helper tests passed";
         return 0;

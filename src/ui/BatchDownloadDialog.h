@@ -23,6 +23,12 @@ class DownloadEngine;
 class BatchDownloadDialog : public QDialog {
     Q_OBJECT
 public:
+    // How many expanded rows the preview lists before eliding, and the hard
+    // ceiling on the expansion itself -- a fat-fingered [1-999999] must not
+    // build a million-entry list just to render a preview of its first twelve.
+    static constexpr int kPreviewRows    = 12;
+    static constexpr int kPreviewCeiling = 10000;
+
     explicit BatchDownloadDialog(DownloadEngine *engine, QWidget *parent = nullptr);
 
     // Addresses queued when the dialog was accepted (empty otherwise).
@@ -32,14 +38,16 @@ private slots:
     void refreshPreview();
     void queueThem();
 
-private:
-    // Expand the text area into the addresses that would be queued, capped at
-    // kPreviewCeiling so a fat-fingered [1-999999] cannot build a huge list just
-    // to render a preview of its first twelve entries.
-    QStringList expandInput(bool *truncated) const;
+public:
+    // The decision the dialog is built around, as a pure function: which
+    // addresses does this text actually queue? Public and static so it can be
+    // tested without a widget, an engine or a database -- the cap and the
+    // scheme filter are the parts worth pinning, and neither needs a window to
+    // be wrong. `truncated` is set when the ceiling cut the list short.
+    static QStringList expandInput(const QString &text, bool *truncated = nullptr);
 
-    static constexpr int kPreviewRows     = 12;
-    static constexpr int kPreviewCeiling  = 10000;
+private:
+
 
     DownloadEngine   *m_engine;
     QPlainTextEdit   *m_input = nullptr;
