@@ -7,6 +7,8 @@
 #include "ui/ThemeGalleryDialog.h"
 #include "ui/Localization.h"
 #include "core/VirusScanner.h"
+#include "shell/ShellIntegration.h"
+#include "core/Portable.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -162,6 +164,23 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     }
     m_whenDone->setToolTip(tr("Runs once, after the last active download finishes (60-second countdown you can cancel)."));
     gen->addRow(tr("When all downloads finish"), m_whenDone);
+#ifdef Q_OS_WIN
+    // Windows Explorer integration. Not stored in QSettings: the registry keys
+    // ARE the state, so a saved bool could disagree with what Explorer actually
+    // shows -- after a reinstall, a profile copy, or another tool clearing them.
+    m_shellMenu = new QCheckBox(tr("Add Nexa to the Explorer right-click menu"), plate);
+    m_shellMenu->setChecked(shellint::isRegistered());
+    m_shellMenu->setToolTip(tr("Adds “New download with Nexa” to a folder’s right-click menu, "
+                               "and lists Nexa under “Open with” for .torrent files. "
+                               "Written for this user only; no administrator needed."));
+    if (portable::isPortable()) {
+        m_shellMenu->setChecked(false);
+        m_shellMenu->setEnabled(false);
+        m_shellMenu->setToolTip(tr("Portable mode leaves the host machine untouched, "
+                                   "so nothing is written to the registry."));
+    }
+    gen->addRow(QString(), m_shellMenu);
+#endif
     // Appearance: the full theme list inline, plus a gallery for people who
     // would rather see the looks than read their names.
     //
@@ -736,6 +755,17 @@ void SettingsDialog::apply()
     s.setValue(QLatin1String(kNotify), m_notify->isChecked());
     s.setValue(QLatin1String(kAutoUpdate), m_autoUpdate->isChecked());
     s.setValue(QLatin1String(kWhenDone), m_whenDone->currentData().toString());
+    // Apply rather than store: the registry keys are the state. Only act on a
+    // real change, so saving Settings does not rewrite the registry every time.
+    if (m_shellMenu && m_shellMenu->isEnabled()) {
+        const bool want = m_shellMenu->isChecked();
+        if (want != shellint::isRegistered()) {
+            if (want)
+                shellint::registerShellIntegration();
+            else
+                shellint::unregisterShellIntegration();
+        }
+    }
     s.setValue(QLatin1String(kDashEnabled), m_dashEnabled->isChecked());
     s.setValue(QLatin1String(kDashPort), m_dashPort->value());
     s.setValue(QLatin1String(kDashLan), m_dashLan->isChecked());

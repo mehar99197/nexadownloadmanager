@@ -55,8 +55,20 @@ public slots:
     // First-launch setup (folder, extension, test download); also Tools → Setup guide…
     void showSetupGuide();
     void promptSmartAdd();           // natural-language "Smart add" (AI)
+    // The New Download dialog, but every file lands in `folder` instead of
+    // wherever the category rules would have put it. Public because Explorer's
+    // "download to this folder" entry reaches it from main(), through the
+    // single-instance guard, exactly like showLinkGrabber. An empty folder is
+    // exactly promptAddUrl().
+    void promptAddUrlInto(const QString &folder);
     void importDownloads();          // read an IDM / JDownloader / link-list export
+    // IDM-style batch add: a list of addresses, or one carrying a [1-240] range.
+    void promptBatchDownload();
     void promptSpeedLimit(int id);   // per-download speed cap
+    // IDM-style "refresh download address": a signed CDN link expired and the
+    // download is sitting on a half-finished file. Re-aim it at a fresh link
+    // rather than starting over.
+    void promptRefreshAddress(int id);
 
 signals:
     // Settings were saved; main() re-applies the remote-dashboard configuration.

@@ -522,6 +522,131 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
     return pathForName(normalizeAppleMusicFilename(url, raw), url);
 }
 
+// How long an armed refresh capture stays live. Long enough to go and find the
+// link again in a browser, short enough that a capture the user forgot about
+// cannot quietly swallow an unrelated download later on.
+static constexpr qint64 kRefreshCaptureMs = 5 * 60 * 1000;
+
+void DownloadEngine::armRefreshCapture(int id)
+{
+    if (!m_tasks.contains(id))
+        return;
+    m_refreshId = id;
+    m_refreshArmedAt = QDateTime::currentDateTimeUtc();
+}
+
+void DownloadEngine::cancelRefreshCapture()
+{
+    m_refreshId = -1;
+    m_refreshArmedAt = QDateTime();
+}
+
+bool DownloadEngine::addressLooksLikeSameFile(const QUrl &oldUrl, const QString &savedFileName,
+                                              const QUrl &newUrl, const QString &suggestedName)
+{
+    if (!newUrl.isValid() || newUrl.host().isEmpty())
+        return false;
+
+    // The common shape by far: the very same object re-issued with a new signing
+    // token in the query. Host plus path identifies it exactly, and no amount of
+    // name comparison would catch it when the name lives in the query string.
+    if (!newUrl.path().isEmpty()
+        && newUrl.host().compare(oldUrl.host(), Qt::CaseInsensitive) == 0
+        && newUrl.path() == oldUrl.path())
+        return true;
+
+    // Otherwise fall back to names. The saved file may have been de-duplicated
+    // to "video (1).mp4", so the OLD URL's own basename is checked too: it is
+    // the one thing that is still exactly what the site called the file.
+    //
+    // A bare name match is deliberately allowed ACROSS hosts. A refreshed link
+    // very often moves to a different CDN edge, and refusing that would refuse
+    // the case this whole feature exists for. What keeps it from swallowing a
+    // stranger is not this rule: it is that the capture has to be armed by
+    // hand, is aimed at one task, and lapses after five minutes.
+    const QString oldUrlName = QFileInfo(oldUrl.path()).fileName();
+    const QString newUrlName = QFileInfo(newUrl.path()).fileName();
+
+    auto sameAs = [](const QString &a, const QString &b) {
+        return !a.isEmpty() && !b.isEmpty()
+            && QString::compare(a, b, Qt::CaseInsensitive) == 0;
+    };
+    if (sameAs(newUrlName, oldUrlName))     return true;
+    if (sameAs(newUrlName, savedFileName))  return true;
+    if (!suggestedName.isEmpty()) {
+        const QString suggested = sanitizeFileName(suggestedName);
+        if (sameAs(suggested, savedFileName) || sameAs(suggested, oldUrlName))
+            return true;
+    }
+    return false;
+}
+
+bool DownloadEngine::matchesRefreshTarget(const QUrl &url, const QString &suggestedName) const
+{
+    DownloadTask *t = m_tasks.value(m_refreshId, nullptr);
+    if (!t)
+        return false;
+    return addressLooksLikeSameFile(t->url(), t->fileName(), url, suggestedName);
+}
+
+int DownloadEngine::addDownloadTo(const QUrl &url, const QString &folder,
+                                  bool playlist, bool userInitiated)
+{
+    if (folder.isEmpty())
+        return addDownload(url, QString(), {}, QString(), QString(), playlist, userInitiated);
+
+    // The folder came from Explorer, so it exists -- but it may have been
+    // deleted between the right-click and the dialog being accepted, and a
+    // download into a folder that is gone fails much later and less clearly.
+    QDir().mkpath(folder);
+
+    QString name = sanitizeFileName(QFileInfo(url.path()).fileName());
+    if (name.isEmpty())
+        name = QStringLiteral("download");
+    return addDownload(url, uniquePathIn(folder, name), {}, QString(), QString(),
+                       playlist, userInitiated);
+}
+
+QUrl DownloadEngine::refererOf(int id) const
+{
+    DownloadTask *t = m_tasks.value(id, nullptr);
+    if (!t)
+        return {};
+    for (const auto &h : t->headers()) {
+        if (qstricmp(h.first.constData(), "Referer") == 0) {
+            const QUrl u(QString::fromUtf8(h.second));
+            return (u.isValid() && !u.host().isEmpty()) ? u : QUrl();
+        }
+    }
+    return {};
+}
+
+bool DownloadEngine::refreshAddress(int id, const QUrl &newUrl,
+                                    const HeaderList &headers, bool trusted)
+{
+    DownloadTask *t = m_tasks.value(id, nullptr);
+    if (!t)
+        return false;
+    // An address that came from a page rather than from the user is held to the
+    // same public-internet rule every other untrusted URL is: a captured handoff
+    // must never be able to re-aim a download at the loopback or the LAN.
+    if (!trusted && !isPublicHttpUrl(newUrl))
+        return false;
+
+    // changeUrl() refuses a running task on purpose (its workers would write the
+    // old object into the new one's file), so stop it first.
+    const DownloadState st = t->state();
+    if (st == DownloadState::Downloading || st == DownloadState::Probing)
+        t->pause();
+    if (!t->changeUrl(newUrl, headers))
+        return false;
+
+    cancelRefreshCapture();
+    emit addressRefreshed(id, newUrl);
+    resume(id);
+    return true;
+}
+
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 const HeaderList &headers, const QString &suggestedName,
                                 const QString &siteFormat, bool playlist, bool userInitiated,
@@ -529,6 +654,22 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
 {
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
+
+    // A refresh capture is armed: the user went back to their browser to fetch a
+    // fresh link for a download whose address had expired. When this handoff is
+    // for that same file, re-aim the waiting task instead of starting a second
+    // copy of it beside the half-finished one. Checked here, before anything is
+    // allocated, because the whole point is that NO new job appears.
+    if (m_refreshId >= 0) {
+        if (!m_refreshArmedAt.isValid()
+            || m_refreshArmedAt.msecsTo(QDateTime::currentDateTimeUtc()) > kRefreshCaptureMs) {
+            cancelRefreshCapture();
+        } else if (matchesRefreshTarget(url, suggestedName)) {
+            const int target = m_refreshId;
+            if (refreshAddress(target, url, headers, /*trusted=*/false))
+                return target;
+        }
+    }
 
     constexpr int kMaxTrackedJobs = 10000;
     const int tracked = m_tasks.size() + m_grabbers.size() + m_siteVideos.size()
@@ -1325,6 +1466,12 @@ void DownloadEngine::resume(int id)
 
 void DownloadEngine::remove(int id, bool deleteFile)
 {
+    // Whatever this job is, an armed refresh waiting on it is now waiting on
+    // nothing — and a stale target id would make the next handoff match a task
+    // that no longer exists.
+    if (m_refreshId == id)
+        cancelRefreshCapture();
+
     if (m_torrents && m_torrentIds.contains(id)) {
         m_torrents->remove(id, deleteFile);
         m_torrentIds.remove(id);
@@ -1530,7 +1677,8 @@ static bool isAllowedRemoteScheme(const QUrl &url)
         || s == QStringLiteral("magnet");
 }
 
-QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &headers)
+QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &headers,
+                                    bool userInitiated)
 {
     constexpr int kMaxBatchItems = 10000;
     QList<int> ids;
@@ -1543,7 +1691,8 @@ QList<int> DownloadEngine::addBatch(const QString &text, const HeaderList &heade
             const QUrl url = QUrl::fromUserInput(expanded);
             if (!url.isValid() || !isAllowedRemoteScheme(url))
                 continue;   // drop file:// and any non-network token per-item
-            const int id = addDownload(url, QString(), headers);
+            const int id = addDownload(url, QString(), headers, QString(), QString(),
+                                       false, userInitiated);
             if (id >= 0)
                 ids.append(id);
         }

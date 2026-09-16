@@ -10,6 +10,7 @@
 #include "ads/AdService.h"
 #include "ui/ClipboardMonitor.h"
 #include "ui/LinkGrabberDialog.h"
+#include "ui/BatchDownloadDialog.h"
 #include "ui/WebsiteGrabberDialog.h"
 #include "ui/FirstRunWizard.h"
 #include "license/LicenseManager.h"
@@ -874,6 +875,16 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
             theme::apply(*app);
         refreshTheme();
     });
+    // A refreshed address is silent otherwise: the row simply starts moving
+    // again, which looks the same as a retry that happened to work. Say what
+    // actually happened, and say that the bytes were kept.
+    connect(m_engine, &DownloadEngine::addressRefreshed, this,
+            [this](int id, const QUrl &) {
+        refreshFileCell(rowForId(id), id);   // the row subtitle shows the host
+        statusBar()->showMessage(
+            tr("New address accepted for %1 - resuming where it left off.")
+                .arg(m_engine->nameOf(id)), 8000);
+    });
     connect(m_engine, &DownloadEngine::scheduledAdded,   this, [this](int) { updateStats(); });
     connect(m_engine, &DownloadEngine::scheduledRemoved, this, [this](int) { updateStats(); });
     // IDM-style: a held (externally-added) download asks before it starts. Resolve
@@ -1106,6 +1117,11 @@ void MainWindow::updateEmptyState()
 
 void MainWindow::promptAddUrl()
 {
+    promptAddUrlInto(QString());
+}
+
+void MainWindow::promptAddUrlInto(const QString &toFolder)
+{
     QString preset = QApplication::clipboard()->text().trimmed();
     if (!(preset.startsWith(QStringLiteral("http://")) ||
           preset.startsWith(QStringLiteral("https://")) ||
@@ -1197,14 +1213,20 @@ void MainWindow::promptAddUrl()
     catDest->setProperty("ddRole", "label");
     catLay->addWidget(catLbl);
     catLay->addWidget(catCombo, 1);
-    const bool showCategoryRow =
-        m_engine->autoCategorize() && !m_engine->categories().isEmpty();
+    // An explicitly chosen folder overrules the rules, so offering a category
+    // here would be offering a choice that is then ignored.
+    const bool showCategoryRow = toFolder.isEmpty()
+        && m_engine->autoCategorize() && !m_engine->categories().isEmpty();
     catRow->setVisible(showCategoryRow);
-    catDest->setVisible(showCategoryRow);
+    catDest->setVisible(showCategoryRow || !toFolder.isEmpty());
 
     // Keep the destination line honest as the URL is typed and the choice
     // changes: the folder shown is the folder the file goes to.
-    auto syncCatDest = [this, edit, catCombo, catDest]() {
+    auto syncCatDest = [this, edit, catCombo, catDest, toFolder]() {
+        if (!toFolder.isEmpty()) {
+            catDest->setText(tr("Saves to %1").arg(QDir::toNativeSeparators(toFolder)));
+            return;
+        }
         const QUrl url = QUrl::fromUserInput(edit->text().trimmed());
         const QString name = QFileInfo(url.path()).fileName();
         const int chosen = catCombo->currentData().toInt();
@@ -1278,9 +1300,12 @@ void MainWindow::promptAddUrl()
     // Pass the chosen audio format only when the row is showing (Apple Music); it's a
     // no-op for every other site, so an empty string elsewhere keeps behaviour intact.
     const QString audioFmt = afRow->isVisible() ? afCombo->currentData().toString() : QString();
-    const int id = m_engine->addDownload(QUrl::fromUserInput(edit->text().trimmed()),
-                                         QString(), {}, QString(), QString(),
-                                         plCheck->isChecked(), /*userInitiated=*/true, audioFmt);
+    const QUrl typed = QUrl::fromUserInput(edit->text().trimmed());
+    const int id = toFolder.isEmpty()
+        ? m_engine->addDownload(typed, QString(), {}, QString(), QString(),
+                                plCheck->isChecked(), /*userInitiated=*/true, audioFmt)
+        : m_engine->addDownloadTo(typed, toFolder, plCheck->isChecked(),
+                                  /*userInitiated=*/true);
     // An explicit choice re-files the save path; it can only be honoured while
     // the download is still queued, which it is on this line and may not be a
     // moment later. Silently ignored for job types that resolve their own path.
@@ -1626,6 +1651,8 @@ void MainWindow::buildMenuBar()
     aNew->setShortcut(QKeySequence::New);
     QAction *aSmart = file->addAction(tr("&Smart add (AI)…"), this, &MainWindow::promptSmartAdd);
     aSmart->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
+    QAction *aBatch = file->addAction(tr("&Batch download…"), this, &MainWindow::promptBatchDownload);
+    aBatch->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
     file->addAction(tr("&Import downloads…"), this, &MainWindow::importDownloads);
     QAction *aFolder = file->addAction(tr("Open download &folder"), this, &MainWindow::openDownloadFolder);
     aFolder->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_O));
@@ -2609,6 +2636,13 @@ void MainWindow::showRowMenu(const QPoint &pos)
     menu.addAction(tr("Pause"),  this, [this, id]() { m_engine->pause(id); });
     menu.addAction(tr("Resume"), this, [this, id]() { m_engine->resume(id); });
     menu.addSeparator();
+    // Only offered for the jobs that have one address to refresh; a torrent or a
+    // video-site grab resolves its sources again on every run anyway.
+    if (m_engine->canRefreshAddress(id)) {
+        menu.addAction(tr("Refresh download address..."), this,
+                       [this, id]() { promptRefreshAddress(id); });
+        menu.addSeparator();   // inside the branch: two in a row would draw twice
+    }
     // Reorder the queue (also possible by dragging the row).
     QAction *top = menu.addAction(tr("Move to top"),
                                   this, [this, row]() { moveRow(row, 0); });
@@ -2783,6 +2817,128 @@ QWidget *MainWindow::buildActionsCell(int id)
     return w;
 }
 
+void MainWindow::promptBatchDownload()
+{
+    BatchDownloadDialog dlg(m_engine, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const int n = dlg.queued().size();
+    if (n > 0)
+        statusBar()->showMessage(tr("%n download(s) queued.", nullptr, n), 6000);
+}
+
+void MainWindow::promptRefreshAddress(int id)
+{
+    if (!m_engine->canRefreshAddress(id)) {
+        QMessageBox::information(this, tr("Refresh download address"),
+            tr("Only ordinary file downloads have a single address to refresh. "
+               "Torrents and video-site grabs resolve their sources themselves "
+               "every time they run."));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Refresh download address"));
+    auto *outer = new QVBoxLayout(&dlg);
+    outer->setContentsMargins(14, 14, 14, 14);
+    auto *plate = new QWidget(&dlg);
+    plate->setObjectName(QStringLiteral("Plate"));
+    outer->addWidget(plate);
+    auto *v = new QVBoxLayout(plate);
+    v->setContentsMargins(18, 16, 18, 16);
+    v->setSpacing(10);
+
+    auto *intro = new QLabel(
+        tr("Links from CDNs and cloud storage are usually signed and stop working "
+           "after a while. Give Nexa the freshly issued link and it carries on from "
+           "the part of %1 it already has, instead of starting the file again.")
+            .arg(m_engine->nameOf(id)), plate);
+    intro->setWordWrap(true);
+    intro->setProperty("ddRole", "label");
+    v->addWidget(intro);
+
+    auto *oldLabel = new QLabel(tr("Current address"), plate);
+    oldLabel->setProperty("ddRole", "label");
+    v->addWidget(oldLabel);
+    auto *oldEdit = new QLineEdit(m_engine->urlOf(id), plate);
+    oldEdit->setReadOnly(true);
+    oldEdit->setCursorPosition(0);
+    v->addWidget(oldEdit);
+
+    auto *newLabel = new QLabel(tr("New address"), plate);
+    newLabel->setProperty("ddRole", "label");
+    v->addWidget(newLabel);
+    auto *newEdit = new QLineEdit(plate);
+    newEdit->setPlaceholderText(tr("Paste the fresh link here"));
+    // Most people arrive here having just copied the new link, so offer it --
+    // but only when the clipboard really holds a web address, never whatever
+    // text happens to be sitting there.
+    {
+        const QString clip = QApplication::clipboard()->text().trimmed();
+        const QUrl clipUrl = QUrl::fromUserInput(clip);
+        if (!clip.isEmpty() && clip.size() < 8192 && clipUrl.isValid()
+            && (clipUrl.scheme() == QLatin1String("http")
+                || clipUrl.scheme() == QLatin1String("https"))) {
+            newEdit->setText(clip);
+            newEdit->selectAll();
+        }
+    }
+    v->addWidget(newEdit);
+
+    // The other half of the flow, and the one that matches how people actually
+    // recover a link: go back to the page, start the download again, and let the
+    // extension hand the new address straight to the waiting task.
+    const QUrl referer = m_engine->refererOf(id);
+    auto *fromBrowser = new QPushButton(
+        referer.isEmpty() ? tr("Wait for the link from my browser")
+                          : tr("Open the page and wait for the link"), plate);
+    fromBrowser->setCursor(Qt::PointingHandCursor);
+    auto *hint = new QLabel(
+        tr("Nexa waits five minutes. The next download you start for this same file "
+           "refreshes this one instead of adding a second copy of it."), plate);
+    hint->setWordWrap(true);
+    hint->setProperty("ddRole", "label");
+    v->addWidget(fromBrowser);
+    v->addWidget(hint);
+
+    auto *btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, plate);
+    btns->button(QDialogButtonBox::Ok)->setText(tr("Refresh and resume"));
+    v->addWidget(btns);
+
+    const auto syncOk = [btns, newEdit]() {
+        const QString text = newEdit->text().trimmed();
+        const QUrl u = QUrl::fromUserInput(text);
+        btns->button(QDialogButtonBox::Ok)->setEnabled(
+            !text.isEmpty() && u.isValid() && !u.host().isEmpty());
+    };
+    connect(newEdit, &QLineEdit::textChanged, &dlg, [syncOk](const QString &) { syncOk(); });
+    syncOk();
+
+    connect(fromBrowser, &QPushButton::clicked, &dlg, [this, id, referer, &dlg]() {
+        m_engine->armRefreshCapture(id);
+        if (!referer.isEmpty())
+            QDesktopServices::openUrl(referer);
+        dlg.reject();   // nothing to apply yet -- the handoff is what finishes this
+        statusBar()->showMessage(
+            tr("Waiting for a fresh link for %1 - start it again in your browser.")
+                .arg(m_engine->nameOf(id)), 10000);
+    });
+    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(btns, &QDialogButtonBox::accepted, &dlg, [this, id, newEdit, &dlg]() {
+        const QUrl u = QUrl::fromUserInput(newEdit->text().trimmed());
+        if (!m_engine->refreshAddress(id, u)) {
+            QMessageBox::warning(&dlg, tr("Refresh download address"),
+                tr("That address could not be used. It has to be an http:// or https:// "
+                   "link, and the download has to be stopped rather than running."));
+            return;
+        }
+        dlg.accept();
+    });
+
+    dlg.resize(620, 0);
+    dlg.exec();
+}
+
 void MainWindow::showRowMenuFor(int id, const QPoint &globalPos)
 {
     const int row = rowForId(id);
@@ -2794,6 +2950,13 @@ void MainWindow::showRowMenuFor(int id, const QPoint &globalPos)
     menu.addAction(tr("Pause"),  this, [this, id]() { m_engine->pause(id); });
     menu.addAction(tr("Resume"), this, [this, id]() { m_engine->resume(id); });
     menu.addSeparator();
+    // Only offered for the jobs that have one address to refresh; a torrent or a
+    // video-site grab resolves its sources again on every run anyway.
+    if (m_engine->canRefreshAddress(id)) {
+        menu.addAction(tr("Refresh download address..."), this,
+                       [this, id]() { promptRefreshAddress(id); });
+        menu.addSeparator();   // inside the branch: two in a row would draw twice
+    }
     menu.addAction(tr("Open download folder"), this, &MainWindow::openDownloadFolder);
     menu.addAction(tr("Remove"), this, &MainWindow::removeSelected);
     menu.exec(globalPos);

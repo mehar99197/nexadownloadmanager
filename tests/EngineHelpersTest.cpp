@@ -227,6 +227,80 @@ static void testWindowsFileNameRules()
           "a cap landing on a dot does not leave one behind");
 }
 
+
+// The rule behind "refresh download address". Both directions matter: too
+// strict and clicking the link again quietly starts a SECOND copy beside the
+// half-finished file, which is the bug the feature exists to remove; too loose
+// and an unrelated download is folded into someone else's partial file, which
+// is silent corruption.
+static void testRefreshAddressMatching()
+{
+    const auto same = [](const char *oldUrl, const char *savedName,
+                         const char *newUrl, const char *suggested = "") {
+        return DownloadEngine::addressLooksLikeSameFile(
+            QUrl(QString::fromLatin1(oldUrl)), QString::fromLatin1(savedName),
+            QUrl(QString::fromLatin1(newUrl)), QString::fromLatin1(suggested));
+    };
+
+    // The case this exists for: one object, a new signing token. Same host,
+    // same path, completely different query.
+    CHECK(same("https://cdn.example.com/files/app.zip?Expires=1&Signature=aaa", "app.zip",
+               "https://cdn.example.com/files/app.zip?Expires=999&Signature=zzz"),
+          "same host + path with a fresh token is the same file");
+
+    // A refreshed link routinely lands on a different CDN edge. Matching the
+    // name across hosts is the point, not an oversight.
+    CHECK(same("https://edge7.example.com/d/video.mp4?t=1", "video.mp4",
+               "https://edge3.example.com/other/path/video.mp4?t=2"),
+          "same file name on a different edge still matches");
+
+    // The saved file was de-duplicated, so it no longer equals the URL's name.
+    // The OLD URL's basename is what still matches.
+    CHECK(same("https://cdn.example.com/a/report.pdf", "report (2).pdf",
+               "https://cdn2.example.com/b/report.pdf"),
+          "a de-duplicated save name does not break the match");
+
+    // The name can arrive only in the browser's suggestion, when the URL is
+    // opaque (an id, a query-driven download endpoint).
+    // Note the DIFFERENT paths: with the same path the host+path branch above
+    // would answer first and this would prove nothing.
+    CHECK(same("https://files.example.com/get?id=88", "lecture.mkv",
+               "https://files.example.com/download?id=99", "lecture.mkv"),
+          "a suggested name matching the saved file counts");
+
+    // ---- and what must NOT match -------------------------------------
+    CHECK(!same("https://cdn.example.com/a/app.zip", "app.zip",
+                "https://cdn.example.com/a/setup.exe"),
+          "a different file on the same host is not a refresh");
+    CHECK(!same("https://cdn.example.com/a/app.zip", "app.zip",
+                "https://cdn.example.com/b/app2.zip"),
+          "a near-miss name is not a refresh");
+    CHECK(!same("https://cdn.example.com/a/app.zip", "app.zip", "not a url at all"),
+          "junk is never a refresh");
+    CHECK(!same("https://cdn.example.com/a/app.zip", "app.zip", ""),
+          "an empty address is never a refresh");
+
+    // Two query-only endpoints on the same host with DIFFERENT paths and no
+    // usable names must not collapse into each other just because both paths
+    // are short. This is the "swallows a stranger" direction.
+    CHECK(!same("https://files.example.com/get?id=88", "",
+                "https://files.example.com/fetch?id=99"),
+          "different paths with no names do not match");
+
+    // An empty path on the new URL must not satisfy the host+path branch by
+    // matching an equally empty old path.
+    CHECK(!same("https://example.com", "", "https://example.com"),
+          "two bare hosts with nothing to compare do not match");
+
+    // Host comparison is case-insensitive (DNS is), file names on Windows too.
+    CHECK(same("https://CDN.Example.com/a/App.ZIP?t=1", "App.ZIP",
+               "https://cdn.example.com/a/App.ZIP?t=2"),
+          "host case does not change the answer");
+    CHECK(same("https://cdn.example.com/a/App.ZIP", "App.ZIP",
+               "https://other.example.com/b/app.zip"),
+          "file-name case does not change the answer");
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -235,6 +309,7 @@ int main(int argc, char **argv)
     testVersionCompare();
     testPlaylistTagMirroring();
     testWindowsFileNameRules();
+    testRefreshAddressMatching();
     if (g_failures == 0) {
         qInfo() << "Engine helper tests passed";
         return 0;

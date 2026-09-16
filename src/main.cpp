@@ -5,6 +5,7 @@
 #include "core/Types.h"
 #include "ipc/IpcServer.h"
 #include "ipc/NativeHostRegistrar.h"
+#include "shell/ShellIntegration.h"
 #include "ipc/ExtensionInstaller.h"
 #include "web/WebServer.h"
 #include "ui/MainWindow.h"
@@ -129,6 +130,19 @@ int main(int argc, char *argv[])
         return report.entries.isEmpty() || report.anyRegistered() ? 0 : 1;
     }
 
+    // `nexa --unregister-shell`: drop the Windows Explorer hooks and exit. The
+    // NSIS uninstaller runs this, because those keys live under the CURRENT
+    // USER and an uninstaller running elevated would be looking at the wrong
+    // hive. Decided before a QApplication exists -- no window is wanted.
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--unregister-shell") != 0) continue;
+        QCoreApplication core(argc, argv);
+        QCoreApplication::setApplicationName(QStringLiteral("Nexa"));
+        QCoreApplication::setOrganizationName(QStringLiteral("Nexa"));
+        nexa::portable::initialise();
+        return nexa::shellint::unregisterShellIntegration() ? 0 : 1;
+    }
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Nexa"));
     QApplication::setOrganizationName(QStringLiteral("Nexa"));
@@ -176,10 +190,23 @@ int main(int argc, char *argv[])
 
     // Positional (non-flag) args are URLs/patterns to download. ("--ai <text>"
     // consumes the next token, so skip it.)
+    // Windows Explorer's context menu launches us with --new-download, and with
+    // --dir <folder> for the "download to this folder" entry. Both are also
+    // forwarded to an already-running instance by the guard below.
+    const bool newDownload = args.contains(QStringLiteral("--new-download"));
+    QString explorerDir;
+
     QStringList urlArgs;
     for (int i = 1; i < args.size(); ++i) {
         const QString a = args.at(i);
         if (a == QStringLiteral("--ai")) { ++i; continue; }
+        // --dir consumes the next token; without this the folder path would be
+        // treated as a URL and queued as a download.
+        if (a == QStringLiteral("--dir")) {
+            if (i + 1 < args.size())
+                explorerDir = args.at(++i);
+            continue;
+        }
         if (!a.startsWith(QStringLiteral("--")))
             urlArgs << a;
     }
@@ -210,6 +237,9 @@ int main(int argc, char *argv[])
             };
             for (const QString &u : urlArgs)
                 sendFramed(QJsonObject{{"type", "download"}, {"url", u}});
+            if (newDownload) {
+                sendFramed(QJsonObject{{"type", "new-download"}, {"dir", explorerDir}});
+            }
             if (!background)                    // a plain re-launch wants the window
                 sendFramed(QJsonObject{{"type", "show"}});
             probe.disconnectFromServer();
@@ -248,6 +278,13 @@ int main(int argc, char *argv[])
     // here; the Linux system-wide ones come from the .deb postinst. The setup
     // guide shows the per-browser result.
     nexa::extinstall::registerExtensions();
+    // …and the Windows Explorer hooks: "Open with Nexa" on the file types we
+    // understand, and "New download with Nexa" on a folder's background. Written
+    // per-user, so no administrator is involved, and rewritten on every launch so
+    // a moved or upgraded install stops pointing at an executable that is gone.
+    // A no-op on other platforms and in portable mode.
+    if (!nexa::shellint::isRegistered())
+        nexa::shellint::registerShellIntegration();
 
     nexa::MainWindow window(&engine);
     // A peer asking to "show" (second launch / popup) surfaces this window.
@@ -256,6 +293,12 @@ int main(int argc, char *argv[])
     // "Download all links" from the extension → link-grabber dialog.
     QObject::connect(&ipc, &nexa::IpcServer::linksReceived,
                      &window, &nexa::MainWindow::showLinkGrabber);
+    // Explorer's context menu, relayed by a second launch.
+    QObject::connect(&ipc, &nexa::IpcServer::newDownloadRequested,
+                     &window, [&window](const QString &folder) {
+        window.showAndRaise();
+        window.promptAddUrlInto(folder);
+    });
 
     // Background presence: a system tray lets the engine run without a window.
     // When a tray exists, closing the window keeps Nexa running in the tray.
@@ -269,6 +312,16 @@ int main(int argc, char *argv[])
     // First launch on this machine: folder → extension → test download.
     if (!background && !batch && urlArgs.isEmpty() && nexa::FirstRunWizard::shouldShow())
         QTimer::singleShot(400, &window, &nexa::MainWindow::showSetupGuide);
+
+    // Explorer's context menu on a COLD start (nothing was running to forward
+    // to). Deferred to the event loop so the window is up behind the dialog --
+    // a modal appearing before its parent is painted looks like a crash.
+    if (newDownload && !background) {
+        const QString folder = explorerDir;
+        QTimer::singleShot(0, &window, [&window, folder]() {
+            window.promptAddUrlInto(folder);
+        });
+    }
 
     if (batch) {
         // In batch mode, exit as soon as all downloads/streams finish or error.
@@ -389,7 +442,9 @@ int main(int argc, char *argv[])
         if (arg.startsWith(QStringLiteral("--")))
             continue;                    // flags handled above, not URLs
         // addBatch expands numeric ranges like file[1-20].jpg and queues them.
-        engine.addBatch(arg);
+        // userInitiated: the person typed this on their own command line, so
+        // "ask before download" must not raise a prompt per expanded URL.
+        engine.addBatch(arg, {}, /*userInitiated=*/true);
     }
 
     // Seats are concurrent, so hand this machine's back on the way out instead

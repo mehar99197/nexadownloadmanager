@@ -210,6 +210,49 @@ User pastes URL ─────────────────────�
   separator, so `*.jpg` against a full path silently matched nothing and every
   preset downloaded zero files. `.html`/`.php`/… are pages, never files, or the
   site's HTML is saved twice.
+- **A dead link is refreshed, not restarted.** Signed CDN and S3 links expire,
+  and the download that was 90% done then fails holding a perfectly good partial
+  file. `DownloadEngine::refreshAddress` re-aims the SAME task at a freshly
+  issued URL and resumes it. What makes that safe is that
+  `DownloadTask::changeUrl` **keeps the ETag**: the `If-Range` on the first
+  resumed segment is what proves the new address serves the same object, and a
+  mismatch trips `onSegmentObjectChanged` and starts the file over rather than
+  stitching two objects together — a plain "swap the URL and resume" would skip
+  exactly that check. `changeUrl` also refuses a *running* task (its workers
+  would write the old object into the new one's file) and re-scopes `m_credHost`
+  to the new host: `resume()` with segments already laid out never calls
+  `start()`, so without that the captured cookies would still be scoped to the
+  dead host and `makeWorker` would strip them — the refresh would 401 instead of
+  running. Two ways in: paste the link, or `armRefreshCapture(id)` and click the
+  link again in the browser, where the next handoff naming the same file re-aims
+  the task instead of adding a second copy. The capture is armed by hand, aimed
+  at one task, and lapses after five minutes, which is what keeps it from
+  swallowing a stranger; the matching rule itself is the pure, tested
+  `addressLooksLikeSameFile`. A captured (untrusted) address is additionally
+  held to `isPublicHttpUrl`, because a page must not be able to re-aim a
+  download at the LAN.
+- **Batch adds must not be confirmed one at a time.** `addBatch` takes
+  `userInitiated` for one reason: with "ask before download" on, a batch added
+  without it raises one confirm prompt PER URL — two hundred dialogs for a two
+  hundred file batch. The expansion is `expandPattern` (first numeric range,
+  zero-padding of the lower bound preserved, capped), and
+  `ui/BatchDownloadDialog` shows what a pattern expands to — first rows, count,
+  and the LAST one, because that is where an off-by-one or a missing zero-pad
+  shows up — before the queue fills.
+- **Explorer integration is per-user and never steals an association.**
+  `src/shell/ShellIntegration.cpp` writes under `HKCU\Software\Classes`: no
+  administrator, no effect on another account, removable by the code that wrote
+  it. `.torrent`/`.ef2`/`.crawljob` go in through **OpenWithProgids**, which
+  lists Nexa under "Open with" and leaves whatever the person already uses as
+  the default — a download manager that silently made itself the handler for a
+  file type is the kind people uninstall. The folder verbs launch
+  `nexa --new-download --dir "%V"`, which the single-instance guard forwards to
+  a running instance as `{"type":"new-download"}`. Registration re-runs on every
+  launch (guarded by `isRegistered()`, which checks the stored path is THIS
+  executable, so a moved or upgraded install repairs itself), is skipped
+  entirely in portable mode, and is undone by `nexa --unregister-shell` from the
+  NSIS uninstaller. The IPC handler refuses a `dir` that is not an existing
+  directory: anything running as this user can reach that socket.
 - **Scheduler persistence:** scheduled jobs live in the SQLite `scheduled` table (URL/time/name only — never headers) and re-arm on startup.
 - **Theming:** every colour comes from `theme::current()`; one stylesheet template is generated per theme. Never hard-code a colour in a widget. 64 built-in themes live in `src/ui/Theme.cpp`: Nexa Dark and Nexa Light are hand-tuned palettes, the rest are derived from a one-line `Recipe` (ground, panel, border, two text tones, three brand stops, five status hues) by `build()`. Adding a theme = adding a `Recipe` row. `ThemeGalleryDialog` renders each as a live miniature of the real layout; `tests/ThemeContrastTest.cpp` asserts WCAG contrast for every role in every theme.
 - **Row hover is painted by the view, not by QSS:** there is deliberately no `QTableWidget::item:hover` rule. Qt applies it per cell and the cells that carry widgets never show it, so a row lit up block by block. `ReorderTable` (MainWindow.cpp) paints one band under the hovered row with a short `QVariantAnimation` fade — a plain hover, no travelling highlight. Moves over cell widgets stop at that widget, so the band is fed from an application event filter, not from the viewport's `mouseMoveEvent`.
@@ -341,10 +384,12 @@ client per half hour and no clicks at all.
 | `src/ui/Localization.{h,cpp}` | Loads `nexa_<lang>.qm`, handles right-to-left |
 | `src/ui/FirstRunWizard.{h,cpp}` | First-launch setup: folder → extension → test download |
 | `src/ui/LinkGrabberDialog.{h,cpp}` | IDM-style "download all links" picker |
+| `src/ui/BatchDownloadDialog.{h,cpp}` | Batch add: a list of addresses or one `[1-240]` range, previewed before it is queued |
 | `src/grabber/SiteCrawler.{h,cpp}` | Website grabber: walks a site, filters, and queues files — SSRF-checked and path-contained |
 | `src/ui/WebsiteGrabberDialog.{h,cpp}` | Tools → Grab Website: presets, filters, live progress |
 | `src/core/ProxyConfig.{h,cpp}` | HTTP/SOCKS5 proxy for Qt and the external tools |
 | `src/core/Portable.{h,cpp}` | Portable mode (`portable.txt` beside the exe) |
+| `src/shell/ShellIntegration.{h,cpp}` | Windows Explorer hooks: "Open with" + the folder context menu, per-user, self-repairing |
 | `src/core/VirusScanner.{h,cpp}` | Optional post-download scan via Defender / ClamAV |
 | `src/core/DownloadImport.{h,cpp}` | Parse IDM `.ef2`, JDownloader `.crawljob`, link lists |
 | `src/web/WebServer.{h,cpp}` | REST API + dashboard for phone remote control |
@@ -389,6 +434,9 @@ client per half hour and no clicks at all.
 // Other message types (same framing):
 { "type": "ping" }                      // → { ok, version, plan, active, queued }
 { "type": "show" }                      // → { ok } — raise the main window
+{ "type": "new-download", "dir": "…" }  // → { ok } — Explorer's context menu, relayed by
+                                        //   the single-instance guard. `dir` must be an
+                                        //   EXISTING directory or it is dropped.
 { "type": "list-formats", "url": … }    // → yt-dlp qualities for the picker
 { "type": "links", "pageUrl", "pageTitle",
   "links": [ { "url", "text", "kind": "link|image|media" } ], "headers": [[name, value]] }

@@ -86,6 +86,20 @@ public:
     QUrl           url()        const { return m_url; }
     QString        savePath()   const { return m_savePath; }
     void           setSavePath(const QString &p) { m_savePath = p; }   // before start only
+
+    // IDM-style "refresh download address": point this task at a freshly issued
+    // URL for the same object, keeping the bytes already on disk. Only valid
+    // while the task is stopped (Paused / Error / Queued); returns false
+    // otherwise, so a running download is never re-aimed underneath its workers.
+    //
+    // The validator (ETag / Last-Modified) is deliberately KEPT. A refreshed
+    // address is normally the same object behind a new signed token, and the
+    // If-Range on the first resumed segment is what proves that. When the new
+    // URL turns out to serve something else, onSegmentObjectChanged() sees the
+    // mismatch and starts the file over rather than stitching two objects
+    // together -- which is exactly the check a "just swap the URL" shortcut
+    // would skip.
+    bool           changeUrl(const QUrl &newUrl, const HeaderList &headers = HeaderList());
     static QString filenameFromContentDisposition(const QByteArray &header);
     QString        fileName()   const;
     qint64         totalBytes() const { return m_total; }

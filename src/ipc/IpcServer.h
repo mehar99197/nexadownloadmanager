@@ -29,6 +29,11 @@ signals:
     // Emitted when a peer sends {"type":"show"} (e.g. a second `nexa` launch, or
     // the browser popup) asking the running instance to surface its window.
     void showWindowRequested();
+    // Emitted when a peer sends {"type":"new-download"} -- Explorer's context
+    // menu, forwarded by the single-instance guard. `folder` is where the file
+    // should land, or empty for the usual category rules. It is only ever a
+    // directory that exists; see the handler for why it is checked there.
+    void newDownloadRequested(const QString &folder);
     // Emitted when the extension sends {"type":"links"} — a page's harvested links
     // (already validated: http(s), public hosts, de-duplicated, capped) for the UI
     // to present in the link-grabber dialog.

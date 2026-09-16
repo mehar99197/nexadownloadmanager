@@ -1717,6 +1717,43 @@ void DownloadTask::pause()
     persist();   // after the state change, so the row says Paused, not Downloading
 }
 
+bool DownloadTask::changeUrl(const QUrl &newUrl, const HeaderList &headers)
+{
+    // Re-aiming a task that has workers in flight would leave them writing the
+    // old object into the same file as the new one. Stop it first.
+    if (m_state == DownloadState::Downloading || m_state == DownloadState::Probing)
+        return false;
+    if (!newUrl.isValid() || newUrl.host().isEmpty())
+        return false;
+    const QString scheme = newUrl.scheme().toLower();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+        return false;
+
+    m_url = newUrl;
+    if (!headers.isEmpty())
+        m_headers = headers;
+
+    // The user handed us THIS address for THIS download, so the captured
+    // cookies/tokens are scoped to the new host deliberately -- unlike a
+    // redirect, which is the server's choice and must not widen the scope by
+    // itself. resume() with segments already laid out never calls start(), so
+    // without this the sensitive headers would still be scoped to the dead host
+    // and makeWorker() would strip them: the refresh would 401 instead of
+    // running, which is the whole failure it exists to fix.
+    m_credHost = m_url.host();
+
+    // The old address's redirect / confirm-page bookkeeping says nothing about
+    // the new one; carrying it over makes the fresh URL fail for the previous
+    // URL's reasons.
+    m_probeRedirects = 0;
+    m_driveConfirmed = false;
+    m_confirmPageFetched = false;
+    m_retries.clear();
+
+    persist();   // saveTask() reads url(), so the new address survives a restart
+    return true;
+}
+
 void DownloadTask::resume()
 {
     if (m_state == DownloadState::Completed || m_state == DownloadState::Downloading)

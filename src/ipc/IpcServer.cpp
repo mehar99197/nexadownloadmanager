@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QHash>
 #include <QUrl>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QAbstractSocket>
 #include <QTimer>
@@ -217,6 +218,22 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     // action) asks the running instance to surface its window. No URL required.
     if (type == QStringLiteral("show")) {
         emit showWindowRequested();
+        sendReply(QJsonObject{{"ok", true}});
+        return;
+    }
+
+    // "new-download": the Windows Explorer context menu, relayed here by the
+    // single-instance guard in main(). Opens the New Download dialog, optionally
+    // pointed at the folder that was right-clicked.
+    if (type == QStringLiteral("new-download")) {
+        QString folder = obj.value(QStringLiteral("dir")).toString();
+        // Anything running as this user can reach this socket, so the folder is
+        // not taken on trust: an existing directory is the only thing that can
+        // be honoured, and a path that is not one silently degrades to the
+        // normal download folder rather than being created wherever it points.
+        if (!folder.isEmpty() && !QFileInfo(folder).isDir())
+            folder.clear();
+        emit newDownloadRequested(folder);
         sendReply(QJsonObject{{"ok", true}});
         return;
     }

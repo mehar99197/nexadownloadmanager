@@ -68,6 +68,7 @@ add_executable(nexa
     src/ipc/IpcServer.cpp
     src/ipc/NativeHostRegistrar.cpp
     src/ipc/ExtensionInstaller.cpp
+    src/shell/ShellIntegration.cpp
     src/web/WebServer.cpp
     src/web/PublicUrlPolicy.cpp
     src/ui/UiHelpers.cpp
@@ -88,6 +89,7 @@ add_executable(nexa
     src/ui/AdBanner.cpp
     src/ui/FirstRunWizard.cpp
     src/ui/LinkGrabberDialog.cpp
+    src/ui/BatchDownloadDialog.cpp
     src/grabber/SiteCrawler.cpp
     src/ui/WebsiteGrabberDialog.cpp
     src/ui/MainWindow.cpp
@@ -742,6 +744,15 @@ if(WIN32)
     # Start-menu / desktop shortcut to the GUI.
     set(CPACK_PACKAGE_EXECUTABLES "nexa" "Nexa Download Manager")
     set(CPACK_CREATE_DESKTOP_LINKS "nexa")
+    # Take the Explorer context-menu / "Open with" keys back out on uninstall.
+    # The app writes them itself on first launch (per-user, no elevation), so
+    # the installer has nothing to add here -- but an uninstall that left a
+    # "New download with Nexa" entry pointing at a deleted exe would be the
+    # thing people remember about the product. `nexa --unregister-shell` is a
+    # windowless no-op when there is nothing to remove, and the leading quote
+    # style is what NSIS needs for a path with spaces.
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS
+        "ExecWait '\"$INSTDIR\\bin\\nexa.exe\" --unregister-shell'")
 else()
     # -----------------------------------------------------------------------
     # Linux: Debian .deb.

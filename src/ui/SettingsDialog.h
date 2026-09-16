@@ -64,6 +64,9 @@ private:
     QCheckBox      *m_notify = nullptr;         // tray/desktop notifications
     QCheckBox      *m_autoUpdate = nullptr;     // silent daily update check
     QComboBox      *m_whenDone = nullptr;       // post-download action
+    // Windows only; left null on every other platform, so every use of it
+    // has to be guarded rather than relying on an #ifdef staying in step.
+    QCheckBox      *m_shellMenu = nullptr;      // Explorer context menu + Open with
     QCheckBox      *m_dashEnabled = nullptr;    // remote web dashboard
     QSpinBox       *m_dashPort = nullptr;
     QCheckBox      *m_dashLan = nullptr;

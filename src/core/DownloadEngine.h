@@ -50,6 +50,13 @@ public:
                      bool userInitiated = false,    // true = user already confirmed; start now
                      const QString &audioFormat = QString(),  // audio-only sites: m4a/aac/flac/mp3
                      bool publicNetworkOnly = false);       // untrusted browser/dashboard target
+    // Queue `url` into an explicitly chosen folder, overruling the category
+    // rules. That override is the whole point of the caller -- Explorer's
+    // "download to this folder" -- so a category quietly re-filing the file
+    // somewhere else would make the menu entry a lie. The name comes from the
+    // URL, sanitised, and steps aside from anything already in the folder.
+    int  addDownloadTo(const QUrl &url, const QString &folder,
+                       bool playlist = false, bool userInitiated = true);
     void pause(int id);
     void resume(int id);
     void remove(int id, bool deleteFile = false);
@@ -75,9 +82,54 @@ public:
     // the database. Returns how many were cleared. Surfaced via Settings.
     int  clearCompleted();
 
+    // ---- IDM-style "refresh download address" -----------------------------
+    // A signed CDN / S3 link expires and the download dies holding a
+    // half-finished file. Starting over throws away everything already
+    // transferred; these entry points re-aim the SAME task at a freshly issued
+    // address and resume it, so the partial file is kept.
+    //
+    // Correctness rests on DownloadTask::changeUrl keeping the ETag: the
+    // If-Range on the first resumed segment is what proves the new address
+    // serves the same object, and a mismatch restarts the file rather than
+    // stitching two different ones together.
+    //
+    // `trusted` is false for an address that arrived from the browser rather
+    // than from the user typing it, and then the public-internet policy applies
+    // — a captured handoff must not be able to point a download at 192.168.x.x.
+    bool refreshAddress(int id, const QUrl &newUrl, const HeaderList &headers = {},
+                        bool trusted = true);
+    // The user is going back to their browser to fetch the link again. Until
+    // this lapses, the next handoff that names the same file re-aims `id`
+    // instead of starting a second, parallel download beside the half-finished
+    // one — which is what makes "just click the link again" work.
+    void armRefreshCapture(int id);
+    void cancelRefreshCapture();
+    int  refreshCaptureId() const { return m_refreshId; }
+    // True only for the jobs refreshAddress() can act on: segmented HTTP
+    // downloads. A torrent or a yt-dlp grab has no single address to refresh.
+    bool canRefreshAddress(int id) const { return m_tasks.contains(id); }
+    // The page this download was started from, when the browser captured a
+    // Referer for it. That page is the one link worth opening to get a fresh
+    // address, so the refresh flow can send the user straight back to it.
+    QUrl refererOf(int id) const;
+    // The rule the refresh capture decides by, as a pure function so it can be
+    // tested without an engine, a network or a database: is `newUrl` another
+    // address for the file the task at `oldUrl` (saved as `savedFileName`) was
+    // already fetching? Getting this wrong in either direction is bad in a
+    // different way -- too strict and "click the link again" quietly starts a
+    // second copy, too loose and an unrelated download is swallowed into
+    // someone else's partial file.
+    static bool addressLooksLikeSameFile(const QUrl &oldUrl, const QString &savedFileName,
+                                         const QUrl &newUrl, const QString &suggestedName);
+
     // Batch add: accepts whitespace/newline-separated URLs and expands numeric
     // ranges like "http://x/file[1-20].jpg" into individual downloads.
-    QList<int> addBatch(const QString &text, const HeaderList &headers = {});
+    // `userInitiated` matters more here than anywhere else: with "ask before
+    // download" on, a batch added without it raises one confirm prompt PER
+    // URL -- two hundred dialogs for a two hundred file batch. The user
+    // confirmed the whole list once, in the batch dialog.
+    QList<int> addBatch(const QString &text, const HeaderList &headers = {},
+                        bool userInitiated = false);
     QList<int> addRemoteBatch(const QString &text);
     // The single sanitiser every untrusted name goes through before it becomes a
     // path: browser suggestions, Content-Disposition, torrent names. Public and
@@ -259,6 +311,9 @@ signals:
     // (currently: login-gated course sites on Free). Carries a ready-to-show
     // explanation so the UI does not have to reconstruct the reason.
     void downloadBlocked(const QUrl &url, const QString &reason);
+    // A download was re-aimed at a freshly issued address and resumed, keeping
+    // the bytes it already had.
+    void addressRefreshed(int id, const QUrl &newUrl);
     void scheduledAdded(int id);      // a job was scheduled (or restored at startup)
     void scheduledRemoved(int id);    // it fired (became a download) or was cancelled
 
@@ -267,6 +322,9 @@ private slots:
     void dropProgress(int id);
 
 private:
+    // Does this incoming handoff name the file the armed refresh is waiting for?
+    bool matchesRefreshTarget(const QUrl &url, const QString &suggestedName) const;
+
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
     // Categorise + de-dup. The URL is what lets a site rule ("youtube.com")
     // beat an extension rule; pass it wherever it is known.
@@ -315,6 +373,12 @@ private:
     QSet<int>              m_torrentIds;
     QSet<int>              m_playlistIds;   // yt-dlp --yes-playlist jobs (no details plate)
     QSet<int>              m_held;          // created but awaiting the user's confirm prompt
+    // The task awaiting a refreshed address (-1 = none), and when the wait was
+    // armed. The capture lapses on its own so a forgotten arm cannot silently
+    // swallow an unrelated download an hour later.
+    int                    m_refreshId = -1;
+    QDateTime              m_refreshArmedAt;
+
     QHash<int, QTimer*>    m_scheduledTimers;  // cancellable scheduled downloads
     QHash<int, ScheduledJob> m_scheduled;      // what each timer will start
     QHash<int, QString>    m_resolvedNames; // real filename from the pre-prompt probe
