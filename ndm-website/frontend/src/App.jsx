@@ -1,52 +1,72 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Outlet, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import WarpField from './components/WarpField';
 import ProtectedRoute from './components/ProtectedRoute';
+import Spinner from './components/Spinner';
 import { ToastProvider } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
 
 import Home from './pages/Home';
-import Download from './pages/Download';
-import Pricing from './pages/Pricing';
-import Reviews from './pages/Reviews';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import VerifyEmail from './pages/VerifyEmail';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import Dashboard from './pages/Dashboard';
-import Billing from './pages/Billing';
-import Profile from './pages/Profile';
-import Activate from './pages/Activate';
-import Terms from './pages/Terms';
-import Privacy from './pages/Privacy';
-import Faq from './pages/Faq';
-import About from './pages/About';
-import Changelog from './pages/Changelog';
-import Contact from './pages/Contact';
-import TeamJoin from './pages/TeamJoin';
-import Compare from './pages/Compare';
-import Benchmarks from './pages/Benchmarks';
-import Tutorials from './pages/Tutorials';
-import Security from './pages/Security';
-import Features from './pages/Features';
-import FeatureAcceleration from './pages/features/FeatureAcceleration';
-import FeatureVideoGrabber from './pages/features/FeatureVideoGrabber';
-import FeatureYoutubeSites from './pages/features/FeatureYoutubeSites';
-import FeatureBittorrent from './pages/features/FeatureBittorrent';
-import FeatureBrowserExtension from './pages/features/FeatureBrowserExtension';
-import FeatureScheduler from './pages/features/FeatureScheduler';
-import FeatureRemoteDashboard from './pages/features/FeatureRemoteDashboard';
-import Docs from './pages/Docs';
-import DocsInstall from './pages/docs/DocsInstall';
-import DocsExtension from './pages/docs/DocsExtension';
-import DocsYoutube from './pages/docs/DocsYoutube';
-import DocsCourses from './pages/docs/DocsCourses';
-import DocsTorrents from './pages/docs/DocsTorrents';
-import DocsRemote from './pages/docs/DocsRemote';
-import DocsLicense from './pages/docs/DocsLicense';
 import NotFound from './pages/NotFound';
+
+/**
+ * Every page except the two above is loaded on demand.
+ *
+ * All 43 of them used to be imported eagerly, so a visitor landing on the
+ * homepage downloaded the changelog, the seven feature deep-dives, the billing
+ * portal and the QR-code library for two-factor setup before anything rendered
+ * — one 728 kB chunk, of which the entry page needs a small fraction.
+ *
+ * Home stays eager because it is the most common entry and a round trip before
+ * the first paint is exactly what this is meant to remove. NotFound stays
+ * eager because it is tiny and it is the one route that renders when something
+ * has already gone wrong.
+ *
+ * Safe for the prerendered shells: scripts/prerender.mjs writes per-route HTML
+ * by string substitution and never imports the app, so the meta tags are
+ * unaffected by how the JS is chunked.
+ */
+const Download = lazy(() => import('./pages/Download'));
+const Pricing = lazy(() => import('./pages/Pricing'));
+const Reviews = lazy(() => import('./pages/Reviews'));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const VerifyEmail = lazy(() => import('./pages/VerifyEmail'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Billing = lazy(() => import('./pages/Billing'));
+const Profile = lazy(() => import('./pages/Profile'));
+const Activate = lazy(() => import('./pages/Activate'));
+const Terms = lazy(() => import('./pages/Terms'));
+const Privacy = lazy(() => import('./pages/Privacy'));
+const Faq = lazy(() => import('./pages/Faq'));
+const About = lazy(() => import('./pages/About'));
+const Changelog = lazy(() => import('./pages/Changelog'));
+const Contact = lazy(() => import('./pages/Contact'));
+const TeamJoin = lazy(() => import('./pages/TeamJoin'));
+const Compare = lazy(() => import('./pages/Compare'));
+const Benchmarks = lazy(() => import('./pages/Benchmarks'));
+const Tutorials = lazy(() => import('./pages/Tutorials'));
+const Security = lazy(() => import('./pages/Security'));
+const Features = lazy(() => import('./pages/Features'));
+const FeatureAcceleration = lazy(() => import('./pages/features/FeatureAcceleration'));
+const FeatureVideoGrabber = lazy(() => import('./pages/features/FeatureVideoGrabber'));
+const FeatureYoutubeSites = lazy(() => import('./pages/features/FeatureYoutubeSites'));
+const FeatureBittorrent = lazy(() => import('./pages/features/FeatureBittorrent'));
+const FeatureBrowserExtension = lazy(() => import('./pages/features/FeatureBrowserExtension'));
+const FeatureScheduler = lazy(() => import('./pages/features/FeatureScheduler'));
+const FeatureRemoteDashboard = lazy(() => import('./pages/features/FeatureRemoteDashboard'));
+const Docs = lazy(() => import('./pages/Docs'));
+const DocsInstall = lazy(() => import('./pages/docs/DocsInstall'));
+const DocsExtension = lazy(() => import('./pages/docs/DocsExtension'));
+const DocsYoutube = lazy(() => import('./pages/docs/DocsYoutube'));
+const DocsCourses = lazy(() => import('./pages/docs/DocsCourses'));
+const DocsTorrents = lazy(() => import('./pages/docs/DocsTorrents'));
+const DocsRemote = lazy(() => import('./pages/docs/DocsRemote'));
+const DocsLicense = lazy(() => import('./pages/docs/DocsLicense'));
 
 /** Remounts on every route change so each page plays its drift-in. */
 function PageFade({ children }) {
@@ -66,7 +86,12 @@ function Layout() {
       <Navbar />
       <main className="flex-1">
         <PageFade>
-          <Outlet />
+          {/* Inside the shell, not around the whole router: the navbar and
+              footer must stay on screen while a route's chunk arrives, or every
+              navigation would blank the page. */}
+          <Suspense fallback={<Spinner center />}>
+            <Outlet />
+          </Suspense>
         </PageFade>
       </main>
       <Footer />
@@ -88,7 +113,12 @@ function AuthLayout() {
       <Navbar />
       <main className="auth-main">
         <PageFade>
-          <Outlet />
+          {/* Inside the shell, not around the whole router: the navbar and
+              footer must stay on screen while a route's chunk arrives, or every
+              navigation would blank the page. */}
+          <Suspense fallback={<Spinner center />}>
+            <Outlet />
+          </Suspense>
         </PageFade>
       </main>
     </>
