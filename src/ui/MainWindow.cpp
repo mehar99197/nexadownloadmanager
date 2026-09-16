@@ -105,7 +105,10 @@ using nexa::Accent;
 
 namespace {
 
-enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColActions, ColCount };
+enum Column { ColFile = 0, ColSize, ColProgress, ColSpeed, ColStatus, ColCategory, ColActions, ColCount };
+
+// Whether the optional Category column is on screen. Remembered per install.
+constexpr auto kShowCategoryColumn = "ui/showCategoryColumn";
 
 // The rows carry cell widgets (file tile, progress bar, status). Qt's built-in
 // InternalMove reorders the underlying items but leaves those widgets behind,
@@ -684,19 +687,26 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     m_table = table;
     m_table->setHorizontalHeaderLabels(
         {QStringLiteral("FILE"), QStringLiteral("SIZE"), QStringLiteral("PROGRESS"),
-         QStringLiteral("SPEED"), QStringLiteral("STATUS"), QString()});
+         QStringLiteral("SPEED"), QStringLiteral("STATUS"), QStringLiteral("CATEGORY"),
+         QString()});
     m_table->horizontalHeader()->setStretchLastSection(false);
     m_table->horizontalHeader()->setSectionResizeMode(ColFile, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColSize, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColProgress, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColSpeed, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColStatus, QHeaderView::Fixed);
+    m_table->horizontalHeader()->setSectionResizeMode(ColCategory, QHeaderView::Fixed);
     m_table->horizontalHeader()->setSectionResizeMode(ColActions, QHeaderView::Fixed);
     m_table->setColumnWidth(ColSize, 88);
     m_table->setColumnWidth(ColProgress, 150);
     m_table->setColumnWidth(ColSpeed, 80);
     m_table->setColumnWidth(ColStatus, 92);
+    m_table->setColumnWidth(ColCategory, 108);
     m_table->setColumnWidth(ColActions, 56);
+    // Optional, and off by default: the column is useful when you sort by it
+    // and noise when you do not. The state is remembered per install.
+    m_table->setColumnHidden(ColCategory,
+                             !QSettings().value(QLatin1String(kShowCategoryColumn), false).toBool());
     m_table->horizontalHeader()->setHighlightSections(false);
     m_table->horizontalHeader()->setFixedHeight(38);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -726,6 +736,23 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
             this, &MainWindow::showRowMenu);
     connect(m_table, &QTableWidget::cellDoubleClicked,
             this, [this](int row, int) { openDetails(idAtRow(row)); });
+    // Clicking a Category cell filters the list down to that category, and
+    // clicking it again lets everything back in — the one place the filter is
+    // reachable without going through a menu, so it has to undo itself too.
+    connect(m_table, &QTableWidget::cellClicked, this, [this](int row, int column) {
+        if (column != ColCategory)
+            return;
+        const int catId = m_engine->categoryOf(idAtRow(row));
+        if (catId <= 0)
+            return;
+        m_categoryFilter = (m_categoryFilter == catId) ? 0 : catId;
+        applyFilter(m_search ? m_search->text() : QString());
+        if (m_categoryFilter > 0) {
+            statusBar()->showMessage(
+                tr("Showing %1 only — click the cell again to show everything.")
+                    .arg(m_engine->categoryNameOf(m_categoryFilter)), 6000);
+        }
+    });
     // Empty-state page: shown when there are no downloads, instead of a bare
     // grid of column headers over a blank void. Centered logo + hint.
     auto *emptyPage = new QWidget(central);
@@ -801,6 +828,10 @@ MainWindow::MainWindow(DownloadEngine *engine, QWidget *parent)
     connect(m_engine, &DownloadEngine::taskRemoved,      this, &MainWindow::onTaskRemoved);
     connect(m_engine, &DownloadEngine::taskRenamed,      this, &MainWindow::onTaskRenamed);
     connect(m_engine, &DownloadEngine::freeLimitReached, this, &MainWindow::onFreeLimitReached);
+    // Editing the rules re-labels every row: the column shows which category
+    // claims a download now, not which one claimed it when it was queued.
+    connect(m_engine, &DownloadEngine::categoriesChanged, this,
+            &MainWindow::refreshCategoryCells);
 
     // A download refused outright by the plan (currently login-gated course
     // sites on Free). The engine supplies the wording so the reason is stated
@@ -1142,6 +1173,51 @@ void MainWindow::promptAddUrl()
     laterLay->addWidget(laterWhen, 1);
     connect(laterCheck, &QCheckBox::toggled, laterWhen, &QWidget::setEnabled);
 
+    // Category row: where this download will be filed, and a way to overrule it
+    // before it starts. "Automatic" is first and selected, because the rules are
+    // right nearly always and a dropdown that demands a decision every time is
+    // the fastest way to make people stop reading it.
+    auto *catRow = new QWidget(plate);
+    auto *catLay = new QHBoxLayout(catRow);
+    catLay->setContentsMargins(0, 0, 0, 0);
+    auto *catLbl = new QLabel(tr("Category"), catRow);
+    catLbl->setProperty("ddRole", "label");
+    auto *catCombo = new QComboBox(catRow);
+    catCombo->addItem(tr("Automatic"), 0);
+    for (const Category &c : m_engine->categories().all()) {
+        const QString label = c.icon.trimmed().isEmpty()
+                                  ? c.name
+                                  : (c.icon + QLatin1Char(' ') + c.name);
+        catCombo->addItem(label, c.id);
+    }
+    // Parented to the plate, not the row: it is added to the outer layout below,
+    // so the row's visibility has to be mirrored onto it explicitly.
+    auto *catDest = new QLabel(plate);
+    catDest->setProperty("ddRole", "label");
+    catLay->addWidget(catLbl);
+    catLay->addWidget(catCombo, 1);
+    const bool showCategoryRow =
+        m_engine->autoCategorize() && !m_engine->categories().isEmpty();
+    catRow->setVisible(showCategoryRow);
+    catDest->setVisible(showCategoryRow);
+
+    // Keep the destination line honest as the URL is typed and the choice
+    // changes: the folder shown is the folder the file goes to.
+    auto syncCatDest = [this, edit, catCombo, catDest]() {
+        const QUrl url = QUrl::fromUserInput(edit->text().trimmed());
+        const QString name = QFileInfo(url.path()).fileName();
+        const int chosen = catCombo->currentData().toInt();
+        const Category *cat = chosen > 0
+                                  ? m_engine->categories().byId(chosen)
+                                  : m_engine->categories().match(name, url);
+        catDest->setText(cat ? tr("Saves to %1").arg(QDir::toNativeSeparators(
+                                   cat->resolvedFolder(m_engine->downloadDir())))
+                             : QString());
+    };
+    connect(edit, &QLineEdit::textChanged, plate, [syncCatDest](const QString &) { syncCatDest(); });
+    connect(catCombo, &QComboBox::currentIndexChanged, plate, [syncCatDest](int) { syncCatDest(); });
+    syncCatDest();
+
     // Show the audio-format row only when the typed URL is an Apple Music link.
     auto isAppleMusic = [](const QString &text) {
         const QString host = QUrl::fromUserInput(text.trimmed()).host().toLower();
@@ -1164,6 +1240,8 @@ void MainWindow::promptAddUrl()
     v->addWidget(plCheck);
     v->addWidget(plHint);
     v->addWidget(afRow);
+    v->addWidget(catRow);
+    v->addWidget(catDest);
     v->addWidget(hashEdit);
     v->addWidget(laterRow);
     v->addStretch(1);
@@ -1202,6 +1280,11 @@ void MainWindow::promptAddUrl()
     const int id = m_engine->addDownload(QUrl::fromUserInput(edit->text().trimmed()),
                                          QString(), {}, QString(), QString(),
                                          plCheck->isChecked(), /*userInitiated=*/true, audioFmt);
+    // An explicit choice re-files the save path; it can only be honoured while
+    // the download is still queued, which it is on this line and may not be a
+    // moment later. Silently ignored for job types that resolve their own path.
+    if (id >= 0 && catCombo->currentData().toInt() > 0)
+        m_engine->setCategoryOf(id, catCombo->currentData().toInt());
     if (id < 0) {
         QMessageBox::warning(this, QStringLiteral("Invalid URL"),
                              QStringLiteral("That URL could not be parsed."));
@@ -1604,8 +1687,12 @@ void MainWindow::buildMenuBar()
         }
     });
     aFind->setShortcut(QKeySequence::Find);
-    view->addAction(tr("F&ilter by status…"), this, &MainWindow::showFilterMenu);
+    view->addAction(tr("F&ilter…"), this, &MainWindow::showFilterMenu);
     view->addAction(tr("&Sort…"), this, &MainWindow::showSortMenu);
+    QAction *aCatCol = view->addAction(tr("Show &category column"));
+    aCatCol->setCheckable(true);
+    aCatCol->setChecked(QSettings().value(QLatin1String(kShowCategoryColumn), false).toBool());
+    connect(aCatCol, &QAction::toggled, this, &MainWindow::setCategoryColumnVisible);
     view->addSeparator();
     QAction *aThemes = view->addAction(tr("&Themes…"), this, &MainWindow::onThemes);
     aThemes->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T));
@@ -1622,7 +1709,8 @@ void MainWindow::buildMenuBar()
         const QSignalBlocker blocker(aClip);
         aClip->setChecked(m_clipboard && m_clipboard->isEnabled());
     });
-    connect(aClip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
+        connect(aClip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
+    tools->addSeparator();
 
     QMenu *help = bar->addMenu(QStringLiteral("&Help"));
     help->addAction(tr("&Documentation"), this, []() {
@@ -2207,7 +2295,8 @@ void MainWindow::moveRow(int from, int to)
     // While a search filter is active, rows are hidden (not removed), so the
     // visual from/to no longer line up with the full queue order — a reorder
     // would move the wrong task. Disallow reordering until the filter is cleared.
-    if ((m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1)
+    if ((m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1
+        || m_categoryFilter > 0)
         return;
     const int rows = m_table->rowCount();
     if (from < 0 || from >= rows)
@@ -2411,7 +2500,9 @@ void MainWindow::applyFilter(const QString &text)
             else
                 stateMatch = (int(s) == m_stateFilter);
         }
-        m_table->setRowHidden(row, !(textMatch && stateMatch));
+        const bool catMatch = (m_categoryFilter <= 0)
+                              || (m_engine->categoryOf(id) == m_categoryFilter);
+        m_table->setRowHidden(row, !(textMatch && stateMatch && catMatch));
     }
 }
 
@@ -2436,6 +2527,33 @@ void MainWindow::showFilterMenu()
             applyFilter(m_search->text());
         });
     }
+    const auto &cats = m_engine->categories().all();
+    if (!cats.isEmpty()) {
+        menu.addSeparator();
+        QMenu *catMenu = menu.addMenu(tr("Category"));
+        QAction *any = catMenu->addAction(tr("Any category"));
+        any->setCheckable(true);
+        any->setChecked(m_categoryFilter <= 0);
+        connect(any, &QAction::triggered, this, [this]() {
+            m_categoryFilter = 0;
+            applyFilter(m_search->text());
+        });
+        catMenu->addSeparator();
+        for (const Category &c : cats) {
+            const QString label = c.icon.trimmed().isEmpty()
+                                      ? c.name
+                                      : (c.icon + QLatin1Char(' ') + c.name);
+            QAction *a = catMenu->addAction(label);
+            a->setCheckable(true);
+            a->setChecked(m_categoryFilter == c.id);
+            const int catId = c.id;
+            connect(a, &QAction::triggered, this, [this, catId]() {
+                m_categoryFilter = catId;
+                applyFilter(m_search->text());
+            });
+        }
+    }
+
     auto *btn = qobject_cast<QWidget*>(sender());
     menu.exec(btn ? btn->mapToGlobal(QPoint(0, btn->height() + 4)) : QCursor::pos());
 }
@@ -2492,7 +2610,8 @@ void MainWindow::showRowMenu(const QPoint &pos)
     top->setEnabled(row > 0);
     up->setEnabled(row > 0);
     dn->setEnabled(row < m_table->rowCount() - 1);
-    const bool filtered = (m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1;
+    const bool filtered = (m_search && !m_search->text().trimmed().isEmpty()) || m_stateFilter != -1
+        || m_categoryFilter > 0;
     if (filtered) {
         for (QAction *a : {top, up, dn}) {
             a->setEnabled(false);
@@ -2510,6 +2629,48 @@ void MainWindow::showRowMenu(const QPoint &pos)
     menu.addSeparator();
     menu.addAction(tr("Remove"), this, &MainWindow::removeSelected);
     menu.exec(m_table->viewport()->mapToGlobal(pos));
+}
+
+QTableWidgetItem *MainWindow::buildCategoryItem(int id)
+{
+    const int catId = m_engine->categoryOf(id);
+    const Category *cat = m_engine->categories().byId(catId);
+    auto *item = new QTableWidgetItem;
+    if (cat) {
+        const QString icon = cat->icon.trimmed();
+        item->setText(icon.isEmpty() ? cat->name : (icon + QLatin1Char(' ') + cat->name));
+        item->setToolTip(tr("Saving to %1")
+                             .arg(QDir::toNativeSeparators(
+                                 cat->resolvedFolder(m_engine->downloadDir()))));
+    } else {
+        item->setText(QStringLiteral("—"));
+        item->setForeground(mutedTextColor());
+    }
+    // Sorting by this column should group categories, not sort by emoji.
+    item->setData(Qt::UserRole + 1, cat ? cat->name : QString());
+    item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    return item;
+}
+
+void MainWindow::refreshCategoryCells()
+{
+    if (!m_table)
+        return;
+    for (int row = 0; row < m_table->rowCount(); ++row)
+        m_table->setItem(row, ColCategory, buildCategoryItem(idAtRow(row)));
+    // A category the filter pointed at may have just been deleted; falling back
+    // to "any" is better than a list that silently shows nothing.
+    if (m_categoryFilter > 0 && !m_engine->categories().byId(m_categoryFilter))
+        m_categoryFilter = 0;
+    applyFilter(m_search ? m_search->text() : QString());
+}
+
+void MainWindow::setCategoryColumnVisible(bool on)
+{
+    if (!m_table)
+        return;
+    m_table->setColumnHidden(ColCategory, !on);
+    QSettings().setValue(QLatin1String(kShowCategoryColumn), on);
 }
 
 void MainWindow::refreshFileCell(int row, int id)
@@ -2658,6 +2819,7 @@ void MainWindow::onTaskAdded(int id)
     m_table->setItem(row, ColSpeed, speedItem);
 
     m_table->setCellWidget(row, ColStatus, buildStatusCell());
+    m_table->setItem(row, ColCategory, buildCategoryItem(id));
     m_table->setCellWidget(row, ColActions, buildActionsCell(id));
     const DownloadState st = m_engine->stateOf(id);
     setRowStatus(row, st, QString());

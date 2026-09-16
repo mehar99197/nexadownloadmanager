@@ -2,6 +2,7 @@
 #include <QString>
 #include <QVector>
 #include <QSqlDatabase>
+#include "core/Categories.h"
 #include "core/Types.h"
 
 namespace nexa {
@@ -19,6 +20,7 @@ struct TaskRecord {
     bool                 rangesSupported = false;
     QString              etag;
     QString              lastModified;
+    int                  categoryId = 0;   // 0 = none recorded (pre-categories row)
     QVector<SegmentInfo> segments;
 };
 
@@ -52,8 +54,24 @@ public:
     void removeScheduled(int id);
     QVector<ScheduledRecord> loadScheduled();   // also bumps nextId() past their ids
 
+    // Download categories. The table is seeded with CategoryStore::defaults()
+    // the first time it is created, so an existing install keeps landing files
+    // in the same Video/ and Audio/ folders it always has.
+    QVector<Category> loadCategories();
+    // Inserts when `cat.id` is 0 and writes the assigned id back; updates
+    // otherwise. Returns false and leaves `cat` alone on failure.
+    bool saveCategory(Category &cat);
+    // Deletes a category and clears it off every download that referenced it.
+    // SQLite does not enforce the foreign key by default, so doing this in one
+    // transaction is what keeps a deleted id from lingering on old rows.
+    bool removeCategory(int id);
+    // Persist the whole visible order in one transaction (drag-to-reorder).
+    bool saveCategoryOrder(const QVector<Category> &ordered);
+    void setTaskCategory(int downloadId, int categoryId);
+
 private:
     void ensureSchema();
+    void seedCategoriesIfEmpty();
     void pruneOrphanSegments();   // drop segment rows with no parent download
     QSqlDatabase m_db;
     int          m_nextId = 1;

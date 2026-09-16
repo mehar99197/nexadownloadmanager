@@ -69,6 +69,16 @@ void Database::ensureSchema()
         " start_at INTEGER NOT NULL,"
         " name TEXT DEFAULT '')"));
     q.exec(QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS categories ("
+        " id INTEGER PRIMARY KEY,"
+        " name TEXT NOT NULL,"
+        " icon TEXT DEFAULT '',"
+        " folder TEXT DEFAULT '',"          // relative to the download dir, or absolute
+        " extensions TEXT DEFAULT '[]',"    // JSON array, e.g. [".mp4",".mkv"]
+        " sites TEXT DEFAULT '[]',"         // JSON array, e.g. ["youtube.com"]
+        " priority INTEGER DEFAULT 0,"
+        " builtin INTEGER DEFAULT 0)"));
+    q.exec(QStringLiteral(
         "CREATE TABLE IF NOT EXISTS segments ("
         " download_id INTEGER NOT NULL,"
         " idx INTEGER NOT NULL,"
@@ -120,12 +130,173 @@ void Database::ensureSchema()
         q.exec(QStringLiteral("ALTER TABLE downloads ADD COLUMN etag TEXT DEFAULT ''"));
     if (!hasColumn(QStringLiteral("last_modified")))
         q.exec(QStringLiteral("ALTER TABLE downloads ADD COLUMN last_modified TEXT DEFAULT ''"));
+    // Which category claimed each download. Rows written before categories
+    // existed keep 0 and are shown uncategorised rather than guessed at — the
+    // file is already on disk, so re-deriving a category would only disagree
+    // with where it actually landed.
+    if (!hasColumn(QStringLiteral("category_id")))
+        q.exec(QStringLiteral("ALTER TABLE downloads ADD COLUMN category_id INTEGER "
+                              "REFERENCES categories(id)"));
 
     // Speeds up the cleanup query (delete completed older than N days) and the
     // by-state scans the engine does. The segments table is already covered for
     // download_id lookups by its (download_id, idx) primary key.
     q.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_downloads_state "
                           "ON downloads(state, updated_at)"));
+
+    seedCategoriesIfEmpty();
+}
+
+void Database::seedCategoriesIfEmpty()
+{
+    QSqlQuery count(m_db);
+    if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM categories")) || !count.next())
+        return;
+    if (count.value(0).toInt() > 0)
+        return;
+
+    // Seeded once, on the first run that has the table. Deliberately not
+    // re-seeded when the list is later emptied: a user who deleted every
+    // category meant it, and having them grow back on the next launch would be
+    // the app arguing with them.
+    const QVector<Category> seeds = CategoryStore::defaults();
+    for (Category cat : seeds)
+        saveCategory(cat);
+}
+
+QVector<Category> Database::loadCategories()
+{
+    QVector<Category> out;
+    if (!m_db.isOpen())
+        return out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT id, name, icon, folder, extensions, sites, priority, builtin "
+            "FROM categories ORDER BY priority, id"))) {
+        qWarning() << "Nexa DB loadCategories:" << q.lastError().text();
+        return out;
+    }
+    while (q.next()) {
+        Category c;
+        c.id       = q.value(0).toInt();
+        c.name     = q.value(1).toString();
+        c.icon     = q.value(2).toString();
+        c.folder   = q.value(3).toString();
+        for (const QString &raw : Category::parseList(q.value(4).toString())) {
+            const QString ext = Category::normalizeExtension(raw);
+            if (!ext.isEmpty())
+                c.extensions << ext;
+        }
+        for (const QString &raw : Category::parseList(q.value(5).toString())) {
+            const QString host = raw.trimmed().toLower();
+            if (!host.isEmpty())
+                c.sites << host;
+        }
+        c.priority = q.value(6).toInt();
+        c.builtin  = q.value(7).toInt() != 0;
+        out.push_back(c);
+    }
+    return out;
+}
+
+bool Database::saveCategory(Category &cat)
+{
+    if (!m_db.isOpen())
+        return false;
+    QSqlQuery q(m_db);
+    if (cat.id > 0) {
+        q.prepare(QStringLiteral(
+            "UPDATE categories SET name=:name, icon=:icon, folder=:folder,"
+            " extensions=:ext, sites=:sites, priority=:priority, builtin=:builtin "
+            "WHERE id=:id"));
+        q.bindValue(QStringLiteral(":id"), cat.id);
+    } else {
+        q.prepare(QStringLiteral(
+            "INSERT INTO categories (name, icon, folder, extensions, sites, priority, builtin) "
+            "VALUES (:name, :icon, :folder, :ext, :sites, :priority, :builtin)"));
+    }
+    q.bindValue(QStringLiteral(":name"), cat.name);
+    q.bindValue(QStringLiteral(":icon"), cat.icon);
+    q.bindValue(QStringLiteral(":folder"), cat.folder);
+    q.bindValue(QStringLiteral(":ext"), Category::serializeExtensions(cat.extensions));
+    q.bindValue(QStringLiteral(":sites"), Category::serializeSites(cat.sites));
+    q.bindValue(QStringLiteral(":priority"), cat.priority);
+    q.bindValue(QStringLiteral(":builtin"), cat.builtin ? 1 : 0);
+    if (!q.exec()) {
+        qWarning() << "Nexa DB saveCategory:" << q.lastError().text();
+        return false;
+    }
+    if (cat.id == 0)
+        cat.id = q.lastInsertId().toInt();
+    return true;
+}
+
+bool Database::removeCategory(int id)
+{
+    if (!m_db.isOpen() || id <= 0)
+        return false;
+    if (!m_db.transaction()) {
+        qWarning() << "Nexa DB removeCategory: no transaction:" << m_db.lastError().text();
+        return false;
+    }
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE downloads SET category_id = NULL WHERE category_id = :id"));
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        qWarning() << "Nexa DB removeCategory (downloads):" << q.lastError().text();
+        m_db.rollback();
+        return false;
+    }
+    q.prepare(QStringLiteral("DELETE FROM categories WHERE id = :id"));
+    q.bindValue(QStringLiteral(":id"), id);
+    if (!q.exec()) {
+        qWarning() << "Nexa DB removeCategory:" << q.lastError().text();
+        m_db.rollback();
+        return false;
+    }
+    if (!m_db.commit()) {
+        m_db.rollback();
+        return false;
+    }
+    return true;
+}
+
+bool Database::saveCategoryOrder(const QVector<Category> &ordered)
+{
+    if (!m_db.isOpen())
+        return false;
+    if (!m_db.transaction())
+        return false;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE categories SET priority = :priority WHERE id = :id"));
+    int priority = 0;
+    for (const Category &c : ordered) {
+        if (c.id <= 0)
+            continue;
+        q.bindValue(QStringLiteral(":priority"), priority++);
+        q.bindValue(QStringLiteral(":id"), c.id);
+        if (!q.exec()) {
+            qWarning() << "Nexa DB saveCategoryOrder:" << q.lastError().text();
+            m_db.rollback();
+            return false;
+        }
+    }
+    if (!m_db.commit()) {
+        m_db.rollback();
+        return false;
+    }
+    return true;
+}
+
+void Database::setTaskCategory(int downloadId, int categoryId)
+{
+    if (!m_db.isOpen())
+        return;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE downloads SET category_id = :cat WHERE id = :id"));
+    q.bindValue(QStringLiteral(":cat"), categoryId > 0 ? QVariant(categoryId) : QVariant());
+    q.bindValue(QStringLiteral(":id"), downloadId);
+    q.exec();
 }
 
 void Database::pruneOrphanSegments()
@@ -157,13 +328,13 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
 
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO downloads (id, url, save_path, total, state, updated_at, ranges_supported, etag, last_modified) "
-        "VALUES (:id, :url, :path, :total, :state, :updated, :ranges, :etag, :last_modified) "
+        "INSERT INTO downloads (id, url, save_path, total, state, updated_at, ranges_supported, etag, last_modified, category_id) "
+        "VALUES (:id, :url, :path, :total, :state, :updated, :ranges, :etag, :last_modified, :category) "
         "ON CONFLICT(id) DO UPDATE SET "
         " url=excluded.url, save_path=excluded.save_path,"
         " total=excluded.total, state=excluded.state, updated_at=excluded.updated_at,"
         " ranges_supported=excluded.ranges_supported, etag=excluded.etag,"
-        " last_modified=excluded.last_modified"));
+        " last_modified=excluded.last_modified, category_id=excluded.category_id"));
     q.bindValue(QStringLiteral(":id"), task.id());
     q.bindValue(QStringLiteral(":url"), task.url().toString());
     q.bindValue(QStringLiteral(":path"), task.savePath());
@@ -173,6 +344,8 @@ void Database::saveTask(const DownloadTask &task, const QVector<SegmentInfo> &se
     q.bindValue(QStringLiteral(":ranges"), task.rangesSupported() ? 1 : 0);
     q.bindValue(QStringLiteral(":etag"), task.etag());
     q.bindValue(QStringLiteral(":last_modified"), task.lastModified());
+    q.bindValue(QStringLiteral(":category"),
+                task.categoryId() > 0 ? QVariant(task.categoryId()) : QVariant());
     if (!q.exec()) {
         qWarning() << "Nexa DB saveTask:" << q.lastError().text();
         m_db.rollback();
@@ -316,8 +489,8 @@ QVector<TaskRecord> Database::loadAll()
         return out;
 
     QSqlQuery q(m_db);
-    if (!q.exec(QStringLiteral("SELECT id, url, save_path, total, state, ranges_supported, etag, last_modified "
-                               "FROM downloads ORDER BY id")))
+    if (!q.exec(QStringLiteral("SELECT id, url, save_path, total, state, ranges_supported, etag, last_modified, "
+                               "category_id FROM downloads ORDER BY id")))
         return out;
 
     while (q.next()) {
@@ -330,6 +503,7 @@ QVector<TaskRecord> Database::loadAll()
         rec.rangesSupported = q.value(5).toInt() != 0;
         rec.etag = q.value(6).toString();
         rec.lastModified = q.value(7).toString();
+        rec.categoryId = q.value(8).toInt();   // NULL reads back as 0 = uncategorised
 
         QSqlQuery sq(m_db);
         sq.prepare(QStringLiteral(

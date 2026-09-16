@@ -100,6 +100,12 @@ public:
     QString        etag() const { return m_etag; }
     QString        lastModified() const { return m_lastModified; }
 
+    // The category that claimed this download. Recorded rather than re-derived
+    // so the row keeps agreeing with the folder the file actually went to, even
+    // after the category's rules are edited underneath it.
+    int            categoryId() const { return m_categoryId; }
+    void           setCategoryId(int id) { m_categoryId = id; }
+
     static int preferredSegmentCount(qint64 totalBytes);
 
 signals:
@@ -167,6 +173,7 @@ private:
     qint64                    m_done = 0;
     DownloadState             m_state = DownloadState::Queued;
     bool                      m_rangesSupported = false;
+    int                       m_categoryId = 0;            // 0 = uncategorised
     bool                      m_dynamicResegment = true;   // work-stealing on by default
     bool                      m_publicNetworkOnly = false;
         QString                   m_etag;

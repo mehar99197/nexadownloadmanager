@@ -70,6 +70,8 @@ DownloadEngine::DownloadEngine(QObject *parent)
     const QString dataDir =
         portable::appDataDir();
     m_db->open(dataDir + QStringLiteral("/nexa.db"));
+    // Before any path is resolved: every save location runs through this list.
+    m_categories.setAll(m_db->loadCategories());
 
     m_downloadDir =
         QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
@@ -339,32 +341,138 @@ QString DownloadEngine::sanitizeFileName(const QString &name)
     return safeBasename(name);
 }
 
-QString DownloadEngine::pathForName(const QString &fileName) const
+void DownloadEngine::reloadCategories()
+{
+    if (!m_db)
+        return;
+    m_categories.setAll(m_db->loadCategories());
+    emit categoriesChanged();
+}
+
+bool DownloadEngine::saveCategory(Category &cat)
+{
+    if (!m_db || !m_db->saveCategory(cat))
+        return false;
+    reloadCategories();
+    return true;
+}
+
+bool DownloadEngine::removeCategory(int categoryId)
+{
+    // A built-in stays: "Other" is where everything unmatched goes, and the
+    // rest are the folders already sitting in the user's download directory.
+    const Category *existing = m_categories.byId(categoryId);
+    if (!existing || existing->builtin)
+        return false;
+    if (!m_db || !m_db->removeCategory(categoryId))
+        return false;
+    // Downloads that pointed at it are now uncategorised; keep the live tasks
+    // in step with the rows the database just cleared.
+    for (DownloadTask *t : std::as_const(m_tasks)) {
+        if (t && t->categoryId() == categoryId)
+            t->setCategoryId(0);
+    }
+    reloadCategories();
+    return true;
+}
+
+bool DownloadEngine::saveCategoryOrder(const QVector<Category> &ordered)
+{
+    if (!m_db || !m_db->saveCategoryOrder(ordered))
+        return false;
+    reloadCategories();
+    return true;
+}
+
+int DownloadEngine::categoryIdFor(const QString &fileName, const QUrl &url) const
+{
+    if (m_categories.isEmpty())
+        return 0;
+    return m_categories.matchId(fileName, url);
+}
+
+QString DownloadEngine::categoryNameOf(int categoryId) const
+{
+    const Category *c = m_categories.byId(categoryId);
+    return c ? c->name : QString();
+}
+
+int DownloadEngine::categoryOf(int id) const
+{
+    if (DownloadTask *t = m_tasks.value(id, nullptr)) {
+        if (t->categoryId() > 0)
+            return t->categoryId();
+    }
+    // Stream grabs, yt-dlp jobs and torrents are not DownloadTasks, so there is
+    // no recorded id to read — derive one from what the engine does know, which
+    // is the same answer the save path was built from.
+    const QString name = nameOf(id);
+    if (name.isEmpty())
+        return 0;
+    return categoryIdFor(name, QUrl(urlOf(id)));
+}
+
+bool DownloadEngine::setCategoryOf(int id, int categoryId)
+{
+    DownloadTask *t = m_tasks.value(id, nullptr);
+    if (!t)
+        return false;
+    // Re-filing moves the destination, which is only safe before any bytes have
+    // been written. Once it is running the folder is already open.
+    if (t->state() != DownloadState::Queued)
+        return false;
+    const Category *cat = m_categories.byId(categoryId);
+    if (categoryId != 0 && !cat)
+        return false;
+
+    t->setCategoryId(categoryId);
+    if (m_autoCategorize) {
+        const QString name = QFileInfo(t->savePath()).fileName();
+        const QString dir  = cat ? cat->resolvedFolder(m_downloadDir) : m_downloadDir;
+        t->setSavePath(uniquePathIn(dir, name));
+    }
+    if (m_db)
+        m_db->setTaskCategory(id, categoryId);
+    return true;
+}
+
+// Join `dir` and `name`, stepping aside from anything already on disk:
+// name.ext -> name (1).ext, name (2).ext, …
+QString DownloadEngine::uniquePathIn(const QString &dir, const QString &name)
+{
+    QString candidate = QDir(dir).filePath(name);
+    if (!QFile::exists(candidate))
+        return candidate;
+    const QFileInfo fi(candidate);
+    const QString base = fi.completeBaseName();
+    const QString suffix = fi.suffix().isEmpty() ? QString()
+                                                 : (QStringLiteral(".") + fi.suffix());
+    int n = 1;
+    do {
+        candidate = QDir(dir).filePath(QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(suffix));
+        ++n;
+    } while (QFile::exists(candidate));
+    return candidate;
+}
+
+QString DownloadEngine::pathForName(const QString &fileName, const QUrl &url) const
 {
     QString name = safeBasename(fileName);
     if (name.isEmpty())
         name = QStringLiteral("download");
 
-    // Auto-categorize: drop the file into a per-type subfolder.
+    // Auto-categorize: drop the file into its category's folder. The loaded
+    // category list is authoritative; the hard-coded map is only the answer
+    // when there is no database behind us (tests, a failed open).
     QString dir = m_downloadDir;
-    if (m_autoCategorize)
-        dir = QDir(m_downloadDir).filePath(categoryFor(name));
-
-    QString candidate = QDir(dir).filePath(name);
-    // Avoid clobbering an existing file: name.ext -> name (1).ext, etc.
-    if (QFile::exists(candidate)) {
-        const QFileInfo fi(candidate);
-        const QString base = fi.completeBaseName();
-        const QString suffix = fi.suffix().isEmpty() ? QString()
-                                                     : (QStringLiteral(".") + fi.suffix());
-        int n = 1;
-        do {
-            candidate = QDir(dir)
-                            .filePath(QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(suffix));
-            ++n;
-        } while (QFile::exists(candidate));
+    if (m_autoCategorize) {
+        dir = m_categories.isEmpty()
+                  ? QDir(m_downloadDir).filePath(categoryFor(name))
+                  : m_categories.folderFor(m_downloadDir, name, url);
     }
-    return candidate;
+
+    // Avoid clobbering an existing file: name.ext -> name (1).ext, etc.
+    return uniquePathIn(dir, name);
 }
 
 // Apple Music CDN serves AAC audio in an MP4 container but names the files
@@ -411,7 +519,7 @@ QString DownloadEngine::resolveSavePath(const QUrl &url, const QString &savePath
     if (!savePath.isEmpty())
         return savePath;
     const QString raw = QFileInfo(url.path()).fileName();
-    return pathForName(normalizeAppleMusicFilename(url, raw));
+    return pathForName(normalizeAppleMusicFilename(url, raw), url);
 }
 
 int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
@@ -550,7 +658,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     if (MegaGrabber::isMegaUrl(url)) {
         QString out = savePath;
         if (out.isEmpty())
-            out = pathForName(QStringLiteral("mega-download.bin"));
+            out = pathForName(QStringLiteral("mega-download.bin"), url);
         QDir().mkpath(QFileInfo(out).absolutePath());
         auto *g = new MegaGrabber(id, url, QFileInfo(out).absolutePath(), m_nam, this);
         m_megaGrabbers.insert(id, g);
@@ -639,7 +747,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                : QFileInfo(suggestedName).completeBaseName();
             if (base.isEmpty())
                 base = QStringLiteral("stream");
-            out = pathForName(base + QStringLiteral(".mp4"));   // categorised (Video/)
+            out = pathForName(base + QStringLiteral(".mp4"), url);   // categorised (Video/)
         }
         HlsGrabber *g = nullptr;
         {
@@ -672,7 +780,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                                 || lowerName == QLatin1String("download")
                                 || lowerName == QLatin1String("file");
         if (opaqueUrlName)
-            path = pathForName(suggestedName);
+            path = pathForName(suggestedName, url);
     }
 
     auto *t = new DownloadTask(id, url, path, m_nam, m_db, this);
@@ -684,7 +792,11 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     HeaderList merged = mergeAuthHeaders(headers, authHeaders);
     t->setHeaders(merged);
     // Lets the task adopt the real Content-Disposition filename, categorised.
-    t->setNameResolver([this](const QString &name) { return pathForName(name); });
+    // The URL rides along so a site rule still applies to the renamed file.
+    t->setNameResolver([this, url](const QString &name) { return pathForName(name, url); });
+    // Recorded from the path we actually resolved, so the row and the folder on
+    // disk tell the same story even if the rules are edited later.
+    t->setCategoryId(categoryIdFor(QFileInfo(path).fileName(), url));
     m_tasks.insert(id, t);
     wireTask(t);
 
@@ -1339,7 +1451,11 @@ void DownloadEngine::loadPersisted()
         auto *t = new DownloadTask(rec.id, QUrl(rec.url), rec.savePath, m_nam, m_db, this);
         t->setRateLimiter(m_limiter);
         t->setCloudProviders(m_providers);
-        t->setNameResolver([this](const QString &name) { return pathForName(name); });
+        const QUrl restoredUrl(rec.url);
+        t->setNameResolver([this, restoredUrl](const QString &name) {
+            return pathForName(name, restoredUrl);
+        });
+        t->setCategoryId(rec.categoryId);
         if (!rec.segments.isEmpty())
             t->restore(rec.total, rec.segments, rec.rangesSupported, rec.etag, rec.lastModified);
         m_tasks.insert(rec.id, t);

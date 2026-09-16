@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QUrl>
 #include <QDateTime>
+#include "core/Categories.h"
 #include "core/Types.h"
 
 class QNetworkAccessManager;
@@ -117,10 +118,33 @@ public:
     qint64 taskSpeedLimit(int id) const;
     bool   supportsSpeedLimit(int id) const { return m_tasks.contains(id); }
 
-    // Sort completed files into per-type subfolders (Video/, Audio/, ...).
+    // Sort completed files into per-category subfolders (Video/, Audio/, ...).
     void setAutoCategorize(bool on) { m_autoCategorize = on; }
     bool autoCategorize() const { return m_autoCategorize; }
+
+    // The built-in extension → folder map, kept as the answer used when no
+    // category list is loaded (tests, a DB that failed to open). The live
+    // categories() store is what the app actually resolves against.
     static QString categoryFor(const QString &fileName);
+
+    // --- Download categories -------------------------------------------------
+    // The store is the in-memory view; every mutator writes through to SQLite
+    // and re-reads, so the two can never drift.
+    const CategoryStore &categories() const { return m_categories; }
+    void reloadCategories();
+    bool saveCategory(Category &cat);            // insert (id 0) or update
+    bool removeCategory(int categoryId);
+    bool saveCategoryOrder(const QVector<Category> &ordered);
+
+    // Which category claims this download, and where it would land. `url` may be
+    // empty — then only the extension rules apply.
+    int     categoryIdFor(const QString &fileName, const QUrl &url) const;
+    QString categoryNameOf(int categoryId) const;
+    // The recorded category of a live download (0 when uncategorised).
+    int     categoryOf(int id) const;
+    // Move a download to another category before it starts: re-files the save
+    // path into that category's folder. Returns false once it is running.
+    bool    setCategoryOf(int id, int categoryId);
 
     // Parallel segment fetches for HLS stream grabs (applied to new grabbers).
     void setStreamConcurrency(int n) { m_streamConcurrency = qBound(1, n, 64); }
@@ -225,6 +249,9 @@ signals:
     void taskFinished(int id);
     void taskRemoved(int id);
     void taskRenamed(int id, const QString &newName);   // AI rename applied
+    // The category list was added to, edited, deleted from or reordered — the
+    // table's Category column and its filter menu rebuild from it.
+    void categoriesChanged();
     // A download was queued (not started) solely because the Free plan caps
     // concurrency below what the user asked for — the UI can offer an upgrade.
     void freeLimitReached(int id);
@@ -241,7 +268,11 @@ private slots:
 
 private:
     QString resolveSavePath(const QUrl &url, const QString &savePath) const;
-    QString pathForName(const QString &fileName) const;  // categorise + de-dup
+    // Categorise + de-dup. The URL is what lets a site rule ("youtube.com")
+    // beat an extension rule; pass it wherever it is known.
+    QString pathForName(const QString &fileName, const QUrl &url = QUrl()) const;
+    // dir/name, stepping aside from anything already there.
+    static QString uniquePathIn(const QString &dir, const QString &name);
     void    wireTask(DownloadTask *t);
     // Default the known auth sites to "use my logged-in browser" at startup, so
     // yt-dlp reads live cookies and the user never needs to open Site Logins.
@@ -301,6 +332,7 @@ private:
     int                    m_torrentUlLimit = 0;
     double                 m_seedRatio = 0.0;          // 0 = don't seed past completion
     bool                   m_autoCategorize = true;
+    CategoryStore          m_categories;        // loaded from the DB at startup
     bool                   m_aiRename = false;
     // Mirrors Entitlements::authSiteDownloads. Free by default so a build that
     // has not yet heard from the licence server gates rather than leaks.

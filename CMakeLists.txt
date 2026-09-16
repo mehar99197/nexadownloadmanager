@@ -46,6 +46,7 @@ add_executable(nexa
     src/license/KeyIntegrity.cpp
     src/license/Guard.cpp
     src/core/Database.cpp
+    src/core/Categories.cpp
     src/core/RateLimiter.cpp
     src/core/UpdateChecker.cpp
     src/core/SegmentDownloader.cpp
@@ -72,6 +73,7 @@ add_executable(nexa
     src/ui/UiHelpers.cpp
     src/ui/DownloadDetailsDialog.cpp
     src/ui/SiteLoginsDialog.cpp
+    src/ui/CategoriesDialog.cpp
     src/ui/SettingsDialog.cpp
     src/core/DownloadImport.cpp
     src/core/Portable.cpp
@@ -383,9 +385,28 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_range_integrity_test PRIVATE src)
     target_link_libraries(nexa_range_integrity_test PRIVATE Qt6::Core Qt6::Network)
 
+    # Download categories: the matching rule (which the user reorders by hand)
+    # and the SQLite rows behind it, including the delete that has to clear the
+    # id off every download that referenced it.
+    add_executable(nexa_categories_test
+        tests/CategoriesTest.cpp
+        src/core/Categories.cpp
+        src/core/Database.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/CloudProviders.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_categories_test PRIVATE src)
+    target_link_libraries(nexa_categories_test PRIVATE Qt6::Core Qt6::Network Qt6::Sql)
+
     add_executable(nexa_database_persistence_test
         tests/DatabasePersistenceTest.cpp
         src/core/Database.cpp
+        src/core/Categories.cpp
         src/core/DownloadTask.cpp
         src/core/SegmentDownloader.cpp
         src/core/RateLimiter.cpp
@@ -407,6 +428,7 @@ if(NEXA_BUILD_TESTS)
         src/core/SegmentDownloader.cpp
         src/core/RateLimiter.cpp
         src/core/Database.cpp
+        src/core/Categories.cpp
         src/core/Portable.cpp
         src/core/UpdateChecker.cpp
         src/core/ProxyConfig.cpp
@@ -462,6 +484,7 @@ if(NEXA_BUILD_TESTS)
         src/core/SegmentDownloader.cpp
         src/core/RateLimiter.cpp
         src/core/Database.cpp
+        src/core/Categories.cpp
         src/auth/AuthUtils.cpp
         src/auth/CloudProviders.cpp
         src/web/PublicUrlPolicy.cpp
@@ -479,6 +502,7 @@ if(NEXA_BUILD_TESTS)
         src/core/SegmentDownloader.cpp
         src/core/RateLimiter.cpp
         src/core/Database.cpp
+        src/core/Categories.cpp
         src/auth/AuthUtils.cpp
         src/auth/CloudProviders.cpp
         src/web/PublicUrlPolicy.cpp
@@ -565,6 +589,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME cloud_providers COMMAND nexa_cloud_providers_test)
     add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
+    add_test(NAME categories COMMAND nexa_categories_test)
     add_test(NAME download_task COMMAND nexa_download_task_test)
     add_test(NAME download_core COMMAND nexa_download_core_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)

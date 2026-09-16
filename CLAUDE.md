@@ -122,8 +122,9 @@ portal and webhook answer 503), never in mock mode; `config.stripeMode` is
 | `nexa_offline_grace_test` | Offline grace end-to-end against a real socket: a paying user keeps Pro (with entitlements) for 7 days offline, day 8 drops to Free, and a copied/garbage/Free cached token grants nothing |
 | `nexa_account_signin_test` | Account sign-in end-to-end against a real socket: the code, the approval, a restart picking the account up from the credential store, a token minted for another account refused, and the asymmetry that matters — `signed_out` forgets the token, a lapsed plan keeps it and drops to Free |
 | `nexa_license_token_test` | Ed25519 licence-token verification: forged/`alg:none`/HMAC-confusion/tampered/expired tokens all refused |
+| `nexa_categories_test` | Download categories: the seeded built-ins, one-pass top-down matching (a site rule only beats an extension rule when it is dragged above it), a rule-less custom row claiming nothing, folder resolution (blank/relative/absolute), the dotted-JSON round trip, and the delete that must clear `downloads.category_id` — SQLite does not enforce that foreign key |
 | `nexa_guard_test` / `nexa_guard_obf_test` | The licence guard compiled BOTH ways (plain, and with `NEXA_OBFUSCATE_LICENSE`) — same assertions on all 32 input combinations prove obfuscation never changes the answer, that a patched "paid" state trips the tamper canary, and that a lapsed-but-real customer never does |
-| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `themes`, `download_task`, `download_core`, `license_token`, `offline_grace`, `account_signin`, `guard`, `guard_obfuscated` also run |
+| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `categories`, `themes`, `download_task`, `download_core`, `license_token`, `offline_grace`, `account_signin`, `guard`, `guard_obfuscated` also run |
 
 ## Architecture
 
@@ -166,6 +167,26 @@ User pastes URL ─────────────────────�
 - **Endpoints are pinned at compile time.** `NEXA_LICENSE_API_URL`, `NEXA_ADS_API_URL`, `NEXA_UPDATE_URL` and `NEXA_ALLOW_INSECURE_LICENSE_API` are compiled out unless `-DNEXA_DEV_BUILD=ON`. Each was a complete bypass needing no reverse engineering; the update one also let a redirected feed supply both an installer and the SHA-256 it was checked against.
 - **Entitlements come from the server:** `/api/license/validate` returns a `features` object (and embeds it in the signed token). `Entitlements` in `LicenseManager.h` defaults to the **Free** set, so a build that is offline before its first validation gates rather than leaks. `DownloadEngine::applyLicensePlan` reads it for the concurrency cap, AI rename and `authSiteDownloads`; login-gated course sites (Udemy, Coursera, LinkedIn Learning) are refused in `addDownload` with `downloadBlocked`. Free gets the two core themes — `ThemeGalleryDialog` still renders every paid theme's real preview behind a PRO badge, because the gallery is the upgrade's best advert.
 - **Update feed is Ed25519-signed:** `UpdateChecker` polls `https://nexadownloadmanager.com/api/releases/feed?os=<platform>` (`{version,url,notes,sha256,signature}`) and **refuses an unsigned or badly-signed feed**. The signature covers `version|url|sha256` (newline-delimited, `nexa-update-v1` prefix) and is checked against the same public key as licence tokens. This is not belt-and-braces: the feed supplies both the installer URL and the SHA-256 it is checked against, so whoever controls the response controls both halves and the checksum alone proves nothing — the app then *runs* what it downloaded. `notes`/`publishedAt` are outside the signature so a changelog can be corrected without re-signing. Rollout order is backend first, then the client. The installer is downloaded through the engine with the checksum enforced, then launched. Admins now **upload** the installer itself (raw `application/octet-stream` PUT, streamed to disk, SHA-256 computed in flight) instead of pasting a URL and a hash; the download route serves it with byte-range support so a dropped transfer resumes.
+- **Categories decide where a file lands, and the order is the whole rule.** A
+  category (`src/core/Categories.{h,cpp}`, the `categories` table) is a folder
+  plus two rule lists: file extensions and site hosts. `CategoryStore::match`
+  reads the list **once, top to bottom, and the first category whose site OR
+  extension rule fits wins** — deliberately not "site rules are more specific so
+  they win", because then dragging a row in Settings → Categories would mean
+  nothing. A site rule covers subdomains (`youtube.com` claims `m.youtube.com`,
+  never `notyoutube.com`). A category with no rules at all claims nothing by
+  matching; only the seeded rule-less "Other" is reachable, as the catch-all,
+  and only after everything else has passed — so a half-filled custom row
+  dragged to the top cannot swallow every download. The seven built-ins keep the
+  names the old hard-coded categoriser used (Video, Audio, …, **not** the spec's
+  "Music"): those folders already exist in every installed user's download
+  directory, and renaming one orphans the files inside it. Built-ins are
+  editable but not deletable. `downloads.category_id` records what claimed each
+  download rather than re-deriving it, so the row keeps agreeing with the folder
+  on disk after the rules are edited underneath it; deleting a category clears
+  that id in the same transaction, because SQLite does not enforce the foreign
+  key by default. The engine falls back to the static `DownloadEngine::categoryFor`
+  map only when no list is loaded at all (a database that failed to open).
 - **Scheduler persistence:** scheduled jobs live in the SQLite `scheduled` table (URL/time/name only — never headers) and re-arm on startup.
 - **Theming:** every colour comes from `theme::current()`; one stylesheet template is generated per theme. Never hard-code a colour in a widget. 64 built-in themes live in `src/ui/Theme.cpp`: Nexa Dark and Nexa Light are hand-tuned palettes, the rest are derived from a one-line `Recipe` (ground, panel, border, two text tones, three brand stops, five status hues) by `build()`. Adding a theme = adding a `Recipe` row. `ThemeGalleryDialog` renders each as a live miniature of the real layout; `tests/ThemeContrastTest.cpp` asserts WCAG contrast for every role in every theme.
 - **Row hover is painted by the view, not by QSS:** there is deliberately no `QTableWidget::item:hover` rule. Qt applies it per cell and the cells that carry widgets never show it, so a row lit up block by block. `ReorderTable` (MainWindow.cpp) paints one band under the hovered row with a short `QVariantAnimation` fade — a plain hover, no travelling highlight. Moves over cell widgets stop at that widget, so the band is fed from an application event filter, not from the viewport's `mouseMoveEvent`.
@@ -278,7 +299,8 @@ client per half hour and no clicks at all.
 |------|------|
 | `src/core/DownloadEngine.{h,cpp}` | Top-level controller — owns all tasks, grabbers, torrents, scheduler |
 | `src/core/DownloadTask.{h,cpp}` | One HTTP download: probing, segmentation, pause/resume, persistence |
-| `src/core/Database.{h,cpp}` | SQLite: `downloads` + `segments` tables, segment offset persistence |
+| `src/core/Database.{h,cpp}` | SQLite: `downloads` + `segments` + `categories` tables, segment offset persistence |
+| `src/core/Categories.{h,cpp}` | Category model + `CategoryStore` matching rule — the answer to "which folder does this download land in?" |
 | `src/core/Types.h` | `DownloadState`, `SegmentInfo`, `HeaderList` shared types |
 | `src/ipc/IpcServer.{h,cpp}` | Local socket listener, 4-byte framed JSON protocol |
 | `src/ipc/NativeHostRegistrar.{h,cpp}` | Writes native host manifests for Chrome/Firefox/Edge/Brave |
@@ -288,6 +310,7 @@ client per half hour and no clicks at all.
 | `src/auth/AuthUtils.{h,cpp}` | Cookie export + domain-scoped auth for authed sites |
 | `src/ui/MainWindow.{h,cpp}` | Qt desktop UI: download table, toolbar, system tray |
 | `src/ui/Theme.{h,cpp}` | Theme catalogue (64 looks, each with its own motion) → the whole app stylesheet; palettes are derived from seed `Recipe`s |
+| `src/ui/CategoriesDialog.{h,cpp}` | Settings → Categories: CRUD + drag-to-reorder, which is the priority order `CategoryStore` reads |
 | `src/ui/ThemeGalleryDialog.{h,cpp}` | Themes gallery: live app-miniature card per theme (with its spark + loader), search, applies on click |
 | `src/ui/Motion.{h,cpp}` | Theme-styled gauge / sparkline / loader / fill painters, `ThemedBar`, the shared `Ticker` |
 | `src/ads/AdService.{h,cpp}` | Fetches + rotates Free-plan promos; hard no-op on a paid plan |

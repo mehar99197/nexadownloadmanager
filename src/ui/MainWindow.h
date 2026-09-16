@@ -7,6 +7,7 @@
 #include "core/Types.h"
 
 class QTableWidget;
+class QTableWidgetItem;
 class QStackedWidget;
 class QLabel;
 class QLineEdit;
@@ -111,6 +112,11 @@ private:
     void updateStats();              // refresh header pill + footer summary
     void updateEmptyState();         // show the empty page when there are no downloads
     void refreshFileCell(int row, int id);
+    // The optional Category cell: an item (not a widget) so the column sorts
+    // and the existing row machinery moves it with everything else.
+    QTableWidgetItem *buildCategoryItem(int id);
+    void refreshCategoryCells();     // after the category list is edited
+    void setCategoryColumnVisible(bool on);
     void setRowStatus(int row, nexa::DownloadState state, const QString &detail);
     void showRowMenu(const QPoint &pos);
     QWidget *buildActionsCell(int id);        // per-row pause/resume + more buttons
@@ -140,6 +146,8 @@ private:
 
     // Toolbar "Filter": -1 = all, else only show rows in this DownloadState.
     int m_stateFilter = -1;
+    // Toolbar "Filter" -> Category: 0 = any, else only this category id.
+    int m_categoryFilter = 0;
     // Count of downloads that completed during THIS session (metrics "+N").
     int m_completedThisSession = 0;
     QSet<int> m_countedDone;   // ids already counted, so a re-emit doesn't double-count

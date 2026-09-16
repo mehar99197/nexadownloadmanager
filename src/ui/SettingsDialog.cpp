@@ -2,6 +2,7 @@
 #include "core/DownloadEngine.h"
 #include "core/Logging.h"
 #include "core/ProxyConfig.h"
+#include "ui/CategoriesDialog.h"
 #include "ui/Theme.h"
 #include "ui/ThemeGalleryDialog.h"
 #include "ui/Localization.h"
@@ -253,10 +254,26 @@ SettingsDialog::SettingsDialog(DownloadEngine *engine, QWidget *parent)
     gen->addRow(tr("Language"), m_language);
     v->addLayout(gen);
 
-    m_categorize = new QCheckBox(QStringLiteral("Sort completed files into type subfolders "
+    m_categorize = new QCheckBox(QStringLiteral("Sort completed files into category subfolders "
                                                 "(Video/, Audio/, …)"), plate);
     m_categorize->setChecked(m_engine->autoCategorize());
-    v->addWidget(m_categorize);
+    auto *catRow = new QWidget(plate);
+    auto *catLay = new QHBoxLayout(catRow);
+    catLay->setContentsMargins(0, 0, 0, 0);
+    auto *catEdit = new QPushButton(tr("Categories…"), catRow);
+    catEdit->setCursor(Qt::PointingHandCursor);
+    catEdit->setToolTip(tr("Which folder each kind of download lands in."));
+    catLay->addWidget(m_categorize, 1);
+    catLay->addWidget(catEdit);
+    v->addWidget(catRow);
+    // The rules only decide anything while sorting is on; saying so beats a
+    // dialog whose every edit silently does nothing.
+    catEdit->setEnabled(m_categorize->isChecked());
+    connect(m_categorize, &QCheckBox::toggled, catEdit, &QPushButton::setEnabled);
+    connect(catEdit, &QPushButton::clicked, this, [this] {
+        CategoriesDialog dlg(m_engine, this);
+        dlg.exec();
+    });
     m_clipboard = new QCheckBox(tr("Monitor the clipboard for download links"), plate);
     m_clipboard->setChecked(st.value(QLatin1String(kClipboard), false).toBool());
     v->addWidget(m_clipboard);
