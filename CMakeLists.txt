@@ -88,6 +88,8 @@ add_executable(nexa
     src/ui/AdBanner.cpp
     src/ui/FirstRunWizard.cpp
     src/ui/LinkGrabberDialog.cpp
+    src/grabber/SiteCrawler.cpp
+    src/ui/WebsiteGrabberDialog.cpp
     src/ui/MainWindow.cpp
 )
 
@@ -421,6 +423,46 @@ if(NEXA_BUILD_TESTS)
 
     # Engine helpers: links the real DownloadEngine translation unit (and its
     # dependency closure) so the tested code is the shipped code, not a copy.
+    # The website grabber's decisions, with no network in the loop: the save
+    # path it derives from a URL (a "../.." there used to write outside the
+    # chosen folder), page-vs-file, the wildcard filters and robots.txt.
+    # Links the real DownloadEngine closure because SiteCrawler hands files to
+    # the engine, so the tested code is the shipped code.
+    add_executable(nexa_site_crawler_test
+        tests/SiteCrawlerTest.cpp
+        src/grabber/SiteCrawler.cpp
+        src/core/DownloadEngine.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/core/Database.cpp
+        src/core/Categories.cpp
+        src/core/Portable.cpp
+        src/core/UpdateChecker.cpp
+        src/core/ProxyConfig.cpp
+        src/grabber/HlsGrabber.cpp
+        src/torrent/TorrentManager.cpp
+        src/site/YtDlpGrabber.cpp
+        src/site/MegaGrabber.cpp
+        src/site/SpotifyGrabber.cpp
+        src/ai/AiClient.cpp
+        src/auth/AuthenticationManager.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/BrowserLogin.cpp
+        src/auth/CookieFile.cpp
+        src/auth/CloudProviders.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_site_crawler_test PRIVATE src)
+    target_link_libraries(nexa_site_crawler_test PRIVATE
+        Qt6::Core Qt6::Network Qt6::Sql ${LIBTORRENT_TARGET} OpenSSL::Crypto)
+
     add_executable(nexa_engine_helpers_test
         tests/EngineHelpersTest.cpp
         src/core/DownloadEngine.cpp
@@ -590,6 +632,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME range_integrity COMMAND nexa_range_integrity_test)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
     add_test(NAME categories COMMAND nexa_categories_test)
+    add_test(NAME site_crawler COMMAND nexa_site_crawler_test)
     add_test(NAME download_task COMMAND nexa_download_task_test)
     add_test(NAME download_core COMMAND nexa_download_core_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)

@@ -470,522 +470,527 @@ Files already downloaded stay where they are. New downloads that matched it will
     <context>
         <name>MainWindow</name>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1588" />
+            <location filename="../src/ui/MainWindow.cpp" line="1589" />
             <source> and verified</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1723" />
+            <location filename="../src/ui/MainWindow.cpp" line="1726" />
             <source>&amp;About Nexa</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1669" />
+            <location filename="../src/ui/MainWindow.cpp" line="1670" />
             <source>&amp;Clear completed</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1641" />
+            <location filename="../src/ui/MainWindow.cpp" line="1642" />
             <source>&amp;Details…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1715" />
+            <location filename="../src/ui/MainWindow.cpp" line="1718" />
             <source>&amp;Documentation</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1632" />
+            <location filename="../src/ui/MainWindow.cpp" line="1633" />
             <source>&amp;Export logs…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1683" />
+            <location filename="../src/ui/MainWindow.cpp" line="1684" />
             <source>&amp;Find…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1628" />
-            <source>&amp;Import downloads…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1706" />
-            <source>&amp;Monitor clipboard for links</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1624" />
-            <source>&amp;New download…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1639" />
-            <source>&amp;Pause / resume selected</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1634" />
-            <source>&amp;Quit Nexa</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1647" />
-            <source>&amp;Remove selected</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1718" />
-            <source>&amp;Report a problem</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1672" />
-            <source>&amp;Scheduled…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1701" />
-            <source>&amp;Settings…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1626" />
-            <source>&amp;Smart add (AI)…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1691" />
-            <source>&amp;Sort…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1697" />
-            <source>&amp;Themes…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1066" />
-            <source>+%1 today</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1160" />
-            <source>64 hex characters, as published next to the file.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1149" />
-            <source>AAC</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2444" />
-            <source>Add URL…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1869" />
-            <source>All downloads finished. %1 in %2 seconds…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1849" />
-            <source>All downloads finished. %1 in 60 seconds…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2533" />
-            <source>Any category</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1145" />
-            <source>Audio format</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1186" />
-            <source>Automatic</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1378" />
-            <source>Cancel</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1878" />
-            <source>Cancelled.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1183" />
-            <source>Category</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1722" />
-            <source>Check for &amp;updates…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1297" />
-            <source>Checksum verification applies to file downloads only.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2617" />
-            <source>Clear the search/filter to reorder the queue</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1468" />
-            <source>Close</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2041" />
-            <source>Could not read %1.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2597" />
-            <source>Details…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1544" />
-            <source>Don't remind me again</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1464" />
-            <source>Don't show this dialog again</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1236" />
-            <source>Download</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1377" />
-            <source>Download Later</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1436" />
-            <source>Download complete</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1132" />
-            <source>Download whole course / playlist</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1127" />
-            <source>Enter URL</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1690" />
-            <source>F&amp;ilter…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1150" />
-            <source>FLAC (re-encode)</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1537" />
-            <source>Free plan: 3 downloads at once</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2577" />
-            <source>Host</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2035" />
-            <source>Import downloads</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2040" />
-            <source>Import failed</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1602" />
-            <source>Install now</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1590" />
-            <source>Install now? Nexa will close while the installer runs; your downloads resume when you reopen it.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1603" />
-            <source>Later</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2112" />
-            <source>Log exported to %1</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1148" />
-            <source>M4A · AAC (lossless copy, best)</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1151" />
-            <source>MP3 (re-encode)</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2607" />
-            <source>Move down</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2603" />
-            <source>Move to top</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2605" />
-            <source>Move up</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2570" />
-            <source>Name (A–Z)</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1117" />
-            <source>New Download</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1587" />
-            <source>Nexa %1 has been downloaded%2.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2440" />
-            <source>Nexa Download Manager</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1679" />
-            <source>Nexa will shut the computer down when the queue finishes.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2050" />
-            <source>No downloadable links were found in %1.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1543" />
-            <source>Not now</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1756" />
-            <source>Nothing scheduled. Tick “Start later” in New download to add one.</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2049" />
-            <source>Nothing to import</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1469" />
-            <source>Open</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2443" />
-            <source>Open Nexa</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1715" />
+            <source>&amp;Grab Website...</source>
             <translation type="unfinished" />
         </message>
         <message>
             <location filename="../src/ui/MainWindow.cpp" line="1629" />
-            <source>Open download &amp;folder</source>
+            <source>&amp;Import downloads…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2787" />
-            <source>Open download folder</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1707" />
+            <source>&amp;Monitor clipboard for links</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1467" />
-            <source>Open folder</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1625" />
+            <source>&amp;New download…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1592" />
-            <source>Open the package now? Your system's package installer will take it from here; restart Nexa afterwards.</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1640" />
+            <source>&amp;Pause / resume selected</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2599" />
-            <source>Pause</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1635" />
+            <source>&amp;Quit Nexa</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1665" />
-            <source>Pause &amp;all</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1648" />
+            <source>&amp;Remove selected</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2749" />
-            <source>Pause or resume this download</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1721" />
+            <source>&amp;Report a problem</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2126" />
-            <source>Pro theme</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1673" />
+            <source>&amp;Scheduled…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2446" />
-            <source>Quit Nexa</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1702" />
+            <source>&amp;Settings…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2629" />
-            <source>Remove</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2756" />
-            <source>Remove this download</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="3011" />
-            <source>Renamed to %1</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2600" />
-            <source>Resume</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1667" />
-            <source>Resume a&amp;ll</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1159" />
-            <source>SHA-256 to verify after download (optional)</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1459" />
-            <source>Saved to</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1213" />
-            <source>Saves to %1</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2641" />
-            <source>Saving to %1</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1737" />
-            <source>Scheduled downloads</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1270" />
-            <source>Scheduled for %1 — see Downloads → Scheduled…</source>
-            <translation type="unfinished" />
-        </message>
-        <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1705" />
-            <source>Setup &amp;guide…</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1627" />
+            <source>&amp;Smart add (AI)…</source>
             <translation type="unfinished" />
         </message>
         <message>
             <location filename="../src/ui/MainWindow.cpp" line="1692" />
-            <source>Show &amp;category column</source>
+            <source>&amp;Sort…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1674" />
-            <source>Shut down computer when done (this session)</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1698" />
+            <source>&amp;Themes…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1542" />
-            <source>Sign in</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1067" />
+            <source>+%1 today</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1704" />
-            <source>Site &amp;logins…</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1161" />
+            <source>64 hex characters, as published next to the file.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1541" />
-            <source>Start free trial</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1150" />
+            <source>AAC</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1166" />
-            <source>Start later, at</source>
+            <location filename="../src/ui/MainWindow.cpp" line="2454" />
+            <source>Add URL…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2574" />
-            <source>Status</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1872" />
+            <source>All downloads finished. %1 in %2 seconds…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1597" />
-            <source>This build could not be checksum-verified: the update feed carried no SHA-256 for it. Install it only if you trust the download.</source>
+            <location filename="../src/ui/MainWindow.cpp" line="1852" />
+            <source>All downloads finished. %1 in 60 seconds…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2543" />
+            <source>Any category</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1146" />
+            <source>Audio format</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1187" />
+            <source>Automatic</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1379" />
+            <source>Cancel</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1881" />
+            <source>Cancelled.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1184" />
+            <source>Category</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1725" />
+            <source>Check for &amp;updates…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1298" />
+            <source>Checksum verification applies to file downloads only.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2627" />
+            <source>Clear the search/filter to reorder the queue</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1469" />
+            <source>Close</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2044" />
+            <source>Could not read %1.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2607" />
+            <source>Details…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1545" />
+            <source>Don't remind me again</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1465" />
+            <source>Don't show this dialog again</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1237" />
+            <source>Download</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1378" />
+            <source>Download Later</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1437" />
+            <source>Download complete</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1133" />
+            <source>Download whole course / playlist</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1128" />
+            <source>Enter URL</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1691" />
+            <source>F&amp;ilter…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1151" />
+            <source>FLAC (re-encode)</source>
             <translation type="unfinished" />
         </message>
         <message>
             <location filename="../src/ui/MainWindow.cpp" line="1538" />
+            <source>Free plan: 3 downloads at once</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2587" />
+            <source>Host</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2038" />
+            <source>Import downloads</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2043" />
+            <source>Import failed</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1603" />
+            <source>Install now</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1591" />
+            <source>Install now? Nexa will close while the installer runs; your downloads resume when you reopen it.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1604" />
+            <source>Later</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2122" />
+            <source>Log exported to %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1149" />
+            <source>M4A · AAC (lossless copy, best)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1152" />
+            <source>MP3 (re-encode)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2617" />
+            <source>Move down</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2613" />
+            <source>Move to top</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2615" />
+            <source>Move up</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2580" />
+            <source>Name (A–Z)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1118" />
+            <source>New Download</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1588" />
+            <source>Nexa %1 has been downloaded%2.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2450" />
+            <source>Nexa Download Manager</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1680" />
+            <source>Nexa will shut the computer down when the queue finishes.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2053" />
+            <source>No downloadable links were found in %1.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1544" />
+            <source>Not now</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1759" />
+            <source>Nothing scheduled. Tick “Start later” in New download to add one.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2052" />
+            <source>Nothing to import</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1470" />
+            <source>Open</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2453" />
+            <source>Open Nexa</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1630" />
+            <source>Open download &amp;folder</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2797" />
+            <source>Open download folder</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1468" />
+            <source>Open folder</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1593" />
+            <source>Open the package now? Your system's package installer will take it from here; restart Nexa afterwards.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2609" />
+            <source>Pause</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1666" />
+            <source>Pause &amp;all</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2759" />
+            <source>Pause or resume this download</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2136" />
+            <source>Pro theme</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2456" />
+            <source>Quit Nexa</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2639" />
+            <source>Remove</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2766" />
+            <source>Remove this download</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="3021" />
+            <source>Renamed to %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2610" />
+            <source>Resume</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1668" />
+            <source>Resume a&amp;ll</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1160" />
+            <source>SHA-256 to verify after download (optional)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1460" />
+            <source>Saved to</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1214" />
+            <source>Saves to %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2651" />
+            <source>Saving to %1</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1740" />
+            <source>Scheduled downloads</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1271" />
+            <source>Scheduled for %1 — see Downloads → Scheduled…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1706" />
+            <source>Setup &amp;guide…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1693" />
+            <source>Show &amp;category column</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1675" />
+            <source>Shut down computer when done (this session)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1543" />
+            <source>Sign in</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1705" />
+            <source>Site &amp;logins…</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1542" />
+            <source>Start free trial</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1167" />
+            <source>Start later, at</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="2584" />
+            <source>Status</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1598" />
+            <source>This build could not be checksum-verified: the update feed carried no SHA-256 for it. Install it only if you trust the download.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/MainWindow.cpp" line="1539" />
             <source>This download is queued — the Free plan runs 3 downloads at a time.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1586" />
+            <location filename="../src/ui/MainWindow.cpp" line="1587" />
             <source>Update ready</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2027" />
+            <location filename="../src/ui/MainWindow.cpp" line="2030" />
             <source>Working on it — new downloads will appear here.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="1063" />
+            <location filename="../src/ui/MainWindow.cpp" line="1064" />
             <source>avg per session</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="2127" />
+            <location filename="../src/ui/MainWindow.cpp" line="2137" />
             <source>“%1” is part of the Pro theme collection.
 
 Free includes Nexa Dark and Nexa Light. Start the free 7-day trial in Settings, or see nexadownloadmanager.com/pricing to unlock all themes.</source>
@@ -995,224 +1000,224 @@ Free includes Nexa Dark and Nexa Light. Start the free 7-day trial in Settings, 
     <context>
         <name>ReorderTable</name>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="558" />
+            <location filename="../src/ui/MainWindow.cpp" line="559" />
             <source>+  New download</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="561" />
+            <location filename="../src/ui/MainWindow.cpp" line="562" />
             <source>Add a new download (URL, video, magnet, or playlist)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="849" />
+            <location filename="../src/ui/MainWindow.cpp" line="850" />
             <source>All seats in use</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="590" />
+            <location filename="../src/ui/MainWindow.cpp" line="591" />
             <source>Check for updates…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="809" />
+            <location filename="../src/ui/MainWindow.cpp" line="810" />
             <source>Clear completed downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="542" />
+            <location filename="../src/ui/MainWindow.cpp" line="543" />
             <source>DOWNLOAD MANAGER</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="931" />
+            <location filename="../src/ui/MainWindow.cpp" line="932" />
             <source>Delete the file</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="966" />
+            <location filename="../src/ui/MainWindow.cpp" line="967" />
             <source>Download &amp;&amp; install</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="985" />
+            <location filename="../src/ui/MainWindow.cpp" line="986" />
             <source>Downloading Nexa %1…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="728" />
+            <location filename="../src/ui/MainWindow.cpp" line="729" />
             <source>Downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="547" />
+            <location filename="../src/ui/MainWindow.cpp" line="548" />
             <source>Downloads  /  Overview</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="591" />
+            <location filename="../src/ui/MainWindow.cpp" line="592" />
             <source>Export logs…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="660" />
+            <location filename="../src/ui/MainWindow.cpp" line="661" />
             <source>Filter downloads by status</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="932" />
+            <location filename="../src/ui/MainWindow.cpp" line="933" />
             <source>Keep it</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="968" />
+            <location filename="../src/ui/MainWindow.cpp" line="969" />
             <source>Later</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="925" />
+            <location filename="../src/ui/MainWindow.cpp" line="926" />
             <source>Malware detected</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="584" />
+            <location filename="../src/ui/MainWindow.cpp" line="585" />
             <source>Monitor clipboard for links</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="768" />
+            <location filename="../src/ui/MainWindow.cpp" line="769" />
             <source>NEXA ENGINE READY</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="573" />
+            <location filename="../src/ui/MainWindow.cpp" line="574" />
             <source>New download</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="540" />
+            <location filename="../src/ui/MainWindow.cpp" line="541" />
             <source>Nexa</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="960" />
+            <location filename="../src/ui/MainWindow.cpp" line="961" />
             <source>Nexa %1 is available (you have %2).</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="507" />
+            <location filename="../src/ui/MainWindow.cpp" line="508" />
             <source>Nexa Download Manager</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="771" />
+            <location filename="../src/ui/MainWindow.cpp" line="772" />
             <source>No downloads yet</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="554" />
+            <location filename="../src/ui/MainWindow.cpp" line="555" />
             <source>Open folder</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="557" />
+            <location filename="../src/ui/MainWindow.cpp" line="558" />
             <source>Open the download folder</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="658" />
+            <location filename="../src/ui/MainWindow.cpp" line="659" />
             <source>Pause all downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="841" />
+            <location filename="../src/ui/MainWindow.cpp" line="842" />
             <source>Pro feature</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="588" />
+            <location filename="../src/ui/MainWindow.cpp" line="589" />
             <source>Remove selected</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="659" />
+            <location filename="../src/ui/MainWindow.cpp" line="660" />
             <source>Resume all downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="941" />
+            <location filename="../src/ui/MainWindow.cpp" line="942" />
             <source>Scanned: no malware found</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="657" />
+            <location filename="../src/ui/MainWindow.cpp" line="658" />
             <source>Search downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="653" />
+            <location filename="../src/ui/MainWindow.cpp" line="654" />
             <source>Search...</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="857" />
+            <location filename="../src/ui/MainWindow.cpp" line="858" />
             <source>Seat not available</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="550" />
+            <location filename="../src/ui/MainWindow.cpp" line="551" />
             <source>Settings</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="575" />
+            <location filename="../src/ui/MainWindow.cpp" line="576" />
             <source>Settings and more</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="553" />
+            <location filename="../src/ui/MainWindow.cpp" line="554" />
             <source>Settings, Site logins &amp; more</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="581" />
+            <location filename="../src/ui/MainWindow.cpp" line="582" />
             <source>Settings…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="752" />
+            <location filename="../src/ui/MainWindow.cpp" line="753" />
             <source>Showing %1 only — click the cell again to show everything.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="583" />
+            <location filename="../src/ui/MainWindow.cpp" line="584" />
             <source>Site logins…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="967" />
+            <location filename="../src/ui/MainWindow.cpp" line="968" />
             <source>Skip this version</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="661" />
+            <location filename="../src/ui/MainWindow.cpp" line="662" />
             <source>Sort downloads</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="582" />
+            <location filename="../src/ui/MainWindow.cpp" line="583" />
             <source>Themes…</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="858" />
+            <location filename="../src/ui/MainWindow.cpp" line="859" />
             <source>This device's seat was freed from your Nexa account, so it has dropped to the Free plan.
 
 Sign in again in Settings to take a seat back, if one is available.</source>
             <translation type="unfinished" />
         </message>
         <message numerus="yes">
-            <location filename="../src/ui/MainWindow.cpp" line="850" />
+            <location filename="../src/ui/MainWindow.cpp" line="851" />
             <source>This license covers %n device(s) at a time, and they are all in use right now.
 
 Close Nexa on another machine, or manage your devices at nexadownloadmanager.com/dashboard.</source>
@@ -1222,22 +1227,22 @@ Close Nexa on another machine, or manage your devices at nexadownloadmanager.com
             </translation>
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="959" />
+            <location filename="../src/ui/MainWindow.cpp" line="960" />
             <source>Update available</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="945" />
+            <location filename="../src/ui/MainWindow.cpp" line="946" />
             <source>Virus scan could not run: %1</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="929" />
+            <location filename="../src/ui/MainWindow.cpp" line="930" />
             <source>Your scanner flagged “%1”.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/MainWindow.cpp" line="814" />
+            <location filename="../src/ui/MainWindow.cpp" line="815" />
             <source>v%1  ·  NexaDL</source>
             <translation type="unfinished" />
         </message>
@@ -1633,6 +1638,54 @@ Free includes Nexa Dark and Nexa Light. Start the free 7-day trial, or see nexad
         </message>
     </context>
     <context>
+        <name>SiteCrawler</name>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="213" />
+            <source>Choose a folder to save into first.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="631" />
+            <source>Could not queue this download.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="221" />
+            <source>That address cannot be grabbed: only public http:// and https:// sites are allowed.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="678" />
+            <source>download failed</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="685" />
+            <source>removed</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="585" />
+            <source>too large</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="583" />
+            <source>too small</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="613" />
+            <source>unsafe path</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/grabber/SiteCrawler.cpp" line="587" />
+            <source>would exceed the total size limit</source>
+            <translation type="unfinished" />
+        </message>
+    </context>
+    <context>
         <name>SiteLoginsDialog</name>
         <message>
             <location filename="../src/ui/SiteLoginsDialog.cpp" line="107" />
@@ -1756,6 +1809,225 @@ Free includes Nexa Dark and Nexa Light. Start the free 7-day trial, or see nexad
         <message>
             <location filename="../src/core/UpdateChecker.cpp" line="119" />
             <source>Update checks are disabled</source>
+            <translation type="unfinished" />
+        </message>
+    </context>
+    <context>
+        <name>WebsiteGrabberDialog</name>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="243" />
+            <source>%1 KB</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="86" />
+            <source>*.jpg, *.png</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="90" />
+            <source>*/thumb/*</source>
+            <translation type="unfinished" />
+        </message>
+        <message numerus="yes">
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="325" />
+            <source>, %n failed</source>
+            <translation type="unfinished">
+                <numerusform />
+                <numerusform />
+            </translation>
+        </message>
+        <message numerus="yes">
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="323" />
+            <source>, %n skipped</source>
+            <translation type="unfinished">
+                <numerusform />
+                <numerusform />
+            </translation>
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="73" />
+            <source>All files</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="120" />
+            <source>Browse</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="149" />
+            <source>Cancel</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="207" />
+            <source>Cancelled</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="186" />
+            <source>Crawling...</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="282" />
+            <source>Crawling... Found %1 files</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="100" />
+            <source>Depth:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="134" />
+            <source>Detail</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="76" />
+            <source>Documents</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="318" />
+            <source>Done: %1 pages, %2 files (%3 MB)</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="71" />
+            <source>Download:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="91" />
+            <source>Exclude:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="134" />
+            <source>File</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="74" />
+            <source>Images</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="87" />
+            <source>Include:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="102" />
+            <source>Max files:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="77" />
+            <source>Offline website</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="298" />
+            <source>Pages: %1 | Files found: %2 | Downloaded: %3</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="131" />
+            <source>Pages: 0 | Files: 0 | Downloaded: 0</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="147" />
+            <source>Pause</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="195" />
+            <source>Paused</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="173" />
+            <source>Please enter a valid URL</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="110" />
+            <source>Preserve structure</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="126" />
+            <source>Progress</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="129" />
+            <source>Ready</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="194" />
+            <source>Resume</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="108" />
+            <source>Same domain only</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="121" />
+            <source>Save to:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="212" />
+            <source>Select Folder</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="82" />
+            <source>Settings</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="146" />
+            <source>Start Grabbing</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="134" />
+            <source>Status</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="64" />
+            <source>URL:</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="75" />
+            <source>Videos</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="43" />
+            <source>Website Grabber</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="66" />
+            <source>https://example.com/gallery</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/WebsiteGrabberDialog.cpp" line="243" />
+            <source>queued</source>
             <translation type="unfinished" />
         </message>
     </context>

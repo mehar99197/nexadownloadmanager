@@ -123,8 +123,9 @@ portal and webhook answer 503), never in mock mode; `config.stripeMode` is
 | `nexa_account_signin_test` | Account sign-in end-to-end against a real socket: the code, the approval, a restart picking the account up from the credential store, a token minted for another account refused, and the asymmetry that matters — `signed_out` forgets the token, a lapsed plan keeps it and drops to Free |
 | `nexa_license_token_test` | Ed25519 licence-token verification: forged/`alg:none`/HMAC-confusion/tampered/expired tokens all refused |
 | `nexa_categories_test` | Download categories: the seeded built-ins, one-pass top-down matching (a site rule only beats an extension rule when it is dragged above it), a rule-less custom row claiming nothing, folder resolution (blank/relative/absolute), the dotted-JSON round trip, and the delete that must clear `downloads.category_id` — SQLite does not enforce that foreign key |
+| `nexa_site_crawler_test` | The website grabber's decisions with no network in the loop: the save path derived from a URL (traversal, percent-encoded traversal, a Windows drive segment, a reserved device name), page-vs-file, the wildcard filters, robots.txt (Allow beating a shorter Disallow, comments, a named section replacing the wildcard one) and the preset ceilings |
 | `nexa_guard_test` / `nexa_guard_obf_test` | The licence guard compiled BOTH ways (plain, and with `NEXA_OBFUSCATE_LICENSE`) — same assertions on all 32 input combinations prove obfuscation never changes the answer, that a patched "paid" state trips the tamper canary, and that a lapsed-but-real customer never does |
-| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `categories`, `themes`, `download_task`, `download_core`, `license_token`, `offline_grace`, `account_signin`, `guard`, `guard_obfuscated` also run |
+| (ctest) | `public_url`, `cloud_providers`, `range_integrity`, `database_persistence`, `categories`, `site_crawler`, `themes`, `download_task`, `download_core`, `license_token`, `offline_grace`, `account_signin`, `guard`, `guard_obfuscated` also run |
 
 ## Architecture
 
@@ -187,6 +188,28 @@ User pastes URL ─────────────────────�
   that id in the same transaction, because SQLite does not enforce the foreign
   key by default. The engine falls back to the static `DownloadEngine::categoryFor`
   map only when no list is loaded at all (a database that failed to open).
+- **The website grabber acts on somebody else's markup, so it is written as if
+  that markup is hostile.** `src/grabber/SiteCrawler.{h,cpp}` walks a site from a
+  seed URL and hands the files it finds to `DownloadEngine` as ordinary
+  downloads. Two properties carry the weight. **Every URL goes through
+  `isPublicHttpUrl()`** — the seed, robots.txt, each page, each HEAD — because a
+  page can point the crawler at `192.168.1.1` or a cloud metadata address, and a
+  crawler is a confused deputy by construction. **The save path is sanitised per
+  segment and then checked for containment**: `safeSavePath()` drops `..`, `.`
+  and drive-colon segments, runs each one through `makeFileNamePortable`, and
+  finally asserts the finished path is still inside the chosen folder — a URL
+  path of `../../../../Windows/System32/x.dll` is otherwise a file write
+  anywhere on disk. Both are pinned by `nexa_site_crawler_test`. The loop
+  continues **only** through `schedulePump()`, and the concurrency slot a file
+  takes comes back from the engine's `taskFinished`/`taskStateChanged(Error)`/
+  `taskRemoved` — without that the crawl stops dead after `maxConcurrent` files
+  and never reports finishing. `kMaxDepthCeiling`/`kMaxFilesCeiling` are hard
+  bounds no configuration can lift, because a site that generates links (a
+  calendar, a session id in the path) is an infinite walk. Wildcards match the
+  **file name**, not the path: Qt's default wildcard conversion treats `/` as a
+  separator, so `*.jpg` against a full path silently matched nothing and every
+  preset downloaded zero files. `.html`/`.php`/… are pages, never files, or the
+  site's HTML is saved twice.
 - **Scheduler persistence:** scheduled jobs live in the SQLite `scheduled` table (URL/time/name only — never headers) and re-arm on startup.
 - **Theming:** every colour comes from `theme::current()`; one stylesheet template is generated per theme. Never hard-code a colour in a widget. 64 built-in themes live in `src/ui/Theme.cpp`: Nexa Dark and Nexa Light are hand-tuned palettes, the rest are derived from a one-line `Recipe` (ground, panel, border, two text tones, three brand stops, five status hues) by `build()`. Adding a theme = adding a `Recipe` row. `ThemeGalleryDialog` renders each as a live miniature of the real layout; `tests/ThemeContrastTest.cpp` asserts WCAG contrast for every role in every theme.
 - **Row hover is painted by the view, not by QSS:** there is deliberately no `QTableWidget::item:hover` rule. Qt applies it per cell and the cells that carry widgets never show it, so a row lit up block by block. `ReorderTable` (MainWindow.cpp) paints one band under the hovered row with a short `QVariantAnimation` fade — a plain hover, no travelling highlight. Moves over cell widgets stop at that widget, so the band is fed from an application event filter, not from the viewport's `mouseMoveEvent`.
@@ -318,6 +341,8 @@ client per half hour and no clicks at all.
 | `src/ui/Localization.{h,cpp}` | Loads `nexa_<lang>.qm`, handles right-to-left |
 | `src/ui/FirstRunWizard.{h,cpp}` | First-launch setup: folder → extension → test download |
 | `src/ui/LinkGrabberDialog.{h,cpp}` | IDM-style "download all links" picker |
+| `src/grabber/SiteCrawler.{h,cpp}` | Website grabber: walks a site, filters, and queues files — SSRF-checked and path-contained |
+| `src/ui/WebsiteGrabberDialog.{h,cpp}` | Tools → Grab Website: presets, filters, live progress |
 | `src/core/ProxyConfig.{h,cpp}` | HTTP/SOCKS5 proxy for Qt and the external tools |
 | `src/core/Portable.{h,cpp}` | Portable mode (`portable.txt` beside the exe) |
 | `src/core/VirusScanner.{h,cpp}` | Optional post-download scan via Defender / ClamAV |

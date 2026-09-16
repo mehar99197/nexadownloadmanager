@@ -78,6 +78,7 @@ private slots:
     void onSiteLogins();             // register a cookies.txt for an auth-gated site
     void onSettings();               // open the Preferences dialog
     void onThemes();                 // open the Themes gallery (live preview)
+    void onGrabWebsite();            // open the Website Grabber dialog
     void refreshTheme();             // redraw the parts Nexa paints itself
     void onCheckUpdates();           // manual "Check for updates…"
     void onExportLogs();             // gear menu: copy the troubleshooting log somewhere

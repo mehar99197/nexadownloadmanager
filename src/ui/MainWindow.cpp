@@ -10,6 +10,7 @@
 #include "ads/AdService.h"
 #include "ui/ClipboardMonitor.h"
 #include "ui/LinkGrabberDialog.h"
+#include "ui/WebsiteGrabberDialog.h"
 #include "ui/FirstRunWizard.h"
 #include "license/LicenseManager.h"
 #include "core/DownloadEngine.h"
@@ -1711,6 +1712,7 @@ void MainWindow::buildMenuBar()
     });
         connect(aClip, &QAction::toggled, this, &MainWindow::setClipboardMonitoring);
     tools->addSeparator();
+    tools->addAction(tr("&Grab Website..."), this, &MainWindow::onGrabWebsite);
 
     QMenu *help = bar->addMenu(QStringLiteral("&Help"));
     help->addAction(tr("&Documentation"), this, []() {
@@ -2078,6 +2080,13 @@ void MainWindow::onSiteLogins()
 {
     SiteLoginsDialog dlg(m_engine, this);
     dlg.exec();
+}
+
+void MainWindow::onGrabWebsite()
+{
+    auto* dlg = new WebsiteGrabberDialog(m_engine, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
 }
 
 void MainWindow::onCheckUpdates()
