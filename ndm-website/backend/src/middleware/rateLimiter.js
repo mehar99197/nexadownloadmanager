@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const config = require('../config/env');
 const { fail } = require('../utils/respond');
 const { MySqlRateLimitStore } = require('./rateLimitStore');
@@ -57,9 +58,19 @@ function makeDurableLimiter(name, options) {
  * below still caps the total from one address, so nobody can walk a dictionary
  * of emails past it either.
  */
+// Every limiter keyed on the caller's address goes through this rather than
+// reading req.ip. See loginKey below for why the raw address is not a key.
+const ipKey = (req) => ipKeyGenerator(req.ip);
+
 function loginKey(req) {
   const email = String(req.body?.email || '').toLowerCase().trim().slice(0, 190);
-  return `${req.ip}|${email}`;
+  // ipKeyGenerator, not req.ip. A single IPv6 customer is handed a whole /64 by
+  // their ISP, so a raw address as the key means an attacker walks to the next
+  // address after every fifth guess and the limit counts nothing. The helper
+  // collapses IPv6 to its prefix and leaves IPv4 exactly as it was, so the
+  // existing behaviour for v4 clients is unchanged. express-rate-limit v8
+  // reports a raw-IP key generator as ERR_ERL_KEY_GEN_IPV6 for this reason.
+  return `${ipKey(req)}|${email}`;
 }
 
 // Register / forgot / reset: 5 per 15 min per address. These carry no shared
@@ -90,7 +101,7 @@ const authIpLimiter = makeDurableLimiter('auth-ip', {
 const licenseLimiter = makeDurableLimiter('license', {
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.ip,
+  keyGenerator: ipKey,
 });
 
 // Admin login: 5 per 15 min.
@@ -237,18 +248,18 @@ const licenseRotateLimiter = makeDurableLimiter('license-rotate', {
 const deviceCodeLimiter = makeDurableLimiter('device-code', {
   windowMs: 60 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.ip,
+  keyGenerator: ipKey,
   message: 'Too many sign-in attempts from this address. Please try again later.',
 });
 const devicePollLimiter = makeLimiter({
   windowMs: 60 * 1000,
   max: 60,
-  keyGenerator: (req) => req.ip,
+  keyGenerator: ipKey,
 });
 const deviceApproveLimiter = makeDurableLimiter('device-approve', {
   windowMs: 15 * 60 * 1000,
   max: 10,
-  keyGenerator: (req) => `${req.ip}|${req.user ? req.user.id : ''}`,
+  keyGenerator: (req) => `${ipKey(req)}|${req.user ? req.user.id : ''}`,
   message: 'Too many code attempts. Please wait a few minutes.',
 });
 
@@ -257,5 +268,5 @@ module.exports = {
   deviceCodeLimiter, devicePollLimiter, deviceApproveLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, faqVoteLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
-  loginKey,
+  loginKey, ipKey,
 };

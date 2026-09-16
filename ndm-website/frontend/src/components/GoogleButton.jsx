@@ -204,6 +204,14 @@ export default function GoogleButton({
         // start a second flow mid-request. pointer-events-none stays as a
         // fallback for browsers without inert.
         //
+        // `disabled || undefined`, not `disabled ? '' : undefined`. React 18 did
+        // not know this attribute, so the empty string was passed through
+        // verbatim and rendered inert="". React 19 knows it as a boolean, where
+        // an empty string means FALSE and the attribute is dropped entirely -
+        // the wrapper stayed reachable by Tab and the second submit came back,
+        // with nothing in the markup to show it had. The test that asserts the
+        // attribute is present is what caught it.
+        //
         // scheme-light: the button is a cross-origin iframe whose document uses
         // the light colour scheme. useTheme stamps `color-scheme: dark` on <html>,
         // and browsers paint an opaque canvas (white, here) behind any iframe
@@ -216,7 +224,7 @@ export default function GoogleButton({
         // form below does not jump when the async script lands.
         className={`flex min-h-10 justify-center scheme-light ${disabled ? 'pointer-events-none opacity-60' : ''}`}
         data-testid="google-button"
-        inert={disabled ? '' : undefined}
+        inert={disabled || undefined}
         aria-busy={disabled || undefined}
       >
         <div ref={container} className="w-full max-w-[320px]" />

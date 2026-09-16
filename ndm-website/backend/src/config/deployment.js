@@ -21,7 +21,12 @@
  * process.env.
  */
 
-require('dotenv').config();
+// quiet: dotenv 17 prints a "injected env (N)" banner to stdout on every load.
+// Harmless in a server, fatal for anything that reads this process's stdout as
+// data - config.test.js boots the app in a child process and JSON.parses what
+// it prints, and the banner turned two passing tests into a SyntaxError. A
+// library announcing itself on stdout is the caller's problem to silence.
+require('dotenv').config({ quiet: true });
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';

@@ -2,6 +2,11 @@
 
 const config = require('../config/env');
 
+// The Stripe API version this codebase is written against. It is what the
+// SDK 16 default was, so pinning it changed nothing at the time it was added —
+// the point is that it cannot change by accident afterwards.
+const STRIPE_API_VERSION = '2024-06-20';
+
 // Same function names in every mode so route handlers are agnostic.
 //
 // Three modes, decided in config/env.js#stripeMode:
@@ -78,7 +83,20 @@ if (config.isBillingDisabled) {
 } else {
   // ── REAL ──────────────────────────────────────────────────
   const Stripe = require('stripe');
-  const stripe = new Stripe(config.STRIPE_SECRET_KEY);
+  // The API version is PINNED, not left to the SDK's default.
+  //
+  // Without this, `npm update stripe` silently changes the version header, and
+  // with it the shape of every object Stripe sends us. That is not a
+  // hypothetical: 2025-03-31.basil moved `invoice.subscription` into
+  // `invoice.parent.subscription_details.subscription` and the line item's
+  // price into `pricing.price_details`. utils/stripeInvoice.js reads both
+  // shapes, so it would survive — but nothing else should have to be written
+  // that defensively because a dependency bump moved the goalposts.
+  //
+  // Upgrading the API version is a deliberate change that needs testing against
+  // Stripe itself, in test mode, with the webhook suite. Upgrading the SDK — for
+  // its security fixes and Node support — should not drag that along with it.
+  const stripe = new Stripe(config.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
   const { PLANS } = require('../config/plans');
 
   impl = {
@@ -167,5 +185,11 @@ if (config.isBillingDisabled) {
     },
   };
 }
+
+// Exported so a test can assert the pin is still there and still what the
+// webhook handlers were written against. An accidental `npm update stripe` that
+// unpinned it would otherwise change every payload shape with nothing to notice
+// it by until a renewal was mishandled.
+impl.apiVersion = STRIPE_API_VERSION;
 
 module.exports = impl;

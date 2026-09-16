@@ -967,6 +967,14 @@ API request would cost far more than those counters are worth.
 
 **Sign-in is keyed per (IP, email)**, not per IP: a single per-IP budget meant one
 person mistyping their password locked out everybody behind the same office NAT.
+
+**Every address-based key goes through `ipKey`** (`ipKeyGenerator` from
+express-rate-limit), never `req.ip` directly. An IPv6 customer is handed a whole
+/64 by their ISP, so a raw address as the key lets an attacker step to the next
+one after every fifth guess while the counter reports nothing wrong. `ipKey`
+collapses IPv6 to its prefix and leaves IPv4 byte-identical, so v4 clients are
+unaffected. express-rate-limit v8 reports a raw-IP key generator as
+`ERR_ERL_KEY_GEN_IPV6`.
 `loginLimiter` (5/15min per account per address) is paired with `authIpLimiter`
 (50/15min per address), so cycling through emails is not a way around it.
 
