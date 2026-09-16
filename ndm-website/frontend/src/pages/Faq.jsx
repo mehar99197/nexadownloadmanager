@@ -1,189 +1,476 @@
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 
-const FAQS = [
+const A = ({ to, children }) => <Link to={to} className="text-brand-300 hover:underline">{children}</Link>;
+const M = ({ children }) => <code className="font-mono text-xs text-brand-100">{children}</code>;
+
+/* ------------------------------------------------------------------ *
+ *  Every answer opens with the answer. A reader scanning for "yes" or "no"
+ *  should find it in the first line and stop; the detail is for whoever needs
+ *  it. `keywords` is what the search box matches beyond the question text —
+ *  the words people actually type, including the error messages.
+ * ------------------------------------------------------------------ */
+const SECTIONS = [
   {
-    q: 'Is Nexa free?',
-    a: (
-      <>
-        Yes. The Free plan costs nothing, never expires and includes the browser extension, the
-        video grabber, YouTube via yt-dlp and BitTorrent. It is limited to 3 downloads running at
-        the same time. Every new account also gets a 7-day Pro trial with no card required.
-      </>
-    ),
+    id: 'start',
+    label: 'Getting started',
+    items: [
+      {
+        q: 'Is Nexa completely free?',
+        keywords: 'price cost free plan pay',
+        a: <>Yes, and it stays free. The Free plan never expires and includes the browser extension, the video grabber, YouTube via yt-dlp, BitTorrent and cloud links. Its one limit is three downloads running at the same time — the rest queue rather than fail. It shows a single promo strip inside the app. Pro removes the concurrency cap and the promo and adds course-site downloads and AI rename, at $5/month or $45/year. Every account also gets a 7-day Pro trial with no card required. See <A to="/pricing">pricing</A>.</>,
+      },
+      {
+        q: 'Which operating systems are supported?',
+        keywords: 'windows linux mac macos ubuntu debian platform',
+        a: <>Windows 10 or newer, and Ubuntu 22.04+ / Debian 12+ via a <M>.deb</M> package. macOS is not shipped: the codebase is Qt and builds there, and our CI produces an app bundle, but it is unsigned so Gatekeeper refuses it. We would rather say that than sell you a broken download. Register interest on the <A to="/contact?topic=macos">contact page</A> and we will tell you when it lands.</>,
+      },
+      {
+        q: 'How do I install Nexa?',
+        keywords: 'install setup exe deb installer',
+        a: <>Download the installer for your platform from the <A to="/download">download page</A> and run it. On Windows that is a single <M>.exe</M>; on Debian or Ubuntu, <M>sudo apt install ./nexa_*.deb</M>. yt-dlp, ffmpeg and aria2 are bundled, so there is nothing else to install. Launch the app once afterwards — that is what registers the browser bridge. Full walkthrough in the <A to="/docs/install">install guide</A>.</>,
+      },
+      {
+        q: 'What is the difference between Free and Pro?',
+        keywords: 'pro upgrade plan difference features',
+        a: <>Free caps you at three simultaneous downloads, shows one in-app promo strip and includes two themes. Pro removes the cap, removes the promo, unlocks all 64 themes, allows downloads from login-gated course sites such as Udemy and Coursera, and adds AI rename. Everything else — the extension, the video grabber, YouTube, torrents, the scheduler, the remote dashboard — is in both. Team is Pro for five machines at a time on one account.</>,
+      },
+      {
+        q: 'Do I need to create an account?',
+        keywords: 'account signup register login required',
+        a: <>No. The Free plan works with no account at all — install it and download. An account is only needed to start a Pro trial, to buy a plan, or to have your plan follow you to another computer. If you do sign in, the app picks the plan up by itself; there is no licence key to copy.</>,
+      },
+      {
+        q: 'How do I update Nexa?',
+        keywords: 'update upgrade version new release',
+        a: <>Install the newer build over the old one. The Windows installer and the <M>.deb</M> both upgrade in place and keep your queue, history and settings. The app also checks for updates daily (you can turn that off) and tells you when one exists. Separately, yt-dlp inside the app can be updated on its own from Settings → Video sites when a site breaks between releases — that is the fix for most &ldquo;this site stopped working&rdquo; problems. See the <A to="/changelog">changelog</A>.</>,
+      },
+      {
+        q: 'Can I use Nexa without the browser extension?',
+        keywords: 'without extension standalone paste url',
+        a: <>Yes, with one trade-off. Paste any URL, magnet link or <M>.m3u8</M> into the app and it downloads normally. What you lose is the session: a URL copied out of a browser carries no cookies, so anything behind a login will fail with a 403. For public files the app alone is entirely sufficient.</>,
+      },
+      {
+        q: 'What languages is Nexa available in?',
+        keywords: 'language translation localisation urdu arabic hindi spanish',
+        a: <>The app ships translations for Arabic, German, Spanish, French, Hindi, Indonesian, Brazilian Portuguese, Russian, Turkish, Urdu and Simplified Chinese, alongside English. Pick one in Settings → General; it applies at the next launch. Coverage varies by language — some are more complete than others, and untranslated strings fall back to English rather than showing blanks. The website itself is currently English only.</>,
+      },
+      {
+        q: 'Where are downloads saved by default?',
+        keywords: 'folder location save path downloads directory',
+        a: <>Your system Downloads folder — <M>%USERPROFILE%\Downloads</M> on Windows, <M>~/Downloads</M> on Linux — with files sorted into category subfolders (Video, Audio, Documents, Compressed, Programs, Images, Other). Change the base folder in Settings → Downloads, change where each category points in Settings → Categories, or set a location per download when you add one. The toolbar&apos;s &ldquo;Open folder&rdquo; button jumps straight there.</>,
+      },
+      {
+        q: 'Can I import downloads from IDM or JDownloader?',
+        keywords: 'import idm jdownloader ef2 crawljob migrate',
+        a: <>Partly. Nexa reads IDM <M>.ef2</M> export files, JDownloader <M>.crawljob</M> files and plain lists of links — File → Import. What transfers is the URLs and their names; in-progress transfers do not carry over, because the partial files and segment state are in the other program&apos;s own format. In practice: export your queue, import it here, and let the finished ones re-download.</>,
+      },
+    ],
   },
   {
-    q: 'What does Pro add?',
-    a: (
-      <>
-        Pro removes the concurrency cap (unlimited simultaneous downloads instead of 3), unlocks AI
-        rename (smart filenames via Anthropic&apos;s API, using your own key) and gets you priority
-        support. It is $5/month or $45/year. Team is the same features for 5 seats. See{' '}
-        <Link to="/pricing" className="text-brand-300 hover:underline">pricing</Link>.
-      </>
-    ),
+    id: 'extension',
+    label: 'Browser extension',
+    items: [
+      {
+        q: 'Which browsers are supported?',
+        keywords: 'chrome firefox edge brave opera vivaldi safari browser',
+        a: <>Chrome, Microsoft Edge, Brave and Firefox are supported and tested. Other Chromium browsers — Vivaldi, Opera, Arc — generally work with the Chrome build, but we do not test them every release. Safari is not supported: it uses a different extension format that would need a separate build and an Apple developer account. See the <A to="/features/browser-extension">extension page</A>.</>,
+      },
+      {
+        q: 'How do I install the extension?',
+        keywords: 'install extension unpacked zip store',
+        a: <>For now, from the packaged zip on the <A to="/download">download page</A> — the Chrome Web Store and Firefox Add-ons listings are still in review. Unzip it somewhere permanent, open <M>chrome://extensions</M>, turn on Developer mode, and use &ldquo;Load unpacked&rdquo;. Firefox uses <M>about:debugging</M> → Load Temporary Add-on. Then launch Nexa once and reload your tabs. Step-by-step with screenshots in the <A to="/docs/extension">extension guide</A>.</>,
+      },
+      {
+        q: 'Why does the extension need so many permissions?',
+        keywords: 'permissions privacy read change data all sites scary',
+        a: <>Because it has to watch the page you are on to find the video, and read that site&apos;s cookies so the download is authorised as you. It cannot be scoped to a list of sites, since you can download from anywhere. None of it leaves your computer: cookies travel over a local pipe to the Nexa app, not to us. Every permission is listed with its reason on the <A to="/security">security page</A>.</>,
+      },
+      {
+        q: 'It says “Nexa: engine unavailable”. What do I do?',
+        keywords: 'engine unavailable error bridge native messaging not running',
+        a: <>The extension reached the bridge and nothing answered: the app is not running, or has never been launched since you installed the extension. Start Nexa, wait for the window, and reload the page. If it persists, launch the app once more — every launch rewrites the native-host manifest, which repairs a registration broken by a browser update or a profile reset.</>,
+      },
+      {
+        q: 'Why is the extension not detecting videos?',
+        keywords: 'no button video not detected grabber missing',
+        a: <>Three usual causes. Playback has not started, so the player has not fetched its manifest — press play. The player is inside a cross-origin iframe the content script cannot reach. Or the video is a plain MP4 with no manifest, in which case there is nothing to detect: right-click it and choose &ldquo;Download with Nexa&rdquo;. Check the extension is also enabled for that site in the toolbar popup.</>,
+      },
+      {
+        q: 'Can I use the extension without the app installed?',
+        keywords: 'extension only standalone without app',
+        a: <>No. The extension downloads nothing itself — it is a bridge that hands URLs, headers and cookies to the desktop app over native messaging. Without the app there is nothing on the other end, and you will see &ldquo;engine unavailable&rdquo; on every click.</>,
+      },
+      {
+        q: 'How do I stop it taking over downloads on a particular site?',
+        keywords: 'disable site exclude takeover per-site',
+        a: <>Open the Nexa toolbar popup while you are on that site and turn off the per-site toggle. The browser then handles downloads there as normal, and the right-click &ldquo;Download with Nexa&rdquo; entry still works when you want it. You can also turn takeover off globally and use the right-click menu only.</>,
+      },
+      {
+        q: 'The extension keeps getting disabled. Why?',
+        keywords: 'disabled removed keeps turning off firefox temporary',
+        a: <>In Firefox this is expected until the Add-ons listing is live: <M>about:debugging</M> installs a temporary add-on that is removed at every restart. In Chromium browsers, an unpacked extension survives restarts but the browser may nag about developer-mode extensions and can disable one whose folder has been moved or deleted — keep the unzipped folder where it is.</>,
+      },
+      {
+        q: 'How do I update the extension?',
+        keywords: 'update extension new version',
+        a: <>Download the new zip, unzip it over the old folder, then press the reload icon on the extension&apos;s card in <M>chrome://extensions</M>. Once the store listings are live this becomes automatic. The app tells you if it ever sees an extension too old to speak to it.</>,
+      },
+      {
+        q: 'Does it work in incognito or private windows?',
+        keywords: 'incognito private browsing window',
+        a: <>Yes, if you allow it. Chromium browsers need &ldquo;Allow in Incognito&rdquo; ticked on the extension&apos;s details page; Firefox has the same setting under &ldquo;Run in Private Windows&rdquo;. The app still has to be running. Note that a private window has its own cookie jar, so a site you are signed into normally may look signed out there.</>,
+      },
+    ],
   },
   {
-    q: 'Which operating systems are supported?',
-    a: (
-      <>
-        Windows 10 or newer (installer) and Ubuntu 22.04+ / Debian 12+ (.deb package). The
-        codebase is Qt and builds on macOS, but we have not shipped a signed macOS build yet —
-        leave your email on the <Link to="/contact?topic=macos" className="text-brand-300 hover:underline">contact page</Link> and
-        we will tell you when it lands.
-      </>
-    ),
+    id: 'video',
+    label: 'YouTube & video',
+    items: [
+      {
+        q: 'Can I download YouTube videos?',
+        keywords: 'youtube download video mp4',
+        a: <>Yes. Paste the URL into the app or use the extension button on the page. Nexa probes it with yt-dlp, shows the title and the available qualities, and downloads the one you choose — merging the separate video and audio streams into one file automatically. Playlists and channels work the same way. Details on the <A to="/features/youtube-sites">YouTube &amp; 1000+ sites page</A>.</>,
+      },
+      {
+        q: 'Why do I get a 403 error on YouTube?',
+        keywords: '403 forbidden error authentication required youtube failed',
+        a: <>Two different problems share that code, and Nexa words them differently. &ldquo;Authentication required (HTTP 403)&rdquo; means the video wants a signed-in session — sign in to the site and start the download from the extension so your cookies travel with it. &ldquo;Media server refused the download — the stream URL expired or yt-dlp is out of date&rdquo; is not a login problem: update yt-dlp from Settings → Video sites and retry. Full guide: <A to="/docs/youtube">downloading from YouTube</A>.</>,
+      },
+      {
+        q: 'How do I download a whole playlist?',
+        keywords: 'playlist channel bulk all videos',
+        a: <>Paste the playlist URL and tick &ldquo;Download whole course / playlist&rdquo; before confirming. Each video becomes its own row, the playlist name becomes a subfolder, and several download in parallel up to your concurrency limit — three on Free. Private, deleted and members-only entries are skipped with a note rather than failing the whole playlist.</>,
+      },
+      {
+        q: 'Can I choose the video quality?',
+        keywords: 'quality resolution 1080p 4k 2160p choose',
+        a: <>Yes — 2160p, 1440p, 1080p, 720p, 480p or best available, plus audio-only. Nexa asks yt-dlp for the best stream at or below your choice. Set a default in Settings → Video sites so you are not asked every time. If only low qualities appear, you are either signed out or running an out-of-date yt-dlp.</>,
+      },
+      {
+        q: 'Does Nexa download subtitles?',
+        keywords: 'subtitles captions srt vtt language',
+        a: <>Yes. Turn it on in Settings → Video sites and list the languages you want. Subtitles can be embedded into the file or saved alongside it. Auto-generated captions are included where the site offers them, and are marked as such. Sites that publish no subtitle track obviously cannot provide one.</>,
+      },
+      {
+        q: 'Can I download age-restricted videos?',
+        keywords: 'age restricted 18 sign in gated',
+        a: <>Yes, when you are signed in to the site and the extension supplies your cookies. Age-gated content is a login problem rather than a technical one — start the download from the extension button on a page where you are signed in and it behaves like any other video.</>,
+      },
+      {
+        q: 'What about YouTube Premium or purchased videos?',
+        keywords: 'premium paid purchased rental drm netflix',
+        a: <>Premium-quality streams behave like any other format if your session has access to them. Purchased or rented films are usually DRM-protected, and Nexa does not break DRM — the app will tell you rather than producing an unplayable file. The same applies to Netflix, Prime Video, Disney+ and anything else using Widevine, PlayReady or FairPlay.</>,
+      },
+      {
+        q: 'Why is only 360p available for some videos?',
+        keywords: '360p low quality only one format',
+        a: <>You are seeing the format list your session was given. An unauthenticated session is often handed a reduced list, so sign in and retry through the extension. The other common cause is an out-of-date yt-dlp that can no longer decipher the higher formats — update it from Settings and try again before anything else.</>,
+      },
+      {
+        q: 'Can I download private or unlisted videos?',
+        keywords: 'private unlisted hidden link only',
+        a: <>Unlisted videos work like public ones — the link is all that is needed. Private videos work only if the account you are signed in to has access, and only when you start the download from the extension so that session travels with it. Nothing here grants access you do not already have.</>,
+      },
+      {
+        q: 'Which other video sites are supported?',
+        keywords: 'sites supported vimeo twitch tiktok instagram soundcloud list',
+        a: <>Over a thousand, because Nexa drives yt-dlp rather than maintaining its own extractors. Vimeo, Twitch VODs, X, Instagram, Facebook, TikTok, Reddit, Dailymotion, SoundCloud, Bandcamp, TED, the Internet Archive and most public broadcasters all work. The honest test is to paste the link and see. A sample list is on the <A to="/features/youtube-sites">feature page</A>.</>,
+      },
+    ],
   },
   {
-    q: 'Is it safe? What happens to my cookies?',
-    a: (
-      <>
-        The extension reads cookies only for the site you are downloading from and sends them to the
-        Nexa app on your own computer over the browser&apos;s native messaging channel — a local
-        pipe, not the internet. Nothing about your downloads is sent to our servers;
-        the app only contacts us to check your plan (sign-in or licence key). Full details in the{' '}
-        <Link to="/privacy" className="text-brand-300 hover:underline">privacy policy</Link>.
-      </>
-    ),
+    id: 'torrents',
+    label: 'Torrents',
+    items: [
+      {
+        q: 'How do I download a torrent?',
+        keywords: 'torrent file download start magnet',
+        a: <>Drag a <M>.torrent</M> file onto the window, or copy a magnet link and press <M>Ctrl+V</M> with Nexa focused. It joins the same queue as everything else and obeys the same limits and folders. There is no separate torrent window or second application. More on the <A to="/features/bittorrent">BitTorrent page</A>.</>,
+      },
+      {
+        q: 'Does Nexa support magnet links?',
+        keywords: 'magnet link dht metadata',
+        a: <>Yes, including DHT and peer exchange, so a magnet with no working tracker still finds peers. A magnet briefly shows &ldquo;fetching metadata&rdquo; before any progress appears — that is the client finding peers who can describe the torrent, and it is a normal part of the protocol rather than a stall. If your browser does not hand magnet links to Nexa, copy and paste it instead.</>,
+      },
+      {
+        q: 'What is seeding, and can I control it?',
+        keywords: 'seeding ratio upload stop sharing',
+        a: <>Seeding is uploading the file to other people after you have finished downloading it — it is how BitTorrent works at all. Nexa keeps seeding until it reaches the seed ratio you set, then stops on its own. Set that ratio in Settings → BitTorrent: <M>1.0</M> means you have given back as much as you took; <M>0</M> stops the moment the download completes. You can also stop any row by hand.</>,
+      },
+      {
+        q: 'Why is my torrent download slow?',
+        keywords: 'torrent slow speed peers seeds',
+        a: <>Torrent speed belongs to the swarm, not to your connection: few seeds means slow no matter how fast your line is. Check the peer count on the row first. If it is healthy and you are still slow, raise your upload limit — BitTorrent prioritises peers who give back, so throttling your upload to nothing makes your own download slower. Some networks also block BitTorrent entirely.</>,
+      },
+      {
+        q: 'Can I create torrent files?',
+        keywords: 'create torrent make tracker seed new',
+        a: <>No. Nexa downloads torrents; it is not a torrent creation tool or a tracker, and there are no plans to make it one. Use a dedicated client such as qBittorrent for that. Selective file download within a torrent is also not supported yet — a torrent currently downloads in full.</>,
+      },
+    ],
   },
   {
-    q: 'How is Nexa different from IDM?',
-    a: (
-      <>
-        IDM is Windows-only and closed source. Nexa runs on Windows and Linux, is open source, and
-        puts HTTP downloads, HLS/DASH streams, YouTube and 1000+ sites (via yt-dlp), BitTorrent and
-        cloud links (Google Drive, Mega) in one queue. It also has a phone dashboard and an optional
-        AI rename. IDM has been around far longer and is more polished in places; Nexa is in beta.
-        There is an honest side-by-side on the <Link to="/compare" className="text-brand-300 hover:underline">compare page</Link>.
-      </>
-    ),
+    id: 'billing',
+    label: 'Account & billing',
+    items: [
+      {
+        q: 'How do I cancel my subscription?',
+        keywords: 'cancel subscription stop billing unsubscribe',
+        a: <>Open <A to="/billing">Billing</A> and click &ldquo;Cancel subscription&rdquo;. Your plan stays active until the end of the period you already paid for and then simply does not renew — no cancellation fee, no email to anyone, no retention flow. If you are on a trial, use &ldquo;End trial now&rdquo; instead; it stops the trial immediately and returns you to Free without ever charging you.</>,
+      },
+      {
+        q: 'What payment methods do you accept?',
+        keywords: 'payment card paypal stripe methods visa mastercard',
+        a: <>Payments run through Stripe, which accepts major credit and debit cards and the local wallets it supports in your country. Card details are entered on Stripe&apos;s own page and never touch our servers. Note that paid plans are not open yet — the site cannot take money today, and the pricing page says so.</>,
+      },
+      {
+        q: 'Is there a refund policy?',
+        keywords: 'refund money back guarantee 14 days',
+        a: <>Yes: within 14 days of any charge, email <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">support@nexadownloadmanager.com</a> and we refund it in full, no questions asked. After 14 days charges are not refundable, but we will still cancel immediately on request so you are not billed again. The details are in the <A to="/terms">terms</A>.</>,
+      },
+      {
+        q: 'How do I activate a licence key?',
+        keywords: 'activate licence key serial activation code',
+        a: <>Easiest is not to: sign in to your account in Settings → Account and the plan follows you, with no key to copy. If you prefer a key, open Settings → Account → &ldquo;Use a license key instead&rdquo;, paste it and activate. The two are mutually exclusive on purpose — signing in clears a stored key, and activating a key signs you out. See <A to="/docs/license">signing in &amp; seats</A>.</>,
+      },
+      {
+        q: 'Can I move my licence to another computer?',
+        keywords: 'transfer move licence another computer new pc seat',
+        a: <>Yes, and you do not need to ask us. A plan covers a number of machines <em>at a time</em>, not a fixed list: Pro is one, Team is five. Sign out on the old machine, or open your <A to="/dashboard">dashboard</A> and sign that device out remotely — the seat frees itself immediately and the new computer can take it. A machine that crashes frees its seat automatically when the lease lapses.</>,
+      },
+      {
+        q: 'What happens if my payment fails?',
+        keywords: 'payment failed declined card expired',
+        a: <>Nothing sudden. Stripe retries a failed payment over several days and emails you. Your plan keeps working throughout, and for a few days after, so a card that expired over a weekend does not interrupt anything. If it ultimately fails, the plan drops back to Free — the app keeps working, with the Free limits. Your licence key is never deleted, so paying again restores everything.</>,
+      },
+      {
+        q: 'How do I update my payment method?',
+        keywords: 'update card change payment method billing details',
+        a: <>Open <A to="/billing">Billing</A> and use &ldquo;Manage billing&rdquo;, which opens Stripe&apos;s own portal. You can change the card, update your address and download past invoices there. We never see or store card numbers, which is also why we cannot change one for you.</>,
+      },
+      {
+        q: 'Can I get an invoice for my company?',
+        keywords: 'invoice receipt vat tax company business',
+        a: <>Yes. Every payment produces an invoice in the Stripe billing portal, reachable from <A to="/billing">Billing</A>, and you can add a company name, address and VAT number there so they appear on it. If you need something the portal cannot produce, email support and we will sort it out.</>,
+      },
+    ],
   },
   {
-    q: 'YouTube fails with “authentication required (HTTP 403)”. What now?',
-    a: (
-      <>
-        A 403 usually means the site wants you signed in, or the signed media URL expired. Sign in
-        to the site in your browser and start the download with the extension&apos;s &ldquo;Download
-        with Nexa&rdquo; button so your session cookies travel with it. Alternatively use Settings
-        &rarr; Site logins in the app to import a cookies.txt export. If it still fails, update
-        yt-dlp — an out-of-date extractor is the other common cause. Step by step in the{' '}
-        <Link to="/docs/youtube" className="text-brand-300 hover:underline">YouTube guide</Link>.
-      </>
-    ),
-  },
-  {
-    q: 'How do I cancel?',
-    a: (
-      <>
-        Open <Link to="/billing" className="text-brand-300 hover:underline">Billing</Link> and click
-        &ldquo;Cancel subscription&rdquo;. Your plan stays active until the end of the period you
-        already paid for and will not renew. There is no cancellation fee and no need to email anyone.
-      </>
-    ),
-  },
-  {
-    q: 'What is the refund policy?',
-    a: (
-      <>
-        Email <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">support@nexadownloadmanager.com</a> within
-        14 days of any charge and we refund it in full, no questions asked. After 14 days charges are
-        not refundable, but we will still cancel immediately on request. See the{' '}
-        <Link to="/terms" className="text-brand-300 hover:underline">terms</Link>.
-      </>
-    ),
-  },
-  {
-    q: 'Where are my downloaded files saved?',
-    a: (
-      <>
-        In your system Downloads folder by default (<code className="font-mono text-xs text-brand-100">~/Downloads</code> on
-        Linux, <code className="font-mono text-xs text-brand-100">%USERPROFILE%\Downloads</code> on Windows). Change it in
-        Settings, or per download when you add one. The &ldquo;Open folder&rdquo; button in the
-        toolbar jumps straight there.
-      </>
-    ),
-  },
-  {
-    q: 'How do I update Nexa?',
-    a: (
-      <>
-        Install the newer build over the old one — the Windows installer and the .deb both upgrade in
-        place, and your queue, history and settings are kept. The{' '}
-        <Link to="/changelog" className="text-brand-300 hover:underline">changelog</Link> lists what changed. yt-dlp inside the
-        app can be updated separately from Settings when a site breaks between releases.
-      </>
-    ),
-  },
-  {
-    q: 'Can I download an entire Udemy or Coursera course?',
-    a: (
-      <>
-        If you are enrolled, yes. Open the course while signed in and use the extension&apos;s
-        &ldquo;Download whole course with Nexa&rdquo; context-menu item; the app pulls every lecture
-        as a playlist. DRM-protected lectures cannot be downloaded — the app tells you when it hits
-        one. See the <Link to="/docs/courses" className="text-brand-300 hover:underline">courses guide</Link>.
-      </>
-    ),
-  },
-  {
-    q: 'Does the browser extension work without the app?',
-    a: (
-      <>
-        No. The extension is only a bridge — it hands URLs, headers and cookies to the desktop app
-        through native messaging. If the app is not installed or not running you will see
-        &ldquo;Nexa: engine unavailable&rdquo;. Install the app, launch it once so it registers the
-        bridge, then reload the page. Troubleshooting is in the{' '}
-        <Link to="/docs/extension" className="text-brand-300 hover:underline">extension guide</Link>.
-      </>
-    ),
+    id: 'trouble',
+    label: 'Troubleshooting',
+    items: [
+      {
+        q: 'A download is stuck at 99%. What do I do?',
+        keywords: 'stuck 99 percent frozen not finishing hang',
+        a: <>Pause the row and resume it. This is almost always one connection whose socket died without an error — the server stopped sending but never closed, so the app is waiting on bytes that will not arrive. Resuming re-opens only the outstanding ranges, so nothing already downloaded is lost. If it happens repeatedly on the same host, lower that download&apos;s connection count to four.</>,
+      },
+      {
+        q: 'Download speed is slower than I expected',
+        keywords: 'slow speed bandwidth throttle performance',
+        a: <>Check three things in order. Is a speed limit set — globally in Settings → Downloads, or on that row via right-click? Does the details window say <M>ranges: no</M>, meaning the server refused to be split? And is the server itself simply slow, which no download manager can fix? More connections is not automatically faster: past about eight, most servers are the bottleneck.</>,
+      },
+      {
+        q: 'A file downloaded but will not open',
+        keywords: 'corrupt file broken wont open damaged invalid',
+        a: <>Usually the server sent an error page instead of the file — a login wall or a rate-limit notice saved under the right filename. Check the size: a few kilobytes where you expected megabytes confirms it. Re-download it from the extension while signed in. If the size is right but the file is bad, paste the publisher&apos;s SHA-256 into the new-download dialog and let Nexa verify it next time.</>,
+      },
+      {
+        q: 'Nexa will not start',
+        keywords: 'wont start crash launch nothing happens startup',
+        a: <>Check whether it is already running in the system tray — Nexa is single-instance, so a second launch quietly hands over to the first. If not, start it from a terminal (<M>nexa</M>) so you can see any error it prints. On Windows, an antivirus quarantining part of the installation is the usual cause. Reinstalling over the top preserves your queue and settings.</>,
+      },
+      {
+        q: 'My downloads disappeared after restarting',
+        keywords: 'downloads gone missing history lost after restart',
+        a: <>Completed downloads are cleared if you have history cleanup switched on in Settings — check there first. The files themselves are untouched on disk either way. If the whole list is empty including active downloads, the app is running as a different user or in portable mode from a different folder, and so is reading a different database.</>,
+      },
+      {
+        q: '“Connection refused”',
+        keywords: 'connection refused error network cannot connect',
+        a: <>Something declined the connection outright rather than timing out. For a download, the host is down or blocking you. For the remote dashboard, the server is not listening — the dashboard is off, the app is not running, or a firewall is blocking the port. For the browser extension, this appears as &ldquo;engine unavailable&rdquo; instead.</>,
+      },
+      {
+        q: '“Disk full” but I have plenty of space',
+        keywords: 'disk full space error no space left',
+        a: <>Nexa allocates the full file size before it starts writing, so a 40&nbsp;GB download needs 40&nbsp;GB free at the beginning rather than at the end. The other causes are a destination on a different drive from the one you checked, a filesystem with a per-file size limit (FAT32 stops at 4&nbsp;GB), or a disk quota on a shared machine.</>,
+      },
+      {
+        q: 'A scheduled download did not start',
+        keywords: 'scheduled schedule did not start timer missed',
+        a: <>Nexa was not running at that moment — the app cannot wake itself, and minimised to the tray is what &ldquo;running&rdquo; means. Scheduled jobs re-arm when you next launch it, so an overdue one starts then. If it started and failed with 403, it needed a login: headers and cookies are deliberately not stored with a scheduled job, so schedule public URLs only.</>,
+      },
+      {
+        q: 'The remote dashboard shows “connection refused”',
+        keywords: 'dashboard remote phone refused cannot connect lan',
+        a: <>Usually it is still bound to loopback, which means &ldquo;this machine only&rdquo;. LAN access has to be turned on <em>and</em> TLS configured — the app refuses to serve your access token over plain HTTP across Wi-Fi, and logs why. Check the log for that line. Otherwise: wrong port, app not running, or a desktop firewall. See <A to="/docs/remote">the guide</A>.</>,
+      },
+      {
+        q: 'AI rename is not working',
+        keywords: 'ai rename not working smart filename',
+        a: <>Check three things: it is off by default, so it has to be enabled in Settings; it is a Pro entitlement, so a Free account will not run it; and it needs a working internet connection at the moment the download finishes. It also declines to rename when it cannot do better than the existing name, which looks like nothing happening but is intentional.</>,
+      },
+      {
+        q: 'How do I completely reset Nexa?',
+        keywords: 'reset factory defaults clean wipe settings start over',
+        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your licence sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
+      },
+      {
+        q: 'Where are Nexa’s settings and database stored?',
+        keywords: 'settings location config database file appdata where stored',
+        a: <>On Windows, <M>%APPDATA%\Nexa</M>; on Linux, <M>~/.local/share/Nexa</M>, with preferences under <M>~/.config/Nexa</M>. The queue, history and categories live in a SQLite file there called <M>nexa.db</M>. In portable mode — a <M>portable.txt</M> beside the executable — everything moves next to the app instead, which is what makes it runnable from a USB stick.</>,
+      },
+    ],
   },
 ];
+
+const ALL = SECTIONS.flatMap((s) => s.items.map((i) => ({ ...i, section: s.label, sectionId: s.id })));
+
+/**
+ * "Was this helpful?" — stored per browser for now.
+ *
+ * There is no endpoint behind this yet, and rather than POST to one that does
+ * not exist, the vote is remembered locally so the reader gets an
+ * acknowledgement and we do not silently drop it. Wiring it to an API is one
+ * fetch call here plus a route on the backend; until that exists the page does
+ * not pretend the vote reached us.
+ */
+function Helpful({ id }) {
+  const key = `faq-vote:${id}`;
+  const [vote, setVote] = useState(() => {
+    try { return localStorage.getItem(key); } catch { return null; }
+  });
+
+  const cast = (value) => {
+    setVote(value);
+    try { localStorage.setItem(key, value); } catch { /* private mode: the vote just does not persist */ }
+  };
+
+  if (vote) {
+    return (
+      <p className="mt-4 text-xs text-slate-500">
+        Thanks — noted on this device.{' '}
+        {vote === 'no' && (
+          <>
+            <Link to="/contact" className="text-brand-300 hover:underline">Tell us what was missing</Link>{' '}
+            and we will rewrite it.
+          </>
+        )}
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-3">
+      <span className="text-xs text-slate-500">Was this helpful?</span>
+      <button type="button" onClick={() => cast('yes')} className="btn btn-ghost !px-3 !py-1 text-xs">Yes</button>
+      <button type="button" onClick={() => cast('no')} className="btn btn-ghost !px-3 !py-1 text-xs">No</button>
+    </div>
+  );
+}
+
+function Item({ item, open }) {
+  return (
+    <Card as="details" className="group !p-0" open={open}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5 text-left text-base font-bold text-white marker:hidden [&::-webkit-details-marker]:hidden">
+        <span>{item.q}</span>
+        <svg
+          width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+          className="shrink-0 text-brand-300 transition-transform group-open:rotate-180"
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </summary>
+      <div className="border-t border-white/5 px-6 py-5 text-sm leading-7 text-slate-400">
+        {item.a}
+        <Helpful id={item.q} />
+      </div>
+    </Card>
+  );
+}
 
 export default function Faq() {
   usePageMeta({
     title: 'FAQ',
     description:
-      'Answers about Nexa Download Manager: pricing and the free plan, what Pro adds, supported platforms, safety and cookies, YouTube 403 errors, refunds, cancelling and updating.',
+      'Fifty-five answers about Nexa Download Manager: pricing and the free plan, installing, the browser extension, YouTube and 403 errors, torrents, billing and refunds, and the things that actually go wrong.',
   });
+
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+
+  const results = useMemo(() => {
+    if (!q) return null;
+    return ALL.filter((item) =>
+      item.q.toLowerCase().includes(q)
+      || item.section.toLowerCase().includes(q)
+      || (item.keywords || '').includes(q));
+  }, [q]);
 
   return (
     <Section>
       <div className="page-intro">
         <span className="eyebrow"><span className="eyebrow-dot" />Questions</span>
         <h1 className="mt-5 text-white">Straight <span className="text-gradient">answers.</span></h1>
-        <p>Everything people ask before installing Nexa. Still stuck? The docs and support are one click away.</p>
+        <p>
+          {ALL.length} of them, grouped by what you are trying to do. Every answer starts with the
+          answer.
+        </p>
       </div>
 
-      <div className="mx-auto mt-12 max-w-3xl space-y-3">
-        {FAQS.map((item, i) => (
-          <Card as="details" key={item.q} className="group !p-0" open={i === 0}>
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5 text-left text-base font-bold text-white marker:hidden [&::-webkit-details-marker]:hidden">
-              <span>{item.q}</span>
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-                className="shrink-0 text-brand-300 transition-transform group-open:rotate-180"
-              >
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-            </summary>
-            <div className="border-t border-white/5 px-6 py-5 text-sm leading-7 text-slate-400">{item.a}</div>
-          </Card>
-        ))}
+      <div className="mx-auto mt-10 max-w-3xl">
+        <label htmlFor="faq-search" className="sr-only">Search the FAQ</label>
+        <input
+          id="faq-search"
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search — try “403”, “refund”, “magnet”, “reset”…"
+          className="w-full rounded-[var(--radius-2)] border border-[var(--color-surface-border)] bg-[var(--color-surface-2)] px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-brand-400/50 focus:outline-none"
+        />
+        {results && (
+          <p className="mt-3 text-xs text-slate-500" role="status">
+            {results.length === 0
+              ? 'Nothing matched. Try a different word, or ask us directly.'
+              : `${results.length} of ${ALL.length} answers match.`}
+          </p>
+        )}
       </div>
 
-      <div className="surface-panel mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-center gap-x-6 gap-y-4 rounded-xl px-6 py-5 text-center sm:text-left">
-        <p className="text-sm text-slate-300">Didn&apos;t find it? Read the docs or ask us directly.</p>
+      {results ? (
+        <div className="mx-auto mt-8 max-w-3xl space-y-3">
+          {results.map((item, i) => (
+            <div key={item.q}>
+              <p className="mb-1.5 text-xs font-bold uppercase tracking-[0.14em] text-brand-300">{item.section}</p>
+              <Item item={item} open={i === 0} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mx-auto mt-10 max-w-3xl space-y-12">
+          {SECTIONS.map((section) => (
+            <div key={section.id} id={section.id} className="scroll-mt-24">
+              <h2 className="text-lg font-bold text-white">
+                {section.label}
+                <span className="ml-2 text-xs font-semibold text-slate-500">{section.items.length}</span>
+              </h2>
+              <div className="mt-4 space-y-3">
+                {section.items.map((item) => (
+                  <Item key={item.q} item={item} open={false} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="surface-panel mx-auto mt-12 flex max-w-3xl flex-wrap items-center justify-center gap-x-6 gap-y-4 rounded-xl px-6 py-5 text-center sm:text-left">
+        <p className="text-sm text-slate-300">Still stuck? The docs go deeper, and we answer email.</p>
         <div className="flex gap-3">
           <Button to="/docs" variant="ghost">Docs</Button>
           <Button to="/contact">Contact</Button>

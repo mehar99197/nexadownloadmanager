@@ -8,6 +8,7 @@ const COLS = [
     title: 'Product',
     links: [
       { to: '/download', label: 'Download' },
+      { to: '/features', label: 'Features' },
       { to: '/pricing', label: 'Pricing' },
       { to: '/compare', label: 'Compare' },
       { to: '/changelog', label: 'Changelog' },
@@ -18,7 +19,9 @@ const COLS = [
     title: 'Resources',
     links: [
       { to: '/docs', label: 'Docs' },
+      { to: '/tutorials', label: 'Tutorials' },
       { to: '/faq', label: 'FAQ' },
+      { to: '/security', label: 'Security' },
       { to: '/about', label: 'About' },
       { to: '/contact', label: 'Contact' },
     ],

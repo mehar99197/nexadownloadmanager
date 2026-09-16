@@ -7,6 +7,7 @@ import Card from '../components/Card';
 import { BrandMark } from '../components/Brand';
 import WarpField from '../components/WarpField';
 import CountUp from '../components/CountUp';
+import StarRating from '../components/StarRating';
 
 /** The arrow both primary CTAs carry. Decorative — the label says where it goes. */
 function CtaArrow() {
@@ -90,11 +91,16 @@ export default function Home() {
 
   const [stats, setStats] = useState(null);
   const [release, setRelease] = useState(null);
+  const [reviews, setReviews] = useState(null);
 
   // Real numbers only. If either call fails we simply hide those tiles.
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([api.get('/stats'), api.get('/releases/latest')]).then(([s, r]) => {
+    Promise.allSettled([
+      api.get('/stats'),
+      api.get('/releases/latest'),
+      api.get('/reviews', { params: { page: 1, limit: 3 } }),
+    ]).then(([s, r, v]) => {
       if (cancelled) return;
       if (s.status === 'fulfilled') {
         const data = unwrap(s.value);
@@ -103,6 +109,12 @@ export default function Home() {
       if (r.status === 'fulfilled') {
         const data = unwrap(r.value);
         if (data?.version) setRelease(data);
+      }
+      // Same rule as the tiles: real reviews or no section at all. An empty
+      // "what users say" block is worse than not claiming anything.
+      if (v.status === 'fulfilled') {
+        const data = unwrap(v.value);
+        if (data?.reviews?.length) setReviews(data);
       }
     });
     return () => { cancelled = true; };
@@ -235,6 +247,36 @@ export default function Home() {
           ))}
         </div>
       </Section>
+
+      {reviews && (
+        <Section>
+          <div className="mx-auto max-w-2xl text-center">
+            <span className="eyebrow"><span className="eyebrow-dot" />What users say</span>
+            <h2 className="mt-5 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+              From people who actually use it.
+            </h2>
+            {Number(reviews.averageRating) > 0 && (
+              <p className="mt-3 text-sm text-slate-400">
+                {Number(reviews.averageRating).toFixed(1)} out of 5 from{' '}
+                {reviews.totalCount} review{reviews.totalCount !== 1 ? 's' : ''} — every one moderated,
+                none of them written by us.
+              </p>
+            )}
+          </div>
+          <div className="mt-10 grid gap-5 md:grid-cols-3">
+            {reviews.reviews.map((r) => (
+              <Card key={r.id} className="!p-6">
+                <StarRating value={r.rating} readOnly size={14} />
+                <p className="mt-3 text-sm leading-7 text-slate-300">“{r.comment}”</p>
+                <p className="mt-4 text-xs font-semibold text-slate-400">{r.userName || 'Anonymous'}</p>
+              </Card>
+            ))}
+          </div>
+          <div className="mt-8 text-center">
+            <Button to="/reviews" variant="ghost">Read all reviews</Button>
+          </div>
+        </Section>
+      )}
 
       <Section full className="!pt-0">
         <div className="container-x">

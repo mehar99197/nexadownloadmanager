@@ -27,6 +27,17 @@ import Changelog from './pages/Changelog';
 import Contact from './pages/Contact';
 import TeamJoin from './pages/TeamJoin';
 import Compare from './pages/Compare';
+import Benchmarks from './pages/Benchmarks';
+import Tutorials from './pages/Tutorials';
+import Security from './pages/Security';
+import Features from './pages/Features';
+import FeatureAcceleration from './pages/features/FeatureAcceleration';
+import FeatureVideoGrabber from './pages/features/FeatureVideoGrabber';
+import FeatureYoutubeSites from './pages/features/FeatureYoutubeSites';
+import FeatureBittorrent from './pages/features/FeatureBittorrent';
+import FeatureBrowserExtension from './pages/features/FeatureBrowserExtension';
+import FeatureScheduler from './pages/features/FeatureScheduler';
+import FeatureRemoteDashboard from './pages/features/FeatureRemoteDashboard';
 import Docs from './pages/Docs';
 import DocsInstall from './pages/docs/DocsInstall';
 import DocsExtension from './pages/docs/DocsExtension';
@@ -96,6 +107,19 @@ export default function App() {
           <Route path="/pricing" element={<Pricing />} />
           <Route path="/reviews" element={<Reviews />} />
           <Route path="/compare" element={<Compare />} />
+          <Route path="/benchmarks" element={<Benchmarks />} />
+          <Route path="/tutorials" element={<Tutorials />} />
+          <Route path="/security" element={<Security />} />
+
+          {/* Feature deep-dives: one hub plus a page per feature. */}
+          <Route path="/features" element={<Features />} />
+          <Route path="/features/acceleration" element={<FeatureAcceleration />} />
+          <Route path="/features/video-grabber" element={<FeatureVideoGrabber />} />
+          <Route path="/features/youtube-sites" element={<FeatureYoutubeSites />} />
+          <Route path="/features/bittorrent" element={<FeatureBittorrent />} />
+          <Route path="/features/browser-extension" element={<FeatureBrowserExtension />} />
+          <Route path="/features/scheduler" element={<FeatureScheduler />} />
+          <Route path="/features/remote-dashboard" element={<FeatureRemoteDashboard />} />
           <Route path="/faq" element={<Faq />} />
           <Route path="/about" element={<About />} />
           <Route path="/changelog" element={<Changelog />} />

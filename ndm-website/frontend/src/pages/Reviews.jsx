@@ -13,6 +13,25 @@ import usePageMeta from '../hooks/usePageMeta';
 
 const PAGE_SIZE = 10;
 
+/* Reviews carry a rating and a comment and nothing else, so "what did you use
+   it for" is not a stored field. Rather than invent one, these filter the text
+   people actually wrote — honest about being a word match, and useful the
+   moment there are enough reviews for it to matter. */
+const USE_CASES = [
+  { id: 'youtube', label: 'For YouTube', words: ['youtube', 'video', 'playlist', 'yt-dlp'] },
+  { id: 'torrents', label: 'For torrents', words: ['torrent', 'magnet', 'seed'] },
+  { id: 'daily', label: 'For daily use', words: ['daily', 'every day', 'everyday', 'work', 'speed', 'fast'] },
+  { id: 'linux', label: 'On Linux', words: ['linux', 'ubuntu', 'debian'] },
+];
+
+const matchesUseCase = (review, useCase) => {
+  if (!useCase) return true;
+  const def = USE_CASES.find((u) => u.id === useCase);
+  if (!def) return true;
+  const text = `${review.comment || ''}`.toLowerCase();
+  return def.words.some((w) => text.includes(w));
+};
+
 function RatingBreakdown({ breakdown, averageRating }) {
   // The breakdown is site-wide while totalCount follows the active star filter,
   // so bars scale against the breakdown's own total — never the filtered count
@@ -98,6 +117,10 @@ function ReviewForm({ onSubmitted }) {
   return (
     <Card className="!p-7">
       <h3 className="text-lg font-bold text-white">Write a review</h3>
+      <p className="mt-1.5 text-xs leading-5 text-slate-500">
+        Every review is read by a human before it appears, and we do not edit or remove one for
+        being critical. That is the only reason the ones below are worth anything.
+      </p>
       <form onSubmit={handleSubmit} className="mt-4 space-y-4">
         <div>
           <span className="mb-1.5 block text-sm font-medium text-zinc-200">Rating</span>
@@ -133,6 +156,7 @@ export default function Reviews() {
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState('');
+  const [useCase, setUseCase] = useState('');
 
   const fetchReviews = useCallback(async (p, ratingFilter) => {
     setLoading(true);
@@ -159,6 +183,18 @@ export default function Reviews() {
   };
 
   const totalPages = data ? Math.ceil(data.totalCount / PAGE_SIZE) : 0;
+  const totalReviews = Object.values(data?.ratingBreakdown || {})
+    .reduce((a, b) => a + (Number(b) || 0), 0);
+  const visibleReviews = (data?.reviews || []).filter((r) => matchesUseCase(r, useCase));
+  // Featured: the strongest ratings with enough written down to be worth
+  // reading. Only on an unfiltered first page, or it competes with the filter
+  // the reader just applied.
+  const featured = (!filter && !useCase && page === 1)
+    ? [...(data?.reviews || [])]
+        .filter((r) => (r.comment || '').length > 120 && r.rating >= 4)
+        .sort((a, b) => b.rating - a.rating || (b.comment || '').length - (a.comment || '').length)
+        .slice(0, 3)
+    : [];
 
   return (
     <Section>
@@ -167,6 +203,18 @@ export default function Reviews() {
         <h1 className="mt-5 text-white">Loved by people who <span className="text-gradient">move fast.</span></h1>
         <p>Real experiences from real downloaders. No inflated promises, just work that gets out of the way.</p>
       </div>
+
+      {totalReviews > 0 && (
+        <div className="mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2">
+          <span className="text-3xl font-extrabold text-white">
+            {Number(data.averageRating).toFixed(1)}
+          </span>
+          <StarRating value={data.averageRating || 0} readOnly size={20} />
+          <span className="text-sm text-slate-400">
+            out of 5 · {totalReviews} review{totalReviews !== 1 ? 's' : ''}
+          </span>
+        </div>
+      )}
 
       {loading && !data ? (
         <Spinner center />
@@ -177,6 +225,46 @@ export default function Reviews() {
       ) : data ? (
         <div className="mt-10 grid gap-8 lg:grid-cols-[1fr_280px]">
           <div className="space-y-5">
+            {featured.length > 0 && (
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-brand-300">
+                  Most detailed
+                </h2>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  {featured.map((r) => (
+                    <Card key={`feat-${r.id}`} className="!p-5">
+                      <StarRating value={r.rating} readOnly size={14} />
+                      <p className="mt-2.5 text-sm leading-6 text-zinc-300">“{r.comment}”</p>
+                      <p className="mt-3 text-xs font-semibold text-slate-400">
+                        {r.userName || 'Anonymous'}
+                        {r.plan ? <span className="ml-2 font-normal text-slate-500">on {r.plan}</span> : null}
+                      </p>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {USE_CASES.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    useCase === u.id
+                      ? 'on-brand'
+                      : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
+                  }`}
+                  onClick={() => setUseCase(useCase === u.id ? '' : u.id)}
+                >
+                  {u.label}
+                </button>
+              ))}
+              {useCase && (
+                <span className="text-xs text-slate-500">matches the words people wrote</span>
+              )}
+            </div>
+
             <div className="flex flex-wrap items-center gap-2">
               {[5, 4, 3, 2, 1].map((star) => (
                 <button
@@ -194,12 +282,31 @@ export default function Reviews() {
               ))}
             </div>
 
-            {(data.reviews || []).length === 0 ? (
-              <p className="text-zinc-500">
-                {filter ? `No ${filter}-star reviews yet.` : 'No reviews yet. Be the first!'}
-              </p>
+            {visibleReviews.length === 0 ? (
+              <Card className="!p-7 text-center">
+                <p className="text-sm font-bold text-white">
+                  {filter || useCase ? 'Nothing matches that filter yet.' : 'No reviews yet.'}
+                </p>
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-400">
+                  {filter || useCase
+                    ? 'Clear the filters to see everything.'
+                    : 'Nexa is new, so there is nothing here to inflate and nothing borrowed from elsewhere. If you have used it, yours would be the first — good or bad.'}
+                </p>
+                <div className="mt-5 flex flex-wrap justify-center gap-3">
+                  {(filter || useCase) ? (
+                    <Button variant="ghost" onClick={() => { setFilter(''); setUseCase(''); setPage(1); }}>
+                      Clear filters
+                    </Button>
+                  ) : (
+                    <>
+                      <Button to="/download">Try it first</Button>
+                      <Button to="/login?next=/reviews" variant="ghost">Sign in to review</Button>
+                    </>
+                  )}
+                </div>
+              </Card>
             ) : (
-              (data.reviews || []).map((r) => (
+              visibleReviews.map((r) => (
                 <Card key={r.id} className="card-hover !p-6">
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-brand-500)]/15 text-sm font-bold text-brand-300">

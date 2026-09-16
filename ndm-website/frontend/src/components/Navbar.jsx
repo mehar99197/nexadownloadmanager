@@ -7,6 +7,7 @@ import Brand from './Brand';
 const NAV = [
   { to: '/', label: 'Home', end: true },
   { to: '/download', label: 'Download' },
+  { to: '/features', label: 'Features' },
   { to: '/pricing', label: 'Pricing' },
   { to: '/docs', label: 'Docs' },
   { to: '/faq', label: 'FAQ' },
