@@ -161,6 +161,12 @@ router.post(
       return fail(res, 'NOT_A_PAID_PLAN', 'The free plan has nothing to cancel', 400);
     if (subscription.status !== 'active')
       return fail(res, 'ALREADY_INACTIVE', 'This subscription is not active', 400);
+    // A trial has no renewal to stop: scheduling a cancellation for the end of
+    // a period that ends by itself is a button that does nothing, and it left
+    // the billing page announcing "Ending" as if something had happened.
+    if (isTrialActive(subscription))
+      return fail(res, 'TRIAL_NOT_CANCELLABLE',
+        'A trial is never billed and ends by itself — use "End trial now" to stop it early', 400);
     if (subscription.cancel_at_period_end)
       return fail(res, 'ALREADY_CANCELLING', 'This subscription is already set to end', 400);
 
@@ -207,6 +213,38 @@ router.post(
     await AuditLog.create({
       adminUserId: null, action: 'subscription.cancel_revoked', entityType: 'subscription',
       entityId: sub.id, summary: `${req.user.email} resumed their ${sub.plan} plan`,
+    });
+    return ok(res, statusSummary(sub));
+  })
+);
+
+/**
+ * End a running trial on the spot.
+ *
+ * "Cancel" can only mean "stop it now" here: nothing is billed and nothing
+ * renews, so there is no future charge to call off. The account drops to Free
+ * immediately — keeping its licence key, since Free is a working plan — and
+ * the trial cannot be started again (users.trial_used stays set), which is the
+ * one consequence worth warning about before the click.
+ *
+ * Deliberately NOT `cancelled`/`expired` on the row: the desktop client deletes
+ * a key it is told is cancelled, and somebody ending a trial early has not had
+ * their licence stopped.
+ */
+router.post(
+  '/trial/cancel', requireAuth,
+  asyncHandler(async (req, res) => {
+    const subs = await Subscription.findByUserId(req.user.id);
+    const subscription = await Subscription.current(subs[0] || null);
+    if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    if (!isTrialActive(subscription))
+      return fail(res, 'NO_TRIAL', 'There is no trial running on this account', 400);
+
+    const sub = await Subscription.endTrial(subscription);
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.trial_cancelled', entityType: 'subscription',
+      entityId: sub.id, summary: `${req.user.email} ended their ${TRIAL_PLAN} trial early`,
+      metadata: { endedAt: toIso(new Date()), wouldHaveEndedAt: toIso(subscription.trial_ends_at) },
     });
     return ok(res, statusSummary(sub));
   })

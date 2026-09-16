@@ -123,6 +123,31 @@ export default function Billing() {
     }
   };
 
+  // A trial is never billed, so there is no future charge to call off: the
+  // only thing "cancel" can mean is "stop it now". Both consequences are said
+  // plainly before the click, because neither is reversible.
+  const handleEndTrial = async () => {
+    const sure = await confirm({
+      title: 'End your Pro trial now?',
+      message: 'Pro features stop immediately and the account returns to Free. '
+        + 'Your licence key and downloads are untouched, but the trial cannot be started again.',
+      confirmLabel: 'End trial now',
+      cancelLabel: 'Keep my trial',
+      danger: true,
+    });
+    if (!sure) return;
+    setCancelling(true);
+    try {
+      await api.post('/subscription/trial/cancel');
+      toast.success('Trial ended. Your account is on the Free plan.');
+      loadData();
+    } catch (err) {
+      toast.error(err?.response?.data?.error?.message || 'Could not end the trial.');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const handleCancel = async () => {
     const sure = await confirm({
       title: 'Cancel your subscription?',
@@ -252,9 +277,24 @@ export default function Billing() {
             </p>
           )}
           {subStatus?.trial && (
-            <p className="mt-4 border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
-              You are on the free Pro trial — nothing is billed and nothing renews; it simply ends.
-            </p>
+            <div className="mt-4 border-t border-[var(--color-surface-border)] pt-4">
+              <p className="text-xs leading-6 text-slate-500">
+                You are on the free Pro trial — nothing is billed and nothing renews; it simply ends on{' '}
+                {formatDate(subStatus.trialEndsAt || subStatus.expiryDate) || 'its last day'}. You can stop it
+                sooner, but it cannot be started again.
+              </p>
+              <div className="mt-3">
+                <Button
+                  variant="ghost"
+                  onClick={handleEndTrial}
+                  disabled={cancelling}
+                  className="border-red-500/30 text-red-300 hover:border-red-500/60"
+                  data-testid="end-trial"
+                >
+                  {cancelling ? 'Ending…' : 'End trial now'}
+                </Button>
+              </div>
+            </div>
           )}
         </Card>
 

@@ -500,6 +500,57 @@ test('backend API', async (t) => {
     void user;
   });
 
+  // A trial is never billed, so "cancel" can only mean "stop it now". The
+  // things worth proving are the consequences: Free arrives immediately, the
+  // licence key survives (Free is a working plan), the trial cannot come back,
+  // and the row never says `cancelled` — the desktop client deletes a key it
+  // is told is cancelled.
+  await t.test('a trial can be ended early, and only once', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    const user = await srv.makeUser(api, 'endtrial');
+    assert.equal((await api.post('/api/subscription/start-trial', {}, { token: user.token })).status, 200);
+    const [before] = await srv.query('SELECT license_key FROM subscriptions LIMIT 1');
+
+    await t2.test('the paid-plan cancel refuses it, and says what to use', async () => {
+      const res = await api.post('/api/subscription/cancel', {}, { token: user.token });
+      assert.equal(res.status, 400, res.text);
+      assert.equal(res.body.error.code, 'TRIAL_NOT_CANCELLABLE');
+      const rows = await srv.query('SELECT cancel_at_period_end FROM subscriptions LIMIT 1');
+      assert.equal(Number(rows[0].cancel_at_period_end), 0, 'nothing was scheduled');
+    });
+
+    await t2.test('ending it drops to Free on the spot, key intact', async () => {
+      const res = await api.post('/api/subscription/trial/cancel', {}, { token: user.token });
+      assert.equal(res.status, 200, res.text);
+      assert.equal(res.body.data.plan, 'free');
+      assert.equal(res.body.data.trial, false);
+      const rows = await srv.query('SELECT plan, status, trial_ends_at, license_key FROM subscriptions LIMIT 1');
+      assert.equal(rows[0].plan, 'free');
+      assert.equal(rows[0].status, 'active', 'never cancelled/expired — the app deletes a key it is told is cancelled');
+      assert.equal(rows[0].trial_ends_at, null);
+      assert.equal(rows[0].license_key, before.license_key, 'the licence key survives');
+    });
+
+    await t2.test('the licence still validates, now as Free', async () => {
+      const res = await api.post('/api/license/validate', {
+        license_key: before.license_key, device_fingerprint: 'd'.repeat(64),
+      });
+      assert.equal(res.body.valid, true);
+      assert.equal(res.body.plan, 'free');
+      assert.equal(res.body.trial, false);
+    });
+
+    await t2.test('there is nothing left to end, and no second trial', async () => {
+      const again = await api.post('/api/subscription/trial/cancel', {}, { token: user.token });
+      assert.equal(again.status, 400);
+      assert.equal(again.body.error.code, 'NO_TRIAL');
+      const restart = await api.post('/api/subscription/start-trial', {}, { token: user.token });
+      assert.equal(restart.status, 400);
+      assert.equal(restart.body.error.code, 'TRIAL_UNAVAILABLE');
+    });
+  });
+
   // --------------------------------------------------------------- trial ---
   await t.test('the 7-day no-card Pro trial', async (t2) => {
     await srv.reset();

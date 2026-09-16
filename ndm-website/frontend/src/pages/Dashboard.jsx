@@ -506,7 +506,14 @@ function TrialBanner({ subscription, onStart, starting }) {
             </span>
           )}
         </div>
-        <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+        <div className="flex items-center gap-4">
+          {/* Ending it early lives on Billing with its warning; from here it is
+              a link, so the banner keeps one primary action. */}
+          <Link to="/billing" className="text-sm text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline">
+            End trial
+          </Link>
+          <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+        </div>
       </div>
     );
   }

@@ -552,18 +552,34 @@ const Subscription = {
     return result.affectedRows || 0;
   },
 
+  /**
+   * What a finished trial looks like, written in ONE place: back to free/active,
+   * no trial date left behind, the licence key untouched so the desktop app
+   * keeps working on Free. Both the lazy expiry (the date passed) and the
+   * customer ending it early go through here, so the two can never drift into
+   * meaning different things.
+   *
+   * `status` deliberately stays `active`: `cancelled`/`expired` make the app
+   * DELETE its stored key, and a finished trial is not a stopped licence.
+   */
+  async endTrial(sub) {
+    if (!sub) return sub;
+    await execute(
+      `UPDATE subscriptions
+          SET plan = 'free', status = 'active', trial_ends_at = NULL, expiry_date = ?, seats = ?,
+              cancel_at_period_end = 0
+        WHERE id = ? AND trial_ends_at IS NOT NULL AND stripe_subscription_id IS NULL`,
+      [planExpiry('free'), planSeats('free'), sub.id]
+    );
+    return Subscription.findById(sub.id);
+  },
+
   // Lazy trial expiry: when trial_ends_at has passed and the row is not a paid
   // Stripe subscription, downgrade to free/active. Returns the (possibly
   // refreshed) row; a non-trial or still-running trial is returned untouched.
   async expireTrialIfNeeded(sub) {
     if (!isTrialExpired(sub)) return sub;
-    await execute(
-      `UPDATE subscriptions
-          SET plan = 'free', status = 'active', trial_ends_at = NULL, expiry_date = ?, seats = ?
-        WHERE id = ? AND trial_ends_at IS NOT NULL AND stripe_subscription_id IS NULL`,
-      [planExpiry('free'), planSeats('free'), sub.id]
-    );
-    return Subscription.findById(sub.id);
+    return Subscription.endTrial(sub);
   },
 
   // Start the one-shot no-card Pro trial for a user in ONE transaction.

@@ -69,7 +69,9 @@ export default function DocsLicense() {
       <Note>
         A trial behaves exactly like a paid plan for its 7 days. When it ends the app returns to
         Free on its next check; upgrade from <Link to="/pricing" className="underline">pricing</Link> and the
-        signed-in app picks the new plan up on its own.
+        signed-in app picks the new plan up on its own. You can also end a trial early from{' '}
+        <Link to="/billing" className="text-brand-300 hover:underline">billing</Link> &mdash; nothing is
+        billed either way, but a trial is one per account and cannot be started again.
       </Note>
 
       <H2 id="statuses">Status messages</H2>
