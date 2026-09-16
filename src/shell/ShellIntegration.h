@@ -55,5 +55,12 @@ bool unregisterShellIntegration();
 // meaningful rather than a permanent no-op.
 bool isRegistered();
 
+// Testing hook: send every key this module reads and writes to a different
+// registry root, so a test can register, inspect the result and unregister
+// again without touching the machine's real shell. An empty string restores
+// the default. Not for use outside tests -- there is no reason a shipped build
+// would write these anywhere else.
+void setClassesRootForTesting(const QString &root);
+
 } // namespace shellint
 } // namespace nexa

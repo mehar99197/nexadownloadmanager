@@ -520,6 +520,16 @@ if(NEXA_BUILD_TESTS)
     target_include_directories(nexa_extension_installer_test PRIVATE src)
     target_link_libraries(nexa_extension_installer_test PRIVATE Qt6::Core)
 
+    # The Explorer hooks against a real registry, redirected under a test key so
+    # it never touches the machine's actual shell. A no-op body off Windows.
+    add_executable(nexa_shell_integration_test
+        tests/ShellIntegrationTest.cpp
+        src/shell/ShellIntegration.cpp
+        src/core/Portable.cpp
+    )
+    target_include_directories(nexa_shell_integration_test PRIVATE src)
+    target_link_libraries(nexa_shell_integration_test PRIVATE Qt6::Core)
+
     # End-to-end DownloadTask against a local Range-capable server: worker-thread
     # preallocation, 8-way segmented transfer, sparse destination on Windows.
     add_executable(nexa_download_task_test
@@ -624,6 +634,7 @@ if(NEXA_BUILD_TESTS)
     enable_testing()
     add_test(NAME mega_crypto COMMAND nexa_mega_crypto_test)
     add_test(NAME extension_installer COMMAND nexa_extension_installer_test)
+    add_test(NAME shell_integration COMMAND nexa_shell_integration_test)
     add_test(NAME download_import COMMAND nexa_download_import_test)
     add_test(NAME engine_helpers COMMAND nexa_engine_helpers_test)
     add_test(NAME auth   COMMAND nexa_auth_test)

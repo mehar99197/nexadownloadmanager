@@ -20,8 +20,13 @@ const QString kProgId  = QStringLiteral("Nexa.Download");
 // every other program on the machine.
 const QString kVerbKey = QStringLiteral("NexaNewDownload");
 
+// Empty except under test; see setClassesRootForTesting.
+QString g_classesRootOverride;
+
 QString classesRoot()
 {
+    if (!g_classesRootOverride.isEmpty())
+        return g_classesRootOverride;
     return QStringLiteral("HKEY_CURRENT_USER\\Software\\Classes");
 }
 
@@ -112,6 +117,11 @@ QStringList verbParents()
 }
 
 } // namespace
+
+void setClassesRootForTesting(const QString &root)
+{
+    g_classesRootOverride = root;
+}
 
 Report registerShellIntegration()
 {
@@ -223,6 +233,7 @@ bool isRegistered()
 Report registerShellIntegration()   { return {}; }
 bool   unregisterShellIntegration() { return true; }
 bool   isRegistered()               { return false; }
+void   setClassesRootForTesting(const QString &) {}
 
 #endif
 
