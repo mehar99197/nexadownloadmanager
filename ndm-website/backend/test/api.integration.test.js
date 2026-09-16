@@ -911,5 +911,58 @@ test('backend API', async (t) => {
     });
   });
 
+  // ------------------------------------------------------------ faq votes ---
+  await t.test('FAQ helpfulness votes are counted, not merely acknowledged', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    const question = 'Does Nexa work offline?';
+
+    await t2.test('a vote reaches the table', async () => {
+      const res = await api.post('/api/faq/vote', { question, helpful: true });
+      assert.equal(res.status, 200, res.text);
+      assert.equal(res.body.data.recorded, true);
+      const rows = await srv.query('SELECT question, yes_count, no_count FROM faq_votes');
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].question, question);
+      assert.equal(Number(rows[0].yes_count), 1);
+      assert.equal(Number(rows[0].no_count), 0);
+    });
+
+    await t2.test('further votes add to the same row rather than creating new ones', async () => {
+      await api.post('/api/faq/vote', { question, helpful: true });
+      await api.post('/api/faq/vote', { question, helpful: false });
+      // Leading/trailing whitespace must not split one question in two.
+      await api.post('/api/faq/vote', { question: `  ${question} `, helpful: false });
+      const rows = await srv.query('SELECT yes_count, no_count FROM faq_votes');
+      assert.equal(rows.length, 1, 'still one row');
+      assert.equal(Number(rows[0].yes_count), 2);
+      assert.equal(Number(rows[0].no_count), 2);
+    });
+
+    await t2.test('a different question gets its own row', async () => {
+      await api.post('/api/faq/vote', { question: 'Is there a Linux build?', helpful: true });
+      const rows = await srv.query('SELECT question FROM faq_votes ORDER BY question');
+      assert.equal(rows.length, 2);
+    });
+
+    await t2.test('nothing about the voter is stored', async () => {
+      // The table is the whole record. If a column ever appears here that could
+      // identify a reader, this fails and the decision gets made deliberately.
+      const cols = await srv.query(
+        `SELECT COLUMN_NAME AS c FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'faq_votes'`
+      );
+      const names = cols.map((r) => String(r.c).toLowerCase()).sort();
+      assert.deepEqual(names, ['no_count', 'question', 'question_key', 'updated_at', 'yes_count']);
+    });
+
+    await t2.test('a malformed vote is refused rather than silently dropped', async () => {
+      for (const body of [{ question }, { question, helpful: 'yes' }, { question: '', helpful: true }]) {
+        const res = await api.post('/api/faq/vote', body);
+        assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(body)} — got ${res.text}`);
+      }
+    });
+  });
+
   await srv.stop();
 });

@@ -11,6 +11,7 @@ const Release = require('../models/Release');
 const Ad = require('../models/Ad');
 const AuditLog = require('../models/AuditLog');
 const ContactMessage = require('../models/ContactMessage');
+const FaqVote = require('../models/FaqVote');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
@@ -905,6 +906,17 @@ router.delete(
     await audit(req, 'ad.deleted', 'ad', id, `Deleted ad "${ad.title}"`);
     return ok(res, { deleted: true });
   })
+);
+
+// ---- FAQ helpfulness ---------------------------------------------------------
+//
+// Worst first, because the list is read to find the answers that are failing
+// their readers rather than to admire the ones that work. Two counters per
+// question and nothing about who voted; see models/FaqVote.js for why.
+
+router.get(
+  '/faq/votes',
+  asyncHandler(async (req, res) => ok(res, { questions: await FaqVote.all() }))
 );
 
 // ---- Contact inbox (messages from the website's contact form) ---------------

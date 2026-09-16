@@ -494,6 +494,29 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  // "Was this helpful?" under each FAQ answer.
+  //
+  // Deliberately an AGGREGATE, not one row per vote. A vote carries no
+  // information we want about the person who cast it, and a per-vote table
+  // would grow without bound while answering the same single question this one
+  // does: which answers are failing their readers. Nothing here records an IP,
+  // an account or a timestamp per visitor.
+  //
+  // question_key is a SHA-1 of the question text rather than an index, so
+  // reordering or inserting FAQ entries cannot silently reassign existing
+  // counts to a different question. The text is stored beside it only so the
+  // admin listing is readable without the frontend bundle.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS faq_votes (
+      question_key CHAR(40) NOT NULL PRIMARY KEY,
+      question VARCHAR(300) NOT NULL,
+      yes_count INT UNSIGNED NOT NULL DEFAULT 0,
+      no_count INT UNSIGNED NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_faq_votes_unhelpful (no_count)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   await execute(`
     CREATE TABLE IF NOT EXISTS contact_messages (
       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

@@ -191,7 +191,7 @@ export default function Home() {
                   <span className="ml-auto rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em] text-emerald-300">Live</span>
                 </div>
                 <div className="download-row">
-                  <div className="download-row-top"><span>nexa-launcher-0.1.0.exe</span><span>82%</span></div>
+                  <div className="download-row-top"><span>project-setup-x64.exe</span><span>82%</span></div>
                   <div className="progress-track"><span style={{ width: '82%' }} /></div>
                   <div className="download-row-bottom"><span>Windows installer</span><span>18.4 MB/s</span></div>
                 </div>

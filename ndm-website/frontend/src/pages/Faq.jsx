@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import api from '../api/client';
 import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
@@ -331,29 +332,46 @@ const SECTIONS = [
 const ALL = SECTIONS.flatMap((s) => s.items.map((i) => ({ ...i, section: s.label, sectionId: s.id })));
 
 /**
- * "Was this helpful?" — stored per browser for now.
+ * "Was this helpful?" under each answer.
  *
- * There is no endpoint behind this yet, and rather than POST to one that does
- * not exist, the vote is remembered locally so the reader gets an
- * acknowledgement and we do not silently drop it. Wiring it to an API is one
- * fetch call here plus a route on the backend; until that exists the page does
- * not pretend the vote reached us.
+ * The vote goes to POST /api/faq/vote, which keeps two counters per question
+ * and nothing about who voted. localStorage is still used, but only to remember
+ * that THIS browser already answered, so the reader is not asked the same
+ * question every time they open the page - it is not where the vote lives.
+ *
+ * When the request fails the page says so rather than showing a thank-you it
+ * has not earned. A reader who is told their feedback landed when it did not is
+ * worse off than one who is told to try again.
  */
 function Helpful({ id }) {
   const key = `faq-vote:${id}`;
   const [vote, setVote] = useState(() => {
     try { return localStorage.getItem(key); } catch { return null; }
   });
+  const [failed, setFailed] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const cast = (value) => {
-    setVote(value);
-    try { localStorage.setItem(key, value); } catch { /* private mode: the vote just does not persist */ }
+  const cast = async (value) => {
+    if (sending) return;
+    setSending(true);
+    setFailed(false);
+    try {
+      await api.post('/faq/vote', { question: id, helpful: value === 'yes' });
+      setVote(value);
+      // Only after it actually reached us: a browser that recorded the vote
+      // locally on a failed request would never offer to send it again.
+      try { localStorage.setItem(key, value); } catch { /* private mode: it just will not persist */ }
+    } catch {
+      setFailed(true);
+    } finally {
+      setSending(false);
+    }
   };
 
   if (vote) {
     return (
       <p className="mt-4 text-xs text-slate-500">
-        Thanks — noted on this device.{' '}
+        Thanks — that is recorded.{' '}
         {vote === 'no' && (
           <>
             <Link to="/contact" className="text-brand-300 hover:underline">Tell us what was missing</Link>{' '}
@@ -367,8 +385,11 @@ function Helpful({ id }) {
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Was this helpful?</span>
-      <button type="button" onClick={() => cast('yes')} className="btn btn-ghost !px-3 !py-1 text-xs">Yes</button>
-      <button type="button" onClick={() => cast('no')} className="btn btn-ghost !px-3 !py-1 text-xs">No</button>
+      <button type="button" disabled={sending} onClick={() => cast('yes')} className="btn btn-ghost !px-3 !py-1 text-xs">Yes</button>
+      <button type="button" disabled={sending} onClick={() => cast('no')} className="btn btn-ghost !px-3 !py-1 text-xs">No</button>
+      {failed && (
+        <span className="text-xs text-amber-300">That did not reach us — please try again.</span>
+      )}
     </div>
   );
 }

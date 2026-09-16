@@ -106,6 +106,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/root', require('./routes/root'));
 app.use('/api/webhooks', require('./routes/webhooks'));
 app.use('/api/contact', require('./routes/contact'));
+app.use('/api/faq', require('./routes/faq'));
 app.use('/api/team', require('./routes/team'));
 
 app.use(notFound);

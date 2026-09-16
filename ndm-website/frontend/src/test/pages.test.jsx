@@ -9,6 +9,7 @@ import { ToastProvider } from '../components/Toast';
 import Home from '../pages/Home';
 import Download from '../pages/Download';
 import Compare from '../pages/Compare';
+import Faq from '../pages/Faq';
 import Input from '../components/Input';
 import Spinner from '../components/Spinner';
 
@@ -47,6 +48,19 @@ describe('Home — honest statistics', () => {
     for (const fake of [/50K\+/i, /10x faster/i, /99\.9%/, /1,000\+ supported sites/i]) {
       expect(screen.queryByText(fake)).toBeNull();
     }
+  });
+
+  it('does not name a Nexa version in the hero mock', async () => {
+    api.get.mockRejectedValue(new Error('network down'));
+
+    const { container } = renderPage(<Home />);
+    await waitFor(() => expect(api.get).toHaveBeenCalled());
+
+    // The illustrated download list used to show "nexa-launcher-0.1.0.exe",
+    // which went stale the moment 0.2.0 shipped and stayed wrong for two more
+    // releases. A mock row must not pin a version of our own product: nobody
+    // updates decorative text, so the only safe version number here is none.
+    expect(container.textContent).not.toMatch(/nexa[\w-]*\d+\.\d+\.\d+/i);
   });
 
   it('hides the numeric tiles rather than inventing them when the API fails', async () => {
@@ -150,6 +164,38 @@ describe('Download page', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalled());
     // The old hard-coded "v0.1.0" fallback must be gone.
     expect(screen.queryByText(/v?0\.1\.0/)).toBeNull();
+  });
+});
+
+describe('FAQ helpfulness vote', () => {
+  it('sends the vote to the API instead of only remembering it locally', async () => {
+    api.post.mockResolvedValue({ data: { ok: true, data: { recorded: true } } });
+    renderPage(<Faq />);
+
+    const yes = screen.getAllByRole('button', { name: /^yes$/i })[0];
+    await userEvent.click(yes);
+
+    // The vote used to stop at localStorage, so nothing was ever collected.
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    const [path, body] = api.post.mock.calls[0];
+    expect(path).toBe('/faq/vote');
+    expect(body.helpful).toBe(true);
+    // The question's own text, not an index: an index would reassign stored
+    // counts to the wrong question the first time an entry is inserted.
+    expect(typeof body.question).toBe('string');
+    expect(body.question.length).toBeGreaterThan(3);
+  });
+
+  it('does not claim the vote was recorded when the request fails', async () => {
+    api.post.mockRejectedValue(new Error('network down'));
+    renderPage(<Faq />);
+
+    await userEvent.click(screen.getAllByRole('button', { name: /^yes$/i })[0]);
+
+    // A thank-you it has not earned is worse than an honest failure: the reader
+    // walks away believing the feedback landed, and never sends it again.
+    await waitFor(() => expect(screen.getAllByText(/did not reach us/i).length).toBeGreaterThan(0));
+    expect(screen.queryByText(/that is recorded/i)).toBeNull();
   });
 });
 

@@ -191,6 +191,16 @@ const contactLimiter = makeDurableLimiter('contact', {
 
 // Second factor on the control-panel login. A 6-digit code has a million
 // values, so the budget must be tiny: ten attempts per challenge window.
+// FAQ helpfulness votes. A reader working through the page may legitimately
+// rate a dozen answers, so the budget is roomy -- it exists to stop a script
+// inflating the counters, not to ration honest clicks. Durable, because this is
+// the kind of counter a restart must not hand back.
+const faqVoteLimiter = makeDurableLimiter('faq-vote', {
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  message: 'Thanks for the feedback. Please try again later.',
+});
+
 const twoFactorLimiter = makeDurableLimiter('2fa', {
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -246,6 +256,6 @@ module.exports = {
   authLimiter, loginLimiter, authIpLimiter, licenseRotateLimiter,
   deviceCodeLimiter, devicePollLimiter, deviceApproveLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
-  adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
+  adsLimiter, contactLimiter, faqVoteLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
   loginKey,
 };

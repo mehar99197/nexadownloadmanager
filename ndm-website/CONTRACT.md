@@ -721,6 +721,35 @@ talking an admin into a refund or a reset. `optionalAuth` (middleware/auth.js)
 identifies a caller who happens to be signed in and leaves `req.user` unset
 otherwise; it never rejects, so the form stays open to anonymous visitors.
 
+### routes/faq.js — mounted at `/api/faq`
+
+| Method | Path | Auth | Body | Response |
+|--------|------|------|------|----------|
+| POST | `/vote` | `faqVoteLimiter` (60/hour/IP) | `{ question, helpful }` — the question's own TEXT, max 300 chars | `{ recorded: true }` *(ADDED)* |
+
+The "Was this helpful?" control under each FAQ answer. `faq_votes` holds **two
+counters per question and nothing else** — no IP, no account, no per-visitor
+timestamp — because a vote carries nothing about the voter worth keeping and a
+per-vote table would grow without bound while answering the same single
+question: which answers are failing their readers.
+
+Keyed on `SHA1(question text)`, not on an index. An index would be smaller, and
+inserting one entry into the FAQ would then silently reassign every stored count
+to the wrong question with nothing to notice it by.
+
+The endpoint is public and takes attacker-chosen text, so `FaqVote.record`
+refuses to create a **new** key once the table holds `MAX_DISTINCT_QUESTIONS`
+(500; the FAQ has 55). Votes for keys that already exist are never refused. The
+reply is `{ recorded: true }` either way: the reader is being told their click
+arrived, which it did, and an error about an internal table limit means nothing
+to them and only invites a retry.
+
+The frontend still writes localStorage, but **only after the POST succeeds**, and
+only to remember that this browser already answered. A browser that recorded the
+vote locally on a failed request would never offer to send it again.
+
+Read back at `GET /api/admin/faq/votes` (`requireAdmin`), worst first.
+
 ### Public release history — `GET /api/releases/history`
 
 `{ releases: [{ version, changelog, publishedAt, downloadCount, isLatest, hasWindows, hasLinux }] }`,
@@ -929,8 +958,8 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
 - `isRootUser(user)` — the creator predicate: `role === 'root'` **and** the email matches
   `ROOT_ADMIN_EMAIL`. Use it instead of comparing `role` directly.
 **Durable counters.** `authLimiter`, `loginLimiter`, `authIpLimiter`,
-`licenseLimiter`, `adminLoginLimiter`, `contactLimiter`, `twoFactorLimiter` and
-`teamInviteLimiter` count in MySQL (`rate_limits`, `middleware/rateLimitStore.js`)
+`licenseLimiter`, `adminLoginLimiter`, `contactLimiter`, `faqVoteLimiter`,
+`twoFactorLimiter` and `teamInviteLimiter` count in MySQL (`rate_limits`, `middleware/rateLimitStore.js`)
 so a restart — which the keepalive cron performs whenever the API looks hung — does
 not hand an attacker a fresh budget. The high-volume ones (`apiLimiter` on all of
 `/api`, `adsLimiter`, `downloadLimiter`) stay in memory: a database round-trip per
