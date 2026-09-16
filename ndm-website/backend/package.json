@@ -1,7 +1,7 @@
 {
   "name": "ndm-website-backend",
   "version": "1.0.0",
-  "description": "NexaDownloadManager website backend \u2014 Express + MySQL2 API",
+  "description": "NexaDownloadManager website backend — Express + MySQL2 API",
   "private": true,
   "main": "src/server.js",
   "scripts": {
@@ -28,8 +28,8 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "morgan": "^1.10.0",
-    "mysql2": "^3.11.0",
+    "morgan": "^1.12.1",
+    "mysql2": "^3.24.4",
     "nanoid": "^3.3.7",
     "nodemailer": "^9.0.5",
     "stripe": "^16.9.0",
