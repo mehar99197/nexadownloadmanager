@@ -377,7 +377,7 @@ successful login, so raising the cost later needs no migration.
 ### `routes/user.js` → `/api/user` (all `requireAuth`)
 | Method | Path | Middleware |
 |--------|------|-----------|
-| GET | `/me` | `requireAuth` — profile + subscription; `subscription` includes `trial: boolean`, `trialEndsAt: ISO\|null` (after `expireTrialIfNeeded`) |
+| GET | `/me` | `requireAuth` — profile + subscription. `subscription` is the plan the account **has** (`utils/accountPlan.js#effectivePlanFor`): a Team member gets the team's row, with `viaTeam:true` and `teamOwner`. Also `trial`, `trialEndsAt` (after `expireTrialIfNeeded`), and `cancelAtPeriodEnd` — the last three are forced off for a member, whose own row is Free and whose owner's cancellation is not theirs to read or act on *(CHANGED)* |
 | PUT | `/profile` | `requireAuth`, `validate(updateProfileSchema)` |
 | GET | `/license` | `requireAuth` — license key (+ `trial`, `trialEndsAt`). `403 EMAIL_NOT_VERIFIED` with `{canResend:true}` for an unverified address |
 | POST | `/license/rotate` | `requireAuth`, `licenseRotateLimiter` (5/day, durable) — issue a NEW licence key and stamp `revoked_at` on every activation. Paid + `active` only (`400 NOT_ROTATABLE`), audit `license.rotated`, best-effort licence email. → `{ licenseKey, plan, devicesRevoked }`. **This is the only way to take a leaked key back**: a Team member is handed the owner's real key and no activation row records who created it, so removing them from the roster revokes nothing *(ADDED)* |
@@ -397,8 +397,8 @@ successful login, so raising the cost later needs no migration.
 | POST | `/cancel` | `requireAuth` — cancels **at period end**: `stripe.cancelSubscription(id, { atPeriodEnd: true })` and `cancel_at_period_end = 1`. The row stays `active` with its expiry intact, so the customer keeps what they paid for; `customer.subscription.deleted` (or the lazy lapse, for a plan with no Stripe subscription) is what finally returns them to Free. `400 ALREADY_CANCELLING` if one is already pending |
 | POST | `/resume` | `requireAuth` — undo a pending cancellation while the period is still running. `400 NOT_CANCELLING` *(ADDED)* |
 | POST | `/trial/cancel` | `requireAuth` — end a running trial **now**. `400 NO_TRIAL` when none is running. `Subscription.endTrial` writes exactly what the lazy expiry writes: `plan='free', status='active', trial_ends_at=NULL, expiry_date=planExpiry('free'), seats=1, cancel_at_period_end=0`, licence key untouched. `users.trial_used` stays 1 — a trial is one per account, whether it ran out or was stopped. Audit `subscription.trial_cancelled`. **Never `cancelled`/`expired`**: the desktop client deletes a key it is told is cancelled, and ending a trial is not a stopped licence. `POST /cancel` refuses a trial with `400 TRIAL_NOT_CANCELLABLE` — there is no renewal to call off, and scheduling one left the billing page announcing "Ending" for something that changed nothing *(ADDED)* |
-| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt, cancelAtPeriodEnd }` (after `Subscription.current`) |
-| POST | `/start-trial` | `requireAuth` — 7-day no-card Pro trial. `400 TRIAL_UNAVAILABLE` if `users.trial_used=1` or the current subscription is an active paid pro/team plan (no trial); `403 SUBSCRIPTION_STOPPED` if its status is `cancelled`/`expired`, which only ever means a person stopped it — the trial used to overwrite that row in place and hand back seven days of Pro on the very key that had been stopped. Otherwise ONE transaction: `plan='pro', status='active', seats=planSeats('pro'), start_date=now, expiry_date=trial_ends_at=now+7d, stripe_subscription_id=NULL`, `users.trial_used=1`; audit `subscription.trial_started`. → `{ plan:'pro', trial:true, trialEndsAt }` *(ADDED)* |
+| GET | `/status` | `requireAuth` — `{ plan, status, expiryDate, seats, trial, trialEndsAt, cancelAtPeriodEnd, viaTeam, teamOwner }`, resolved through `effectivePlanFor` so a Team member sees the team's plan rather than their own Free row. Billing hides cancel/portal on `viaTeam` *(CHANGED)* |
+| POST | `/start-trial` | `requireAuth` — 7-day no-card Pro trial. `400 TRIAL_UNAVAILABLE` if `users.trial_used=1`, if the account is on somebody's **Team** plan (it already has everything the trial grants, and starting one would spend the account's single trial on nothing), or if the current subscription is an active paid pro/team plan; `403 SUBSCRIPTION_STOPPED` if its status is `cancelled`/`expired`, which only ever means a person stopped it — the trial used to overwrite that row in place and hand back seven days of Pro on the very key that had been stopped. Otherwise ONE transaction: `plan='pro', status='active', seats=planSeats('pro'), start_date=now, expiry_date=trial_ends_at=now+7d, stripe_subscription_id=NULL`, `users.trial_used=1`; audit `subscription.trial_started`. → `{ plan:'pro', trial:true, trialEndsAt }` *(ADDED)* |
 
 ### `routes/license.js` → `/api/license`
 | Method | Path | Middleware | Notes |
@@ -949,6 +949,19 @@ person mistyping their password locked out everybody behind the same office NAT.
 ## 8. Util signatures
 
 `utils/respond.js` → `ok(res,data,status=200)`, `fail(res,code,message,status=400,details)`
+
+`utils/accountPlan.js` — **the one answer to "which plan does this account have?"**:
+```
+effectivePlanFor(userId)     → { subscription, viaTeam, teamOwner }   // what the SITE shows
+subscriptionForUser(userId)  → row                                    // what the APP validates against
+teamSubscriptionForUser(userId) / ownSubscriptionForUser(userId) / teamPlanForUser(userId)
+```
+A Team member's own subscription row stays Free — the seats belong to the
+owner's plan — so reading that row is not the same question as "what is this
+account entitled to". Every page (`/user/me`, `/user/license`,
+`/subscription/status`) and every licence path goes through here, which is why
+a member no longer sees "Free" and a trial offer beside a card telling them
+they are on somebody's team.
 
 `utils/asyncHandler.js` → `asyncHandler(fn)`
 

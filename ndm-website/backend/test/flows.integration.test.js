@@ -364,6 +364,43 @@ test('backend flows', async (t) => {
       assert.equal(spent.status, 404, 'a used invite is dead');
     });
 
+    // The bug this guards: a member's own subscription row stays Free, and
+    // every page that read that row told them they were on Free — offering the
+    // Pro trial they already had, three lines above a card that said "you are
+    // on X's team".
+    await t2.test('a member sees the TEAM plan everywhere, not their own Free row', async () => {
+      const me = (await member.get('/api/user/me', { token: m.token })).body.data;
+      assert.equal(me.subscription.plan, 'team', 'the dashboard plan tile');
+      assert.equal(me.subscription.viaTeam, true);
+      assert.equal(me.subscription.trial, false);
+      assert.equal(me.subscription.teamOwner, o.name || me.subscription.teamOwner);
+      assert.ok(me.subscription.teamOwner, 'whose team it is');
+      assert.equal(me.team.role, 'member');
+
+      const status = (await member.get('/api/subscription/status', { token: m.token })).body.data;
+      assert.equal(status.plan, 'team', 'the billing page plan');
+      assert.equal(status.viaTeam, true);
+      // A member is never shown the owner's cancellation state: it is not
+      // theirs to read, and the billing page acts on it.
+      assert.equal(status.cancelAtPeriodEnd, false);
+
+      // …and the entitlement the desktop app receives agrees with all of it.
+      const licence = (await member.get('/api/user/license', { token: m.token })).body.data;
+      const validated = await member.post('/api/license/validate', {
+        license_key: licence.licenseKey, device_fingerprint: 'e'.repeat(64),
+      });
+      assert.equal(validated.body.valid, true);
+      assert.equal(validated.body.plan, 'team');
+    });
+
+    await t2.test('a member cannot start a Pro trial they already have', async () => {
+      const res = await member.post('/api/subscription/start-trial', null, { token: m.token });
+      assert.equal(res.status, 400, res.text);
+      assert.equal(res.body.error.code, 'TRIAL_UNAVAILABLE');
+      const rows = await srv.query('SELECT trial_used FROM users WHERE email = ?', [m.email]);
+      assert.equal(Number(rows[0].trial_used), 0, 'the account keeps its one trial');
+    });
+
     await t2.test('the roster is capped at the plan seats', async () => {
       for (let i = 0; i < 3; i++) {
         const res = await owner.post('/api/team/invites', { email: `extra${i}@example.test` }, { token: o.token });
@@ -381,6 +418,13 @@ test('backend flows', async (t) => {
       const lic = await member.get('/api/user/license', { token: m.token });
       assert.equal(lic.body.data.viaTeam, false);
       assert.equal(lic.body.data.plan, 'free');
+      // Every page follows them back, and the trial they never spent is theirs.
+      const me = (await member.get('/api/user/me', { token: m.token })).body.data;
+      assert.equal(me.subscription.plan, 'free');
+      assert.equal(me.subscription.viaTeam, false);
+      assert.equal(me.team, null);
+      const trial = await member.post('/api/subscription/start-trial', null, { token: m.token });
+      assert.equal(trial.status, 200, trial.text);
       const roster = await owner.get('/api/team', { token: o.token });
       const pending = roster.body.data.members.find((x) => x.email === 'extra0@example.test');
       const gone = await owner.del(`/api/team/members/${pending.id}`, { token: o.token });

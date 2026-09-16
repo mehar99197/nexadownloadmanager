@@ -235,7 +235,7 @@ export default function Billing() {
                   <span className="text-sm text-white">{subStatus.seats}</span>
                 </div>
               )}
-              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && (
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam && (
                 <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
                   {/* Stripe's own portal handles cards, invoices and receipts —
                       things we deliberately never store ourselves. */}
@@ -270,7 +270,16 @@ export default function Billing() {
           ) : (
             <p className="mt-4 text-sm text-zinc-500">No active subscription.</p>
           )}
-          {subStatus?.plan === 'free' && (
+          {subStatus?.viaTeam && (
+            <p className="mt-4 border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
+              This plan comes from{' '}
+              <span className="font-medium text-slate-300">{subStatus.teamOwner || 'the team'}</span>&rsquo;s
+              Team subscription, so there is nothing to pay or cancel here. Leaving the team, from your{' '}
+              <Link to="/dashboard" className="text-slate-300 hover:text-brand-300">dashboard</Link>, returns
+              this account to its own plan.
+            </p>
+          )}
+          {subStatus?.plan === 'free' && !subStatus?.viaTeam && (
             <p className="mt-4 border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
               The free plan never expires and has nothing to cancel.{' '}
               <Link to="/pricing" className="text-slate-300 hover:text-brand-300">See what Pro adds</Link>.

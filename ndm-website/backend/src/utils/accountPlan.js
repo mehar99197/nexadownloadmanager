@@ -17,7 +17,8 @@
 const Subscription = require('../models/Subscription');
 const TeamMember = require('../models/TeamMember');
 
-async function teamSubscriptionForUser(userId) {
+// The membership plus who it belongs to, or null when it grants nothing.
+async function teamPlanForUser(userId) {
   const m = await TeamMember.findActiveByUserId(userId);
   if (!m || m.owner_plan !== 'team' || m.owner_status !== 'active') return null;
   const row = await Subscription.findById(m.subscription_id);
@@ -25,7 +26,13 @@ async function teamSubscriptionForUser(userId) {
   const sub = await Subscription.current(row);
   // current() may just have downgraded a lapsed team to Free: then it is no
   // longer a team the member can draw on.
-  return sub && sub.plan === 'team' && sub.status === 'active' ? sub : null;
+  if (!(sub && sub.plan === 'team' && sub.status === 'active')) return null;
+  return { subscription: sub, ownerName: m.owner_name, ownerEmail: m.owner_email };
+}
+
+async function teamSubscriptionForUser(userId) {
+  const team = await teamPlanForUser(userId);
+  return team ? team.subscription : null;
 }
 
 async function ownSubscriptionForUser(userId) {
@@ -38,4 +45,24 @@ async function subscriptionForUser(userId) {
   return (await teamSubscriptionForUser(userId)) || ownSubscriptionForUser(userId);
 }
 
-module.exports = { subscriptionForUser, teamSubscriptionForUser, ownSubscriptionForUser };
+/**
+ * The plan this account HAS — the one every page should show.
+ *
+ * A Team member keeps their own Free row (the seats belong to the owner's
+ * plan), and reading that row is why the site told them "Free", offered them
+ * the Pro trial they already have, and said "you are on X's team" three lines
+ * below. The entitlement already came from the team everywhere it mattered
+ * (licence validation, seats); this is the same answer for the pages.
+ *
+ * → { subscription, viaTeam, teamOwner }
+ */
+async function effectivePlanFor(userId) {
+  const team = await teamPlanForUser(userId);
+  if (team) return { subscription: team.subscription, viaTeam: true, teamOwner: team.ownerName };
+  return { subscription: await ownSubscriptionForUser(userId), viaTeam: false, teamOwner: null };
+}
+
+module.exports = {
+  subscriptionForUser, teamSubscriptionForUser, ownSubscriptionForUser,
+  teamPlanForUser, effectivePlanFor,
+};

@@ -21,7 +21,7 @@ const { isTrialActive } = require('../utils/license');
 const { stripSensitive } = require('../utils/sanitize');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
 const DeviceAuth = require('../models/DeviceAuth');
-const { subscriptionForUser } = require('../utils/accountPlan');
+const { subscriptionForUser, effectivePlanFor } = require('../utils/accountPlan');
 const { hashRefreshToken } = require('../utils/jwt');
 const UserSession = require('../models/UserSession');
 const security = require('../utils/securityEvents');
@@ -73,13 +73,25 @@ async function findUserSubscription(userId) {
   return Subscription.current(sub);
 }
 
-function subscriptionSummary(sub) {
+/**
+ * `viaTeam` is not decoration: it is the difference between "your plan" and
+ * "the plan you are a guest on". A member cannot cancel it, cannot manage its
+ * billing and must not be offered a trial against it, so the flag rides with
+ * the summary rather than being re-derived by each page.
+ *
+ * A member is shown the team's plan, its expiry and the key that unlocks the
+ * app for them — everything /api/team already tells them — but never the
+ * owner's cancellation state, which is not theirs to read or act on.
+ */
+function subscriptionSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
   if (!sub) return null;
   return {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
     seats: sub.seats, licenseKey: sub.license_key,
-    trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
-    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
+    trial: viaTeam ? false : isTrialActive(sub),
+    trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
+    cancelAtPeriodEnd: viaTeam ? false : Boolean(Number(sub.cancel_at_period_end)),
+    viaTeam, teamOwner,
   };
 }
 
@@ -95,12 +107,12 @@ async function teamMembership(userId) {
 router.get(
   '/me', requireAuth,
   asyncHandler(async (req, res) => {
-    const [sub, team] = await Promise.all([
-      findUserSubscription(req.user.id), teamMembership(req.user.id),
+    const [{ subscription, viaTeam, teamOwner }, team] = await Promise.all([
+      effectivePlanFor(req.user.id), teamMembership(req.user.id),
     ]);
     return ok(res, {
       user: sanitizeUser(req.user),
-      subscription: subscriptionSummary(sub),
+      subscription: subscriptionSummary(subscription, { viaTeam, teamOwner }),
       team: team ? { role: 'member', ownerName: team.owner_name, plan: team.owner_plan } : null,
     });
   })
@@ -211,24 +223,16 @@ router.get(
     if (!req.user.email_verified)
       return fail(res, 'EMAIL_NOT_VERIFIED',
         'Verify your email address to receive your license key', 403, { canResend: true });
-    const sub = await findUserSubscription(req.user.id);
-    // A team member on the Free plan gets the team's key here, so the
-    // dashboard shows the key that actually unlocks the app for them.
-    const ownPaid = sub && sub.status === 'active' && sub.plan !== 'free';
-    if (!ownPaid) {
-      const team = await teamMembership(req.user.id);
-      if (team) {
-        return ok(res, {
-          licenseKey: team.owner_license_key, plan: team.owner_plan, status: team.owner_status,
-          expiryDate: team.owner_expiry_date, trial: false, trialEndsAt: null,
-          viaTeam: true, teamOwner: team.owner_name,
-        });
-      }
-    }
+    // The key that actually unlocks the app for this account: the team's for a
+    // member, their own otherwise — the same answer /me and the licence
+    // endpoints give, from the same helper.
+    const { subscription: sub, viaTeam, teamOwner } = await effectivePlanFor(req.user.id);
     if (!sub) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
     return ok(res, {
       licenseKey: sub.license_key, plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
-      trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at), viaTeam: false,
+      trial: viaTeam ? false : isTrialActive(sub),
+      trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
+      viaTeam, ...(viaTeam ? { teamOwner } : {}),
     });
   })
 );

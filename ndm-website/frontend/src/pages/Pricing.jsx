@@ -57,6 +57,9 @@ function resolveCta(plan, user, billingOpen = true) {
 
   if (plan.id === 'pro') {
     if (!user) return { label: 'Start 7-day free trial', action: 'link', to: '/register?trial=1' };
+    // Team includes everything Pro has, so a Team member (or owner) is never
+    // shown a trial or an upgrade for it.
+    if (currentPlan === 'team') return { label: 'Included in Team', action: 'none' };
     if (currentPlan === 'pro' && !onTrial) return { label: 'Current plan', action: 'none', current: true };
     if (currentPlan === 'free' && !trialUsed) return { label: 'Start 7-day free trial', action: 'trial' };
     // Nothing can be bought until Stripe is configured on the server; say so on

@@ -11,6 +11,7 @@ const validate = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
 const { checkoutSchema, mockCompleteSchema, couponSchema } = require('../schemas/subscription.schema');
 const Subscription = require('../models/Subscription');
+const { effectivePlanFor } = require('../utils/accountPlan');
 const Payment = require('../models/Payment');
 const AuditLog = require('../models/AuditLog');
 const {
@@ -23,13 +24,18 @@ function toIso(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function statusSummary(sub) {
+function statusSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
   return {
     plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date, seats: sub.seats,
-    trial: isTrialActive(sub), trialEndsAt: toIso(sub.trial_ends_at),
+    trial: viaTeam ? false : isTrialActive(sub),
+    trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
     // "Active, but it ends on the 3rd" is a state the site has to be able to
-    // show — otherwise a cancellation looks like it did nothing.
-    cancelAtPeriodEnd: Boolean(Number(sub.cancel_at_period_end)),
+    // show — otherwise a cancellation looks like it did nothing. A member is
+    // never shown the owner's cancellation state: it is not theirs to act on.
+    cancelAtPeriodEnd: viaTeam ? false : Boolean(Number(sub.cancel_at_period_end)),
+    // Billing hides "cancel" and "manage billing" on a plan the account is a
+    // guest on — a member can neither pay for nor stop the owner's plan.
+    viaTeam, teamOwner,
   };
 }
 
@@ -255,6 +261,13 @@ router.post(
 router.post(
   '/start-trial', requireAuth,
   asyncHandler(async (req, res) => {
+    // Somebody on a Team plan already has everything the trial grants, and
+    // starting one would burn the account's single trial on nothing: their own
+    // row would go Pro-for-7-days behind a Team plan that already outranks it.
+    const { viaTeam, teamOwner } = await effectivePlanFor(req.user.id);
+    if (viaTeam)
+      return fail(res, 'TRIAL_UNAVAILABLE',
+        `You are already on ${teamOwner || 'a'}'s Team plan — a trial would add nothing`, 400);
     const result = await Subscription.startTrial(req.user.id);
     if (!result.ok) {
       if (result.reason === 'not_found') return fail(res, 'NOT_FOUND', 'Account not found', 404);
@@ -282,10 +295,12 @@ router.post(
 router.get(
   '/status', requireAuth,
   asyncHandler(async (req, res) => {
-    const found = await Subscription.findActiveByUserId(req.user.id) ||
-                  (await Subscription.findByUserId(req.user.id))[0];
-    if (!found) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
-    return ok(res, statusSummary(await Subscription.current(found)));
+    // Team first: a member's own row stays Free, and reporting that as their
+    // plan is what made Billing say "Free — nothing to cancel" to somebody
+    // sitting on a live Team plan.
+    const { subscription, viaTeam, teamOwner } = await effectivePlanFor(req.user.id);
+    if (!subscription) return fail(res, 'NOT_FOUND', 'No subscription found', 404);
+    return ok(res, statusSummary(subscription, { viaTeam, teamOwner }));
   })
 );
 

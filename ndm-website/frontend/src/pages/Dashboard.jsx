@@ -546,9 +546,11 @@ export default function Dashboard() {
   const redeemed = useRef(false);
 
   const subscription = user?.subscription;
-  // A Team member on the Free plan uses the team's licence, so the summary
-  // tiles and the trial offer follow the plan they actually have.
-  const viaTeam = Boolean(user?.team) && (subscription?.plan || 'free') === 'free';
+  // The server reports the plan this account HAS: a member's own row stays
+  // Free, so it sends the team's plan with viaTeam set. Deriving that here
+  // from "team block present AND my plan is free" is what put a member on
+  // "Free" with a trial offer while the team card said otherwise.
+  const viaTeam = Boolean(subscription?.viaTeam);
 
   const loadLicense = async () => {
     try {

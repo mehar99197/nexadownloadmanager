@@ -97,6 +97,21 @@ describe('Billing — the other plans', () => {
     expect(screen.queryByTestId('end-trial')).toBeNull();
   });
 
+  it('a Team member sees whose plan it is, with nothing to pay or cancel', async () => {
+    renderBilling({
+      plan: 'team', status: 'active', trial: false, seats: 5,
+      expiryDate: '2026-10-16T00:00:00.000Z', cancelAtPeriodEnd: false,
+      viaTeam: true, teamOwner: 'Ahmad',
+    });
+    expect(await screen.findByText(/this plan comes from/i)).toHaveTextContent(/Ahmad/);
+    // A member can neither pay for nor stop somebody else's subscription.
+    expect(screen.queryByRole('button', { name: /cancel subscription/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /manage billing/i })).toBeNull();
+    expect(screen.queryByTestId('end-trial')).toBeNull();
+    // …and it is not the Free plan either.
+    expect(screen.queryByText(/never expires and has nothing to cancel/i)).toBeNull();
+  });
+
   it('Free has nothing to end', async () => {
     renderBilling({ plan: 'free', status: 'active', trial: false, seats: 1, cancelAtPeriodEnd: false });
     expect(await screen.findByText(/nothing to cancel/i)).toBeInTheDocument();
