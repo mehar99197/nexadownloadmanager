@@ -3,3 +3,6 @@ node_modules
 *.log
 dist
 mongo-data
+
+# Throwaway MariaDB for the integration tests (test/tools/testdb.sh)
+.testdb/

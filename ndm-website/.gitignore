@@ -9,3 +9,6 @@ mongo-data
 
 # Uploaded release installers (large binaries — never committed)
 backend/uploads/
+
+# Throwaway MariaDB for the integration tests (test/tools/testdb.sh)
+backend/.testdb/
