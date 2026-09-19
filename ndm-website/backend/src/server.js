@@ -30,6 +30,7 @@ connectDB().then(async () => {
     // eslint-disable-next-line no-console
     console.log(`[server] NDM backend listening on ${bindHost}:${config.PORT} (${config.NODE_ENV})`);
     if (config.isStripeMock) console.log('[server] Stripe: MOCK mode (no STRIPE_SECRET_KEY) — webhook signatures NOT verified');
+    if (config.isBillingDisabled) console.log('[server] Billing: DISABLED (no STRIPE_SECRET_KEY) — checkout, coupons and webhooks all refuse with BILLING_UNAVAILABLE');
     if (config.isEmailMock) console.log('[server] Email: MOCK mode (no SMTP_HOST)');
     if (insecureDefaults && bindHost !== '127.0.0.1')
       console.warn(`[server] WARNING: dev secrets + mock Stripe are exposed on ${bindHost}. Set NODE_ENV=production for a real deployment.`);

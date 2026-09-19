@@ -217,7 +217,7 @@ router.get(
       system: {
         node: process.version,
         environment: config.NODE_ENV,
-        stripe: config.isStripeMock ? 'mock' : 'live',
+        stripe: config.billingMode,
         email: config.isEmailMock ? 'mock' : 'live',
       },
     });
@@ -233,7 +233,7 @@ router.get(
     return ok(res, {
       database: 'connected',
       latencyMs: Date.now() - started,
-      stripe: config.isStripeMock ? 'mock' : 'configured',
+      stripe: config.billingMode,
       email: config.isEmailMock ? 'mock' : 'configured',
       uptimeSeconds: Math.round(process.uptime()),
       node: process.version,

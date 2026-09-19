@@ -5,7 +5,36 @@ const config = require('../config/env');
 // Same function names in mock + real mode so route handlers are agnostic.
 let impl;
 
-if (config.isStripeMock) {
+if (config.isBillingDisabled) {
+  // ── DISABLED ──────────────────────────────────────────────────
+  // A real deployment with no Stripe account yet. Mock mode is NOT an option
+  // here: its checkout grants a paid plan for free. Every entry point that
+  // would move money or trust an event fails closed instead.
+  const unavailable = () => {
+    const err = new Error('Billing is not available on this deployment');
+    err.status = 503;
+    err.code = 'BILLING_UNAVAILABLE';
+    throw err;
+  };
+  impl = {
+    mock: false,
+    disabled: true,
+    async createCheckoutSession() { return unavailable(); },
+    // Nothing to manage and no hosted portal to send anyone to; the caller
+    // already treats url:null as "stay on /billing".
+    async createPortalSession() { return { url: null }; },
+    // Not "no such code" - the whole coupon feature is off, and reporting it
+    // as an invalid code would send the user hunting for a better one.
+    async findPromotionCode() { return unavailable(); },
+    // No signing secret exists, so no event can be authenticated. Refusing is
+    // the only safe answer: a forged event here would hand out a paid plan.
+    constructEvent() { return unavailable(); },
+    // Disabled implies no Stripe account at all (see config/env.js), so no
+    // remote subscription can still be charging and the local status change is
+    // the entire cancellation. Throwing would only trap the user on a plan.
+    async cancelSubscription(id) { return { id, status: 'canceled' }; },
+  };
+} else if (config.isStripeMock) {
   // ── MOCK ──────────────────────────────────────────────────
   impl = {
     mock: true,

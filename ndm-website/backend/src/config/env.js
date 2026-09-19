@@ -59,6 +59,9 @@ const config = {
 
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
+  // Run with billing switched off on purpose (see the billing-mode block
+  // below). Lets a real deployment boot before the Stripe account is live.
+  BILLING_DISABLED: bool(process.env.BILLING_DISABLED, false),
 
   SMTP_HOST: process.env.SMTP_HOST || '',
   SMTP_PORT: parseInt(process.env.SMTP_PORT, 10) || 587,
@@ -125,7 +128,32 @@ const config = {
   MAX_RELEASE_UPLOAD_MB: parseInt(process.env.MAX_RELEASE_UPLOAD_MB, 10) || 1024,
 };
 
-config.isStripeMock = !config.STRIPE_SECRET_KEY;
+// Billing runs in exactly one of three modes:
+//   live     - STRIPE_SECRET_KEY is set: real charges, signed webhooks.
+//   disabled - no key, and either BILLING_DISABLED=true or this is production:
+//              every billing entry point fails closed with BILLING_UNAVAILABLE.
+//              Nothing hands out a plan without a payment.
+//   mock     - no key, outside production: fake checkout plus the
+//              /subscription/mock-complete shortcut, for local development.
+// Production must never resolve to mock. That route grants a paid plan for
+// free, so "no key in production" is disabled, never mock.
+// Disabled always means "no Stripe account is configured", so a disabled
+// deployment provably has nothing charging cards in the background and a
+// cancellation is purely local state.
+config.isBillingDisabled = !config.STRIPE_SECRET_KEY
+  && (config.BILLING_DISABLED || config.isProd);
+config.isStripeMock = !config.STRIPE_SECRET_KEY && !config.isBillingDisabled;
+config.isBillingLive = Boolean(config.STRIPE_SECRET_KEY);
+// One name for the mode, so status readouts and logs cannot drift apart.
+config.billingMode = config.isBillingDisabled ? 'disabled'
+  : config.isStripeMock ? 'mock' : 'live';
+
+// Asking for billing off while handing over a usable key is a contradiction,
+// and the dangerous reading is the silent one: cards keep being charged while
+// the operator believes billing is off. Refuse both at once, in any NODE_ENV.
+if (config.BILLING_DISABLED && config.STRIPE_SECRET_KEY)
+  throw new Error('[config] BILLING_DISABLED=true contradicts STRIPE_SECRET_KEY being set; unset one of them');
+
 config.isEmailMock = !config.SMTP_HOST;
 // "Continue with Google" is only offered when a client ID is configured on both
 // halves; without it the backend has no audience to verify an ID token against.
@@ -141,8 +169,14 @@ if (config.isProd) {
     throw new Error('[config] JWT secrets must all be different in production');
   if (!config.ROOT_ADMIN_EMAIL)
     throw new Error('[config] ROOT_ADMIN_EMAIL must name the creator account in production');
-  if (!config.STRIPE_SECRET_KEY.startsWith('sk_') || !config.STRIPE_WEBHOOK_SECRET.startsWith('whsec_'))
-    throw new Error('[config] live Stripe secret and webhook signing secret are required in production');
+  // Mock billing is a free upgrade with extra steps, so it may never be
+  // reachable where real money is expected. The derivation above already rules
+  // it out; this asserts the invariant so a later edit to it fails loudly here.
+  if (config.isStripeMock)
+    throw new Error('[config] mock billing must never be active in production');
+  if (!config.isBillingDisabled
+      && (!config.STRIPE_SECRET_KEY.startsWith('sk_') || !config.STRIPE_WEBHOOK_SECRET.startsWith('whsec_')))
+    throw new Error('[config] live Stripe secret and webhook signing secret are required in production; set BILLING_DISABLED=true to run with billing turned off instead');
   if (config.isEmailMock)
     throw new Error('[config] SMTP_HOST is required in production; email mock mode is disabled');
   if (!config.CORS_ORIGINS.length || config.CORS_ORIGINS.some((origin) => !origin.startsWith('https://')))

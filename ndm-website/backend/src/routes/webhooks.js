@@ -3,6 +3,7 @@
 const router = require('express').Router();
 
 const asyncHandler = require('../utils/asyncHandler');
+const config = require('../config/env');
 const stripe = require('../utils/stripe');
 const { sendLicenseEmail, sendReceiptEmail } = require('../utils/email');
 const { planSeats, planExpiry } = require('../utils/license');
@@ -147,6 +148,13 @@ async function handlePaymentFailed(obj) {
 router.post(
   '/stripe',
   asyncHandler(async (req, res) => {
+    // Billing disabled means no signing secret exists, so nothing reaching this
+    // route can be authenticated. Refuse before parsing: an accepted event here
+    // would grant a paid plan. The edge .htaccess blocks this path too - this
+    // is the half that survives a webserver config being rebuilt.
+    if (config.isBillingDisabled)
+      return res.status(503).json({ received: false, error: 'billing_unavailable' });
+
     let event;
     try { event = stripe.constructEvent(req.body, req.headers['stripe-signature']); }
     catch (err) { return res.status(400).json({ received: false, error: 'invalid_signature' }); }
