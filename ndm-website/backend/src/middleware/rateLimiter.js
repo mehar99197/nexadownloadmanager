@@ -26,11 +26,146 @@ function makeLimiter(options) {
   return (req, res, next) => (limitsDisabled() ? next() : limiter(req, res, next));
 }
 
-// Auth endpoints (register/login/forgot/reset): 5 per 15 min.
+// ── Auth ────────────────────────────────────────────────────────────────────
+//
+// One 5-per-15-min bucket, keyed on the source IP, used to cover register,
+// login, google, forgot-password AND reset-password together. Two problems
+// with that, both of them real:
+//
+//   * Shared egress. An office, a campus or any CGNAT address is one IP, so
+//     the fifth person to sign in during a quarter of an hour was refused —
+//     and Team plans are exactly the customers who sit behind one.
+//   * One bucket. Five sign-up attempts left a colleague unable to start a
+//     password reset, because the two spent the same budget.
+//
+// Keying on the EMAIL instead (what the audit found in production) is worse
+// still: it hands anyone who knows an address the ability to close that
+// account for fifteen minutes with five requests.
+//
+// So the budgets are split by concern, and the two keys do different jobs:
+//
+//   per IP    → REFUSES (429). The brute-force / credential-stuffing control.
+//   per email → DELAYS, never refuses. An attacker can make one account slow;
+//               they cannot make it unusable, and the owner still signs in.
+//
+// All of these are mounted AFTER validate() in routes/auth.js, so a request
+// that fails its schema costs no auth quota — only real attempts count.
+
+// Sign-in: sized for a shared address, not for one person.
+const loginLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+});
+
+// Account creation from one address. Generous enough for a family or an
+// office, useless for a script farming accounts.
+const registerLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'Too many accounts created from this address. Please try again later.',
+});
+
+// Password recovery gets its own budget: being unable to reset a password
+// because someone else on your network was signing up is its own outage.
+const forgotPasswordLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+});
+
+// Consuming a reset token. Bounded so the token space cannot be walked.
+const resetPasswordLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+});
+
+// "Continue with Google". Google has already challenged the human, so this is
+// only a floor against a loop hammering the endpoint.
+const googleLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+});
+
+// Kept for callers that still want the old shared bucket semantics.
 const authLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 5,
 });
+
+// ── Per-account slowdown ────────────────────────────────────────────────────
+//
+// The second half of the dual key. Consecutive failed sign-ins for one address
+// buy an increasing delay before the next attempt is even looked at, which
+// makes online guessing pointless (a 2 s floor caps an attacker at ~1,800
+// guesses a day per account) while leaving the real owner able to sign in —
+// they wait a second or two, they are never told to come back in 15 minutes.
+//
+// A successful sign-in clears the counter, so one fat-fingered password never
+// leaves a trace.
+//
+// In-memory and therefore per-process, exactly like express-rate-limit's own
+// default store, so this adds no dependency and no new failure mode. Behind
+// several API instances each one keeps its own view; the per-IP limiter above
+// has always had the same property.
+const LOGIN_FAILURE_TTL_MS = 15 * 60 * 1000;
+const LOGIN_DELAY_STEPS_MS = [0, 0, 0, 100, 250, 500, 1000];
+const LOGIN_DELAY_MAX_MS = 2000;
+const LOGIN_FAILURE_SWEEP_AT = 5000;
+
+const loginFailures = new Map();
+
+const normaliseEmail = (value) =>
+  (typeof value === 'string' ? value.trim().toLowerCase() : '');
+
+function sweepLoginFailures(now) {
+  for (const [email, entry] of loginFailures) {
+    if (now - entry.at > LOGIN_FAILURE_TTL_MS) loginFailures.delete(email);
+  }
+}
+
+function loginFailureCount(email) {
+  const entry = loginFailures.get(email);
+  if (!entry) return 0;
+  if (Date.now() - entry.at > LOGIN_FAILURE_TTL_MS) {
+    loginFailures.delete(email);
+    return 0;
+  }
+  return entry.count;
+}
+
+function recordLoginFailure(email) {
+  const key = normaliseEmail(email);
+  if (!key) return;
+  const now = Date.now();
+  if (loginFailures.size > LOGIN_FAILURE_SWEEP_AT) sweepLoginFailures(now);
+  const count = loginFailureCount(key) + 1;
+  loginFailures.set(key, { count, at: now });
+}
+
+function clearLoginFailures(email) {
+  const key = normaliseEmail(email);
+  if (key) loginFailures.delete(key);
+}
+
+function loginDelayFor(email) {
+  const count = loginFailureCount(normaliseEmail(email));
+  if (count <= 0) return 0;
+  return LOGIN_DELAY_STEPS_MS[count] ?? LOGIN_DELAY_MAX_MS;
+}
+
+/**
+ * Middleware: hold a sign-in attempt for as long as this account's recent
+ * failure count has earned. Mounted after validate(), so req.body.email is
+ * already trimmed and lower-cased by the schema.
+ */
+function loginSlowdown(req, res, next) {
+  if (limitsDisabled()) return next();
+  const delay = loginDelayFor(req.body && req.body.email);
+  if (delay <= 0) return next();
+  const timer = setTimeout(next, delay);
+  // A visitor who gives up mid-wait should not leave a timer behind.
+  res.on('close', () => clearTimeout(timer));
+  return undefined;
+}
 
 // License validation (called by the C++ app): 10 per hour per (source IP,
 // licence key). Keyed on the IP alone, one shared egress address — an office,
@@ -87,9 +222,22 @@ const apiLimiter = makeLimiter({
 
 // Public counting download redirect: light per-IP cap so the counter cannot
 // be inflated trivially while still allowing retries for both OSes.
+//
+// Only a FRESH start counts: no Range header, or one that begins at byte 0.
+// The desktop updater fetches the installer through the segmented engine —
+// up to 32 connections, each its own ranged request, plus the work-stealing
+// tails — and browsers and download managers resume with ranges too. Counting
+// every chunk meant a single 187 MB update burned the whole budget
+// mid-transfer and every user's updater died with 429. This is the same rule
+// the route uses for its download counter (releases.js, isFreshStart), so
+// what the limiter protects and what it counts are the same thing.
 const downloadLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   max: 30,
+  skip: (req) => {
+    const range = String(req.headers.range || '').trim();
+    return range !== '' && !/^bytes=0-/.test(range);
+  },
 });
 
 // Admin/root session refresh runs on every full page load of the panel, so
@@ -128,4 +276,7 @@ module.exports = {
   authLimiter, licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, twoFactorLimiter, teamInviteLimiter,
   sessionRefreshLimiter, verifyEmailLimiter,
+  // WP-08: per-route budgets plus the per-account slowdown.
+  loginLimiter, registerLimiter, forgotPasswordLimiter, resetPasswordLimiter, googleLimiter,
+  loginSlowdown, recordLoginFailure, clearLoginFailures, loginDelayFor, loginFailureCount,
 };

@@ -11,7 +11,9 @@ const Subscription = require('../models/Subscription');
 const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const {
-  authLimiter, sessionRefreshLimiter, verifyEmailLimiter,
+  loginLimiter, registerLimiter, forgotPasswordLimiter, resetPasswordLimiter, googleLimiter,
+  loginSlowdown, recordLoginFailure, clearLoginFailures,
+  sessionRefreshLimiter, verifyEmailLimiter,
 } = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
 const { ok, fail } = require('../utils/respond');
@@ -71,46 +73,79 @@ async function openSession(req, res, user) {
 }
 
 router.post(
-  '/register', authLimiter, requireTurnstile, validate(registerSchema),
+  // requireTurnstile must precede validate(): it strips `turnstileToken` from
+  // the body, which the .strict() schema would otherwise reject. The limiter
+  // sits AFTER validate so a schema-invalid request spends no auth quota.
+  '/register', requireTurnstile, validate(registerSchema), registerLimiter,
   asyncHandler(async (req, res) => {
     const { name, email, password } = req.body;
-    const existing = await User.findByEmail(email);
-    if (existing) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
 
+    // Hash FIRST, before looking the address up, so both paths below cost the
+    // same. bcrypt at cost 12 is ~250 ms; doing it only for new accounts would
+    // make "this address is taken" measurable with a stopwatch even though the
+    // responses are identical.
     const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
-    const user = await User.create({ name, email, passwordHash, emailVerified: false });
 
-    await Subscription.create({
-      userId: user.id, plan: 'free', status: 'active',
-      licenseKey: generateLicenseKey(), seats: planSeats('free'),
-      startDate: new Date(), expiryDate: planExpiry('free'),
-    });
+    const existing = await User.findByEmail(email);
+    if (!existing) {
+      const user = await User.create({ name, email, passwordHash, emailVerified: false });
 
-    const verifyToken = signEmailToken(user);
-    await sendVerificationEmail(user, verifyToken);
-    return ok(res, { userId: String(user.id) }, 201);
+      await Subscription.create({
+        userId: user.id, plan: 'free', status: 'active',
+        licenseKey: generateLicenseKey(), seats: planSeats('free'),
+        startDate: new Date(), expiryDate: planExpiry('free'),
+      });
+
+      const verifyToken = signEmailToken(user);
+      await sendVerificationEmail(user, verifyToken);
+    }
+
+    // The SAME answer either way. Returning 409 EMAIL_EXISTS turned sign-up
+    // into an account oracle: anyone could test a list of addresses and learn
+    // which ones have accounts here. The person who really owns the address
+    // finds out through their inbox — either a verification email, or nothing
+    // because they already signed up — which is the only channel that proves
+    // they own it. The body carries no id for the same reason.
+    return ok(res, { registered: true }, 201);
   })
 );
 
 router.post(
-  '/login', authLimiter, validate(loginSchema),
+  '/login', validate(loginSchema), loginLimiter, loginSlowdown,
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    if (!user) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    if (!user) {
+      // Counted even for an unknown address: otherwise the delay itself would
+      // tell an attacker which addresses are registered.
+      recordLoginFailure(email);
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
 
     // A Google-created account has no password hash at all. Saying so is not a
     // disclosure risk (the sign-in page offers both buttons anyway) and it saves
     // the user guessing at a password that was never set.
+    //
+    // WP-11: the wording must not describe where the button is. Production said
+    // "Use “Continue with Google” below" while the button sits ABOVE the form,
+    // and any such phrasing breaks again the next time the layout moves or on a
+    // narrow screen. Name the control, never its position.
     if (!user.password_hash)
       return fail(res, 'PASSWORD_NOT_SET',
-        'This account was created with Google. Use “Continue with Google”, or set a password via “Forgot password”.', 409);
+        'This account was created with Google. Sign in with the “Continue with Google” button, or set a password via “Forgot password”.', 409);
 
     const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    if (!match) {
+      recordLoginFailure(email);
+      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
+    }
 
     if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
       return fail(res, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', 403);
+
+    // Proof of ownership: drop whatever slowdown a guesser had built up, so a
+    // burst of wrong passwords never costs the real owner anything afterwards.
+    clearLoginFailures(email);
 
     const token = signAccessToken(user);
     await openSession(req, res, user);
@@ -141,7 +176,7 @@ router.post(
  * human, and there is no anonymous write here to abuse.
  */
 router.post(
-  '/google', authLimiter, validate(googleSchema),
+  '/google', validate(googleSchema), googleLimiter,
   asyncHandler(async (req, res) => {
     if (!config.isGoogleAuthEnabled)
       return fail(res, 'GOOGLE_AUTH_DISABLED', 'Google sign-in is not available', 503);
@@ -283,7 +318,7 @@ router.post(
 );
 
 router.post(
-  '/forgot-password', authLimiter, requireTurnstile, validate(forgotPasswordSchema),
+  '/forgot-password', requireTurnstile, validate(forgotPasswordSchema), forgotPasswordLimiter,
   asyncHandler(async (req, res) => {
     const { email } = req.body;
     const user = await User.findByEmail(email);
@@ -296,7 +331,7 @@ router.post(
 );
 
 router.post(
-  '/reset-password', authLimiter, validate(resetPasswordSchema),
+  '/reset-password', validate(resetPasswordSchema), resetPasswordLimiter,
   asyncHandler(async (req, res) => {
     const { token, password } = req.body;
     let payload;
