@@ -8,10 +8,17 @@ const { query, queryOne, insert, execute } = require('../config/db');
 // a property of each caller's discipline, not of this function. An allowlist
 // makes it a property of the code: an unknown key throws instead of becoming
 // SQL. Keep in step with the users table in config/schema.js.
+//
+// admin_refresh_token_hash and root_refresh_token_hash are deliberately NOT
+// here: the panel sessions moved to user_sessions and the two columns are
+// retired (config/schema.js). A write to either now throws, which is how a
+// leftover caller gets noticed rather than quietly maintaining a dead slot.
+// refresh_token_hash stays because /auth/refresh still adopts a pre-sessions
+// site cookie from it once, so it is a credential until it is cleared.
 const UPDATABLE_COLUMNS = new Set([
   'name', 'email', 'password_hash', 'role', 'email_verified', 'banned',
-  'google_id', 'avatar_url', 'refresh_token_hash', 'admin_refresh_token_hash',
-  'root_refresh_token_hash', 'trial_used', 'totp_secret', 'totp_enabled',
+  'google_id', 'avatar_url', 'refresh_token_hash',
+  'trial_used', 'totp_secret', 'totp_enabled',
   'totp_recovery', 'totp_last_step',
 ]);
 
@@ -30,19 +37,10 @@ const User = {
     return queryOne('SELECT * FROM users WHERE google_id = ?', [String(googleId)]);
   },
 
+  // The pre-sessions site cookie slot. Only /auth/refresh and /auth/logout
+  // still read it, to adopt (or end) a cookie issued before user_sessions.
   async findByRefreshTokenHash(hash) {
     return queryOne('SELECT * FROM users WHERE refresh_token_hash = ?', [hash]);
-  },
-
-  // Admin SPA session cookie (ndm_admin_refresh) — separate from the user refresh token.
-  async findByAdminRefreshTokenHash(hash) {
-    return queryOne('SELECT * FROM users WHERE admin_refresh_token_hash = ?', [hash]);
-  },
-
-  // Root SPA session cookie (ndm_root_refresh) — a third, separate token store
-  // so a staff session and a creator session can never be mistaken for each other.
-  async findByRootRefreshTokenHash(hash) {
-    return queryOne('SELECT * FROM users WHERE root_refresh_token_hash = ?', [hash]);
   },
 
   // Every account that can reach a control panel, for the creator's admin screen.

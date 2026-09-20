@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
-import api, { unwrap } from '../api/client';
+import api, { unwrap, setAccessToken } from '../api/client';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -216,10 +216,15 @@ export default function Profile() {
       // /auth/change-password signs every OTHER browser out and keeps this one.
       // An account created with Google has no current password to send; the
       // field is left out rather than sent empty, which the API would reject.
-      await api.post('/auth/change-password', {
+      const result = unwrap(await api.post('/auth/change-password', {
         ...(currentPassword ? { currentPassword } : {}),
         newPassword,
-      });
+      }));
+      // Every bearer is bound to its session, and the change just replaced
+      // this browser's session — so the token in hand is dead and the response
+      // carries its successor. Adopt it here rather than let the next request
+      // discover the 401 and take the refresh round trip.
+      if (result?.token) setAccessToken(result.token);
       toast.success('Password changed. Any other signed-in devices were signed out.');
       setCurrentPassword('');
       setNewPassword('');

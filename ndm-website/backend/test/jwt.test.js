@@ -4,23 +4,56 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  signAccessToken, signAdminToken, signEmailToken, signResetToken, signLicenseToken,
-  verifyAccess, verifyAdmin, verifyEmailToken, verifyResetToken, verifyLicense,
-  resetTokenMatches,
+  signAccessToken, signAdminToken, signRootToken, signEmailToken, signResetToken, signLicenseToken,
+  verifyAccess, verifyAdmin, verifyRoot, verifyEmailToken, verifyResetToken, verifyLicense,
+  resetTokenMatches, BEARER_TTL,
 } = require('../src/utils/jwt');
 
 const user = { id: 42, email: 'user@example.test', role: 'user' };
+// The user_sessions row a bearer is minted against; only its id matters here.
+const session = { id: 7 };
 
 test('accepts every token only for its intended purpose', () => {
-  assert.equal(verifyAccess(signAccessToken(user)).typ, 'access');
-  assert.equal(verifyAdmin(signAdminToken({ ...user, role: 'admin' })).typ, 'admin');
+  assert.equal(verifyAccess(signAccessToken(user, session)).typ, 'access');
+  assert.equal(verifyAdmin(signAdminToken({ ...user, role: 'admin' }, session)).typ, 'admin');
   assert.equal(verifyEmailToken(signEmailToken(user)).typ, 'verify-email');
   assert.equal(verifyResetToken(signResetToken(user)).typ, 'reset');
   assert.equal(verifyLicense(signLicenseToken({ sub: 'NDM-TEST-TEST-TEST' })).typ, 'license');
 });
 
+// H-08: every bearer names the session row it belongs to, so the gates can
+// refuse it the moment that row is deleted. A token with no row to check
+// against is one nothing can ever revoke, so minting one is a bug, not a
+// default — and the claim is the row's numeric id, never something derived
+// from the user, so two sessions of one account are told apart.
+test('every bearer token carries the id of its session row', () => {
+  assert.equal(verifyAccess(signAccessToken(user, session)).sid, 7);
+  assert.equal(verifyAdmin(signAdminToken({ ...user, role: 'admin' }, session)).sid, 7);
+  assert.equal(verifyRoot(signRootToken({ ...user, role: 'root' }, session)).sid, 7);
+  // The driver hands ids back as numbers, but a string id must not become a
+  // string claim that a strict comparison downstream would miss.
+  assert.equal(verifyAccess(signAccessToken(user, { id: '7' })).sid, 7);
+});
+
+test('a bearer token cannot be minted without a session', () => {
+  for (const bad of [undefined, null, {}, { id: 0 }, { id: -1 }, { id: 'x' }, { id: 1.5 }]) {
+    assert.throws(() => signAccessToken(user, bad), /bound to a session/);
+    assert.throws(() => signAdminToken({ ...user, role: 'admin' }, bad), /bound to a session/);
+    assert.throws(() => signRootToken({ ...user, role: 'root' }, bad), /bound to a session/);
+  }
+});
+
+test('a bearer token is short-lived; the session row is the long-lived thing', () => {
+  // Seven days was the whole H-08 window. Minutes, not days, so that even a
+  // gate that somehow skipped the row check would only be wrong briefly.
+  assert.match(BEARER_TTL, /^\d+m$/);
+  assert.ok(Number.parseInt(BEARER_TTL, 10) <= 15, `${BEARER_TTL} is longer than 15 minutes`);
+  const { exp, iat } = verifyAccess(signAccessToken(user, session));
+  assert.ok(exp - iat <= 15 * 60, 'the minted token honours the TTL');
+});
+
 test('rejects cross-purpose tokens sharing the user JWT secret', () => {
-  const access = signAccessToken(user);
+  const access = signAccessToken(user, session);
   const verifyEmail = signEmailToken(user);
   const reset = signResetToken(user);
 
@@ -33,7 +66,7 @@ test('rejects cross-purpose tokens sharing the user JWT secret', () => {
 });
 
 test('rejects tokens signed with another token-family secret', () => {
-  assert.throws(() => verifyAccess(signAdminToken({ ...user, role: 'admin' })));
+  assert.throws(() => verifyAccess(signAdminToken({ ...user, role: 'admin' }, session)));
   assert.throws(() => verifyAccess(signLicenseToken({ sub: 'NDM-TEST-TEST-TEST' })));
 });
 

@@ -101,7 +101,13 @@ async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
-  // Existing databases: admin SPA session cookie + one-shot Pro trial flag.
+  // RETIRED: admin_refresh_token_hash and root_refresh_token_hash were the two
+  // control-panel session slots. Panel sessions now live in user_sessions
+  // (realm 'admin' / 'root') beside the site's, so one revocation ends all
+  // three and every bearer token can be checked against a live row. Nothing
+  // reads or writes the two columns any more; they are left in place because
+  // dropping a column is not something a boot-time migration should do to a
+  // production table, and a stale value in them is inert.
   await addColumnIfMissing('users', 'admin_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL');
   await addIndexIfMissing('users', 'idx_admin_refresh_token (admin_refresh_token_hash)');
   await addColumnIfMissing('users', 'trial_used TINYINT(1) NOT NULL DEFAULT 0');
@@ -137,16 +143,24 @@ async function initSchema() {
   // process). Keep it a plain scalar the database can compare in the WHERE.
   await addColumnIfMissing('users', 'totp_last_step BIGINT NULL DEFAULT NULL');
 
-  // Site sessions: one row per signed-in browser, keyed by the SHA-256 of its
+  // Sessions: one row per signed-in browser, keyed by the SHA-256 of its
   // refresh token. This replaces users.refresh_token_hash, which was a single
   // slot per account — signing in on a second device silently signed the first
   // one out, and two tabs refreshing at once raced for it. The old column is
   // kept (and read as a fallback in /auth/refresh) so a cookie issued before
   // this table existed still works once, migrating itself into a row here.
+  //
+  // `realm` says which sign-in the row is: the website ('site'), the staff
+  // panel ('admin') or the creator panel ('root'). All three live here so a
+  // password change, a ban or an admin's "revoke sessions" is ONE delete that
+  // ends every kind of session the account has — and so every bearer token,
+  // which carries its row's id as the `sid` claim, can be refused the moment
+  // the row is gone (middleware/auth.js, middleware/adminAuth.js).
   await execute(`
     CREATE TABLE IF NOT EXISTS user_sessions (
       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       user_id INT UNSIGNED NOT NULL,
+      realm ENUM('site', 'admin', 'root') NOT NULL DEFAULT 'site',
       token_hash CHAR(64) NOT NULL,
       user_agent VARCHAR(255) NULL DEFAULT NULL,
       ip VARCHAR(45) NULL DEFAULT NULL,
@@ -159,6 +173,10 @@ async function initSchema() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  // Rows from before the panels moved in are site sessions, which the default
+  // says for them.
+  await addColumnIfMissing('user_sessions',
+    "realm ENUM('site', 'admin', 'root') NOT NULL DEFAULT 'site' AFTER user_id");
 
   // "Continue with Google". `google_id` is Google's immutable subject claim —
   // never the email, which a user can change at Google. It is UNIQUE so one

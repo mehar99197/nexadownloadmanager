@@ -27,4 +27,9 @@ const deleteAccountSchema = {
     .strict(),
 };
 
-module.exports = { updateProfileSchema, deleteAccountSchema };
+// DELETE /user/devices/:id — the activation row to free a seat from.
+const deviceIdParamSchema = {
+  params: z.object({ id: z.coerce.number().int().positive('Invalid id') }).strict(),
+};
+
+module.exports = { updateProfileSchema, deleteAccountSchema, deviceIdParamSchema };

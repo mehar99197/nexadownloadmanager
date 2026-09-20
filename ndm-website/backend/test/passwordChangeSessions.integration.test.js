@@ -20,9 +20,9 @@
  * jars, because the bug lived in the gap between the route and the session
  * table and a model-level test would have missed it entirely. For the same
  * reason every credential this route revokes is asserted by REPLAYING it, not
- * by reading the column it lives in: all four of them (the session rows and
- * the three single-slot columns) read empty on a fresh account, so a column
- * check passes whether or not the route does anything at all.
+ * by reading the column it lives in: the session rows and the legacy cookie
+ * slot all read empty on a fresh account, so a column check passes whether or
+ * not the route does anything at all.
  */
 process.env.RATE_LIMIT_DISABLED = '1';   // this suite hammers /auth/refresh
 
@@ -44,15 +44,13 @@ async function sessionCount(email) {
   return Number(rows[0].n);
 }
 
-// The three one-per-account refresh slots that live on the users row itself:
-// the pre-sessions site cookie, the admin panel's, and the creator panel's.
-async function slots(email) {
-  const rows = await srv.query(
-    `SELECT refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash
-       FROM users WHERE email = ?`,
-    [email]
-  );
-  return rows[0];
+// The one refresh slot still on the users row: the pre-sessions site cookie,
+// which /auth/refresh adopts into a row once. (The two control-panel slots
+// beside it are retired — panel sessions are user_sessions rows now, and are
+// asserted through their own /refresh endpoints below.)
+async function legacySlot(email) {
+  const rows = await srv.query('SELECT refresh_token_hash FROM users WHERE email = ?', [email]);
+  return rows[0].refresh_token_hash;
 }
 
 test('changing a password from the profile page', async (t) => {
@@ -123,10 +121,20 @@ test('changing a password from the profile page', async (t) => {
     bToken = stillB.body.data.token;
   });
 
+  let keptToken = null;
+
   await t.test('changing the password revokes the other browser', async () => {
+    // Proves the bearer works right up to the change, so the 401 below is the
+    // change's doing and not a token that was never any good.
+    const live = await b.get('/api/user/me', { token: bToken });
+    assert.equal(live.status, 200, 'the other browser is signed in before the change: ' + live.text);
+
     const res = await a.post('/api/auth/change-password',
       { currentPassword: password, newPassword }, { token: aToken });
     assert.equal(res.status, 200, res.text);
+    assert.equal(res.body.data.sessionKept, true);
+    keptToken = res.body.data.token;
+    assert.ok(keptToken, 'the caller is handed a bearer for its re-opened session');
 
     // All three rows are gone and exactly one — the caller's fresh one — remains.
     assert.equal(await sessionCount(email), 1, 'only the calling browser keeps a session');
@@ -136,36 +144,35 @@ test('changing a password from the profile page', async (t) => {
     assert.equal(deadB.body.error.code, 'INVALID_REFRESH_TOKEN');
   });
 
-  await t.test('KNOWN GAP: the revoked browser keeps its access token', async () => {
-    // Read this before "fixing" the assertion below — it asserts the hole ON
-    // PURPOSE, as a tripwire.
-    //
-    // Revoking the session rows kills the refresh cookie and nothing else.
-    // requireAuth (src/middleware/auth.js) verifies the access JWT and reloads
-    // the user row; it never asks whether a user_sessions row still exists, and
-    // signAccessToken mints SEVEN DAYS (src/utils/jwt.js). So the browser the
-    // test above just called "signed out" still reads and writes the whole
-    // account with the bearer token it was already holding: M-01's window
-    // narrows from 30 days to 7 rather than closing.
-    //
-    // Closing it means binding the access token to something a password change
-    // moves — a session id in the claim that requireAuth resolves, or the `pv`
-    // password-version claim utils/jwt.js already computes for reset links —
-    // which is a change to middleware/auth.js and utils/jwt.js, not to this
-    // route. /auth/reset-password has the identical hole, which is why parity
-    // with it was never enough.
-    //
-    // When that lands, these four lines start failing. The correct response is
-    // to flip them to 401 and delete this comment, NOT to delete the checks.
+  await t.test('the revoked browser loses its access token too, immediately', async () => {
+    // H-08. Until the access token was bound to its session row this was the
+    // hole: revoking the rows killed the refresh cookie and nothing else, and
+    // the bearer the other browser already held kept reading and writing the
+    // whole account for the rest of its seven-day life. Now every bearer
+    // carries its row's id (`sid`) and requireAuth refuses one whose row is
+    // gone, so "signed out" means signed out with the request in flight.
     for (const path of ['/api/user/me', '/api/user/license', '/api/user/export', '/api/user/devices']) {
       const replay = await b.get(path, { token: bToken });
-      assert.equal(replay.status, 200,
-        `${path} answered ${replay.status}: a 401 means the access token is session-bound at `
-        + 'last — M-01 is closed, flip this assertion');
+      assert.equal(replay.status, 401, `${path} still answers ${replay.status} to a revoked bearer`);
+      assert.equal(replay.body.error.code, 'SESSION_REVOKED');
     }
+    // The old token has not merely lapsed — it is refused for what it names.
+    // A refresh with the dead cookie cannot bring it back either.
+    const dead = await b.post('/api/auth/refresh');
+    assert.equal(dead.status, 401);
   });
 
   await t.test('the browser that made the change stays signed in', async () => {
+    // First with the bearer the change handed back — no round trip needed —
+    // and then through a refresh, which is what a reload would do.
+    const meNow = await a.get('/api/user/me', { token: keptToken });
+    assert.equal(meNow.status, 200, 'the returned bearer works at once: ' + meNow.text);
+
+    // The caller's PREVIOUS bearer named a row the change deleted, so it is as
+    // dead as the other browser's: a kept session is a new row, not a pardon.
+    const stale = await a.get('/api/user/me', { token: aToken });
+    assert.equal(stale.status, 401, 'the pre-change bearer is not grandfathered');
+
     const refreshA = await a.post('/api/auth/refresh');
     assert.equal(refreshA.status, 200, 'the caller was handed a working session: ' + refreshA.text);
     aToken = refreshA.body.data.token;
@@ -193,21 +200,17 @@ test('changing a password from the profile page', async (t) => {
     assert.match(refreshLine, /;\s*HttpOnly(;|$)/i);
   });
 
-  await t.test('all three single-slot refresh columns die with the password', async () => {
-    // Each of these columns is a credential, so the test plants a real value in
-    // every one and then replays the one that can be replayed from a browser.
-    // Asserting they read NULL afterwards proves nothing on its own: they are
-    // NULL on a fresh account, and the whole clear could be deleted from
-    // routes/user.js without such an assertion noticing.
+  await t.test('the pre-sessions cookie slot dies with the password', async () => {
+    // The column is a credential, so the test plants a real value in it and
+    // then replays it from a browser. Asserting it reads NULL afterwards proves
+    // nothing on its own: it is NULL on a fresh account, and the clear could
+    // be deleted from the route without such an assertion noticing.
     const owner = srv.client();
     const slotUser = await srv.makeUser(owner, 'slots');
     const legacyCookie = 'a-refresh-cookie-issued-before-user_sessions-existed';
     const plant = () => srv.query(
-      `UPDATE users
-          SET refresh_token_hash = ?, admin_refresh_token_hash = ?, root_refresh_token_hash = ?
-        WHERE email = ?`,
-      [hashRefreshToken(legacyCookie), 'a-live-admin-panel-slot', 'a-live-creator-panel-slot',
-        slotUser.email]
+      'UPDATE users SET refresh_token_hash = ? WHERE email = ?',
+      [hashRefreshToken(legacyCookie), slotUser.email]
     );
 
     await plant();
@@ -219,21 +222,16 @@ test('changing a password from the profile page', async (t) => {
     const adopted = await oldBrowser.post('/api/auth/refresh');
     assert.equal(adopted.status, 200, 'the planted cookie refreshes while the slot holds it: ' + adopted.text);
 
-    // Adoption consumed the slot, so plant all three again for the real run.
+    // Adoption consumed the slot, so plant it again for the real run.
     await plant();
-    const before = await slots(slotUser.email);
-    assert.ok(before.refresh_token_hash && before.admin_refresh_token_hash
-      && before.root_refresh_token_hash, 'all three slots hold a credential before the change');
+    assert.ok(await legacySlot(slotUser.email), 'the slot holds a credential before the change');
 
     const changed = await owner.post('/api/auth/change-password',
       { currentPassword: slotUser.password, newPassword: 'slots-rotated-password' },
       { token: slotUser.token });
     assert.equal(changed.status, 200, changed.text);
 
-    const after = await slots(slotUser.email);
-    assert.equal(after.refresh_token_hash, null);
-    assert.equal(after.admin_refresh_token_hash, null, 'the admin panel session goes too');
-    assert.equal(after.root_refresh_token_hash, null, 'and the creator panel session');
+    assert.equal(await legacySlot(slotUser.email), null);
 
     oldBrowser.cookies.set('ndm_refresh', legacyCookie);
     const dead = await oldBrowser.post('/api/auth/refresh');
@@ -241,13 +239,11 @@ test('changing a password from the profile page', async (t) => {
   });
 
   await t.test('the creator control-panel session dies with the password too', async () => {
-    // root_refresh_token_hash is the account's highest-privilege session and
-    // the only one with no server-side expiry at all: POST /api/root/refresh
-    // re-issues it on every use, so it rolls indefinitely. It was also the slot
-    // the first attempt at this fix forgot, which would have left the strongest
-    // session as the one thing a password change did not kill. Driven end to
-    // end, because the column only matters inasmuch as /api/root/refresh
-    // honours it.
+    // The account's highest-privilege session. It was also the slot the first
+    // attempt at this fix forgot, which would have left the strongest session
+    // as the one thing a password change did not kill. Driven end to end
+    // through /api/root — the cookie, and now the bearer as well, since the
+    // panel gates check their session row exactly as the site's does.
     const site = srv.client();
     const creator = await srv.makeUser(site, 'creator');
     // Promoted in SQL: there is no endpoint that mints a creator, and the panel
@@ -260,6 +256,9 @@ test('changing a password from the profile page', async (t) => {
     assert.equal(panelLogin.status, 200, 'the creator signs in to /api/root: ' + panelLogin.text);
     const panelAlive = await panel.post('/api/root/refresh');
     assert.equal(panelAlive.status, 200, 'the panel session rolls before the change: ' + panelAlive.text);
+    const rootToken = panelAlive.body.data.token;
+    const meBefore = await panel.get('/api/root/me', { token: rootToken });
+    assert.equal(meBefore.status, 200, 'the root bearer works before the change: ' + meBefore.text);
 
     const changed = await site.post('/api/auth/change-password',
       { currentPassword: creator.password, newPassword: 'creator-rotated-password' },
@@ -269,6 +268,9 @@ test('changing a password from the profile page', async (t) => {
     const panelDead = await panel.post('/api/root/refresh');
     assert.equal(panelDead.status, 401, 'the creator panel session is revoked: ' + panelDead.text);
     assert.equal(panelDead.body.error.code, 'INVALID_REFRESH_TOKEN');
+    const bearerDead = await panel.get('/api/root/me', { token: rootToken });
+    assert.equal(bearerDead.status, 401, 'and its bearer with it: ' + bearerDead.text);
+    assert.equal(bearerDead.body.error.code, 'SESSION_REVOKED');
   });
 
   await t.test('a bearer token on its own is never upgraded into a session', async () => {

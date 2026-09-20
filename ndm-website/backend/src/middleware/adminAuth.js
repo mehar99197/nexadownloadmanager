@@ -4,6 +4,7 @@ const { verifyAdmin, verifyRoot } = require('../utils/jwt');
 const { fail } = require('../utils/respond');
 const config = require('../config/env');
 const User = require('../models/User');
+const UserSession = require('../models/UserSession');
 
 function ipAllowed(list, req) {
   if (!list || list.length === 0) return true;
@@ -47,6 +48,25 @@ function isRootUser(user) {
 }
 
 /**
+ * The live session row a panel token names, or a 401 already sent.
+ *
+ * Same rule as the site gate (middleware/auth.js): the signature proves we
+ * minted the token, the row proves nobody has since taken it back. The realm
+ * is the token's family, so a staff session's id inside a root-signed token
+ * finds nothing — and the creator revoking a staff admin's sessions ends that
+ * admin's panel access with the request in flight, not at the end of an
+ * eight-hour token.
+ */
+async function liveSessionOr401(res, payload, user, realm) {
+  const session = await UserSession.findLiveForToken({ id: payload.sid, userId: user.id, realm });
+  if (!session) {
+    fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
+    return null;
+  }
+  return session;
+}
+
+/**
  * Staff-admin gate for /api/admin/*.
  *
  * Accepts either token family: a staff token (role 'admin') or a root token, so
@@ -86,7 +106,11 @@ async function verifyAdminToken(req, res, next) {
       return fail(res, 'FORBIDDEN', 'Admin access required', 403);
     }
 
+    const session = await liveSessionOr401(res, payload, user, family);
+    if (!session) return undefined;
+
     req.admin = user;
+    req.session = session;
     req.isRoot = family === 'root';
     return next();
   } catch (err) {
@@ -103,8 +127,11 @@ async function verifyRootToken(req, res, next) {
     const user = await User.findById(Number(payload.sub));
     if (!user || !isRootUser(user)) return fail(res, 'FORBIDDEN', 'Root access required', 403);
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    const session = await liveSessionOr401(res, payload, user, 'root');
+    if (!session) return undefined;
     req.admin = user;
     req.root = user;
+    req.session = session;
     req.isRoot = true;
     return next();
   } catch (err) {

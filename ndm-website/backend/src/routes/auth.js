@@ -60,18 +60,20 @@ function refreshExpiry() {
   return new Date(Date.now() + REFRESH_MAX_AGE);
 }
 
-// Open a NEW session row for this browser and set its cookies. Every sign-in
-// path (password, Google) goes through here so a second device never touches
-// the first one's session.
+// Open a NEW session row for this browser, set its cookies, and hand the row
+// back so the access token can be minted against it (utils/jwt.js binds every
+// bearer to its session's id). Every sign-in path (password, Google) goes
+// through here so a second device never touches the first one's session.
 async function openSession(req, res, user) {
   const { token: refreshToken, hash } = generateRefreshToken();
-  await UserSession.create({
-    userId: user.id, tokenHash: hash,
+  const session = await UserSession.create({
+    userId: user.id, tokenHash: hash, realm: 'site',
     userAgent: req.get('user-agent') || null, ip: req.ip || null,
     expiresAt: refreshExpiry(),
   });
   res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
   setSessionHint(res);
+  return session;
 }
 
 // The session row behind the refresh cookie THIS request carries, or null when
@@ -85,7 +87,7 @@ async function openSession(req, res, user) {
 async function callerSession(req, user) {
   const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
   if (!cookie) return null;
-  const session = await UserSession.findLiveByTokenHash(hashRefreshToken(cookie));
+  const session = await UserSession.findLiveByTokenHash(hashRefreshToken(cookie), 'site');
   return session && Number(session.user_id) === Number(user.id) ? session : null;
 }
 
@@ -176,11 +178,10 @@ router.post(
     if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
       return fail(res, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', 403);
 
-    const token = signAccessToken(user);
-    await openSession(req, res, user);
+    const session = await openSession(req, res, user);
 
     return ok(res, {
-      token,
+      token: signAccessToken(user, session),
       user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
     });
   })
@@ -259,11 +260,10 @@ router.post(
 
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
 
-    const token = signAccessToken(user);
-    await openSession(req, res, user);
+    const session = await openSession(req, res, user);
 
     return ok(res, {
-      token,
+      token: signAccessToken(user, session),
       created,
       user: { id: String(user.id), name: user.name, email: user.email, role: user.role },
     });
@@ -297,7 +297,7 @@ router.post(
     const invalid = () =>
       fail(res, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or has expired', 401);
 
-    let session = await UserSession.findLiveByTokenHash(hash);
+    let session = await UserSession.findLiveByTokenHash(hash, 'site');
     if (!session) {
       // A cookie issued before user_sessions existed still points at the old
       // single slot on the users row. Honour it once and move it into a row of
@@ -306,7 +306,7 @@ router.post(
       if (!legacy) return invalid();
       await User.update(legacy.id, { refreshTokenHash: null });
       session = await UserSession.create({
-        userId: legacy.id, tokenHash: hash,
+        userId: legacy.id, tokenHash: hash, realm: 'site',
         userAgent: req.get('user-agent') || null, ip: req.ip || null,
         expiresAt: refreshExpiry(),
       });
@@ -325,7 +325,10 @@ router.post(
       return invalid();
     res.cookie(REFRESH_COOKIE, rt, refreshCookieOptions());
     setSessionHint(res);
-    return ok(res, { token: signAccessToken(user) });
+    // The row's id survives the rotation, so the new bearer names the same
+    // session the cookie does — and a second tab's older bearer, bound to
+    // the same id, keeps working too.
+    return ok(res, { token: signAccessToken(user, session) });
   })
 );
 
@@ -389,14 +392,11 @@ router.post(
     // the loser updates nothing and is told the link is dead, which by then it
     // is. Spelled out here rather than through User.update because that helper
     // discards affectedRows.
-    // All three single-slot refresh columns go, not two: root_refresh_token_hash
-    // is the creator's control-panel session, re-issued on every /api/root
-    // refresh with no expiry of its own, and it must not be the one session a
-    // password reset leaves standing.
+    // refresh_token_hash is the pre-sessions site cookie slot, still honoured
+    // once by /refresh above, so it is a live credential until it is cleared.
     const result = await execute(
       `UPDATE users
-          SET password_hash = ?, refresh_token_hash = NULL,
-              admin_refresh_token_hash = NULL, root_refresh_token_hash = NULL
+          SET password_hash = ?, refresh_token_hash = NULL
         WHERE id = ? AND password_hash <=> ?`,
       [passwordHash, user.id, user.password_hash]
     );
@@ -406,7 +406,10 @@ router.post(
     if (!(result.affectedRows || 0)) return dead();
 
     // A password reset signs the account out EVERYWHERE — that is the point of
-    // one, and with per-browser sessions it now has to be said explicitly.
+    // one. Every realm's sessions live in the one table, so this is the site,
+    // the staff panel and the creator panel in one statement; and since every
+    // bearer token is checked against its row, the access tokens die with the
+    // rows rather than at their own expiry.
     await UserSession.removeAllForUser(user.id);
     return ok(res, { reset: true });
   })
@@ -416,25 +419,27 @@ router.post(
  * POST /auth/change-password — a signed-in user replacing their own password.
  *
  * Same consequence as a reset: whoever changes a password is usually locking
- * somebody else out, so every session opened under the old one dies with it,
- * along with the three single-slot control-panel cookies. The difference is
- * that a reset arrives from an email link with no live session to keep, while
- * this is a signed-in person doing routine hygiene — dumping them on the login
- * screen only teaches them not to bother. So one session is re-opened for the
- * browser that asked, and ONLY when it presented a live refresh cookie of its
- * own: minting one for anyone who merely holds an access token would hand a
- * stolen 7-day bearer thirty days of fresh persistence, and on an account with
- * no password yet a lockout primitive it did not have a moment earlier.
+ * somebody else out, so every session opened under the old one dies with it —
+ * site, staff panel and creator panel alike, since all three live in
+ * user_sessions — and with it every bearer token those sessions had issued,
+ * because each gate re-checks its token's row on every request. The
+ * difference from a reset is that a reset arrives from an email link with no
+ * live session to keep, while this is a signed-in person doing routine
+ * hygiene — dumping them on the login screen only teaches them not to bother.
+ * So one session is re-opened for the browser that asked, and ONLY when it
+ * presented a live refresh cookie of its own: minting one for anyone who
+ * merely holds an access token would hand a stolen bearer thirty days of
+ * fresh persistence, and on an account with no password yet a lockout
+ * primitive it did not have a moment earlier.
+ *
+ * The caller's own bearer is bound to a row that has just been deleted, so
+ * the response carries a replacement minted against the new one; the SPA
+ * would otherwise spend its next request on a 401 and a refresh.
  *
  * Lives here rather than on PUT /user/profile because the refresh cookie is
  * scoped to /api/auth and never reaches /api/user — on that path "keep the
  * caller signed in" could not work, and the two had grown a duplicated copy
  * of every cookie helper above to try.
- *
- * What this cannot do is end the other browsers' ACCESS tokens: requireAuth
- * checks the JWT and the banned flag and never consults user_sessions, so a
- * bearer already issued keeps working until it expires (AUDIT.md H-08). The
- * suite pins that gap so the day it closes, it is noticed.
  */
 router.post(
   '/change-password', requireAuth, validate(changePasswordSchema),
@@ -457,20 +462,22 @@ router.post(
 
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(newPassword, BCRYPT_COST),
-      refreshTokenHash: null, adminRefreshTokenHash: null, rootRefreshTokenHash: null,
+      refreshTokenHash: null,
     });
     await UserSession.removeAllForUser(user.id);
 
     if (own) {
-      await openSession(req, res, user);
-    } else if (req.cookies && req.cookies[REFRESH_COOKIE]) {
+      const session = await openSession(req, res, user);
+      return ok(res, { changed: true, sessionKept: true, token: signAccessToken(user, session) });
+    }
+    if (req.cookies && req.cookies[REFRESH_COOKIE]) {
       // A cookie was sent but no live row stands behind it: say so, rather
       // than leave the browser advertising a session it no longer has. A
       // caller that sent nothing is left with nothing.
       res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
       res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
     }
-    return ok(res, { changed: true, sessionKept: Boolean(own) });
+    return ok(res, { changed: true, sessionKept: false });
   })
 );
 

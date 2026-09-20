@@ -17,6 +17,7 @@ const { connectDB } = require('../config/db');
 const { initSchema } = require('../config/schema');
 const config = require('../config/env');
 const User = require('../models/User');
+const UserSession = require('../models/UserSession');
 
 function randomPassword() {
   return crypto.randomBytes(18).toString('base64url');
@@ -54,9 +55,11 @@ async function main() {
   if (user) {
     await User.update(user.id, {
       name, role: 'root', emailVerified: true, banned: false, passwordHash,
-      // Any session minted before this account became root is not a root session.
-      refreshTokenHash: null, adminRefreshTokenHash: null, rootRefreshTokenHash: null,
+      refreshTokenHash: null,
     });
+    // Any session minted before this account became root is not a root
+    // session: every realm's rows go, and every bearer bound to them with it.
+    await UserSession.removeAllForUser(user.id);
     user = await User.findById(user.id);
   } else {
     user = await User.create({ name, email, passwordHash, role: 'root', emailVerified: true });

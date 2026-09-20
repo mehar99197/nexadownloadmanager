@@ -7,7 +7,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, fail } = require('../utils/respond');
 const validate = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
-const { updateProfileSchema, deleteAccountSchema } = require('../schemas/user.schema');
+const { updateProfileSchema, deleteAccountSchema, deviceIdParamSchema } = require('../schemas/user.schema');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
@@ -243,11 +243,11 @@ router.delete(
 );
 
 router.delete(
-  '/devices/:id', requireAuth,
+  '/devices/:id', requireAuth, validate(deviceIdParamSchema),
   asyncHandler(async (req, res) => {
     const sub = await findUserSubscription(req.user.id);
     if (!sub) return fail(res, 'NOT_FOUND', 'No subscription for this account', 404);
-    const released = await Subscription.releaseSeatById(sub.id, Number(req.params.id));
+    const released = await Subscription.releaseSeatById(sub.id, req.params.id);
     if (!released) return fail(res, 'NOT_FOUND', 'Device not found on this licence', 404);
     return ok(res, { released: true, activeSeats: await Subscription.activeSeatCount(sub.id) });
   })

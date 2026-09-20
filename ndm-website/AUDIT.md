@@ -31,12 +31,12 @@ it works.
 
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
-| High | 8 | 4 | 4 |
-| Medium | 15 | 13 (1 in progress) | 2 |
-| Low | 10 | 9 | 1 |
-| Test debt | 2 | 2 | 0 |
+| High | 8 | 0 | 8 |
+| Medium | 15 | 9 | 6 |
+| Low | 10 | 8 | 2 |
+| Test debt | 2 | 0 | 2 |
 | Operational | 3 | 3 (1 in progress) | 0 |
-| **Total** | **38** | **31** | **7** |
+| **Total** | **38** | **20** | **18** |
 
 Baseline at audit time: backend unit tests **86/86 pass**; full backend suite
 **95 pass / 5 skipped** with no database; frontend **23/23 pass**; admin +
@@ -55,6 +55,13 @@ regressions.
 After Phase 2: **252 tests, 239 pass, 13 fail, 0 skipped** — 51 more tests
 (three new integration suites drive the real endpoints), same eight leaves.
 Frontend 23/23, ESLint clean.
+
+After Phase 4: **288 tests, 288 pass, 0 fail, 0 skipped** — the first fully
+green run. The eight leaves that had failed since the baseline are gone (H-06,
+H-07 wired; T-01, T-02 rewritten), plus 36 new tests: a webhook renewal suite,
+an errorHandler suite, session-binding assertions in `jwt`, `api`,
+`passwordChangeSessions`, `downloadCounter` and `rateLimit`. Frontend 23/23;
+admin and frontend ESLint clean and both SPAs build.
 
 ---
 
@@ -212,7 +219,37 @@ app must stop being handed a Pro token.
 
 ## H-04 — Subscription renewals are never recorded, so paying customers expire
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/webhookRenewal.integration.test.js` (14 tests through the real webhook route and `/license/validate`) + full suite
+
+**Fixed by:** two handlers in `routes/webhooks.js`, both idempotent and
+order-independent (row found by `stripe_subscription_id`, then
+`stripe_customer_id`, then the account's newest row):
+
+- `invoice.paid` / `invoice.payment_succeeded` → `status='active'`,
+  `expiry_date` = the invoice's latest line period end **+ 3 days**
+  (`RENEWAL_GRACE_DAYS`: Stripe bills at the period end and reports the
+  payment later — seconds, or days under card retries — and without headroom
+  every customer would be refused in between, on every renewal), and a
+  `payments` row keyed on the payment intent so the pair of events counts
+  once. `billing_reason: 'subscription_create'` is left to the checkout
+  handler, which owns the first invoice.
+- `customer.subscription.created` / `.updated` → plan (from the subscription's
+  own metadata, which checkout now sets via `subscription_data.metadata` —
+  session metadata never travelled beyond the first event), status
+  (`past_due` stays active while Stripe retries; `unpaid`/`canceled` cancel;
+  `paused` expires; `incomplete` is not mirrored), and `current_period_end`.
+  Seats follow the plan only when the plan changes, so admin-granted extra
+  seats survive a card change.
+
+Both Invoice shapes are read (`subscription`/`subscription_details` and the
+2025-03-31+ `parent.subscription_details`), likewise `current_period_end` on
+the Subscription or on its items. Found and fixed on the way:
+`invoice.payment_failed` read `planFromObject(invoice)`, which throws because
+an Invoice has no `metadata.plan` — every real failure event would have been a
+500 that Stripe retried for days. An event for a subscription nobody here has,
+or one that names no paid plan for a free row, is logged and acknowledged
+rather than applied blind (a one-month expiry on a free row would read as
+`expired` a month later).
 
 **Where:** `backend/src/routes/webhooks.js:177-179`
 
@@ -271,7 +308,15 @@ the wording already used in `/auth/google`.
 
 ## H-06 — The download-counter fix was written, tested, and never wired up
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/downloadCounter.integration.test.js` — the 3 failing leaves now pass, plus 5 new (HEAD on both paths, resume of an uploaded file, missing file → 404 and uncounted); 14/14
+
+**Fixed by:** `routes/releases.js` asks `shouldCountDownload()` on both the
+uploaded-file and the legacy-redirect path, through one `countsAsDownload()`
+that first refuses a `HEAD` (Express routes HEAD to the GET handler, and a HEAD
+has no `Range`, so it looked exactly like a fresh start). The 404 for a file
+missing from disk is decided *before* the count (`releaseFiles.artifactOnDisk`),
+and the increment lands before the first byte goes out, so a client reading
+`/latest` the moment its transfer ends sees it. L-07 closes with this.
 
 **Where:** `backend/src/utils/downloadCounter.js`, `backend/src/routes/releases.js:57`
 
@@ -314,7 +359,17 @@ times), `20 !== 16` (the audit's own scenario).
 
 ## H-07 — The release-version invariant was written, tested, and never wired up
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/releaseVersionInvariant.integration.test.js` — all four contract cases pass (5/5)
+
+**Fixed by:** the upload route reads the version back from the stored file
+(`artifactVersionFromFile`) right after `storeUpload()`. A definite mismatch
+removes the file and answers `409 VERSION_MISMATCH` with
+`{ artifactVersion, releaseVersion }` before the row is touched; a match
+answers `artifactVersion` + `versionWarning: null`; an unreadable version is
+accepted with a `versionWarning`, which also goes into the audit row's summary
+("— version unchecked") and metadata. The admin Releases page now shows
+"build X verified" or the warning instead of a flat "uploaded", so the
+operator sees which of the two happened.
 
 **Where:** `backend/src/utils/artifactVersion.js`, `backend/src/routes/admin.js` (`PUT /releases/:id/artifact/:os`), `backend/test/releaseVersionInvariant.integration.test.js`
 
@@ -351,7 +406,37 @@ file and answer 409 before touching the row; otherwise carry
 
 ## H-08 — "Revoke sessions" does not revoke access
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `passwordChangeSessions` (the `KNOWN GAP` tripwire flipped: the revoked browser's bearer is `401 SESSION_REVOKED` on all four routes, and so is the creator's root bearer), `api` admin-session (a signed-out admin bearer is refused at once), `jwt.test.js` (+3: `sid` carried, no session → throws, TTL ≤ 15 min), full suite
+
+**Fixed by:** doing both halves the finding named, for all three realms at
+once rather than the site alone.
+
+- **One session table.** The staff and creator panels' sessions moved from
+  the two single-slot columns into `user_sessions`, with a `realm` column
+  (`site` / `admin` / `root`). `admin_refresh_token_hash` and
+  `root_refresh_token_hash` are retired: not in `UPDATABLE_COLUMNS`, never
+  read, left on the table because a boot-time migration should not drop a
+  production column. One `UserSession.removeAllForUser(id)` now ends every
+  kind of session an account has; a demotion ends only the `admin` ones.
+- **The bearer is bound to its row.** `signAccessToken` / `signAdminToken` /
+  `signRootToken` take the session and put its id in the token as `sid`, and
+  *throw* without one — a token nothing can revoke is a bug, never a default.
+  `requireAuth`, `requireAdmin` and `requireRoot` look the row up on every
+  request (`UserSession.findLiveForToken`: same account, same realm, not
+  expired — one primary-key read beside the `User.findById` already there)
+  and answer `401 SESSION_REVOKED` when it is gone. Rotation on `/refresh`
+  swaps the hash in place, so the id — and a second tab's older bearer —
+  survives a refresh.
+- **The TTL is minutes.** 7d / 8h / 4h → **15 min** for all three; the SPAs
+  already refresh on a 401. The revocation is immediate regardless; the TTL
+  bounds what a token proves on its own.
+
+`POST /auth/change-password` now returns a `token` for the re-opened session
+(the caller's old bearer named a row the change deleted) and Profile.jsx adopts
+it. `createRoot.js` revokes through the table. **Deploy note:** panel cookies
+issued before this point at the retired slots, so every admin signs in once
+more after the deploy; site cookies are unaffected (the row is the same, only
+the bearer is re-minted on the next refresh, which a 401 triggers).
 
 **Where:** `backend/src/middleware/auth.js:13-25` (`requireAuth`), `backend/src/utils/jwt.js:15-17` (`signAccessToken`)
 
@@ -408,7 +493,7 @@ this is fixed, whatever `PUT /user/profile` does.
 
 ## M-01 — Changing your password does not sign out your other sessions
 
-**Status:** IN PROGRESS — the route does everything a route can; the remaining half is H-08 &nbsp;|&nbsp; **Verified by:** `test/passwordChangeSessions.integration.test.js` (11 tests, two independent cookie jars)
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/passwordChangeSessions.integration.test.js` (11 tests, two independent cookie jars; with H-08 the other browser's bearer is now refused with the request in flight, not at its own expiry)
 
 **Where:** `backend/src/routes/user.js` (`PUT /profile`)
 
@@ -426,20 +511,15 @@ cookie helper trying. The route-level test only passed because the harness's
 cookie jar ignores `Path`; two of the adversarial reviewers caught it. Under
 `/api/auth` there is exactly one `openSession`, shared with `/auth/login`.
 
-**Not done, and not doable from this route:** the other browser's *access
-token* keeps working until it expires — see H-08. The suite pins that gap on
-purpose (`KNOWN GAP: the revoked browser keeps its access token`) so the day
-H-08 lands, the assertion flips.
+**Closed by H-08:** the other browser's *access token* dies with its session
+row. The suite's `KNOWN GAP` tripwire flipped to the 401 it was waiting for,
+and the route now hands the caller a bearer for its re-opened session.
 
 `/api/auth/reset-password` correctly calls `UserSession.removeAllForUser(user.id)`
 and comments that a reset signs you out everywhere. `PUT /api/user/profile`,
 which is the other way to change a password, does not. Someone who suspects
 their account is compromised and changes their password from the profile page
 leaves the attacker's session alive for its full 30 days.
-
-**Blocked by H-08.** Deleting the session rows does not end the other browser's
-access — `requireAuth` never looks at `user_sessions`, so a 7-day access token
-outlives the revocation. This finding cannot be closed on its own.
 
 ## M-02 — Password-reset tokens stay valid after use
 
@@ -496,7 +576,16 @@ refused with the same `INVALID_CODE` as a wrong code.
 
 ## M-04 — `errorHandler` returns raw SQL error text in production
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/errorHandler.test.js` (7 tests, both modes)
+
+**Fixed by:** `details = err.sqlMessage` only when `!config.isProd`; in
+production a duplicate key is a bare `409 DUPLICATE "Duplicate entry"`. The
+same rule now covers an *unexpected* throw's message (a driver, a library, a
+file path) — masked to "Something went wrong" in production, while a
+deliberate 5xx such as `503 BILLING_UNAVAILABLE` keeps the wording it chose.
+Also added the standard `if (res.headersSent) return next(err)`: an error
+after an installer stream has started is handed to Express instead of
+throwing a second error trying to write JSON over a half-sent body.
 
 **Where:** `backend/src/middleware/errorHandler.js:30` and `:41`
 
@@ -561,7 +650,24 @@ either, because it would never match anything.
 
 ## M-07 — Duplicate subscriptions are possible and stale licence keys never die
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `api.integration` → "admin subscriptions: one per account" (4 tests)
+
+**Fixed by:** `POST /admin/subscriptions` answers `409 SUBSCRIPTION_EXISTS`
+(naming the existing row in `details`) when the account already has one —
+registration gives every account a free row, so the route is for the rare
+account with none, and anything else is an edit. `PUT /users/:id { plan }`
+edits the account's **newest** row only, the same row `PUT /subscriptions/:id`
+edits and every reader shows; `Subscription.updateByUserId` is gone.
+`PUT /subscriptions/:id` and `POST /subscriptions` now go through
+`blockedStaffTarget()` on the owner, so a staff admin cannot alter the
+creator's plan.
+
+**Not done:** a `UNIQUE` index on `subscriptions.user_id`, which would make the
+invariant the database's. Production may already hold duplicates from before
+this fix, and an index that fails to build would stop the API booting — it
+needs a look at the live table (and a de-duplication that honours
+`team_members` / `license_activations` foreign keys) first. Tracked as a
+follow-up, not a boot-time migration.
 
 **Where:** `backend/src/routes/admin.js` (`POST /subscriptions`, `PUT /users/:id`)
 
@@ -708,10 +814,14 @@ same one-time display the enable flow already has.
 
 ## M-13 — Five routes read `:id` from the URL with no schema validation
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `api.integration` → "an id that is not a number is a 400" (all five routes answer `400 VALIDATION_ERROR`)
+
+**Fixed by:** `validate(idParamSchema)` on the four admin routes (the schema
+already existed, exported and unused) and a new `deviceIdParamSchema` on
+`DELETE /user/devices/:id`. The handlers read the coerced `req.params.id`.
 
 Everything else in the codebase validates params with a zod schema. These five
-call `Number(req.params.id)` directly, so `NaN` reaches the model layer:
+called `Number(req.params.id)` directly, so `NaN` reached the model layer:
 
 | Route | File |
 |---|---|
@@ -782,7 +892,7 @@ The same rule governs admin and root passwords set from the panels.
 
 ## L-07 — The download counter also inflates on HEAD and on a missing file
 
-**Status:** OPEN — folded into H-06
+**Status:** FIXED — with H-06 &nbsp;|&nbsp; **Verified by:** `downloadCounter.integration` ("a HEAD is a size probe", "a release whose file is missing answers 404 and counts nothing")
 
 ## L-08 — `notFound` reflects the raw request URL
 
@@ -827,31 +937,34 @@ Each needs rewriting to pin the *current* behaviour, not deleting.
 
 ## T-01 — `rejects a duplicate email` asserts the account oracle that was removed
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `api.integration` → "a second registration with a taken address is indistinguishable and inert"
 
-`backend/test/api.integration.test.js:42` expects a second registration with a
-taken address to answer `>= 400`. `/api/auth/register` now deliberately answers
+`backend/test/api.integration.test.js:42` expected a second registration with a
+taken address to answer `>= 400`. `/api/auth/register` deliberately answers
 `201 { registered: true }` either way — that is the account-enumeration fix
 recovered in `9f312a2` — and the test was never brought along.
 
-**Rewrite:** both registrations answer `201`; exactly one `users` row exists for
-the address afterwards; the second call must not open a session or change the
-first account's password hash.
+**Rewritten to pin the real contract:** both registrations answer a
+byte-identical `201 { registered: true }` with no cookie; exactly one `users`
+row and one free licence exist afterwards; the first account's password hash
+is untouched and the newcomer's password does not sign in.
 
 ## T-02 — `auth endpoints stop brute force after 5 attempts` asserts the old shared bucket
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/rateLimit.integration.test.js` (rewritten, 6 tests)
 
-`backend/test/rateLimit.integration.test.js:18` expects a `429` after five login
-attempts. WP-08 split the budgets: login is now **30 per 15 min per IP**, with a
+`backend/test/rateLimit.integration.test.js:18` expected a `429` after five login
+attempts. WP-08 split the budgets: login is **30 per 15 min per IP**, with a
 per-**account** slowdown (100 → 2000 ms) instead of a refusal. Seven attempts
 therefore get seven `401`s, which is the intended behaviour.
 
-**Rewrite:** (a) 31 attempts against *distinct* addresses from one IP → the
-31st is `429 RATE_LIMITED` (distinct addresses so the per-account delay does not
-make the test take a minute); (b) repeated failures against *one* address get
-measurably slower (`loginDelayFor` steps) and a successful sign-in clears the
-delay.
+**Rewritten to pin both halves,** each subtest from its own forwarded address:
+30 attempts against distinct addresses are `401`s and the 31st is
+`429 RATE_LIMITED` while a neighbouring IP is untouched; 35 malformed bodies
+spend no budget (the limiters sit after `validate()`); three failures against
+one address earn a 100 ms wait, the fourth attempt measurably waits it (lower
+bound only — an upper bound would make a slow CI box a failure) and earns 250,
+the fifth waits that; a successful sign-in clears the counter.
 
 ---
 
@@ -971,8 +1084,8 @@ Closes the one chain that leads to a full account takeover.
 Things that are supposed to stop someone and do not.
 - [x] H-05 — `banned` check in `/auth/login`
 - [x] H-03 — `banned` check in licence validate + heartbeat; Team key rotation for a banned member
-- [ ] H-08 — make session revocation actually revoke access **(blocks the second half of M-01; moved to Phase 4)**
-- [x] M-01 — `POST /auth/change-password`: sessions revoked, caller kept — the access-token half waits on H-08
+- [x] H-08 — make session revocation actually revoke access **(done in Phase 4)**
+- [x] M-01 — `POST /auth/change-password`: sessions revoked, caller kept — the access-token half closed with H-08
 - [x] M-02 — single-use reset tokens (`pv` claim + conditional write)
 - [x] M-03 — single-use TOTP and recovery codes (conditional spends)
 - **Verified:** three new integration suites drive the real endpoints —
@@ -990,16 +1103,17 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 - [ ] O-03c — CI job running `npm test` with a database service
 - **Verify:** `npm test` reports 0 skipped, on a second machine or in CI.
 
-### Phase 4 — Correctness  &#9744;
-- [ ] H-08 — session-bound access tokens (then flip the `KNOWN GAP` assertion in `passwordChangeSessions`)
-- [ ] H-06 — wire up `shouldCountDownload`; stop counting HEADs and 404s
-- [ ] H-07 — wire up `artifactVersionFromFile` in the upload route
-- [ ] T-01, T-02 — rewrite the two stale tests to the current contracts
-- [ ] H-04 — handle `invoice.payment_succeeded` and `customer.subscription.updated`
-- [ ] M-07 — one subscription per user; reconcile the two admin write paths
-- [ ] M-04 — drop `sqlMessage` from production responses
-- [ ] M-13 — zod schemas on the five unvalidated `:id` params
-- **Verify:** `downloadCounter` and `releaseVersionInvariant` integration suites pass for real; new webhook renewal test; full suite 0 fail / 0 skipped.
+### Phase 4 — Correctness  &#9745; **DONE 2026-09-20**
+- [x] H-08 — session-bound bearers for all three realms (`sid` + a live-row check in every gate, 15-min TTL); the `KNOWN GAP` tripwire in `passwordChangeSessions` flipped. Closes M-01.
+- [x] H-06 — `shouldCountDownload` wired on both paths; HEADs and 404s no longer count (L-07 with it)
+- [x] H-07 — `artifactVersionFromFile` in the upload route; the admin page shows the verdict
+- [x] T-01, T-02 — rewritten to the current contracts
+- [x] H-04 — `invoice.paid`/`payment_succeeded` and `customer.subscription.created`/`updated`; `invoice.payment_failed` no longer throws
+- [x] M-07 — one subscription per account; both admin write paths edit the same row; staff guard on subscription edits
+- [x] M-04 — no `sqlMessage` (or raw throw text) in production responses; `headersSent` handled
+- [x] M-13 — zod on all five `:id` params
+- **Verified:** full suite **288 / 288, 0 skipped** — first green run. `downloadCounter` 14/14 and `releaseVersionInvariant` 5/5 for real; new `webhookRenewal` (14) and `errorHandler` (7) suites; frontend 23/23; both SPAs lint clean and build.
+- **Follow-up:** the `UNIQUE` index behind M-07 waits on a look at production data (see the finding).
 
 ### Phase 5 — Hardening and operations  &#9744;
 - [ ] M-14 — a way for the creator to recover from a lost authenticator **(do this before trusting H-02's legacy retirement)**
@@ -1033,3 +1147,4 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 | 2026-09-19 | **Phase 1 done** — H-01, L-04, H-02 fixed and verified (201 tests, 188 pass, no new failures). Opened M-14, M-15, L-10. 37 findings, 3 fixed. |
 | 2026-09-19 | Phase 2's adversarial review surfaced H-08: `requireAuth` never checks `user_sessions`, so every "revoke sessions" action is a no-op for the 7-day life of the access token. Blocks M-01. 38 findings. |
 | 2026-09-20 | **Phase 2 done** — H-05, H-03, M-02, M-03 fixed; M-01 fixed as far as a route can be (access-token half waits on H-08). Password change moved to `POST /auth/change-password`. 252 tests / 239 pass. 7 fixed. |
+| 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |

@@ -39,10 +39,34 @@ test('backend API', async (t) => {
       assert.match(rows[0].license_key, /^NDM(-[A-Z0-9]{4}){3}$/);
     });
 
-    await t2.test('rejects a duplicate email', async () => {
-      const res = await api.post('/api/auth/register', { name: 'Again', email, password });
-      assert.equal(res.status >= 400, true);
-      assert.equal(res.body.ok, false);
+    await t2.test('a second registration with a taken address is indistinguishable and inert', async () => {
+      // Registration deliberately answers the same 201 { registered: true }
+      // whether or not the address is taken: a 409 would let anyone test a
+      // list of addresses for accounts (the account-oracle fix in 9f312a2).
+      // So what is asserted is not a refusal but that the second call did
+      // NOTHING — no second row, no session, and the first account's password
+      // untouched — while looking exactly like the first.
+      const first = await srv.query('SELECT id, password_hash FROM users WHERE email = ?', [email]);
+      assert.equal(first.length, 1);
+      const fresh = srv.client();
+
+      const res = await fresh.post('/api/auth/register',
+        { name: 'Again', email, password: 'a-different-password' });
+      assert.equal(res.status, 201, res.text);
+      assert.deepEqual(res.body, { ok: true, data: { registered: true } },
+        'the taken-address answer carries nothing the fresh-address answer does not');
+      assert.equal(res.headers.getSetCookie().length, 0, 'registration never opens a session');
+
+      const rows = await srv.query('SELECT id, password_hash FROM users WHERE email = ?', [email]);
+      assert.equal(rows.length, 1, 'still exactly one account for the address');
+      assert.equal(rows[0].id, first[0].id);
+      assert.equal(rows[0].password_hash, first[0].password_hash, 'the existing password was not replaced');
+      const subs = await srv.query('SELECT COUNT(*) AS n FROM subscriptions');
+      assert.equal(Number(subs[0].n), 1, 'no second free licence was minted');
+
+      // And the newcomer's password is not a way in.
+      const login = await fresh.post('/api/auth/login', { email, password: 'a-different-password' });
+      assert.equal(login.status, 401);
     });
 
     await t2.test('rejects the wrong password without leaking which field was wrong', async () => {
@@ -679,15 +703,103 @@ test('backend API', async (t) => {
       assert.equal(res.body.data.role, 'admin');
     });
 
-    await t2.test('logout clears the cookie and the stored hash', async () => {
+    await t2.test('logout ends the session row, the cookie and the bearer', async () => {
+      const rowsBefore = await srv.query(
+        `SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id
+          WHERE u.email = ? AND s.realm = 'admin'`, ['admin@example.test']
+      );
+      assert.equal(Number(rowsBefore[0].n), 1, 'one panel session row while signed in');
+
       const res = await api.post('/api/admin/logout', {}, { token: adminToken });
       assert.equal(res.status, 200, res.text);
-      const rows = await srv.query(
-        'SELECT admin_refresh_token_hash FROM users WHERE email = ?', ['admin@example.test']
+
+      const rowsAfter = await srv.query(
+        `SELECT COUNT(*) AS n FROM user_sessions s JOIN users u ON u.id = s.user_id
+          WHERE u.email = ? AND s.realm = 'admin'`, ['admin@example.test']
       );
-      assert.equal(rows[0].admin_refresh_token_hash, null);
+      assert.equal(Number(rowsAfter[0].n), 0, 'the panel session row is gone');
       const after = await api.post('/api/admin/refresh');
       assert.equal(after.status, 401, 'the cleared cookie no longer refreshes');
+      // H-08: the bearer is bound to the row that logout deleted, so it is
+      // refused at once rather than working until it expires.
+      const replay = await api.get('/api/admin/me', { token: adminToken });
+      assert.equal(replay.status, 401, 'the signed-out bearer is refused: ' + replay.text);
+      assert.equal(replay.body.error.code, 'SESSION_REVOKED');
+    });
+  });
+
+  // M-07: one subscription per account. Every reader takes the newest row, so
+  // a second one would be an invisible row with a live licence key.
+  await t.test('admin subscriptions: one per account', async (t2) => {
+    await srv.reset();
+    const api = srv.client();
+    const bcrypt = require('bcryptjs');
+    await srv.query(
+      "INSERT INTO users (name, email, password_hash, role, email_verified) VALUES ('Admin', 'subadmin@example.test', ?, 'admin', 1)",
+      [await bcrypt.hash('admin-password-123', 12)]
+    );
+    const login = await api.post('/api/admin/login',
+      { email: 'subadmin@example.test', password: 'admin-password-123' });
+    assert.equal(login.status, 200, login.text);
+    const auth = { token: login.body.data.token };
+
+    const { email } = await srv.makeUser(srv.client(), 'onesub');
+    const [{ id: userId }] = await srv.query('SELECT id FROM users WHERE email = ?', [email]);
+    const rowsFor = () => srv.query(
+      'SELECT id, plan, status, license_key FROM subscriptions WHERE user_id = ? ORDER BY id', [userId]
+    );
+
+    await t2.test('creating a second subscription is refused and names the first', async () => {
+      const [existing] = await rowsFor();
+      const res = await api.post('/api/admin/subscriptions', { userId, plan: 'pro' }, auth);
+      assert.equal(res.status, 409, res.text);
+      assert.equal(res.body.error.code, 'SUBSCRIPTION_EXISTS');
+      assert.equal(res.body.error.details.subscriptionId, existing.id);
+      const rows = await rowsFor();
+      assert.equal(rows.length, 1, 'still one row');
+      assert.equal(rows[0].plan, 'free', 'and it was not touched');
+    });
+
+    await t2.test('a plan change from the user screen edits the row the subscription screen shows', async () => {
+      const res = await api.put(`/api/admin/users/${userId}`, { plan: 'pro' }, auth);
+      assert.equal(res.status, 200, res.text);
+      const rows = await rowsFor();
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].plan, 'pro');
+      assert.equal(res.body.data.subscription.id, rows[0].id, 'the response shows the same row');
+      // ...and the subscription screen's own edit lands on that same row.
+      const edit = await api.put(`/api/admin/subscriptions/${rows[0].id}`, { plan: 'team' }, auth);
+      assert.equal(edit.status, 200, edit.text);
+      assert.equal((await rowsFor())[0].plan, 'team');
+      const details = await api.get(`/api/admin/users/${userId}/details`, auth);
+      assert.equal(details.body.data.subscriptions[0].plan, 'team', 'every reader agrees');
+    });
+
+    await t2.test('a staff admin cannot edit the creator’s subscription', async () => {
+      await srv.query("UPDATE users SET role = 'root' WHERE email = ?", [email]);
+      const [row] = await rowsFor();
+      const res = await api.put(`/api/admin/subscriptions/${row.id}`, { plan: 'free' }, auth);
+      assert.equal(res.status, 403, res.text);
+      assert.equal((await rowsFor())[0].plan, 'team', 'unchanged');
+      const create = await api.post('/api/admin/subscriptions', { userId, plan: 'free' }, auth);
+      assert.equal(create.status, 403, 'nor create one for them: ' + create.text);
+    });
+
+    await t2.test('an id that is not a number is a 400, not a database lookup for NaN', async () => {
+      for (const path of [
+        '/api/admin/users/abc/details', '/api/admin/users/abc/revoke-sessions',
+        '/api/admin/subscriptions/abc/revoke-device', '/api/admin/releases/abc',
+      ]) {
+        const method = path.endsWith('/details') ? 'get'
+          : path.startsWith('/api/admin/releases') ? 'del' : 'post';
+        const res = method === 'post' ? await api.post(path, {}, auth) : await api[method](path, auth);
+        assert.equal(res.status, 400, `${path}: ${res.text}`);
+        assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+      }
+      const user = await srv.makeUser(srv.client(), 'devid');
+      const dev = await srv.client().del('/api/user/devices/abc', { token: user.token });
+      assert.equal(dev.status, 400, dev.text);
+      assert.equal(dev.body.error.code, 'VALIDATION_ERROR');
     });
   });
 

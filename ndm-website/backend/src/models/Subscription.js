@@ -6,17 +6,17 @@ const {
   SEAT_LEASE_SECONDS,
 } = require('../utils/license');
 
-// Columns update()/updateByUserId() may touch. The name is interpolated into
-// the statement, so it must never come from user input — see User.js. Seat
-// leases live in license_activations and have their own methods.
+// Columns update() may touch. The name is interpolated into the statement,
+// so it must never come from user input — see User.js. Seat leases live in
+// license_activations and have their own methods.
 const UPDATABLE_COLUMNS = new Set([
   'plan', 'status', 'license_key', 'device_fingerprint', 'seats', 'start_date',
   'expiry_date', 'trial_ends_at', 'trial_reminder_sent_at',
   'stripe_subscription_id', 'stripe_customer_id',
 ]);
 
-// Shared by both update flavours: turns {camelCase: value} into SET clauses,
-// refusing any column outside the allowlist.
+// Turns {camelCase: value} into SET clauses, refusing any column outside the
+// allowlist.
 function setClauses(fields, what) {
   const sets = [];
   const vals = [];
@@ -158,6 +158,15 @@ const Subscription = {
 
   async findByStripeSubscriptionId(id) {
     return queryOne('SELECT * FROM subscriptions WHERE stripe_subscription_id = ?', [id]);
+  },
+
+  // Newest first: a customer who re-subscribed after cancelling has one live
+  // row and older ones, and the webhook wants the one Stripe is billing.
+  async findByStripeCustomerId(id) {
+    return queryOne(
+      'SELECT * FROM subscriptions WHERE stripe_customer_id = ? ORDER BY created_at DESC LIMIT 1',
+      [id]
+    );
   },
 
   /**
@@ -353,18 +362,15 @@ const Subscription = {
     return Subscription.findById(id);
   },
 
+  // By id only. There used to be an updateByUserId that wrote EVERY row for
+  // an account; with readers taking the newest row, it changed rows nobody
+  // would ever see and left the two admin write paths disagreeing about which
+  // subscription was "the" one (AUDIT.md M-07). Callers find the row first.
   async update(id, fields) {
     const { sets, vals } = setClauses(fields, 'Subscription.update');
     if (sets.length === 0) return;
     vals.push(id);
     await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE id = ?`, vals);
-  },
-
-  async updateByUserId(userId, fields) {
-    const { sets, vals } = setClauses(fields, 'Subscription.updateByUserId');
-    if (sets.length === 0) return;
-    vals.push(userId);
-    await execute(`UPDATE subscriptions SET ${sets.join(', ')} WHERE user_id = ?`, vals);
   },
 
   async count(filter = {}) {

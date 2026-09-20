@@ -32,22 +32,40 @@ const {
 } = require('../schemas/root.schema');
 
 // Scoped to /api/root so the browser never sends the creator's session cookie
-// to a staff endpoint — and a stolen staff cookie is useless here.
+// to a staff endpoint — and a stolen staff cookie is useless here. The session
+// itself is a user_sessions row of realm 'root' (the old single slot,
+// users.root_refresh_token_hash, is retired — see config/schema.js); four
+// hours, the shortest sitting of the three realms, because it is the account
+// that can do the most.
 const ROOT_REFRESH_COOKIE = 'ndm_root_refresh';
 const ROOT_REFRESH_PATH = '/api/root';
+const ROOT_SESSION_MS = 4 * 60 * 60 * 1000;
 const BCRYPT_COST = 12;
 
 function rootRefreshCookieOptions() {
   return {
     httpOnly: true, sameSite: 'lax', secure: config.isProd,
-    maxAge: 4 * 60 * 60 * 1000, path: ROOT_REFRESH_PATH,
+    maxAge: ROOT_SESSION_MS, path: ROOT_REFRESH_PATH,
   };
 }
 
-async function issueRootSession(res, user) {
+function rootSessionExpiry() {
+  return new Date(Date.now() + ROOT_SESSION_MS);
+}
+
+function clearRootCookie(res) {
+  res.clearCookie(ROOT_REFRESH_COOKIE, { path: ROOT_REFRESH_PATH });
+}
+
+async function issueRootSession(req, res, user) {
   const { token: refreshToken, hash } = generateRefreshToken();
-  await User.update(user.id, { rootRefreshTokenHash: hash });
+  const session = await UserSession.create({
+    userId: user.id, tokenHash: hash, realm: 'root',
+    userAgent: req.get('user-agent') || null, ip: req.ip || null,
+    expiresAt: rootSessionExpiry(),
+  });
   res.cookie(ROOT_REFRESH_COOKIE, refreshToken, rootRefreshCookieOptions());
+  return session;
 }
 
 function rootIdentity(user) {
@@ -82,14 +100,14 @@ router.post(
         challenge: signChallenge(user, { secret: config.JWT_ROOT_SECRET, realm: 'root' }),
       });
     }
-    return ok(res, await finishRootLogin(res, user));
+    return ok(res, await finishRootLogin(req, res, user));
   })
 );
 
-async function finishRootLogin(res, user) {
-  await issueRootSession(res, user);
+async function finishRootLogin(req, res, user) {
+  const session = await issueRootSession(req, res, user);
   await audit({ admin: user }, 'root.login', 'user', user.id, `Root sign-in ${user.email}`);
-  return { token: signRootToken(user), admin: rootIdentity(user) };
+  return { token: signRootToken(user, session), admin: rootIdentity(user) };
 }
 
 mountTwoFactor(router, {
@@ -101,23 +119,37 @@ mountTwoFactor(router, {
   audit: (req, action, user, summary) => audit({ admin: req.admin || user }, action, 'user', user.id, summary),
 });
 
+// Rotated in place, so the row — and the `sid` in every bearer minted from
+// it — stays the same across renewals. See routes/admin.js for the shape.
 router.post(
   '/refresh', adminRefreshLimiter, rootIpWhitelist,
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[ROOT_REFRESH_COOKIE];
     if (!cookie) return fail(res, 'NO_REFRESH_TOKEN', 'Missing root refresh token', 401);
-    const user = await User.findByRootRefreshTokenHash(hashRefreshToken(cookie));
-    if (!isRootUser(user)) {
-      res.clearCookie(ROOT_REFRESH_COOKIE, { path: ROOT_REFRESH_PATH });
+    const hash = hashRefreshToken(cookie);
+    const invalid = () => {
+      clearRootCookie(res);
       return fail(res, 'INVALID_REFRESH_TOKEN', 'Root session is invalid or has expired', 401);
+    };
+
+    const session = await UserSession.findLiveByTokenHash(hash, 'root');
+    if (!session) return invalid();
+    const user = await User.findById(session.user_id);
+    if (!isRootUser(user)) {
+      await UserSession.removeByTokenHash(hash);
+      return invalid();
     }
     if (user.banned) {
-      await User.update(user.id, { rootRefreshTokenHash: null });
-      res.clearCookie(ROOT_REFRESH_COOKIE, { path: ROOT_REFRESH_PATH });
+      await UserSession.removeByTokenHash(hash);
+      clearRootCookie(res);
       return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     }
-    await issueRootSession(res, user);
-    return ok(res, { token: signRootToken(user) });
+
+    const { token: rt, hash: newHash } = generateRefreshToken();
+    if (!(await UserSession.rotate(session.id, hash, newHash, rootSessionExpiry())))
+      return invalid();
+    res.cookie(ROOT_REFRESH_COOKIE, rt, rootRefreshCookieOptions());
+    return ok(res, { token: signRootToken(user, session) });
   })
 );
 
@@ -125,11 +157,8 @@ router.post(
   '/logout', rootIpWhitelist,
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[ROOT_REFRESH_COOKIE];
-    if (cookie) {
-      const user = await User.findByRootRefreshTokenHash(hashRefreshToken(cookie));
-      if (user) await User.update(user.id, { rootRefreshTokenHash: null });
-    }
-    res.clearCookie(ROOT_REFRESH_COOKIE, { path: ROOT_REFRESH_PATH });
+    if (cookie) await UserSession.removeByTokenHash(hashRefreshToken(cookie));
+    clearRootCookie(res);
     return ok(res, { loggedOut: true });
   })
 );
@@ -211,14 +240,13 @@ router.put(
     if (name !== undefined) updates.name = name;
     if (banned !== undefined) updates.banned = banned;
     if (role !== undefined) updates.role = role;
-    // Banning or demoting must also kill the live session; verifyAdminToken
-    // re-reads the role on every request, so the bearer token dies with it.
-    if (banned === true || role === 'user') {
-      updates.adminRefreshTokenHash = null;
-      updates.refreshTokenHash = null;
-    }
     await User.update(user.id, updates);
+    // A ban ends every session the account has; a demotion ends the panel
+    // one and leaves the person signed in to the website as the ordinary
+    // user they now are. Either way the bearer dies with its row — the gate
+    // re-checks both the role and the session on every request.
     if (banned === true) await UserSession.removeAllForUser(user.id);
+    else if (role === 'user') await UserSession.removeAllForUser(user.id, 'admin');
 
     const fresh = await User.findById(user.id);
     await audit(req, 'admin.updated', 'user', user.id, `Updated staff admin ${fresh.email}`, req.body);
@@ -226,6 +254,8 @@ router.put(
   })
 );
 
+// refreshTokenHash below is the pre-sessions site cookie slot, still honoured
+// once by /auth/refresh, so it is cleared wherever the rows are.
 router.post(
   '/admins/:id/reset-password', validate(resetAdminPasswordSchema),
   asyncHandler(async (req, res) => {
@@ -233,7 +263,7 @@ router.post(
     if (!user) return undefined;
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(req.body.password, BCRYPT_COST),
-      refreshTokenHash: null, adminRefreshTokenHash: null,
+      refreshTokenHash: null,
     });
     await UserSession.removeAllForUser(user.id);
     await audit(req, 'admin.password_reset', 'user', user.id, `Reset password for ${user.email}`);
@@ -246,10 +276,11 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
-    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
-    await UserSession.removeAllForUser(user.id);
-    await audit(req, 'admin.sessions_revoked', 'user', user.id, `Revoked sessions for ${user.email}`);
-    return ok(res, { revoked: true });
+    await User.update(user.id, { refreshTokenHash: null });
+    const sessions = await UserSession.removeAllForUser(user.id);
+    await audit(req, 'admin.sessions_revoked', 'user', user.id,
+      `Revoked sessions for ${user.email}`, { sessions });
+    return ok(res, { revoked: true, sessions });
   })
 );
 
@@ -263,7 +294,7 @@ router.post(
     if (!user) return undefined;
     await User.update(user.id, {
       totpEnabled: 0, totpSecret: null, totpRecovery: null,
-      refreshTokenHash: null, adminRefreshTokenHash: null,
+      refreshTokenHash: null,
     });
     await UserSession.removeAllForUser(user.id);
     await audit(req, 'admin.2fa_reset', 'user', user.id, `Reset two-factor authentication for ${user.email}`);
@@ -271,15 +302,15 @@ router.post(
   })
 );
 
-// Demote to a plain user — keeps the account and its billing history.
+// Demote to a plain user — keeps the account and its billing history, and
+// their website sign-in; only the panel session ends.
 router.delete(
   '/admins/:id', validate(idParamSchema),
   asyncHandler(async (req, res) => {
     const user = await loadStaffTarget(req, res);
     if (!user) return undefined;
-    await User.update(user.id, {
-      role: 'user', adminRefreshTokenHash: null, refreshTokenHash: null,
-    });
+    await User.update(user.id, { role: 'user' });
+    await UserSession.removeAllForUser(user.id, 'admin');
     await audit(req, 'admin.demoted', 'user', user.id, `Demoted ${user.email} to user`);
     return ok(res, { demoted: true });
   })

@@ -30,14 +30,18 @@ process.env.TRUST_PROXY = process.env.TRUST_PROXY || 'loopback';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const srv = require('./helpers/testServer');
 const Release = require('../src/models/Release');
+const { uploadDir, ensureUploadDir } = require('../src/utils/releaseFiles');
 
 const countOf = async () => Number((await Release.findLatest()).download_count) || 0;
 
 /** A GET with a chosen client address, so "per IP" can actually be exercised. */
-async function get(baseUrl, path, { range, ip = '203.0.113.10' } = {}) {
+async function get(baseUrl, path, { range, ip = '203.0.113.10', method = 'GET' } = {}) {
   const res = await fetch(`${baseUrl}${path}`, {
+    method,
     redirect: 'manual',
     headers: {
       'x-forwarded-for': ip,
@@ -133,6 +137,68 @@ test('download counter', async (t) => {
     }
 
     assert.equal(await countOf(), before + 1, 'the counter increased by 1, not 5');
+  });
+
+  await t.test('a HEAD is a size probe, not a download', async () => {
+    // Express routes HEAD to the GET handler, and a HEAD carries no Range, so
+    // without an explicit check it is indistinguishable from a fresh start.
+    const before = await countOf();
+    await get(baseUrl, '/api/releases/download/windows', { ip: '203.0.113.70', method: 'HEAD' });
+    assert.equal(await countOf(), before, 'a HEAD on the redirect path must not count');
+  });
+
+  // The uploaded-installer path: the file is streamed from disk, so the
+  // counter must also cope with a row that names a file which is not there.
+  await t.test('an uploaded installer', async (t2) => {
+    await ensureUploadDir();
+    const stored = `windows-2.0.0-${Date.now()}.exe`;
+    await fs.writeFile(path.join(uploadDir(), stored), Buffer.alloc(4096, 0x4d));
+    const release = await Release.create({
+      version: '2.0.0', windowsUrl: '', linuxUrl: '',
+      changelog: '', isLatest: true, windowsSha256: null, linuxSha256: null,
+    });
+    await Release.unsetLatestExcept(release.id);
+    await Release.update(release.id, {
+      windowsFile: stored, windowsFilename: 'nexa-setup.exe', windowsSize: 4096,
+    });
+
+    try {
+      await t2.test('a fresh start of a file on disk counts once', async () => {
+        const before = await countOf();
+        const res = await get(baseUrl, '/api/releases/download/windows', { ip: '203.0.113.80' });
+        assert.equal(res.status, 200);
+        assert.equal(await countOf(), before + 1);
+      });
+
+      await t2.test('a resume of it does not', async () => {
+        const before = await countOf();
+        const res = await get(baseUrl, '/api/releases/download/windows',
+          { ip: '203.0.113.81', range: 'bytes=2048-' });
+        assert.equal(res.status, 206);
+        assert.equal(await countOf(), before);
+      });
+
+      await t2.test('nor a HEAD', async () => {
+        const before = await countOf();
+        const res = await get(baseUrl, '/api/releases/download/windows',
+          { ip: '203.0.113.82', method: 'HEAD' });
+        assert.equal(res.status, 200);
+        assert.equal(await countOf(), before);
+      });
+
+      await t2.test('a release whose file is missing answers 404 and counts nothing', async () => {
+        // The row still names the file; only the bytes are gone. The counter
+        // used to be bumped before anyone looked, so a broken release counted
+        // every visitor it failed.
+        await fs.rm(path.join(uploadDir(), stored));
+        const before = await countOf();
+        const res = await get(baseUrl, '/api/releases/download/windows', { ip: '203.0.113.83' });
+        assert.equal(res.status, 404);
+        assert.equal(await countOf(), before, 'a 404 is not a download');
+      });
+    } finally {
+      await fs.rm(path.join(uploadDir(), stored), { force: true });
+    }
   });
 
   await srv.stop();

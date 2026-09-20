@@ -91,46 +91,66 @@ Header: `Authorization: Bearer <token>`.
 
 | Token | TTL | Secret | Signed by | Verified by |
 |-------|-----|--------|-----------|-------------|
-| user access | 7d | `JWT_SECRET` | `signAccessToken(user)` | `verifyAccess` / `requireAuth` |
-| admin | 8h | `JWT_ADMIN_SECRET` | `signAdminToken(user)` | `verifyAdmin` / `requireAdmin` |
-| root (creator) | 4h | `JWT_ROOT_SECRET` | `signRootToken(user)` | `verifyRoot` / `requireRoot` |
+| user access | **15m** | `JWT_SECRET` | `signAccessToken(user, session)` | `verifyAccess` / `requireAuth` |
+| admin | **15m** | `JWT_ADMIN_SECRET` | `signAdminToken(user, session)` | `verifyAdmin` / `requireAdmin` |
+| root (creator) | **15m** | `JWT_ROOT_SECRET` | `signRootToken(user, session)` | `verifyRoot` / `requireRoot` |
 | email verify | 1h | `JWT_SECRET` | `signEmailToken(user)` | `verifyEmailToken` |
 | password reset | 1h | `JWT_SECRET` | `signResetToken(user)` | `verifyResetToken` |
 | license | 24h | `LICENSE_JWT_SECRET` | `signLicenseToken(payload)` | `verifyLicense` |
 
-**Refresh token:** opaque random string in an **httpOnly cookie named `ndm_refresh`**.
-Only the SHA-256 hash is stored on `User.refreshTokenHash`. Generate with
-`generateRefreshToken()` → `{ token, hash }`; store `hash`, set `token` in the cookie.
-On `/api/auth/refresh`, read the cookie, `hashRefreshToken(cookie)` and compare to the
-stored hash (rotate on every refresh). Recommended cookie options:
+### Sessions — one table, three realms, and the bearer is bound to its row
+
+Every signed-in browser is a row in **`user_sessions`** — `realm` says which
+sign-in it is (`'site'`, `'admin'` or `'root'`), `token_hash` is the SHA-256 of
+the refresh token in that realm's httpOnly cookie, `expires_at` is the sitting.
+`UserSession.create / findLiveByTokenHash(hash, realm) / findLiveForToken /
+rotate / removeByTokenHash / removeAllForUser(userId, realm?)`. The old single
+slots `users.admin_refresh_token_hash` and `users.root_refresh_token_hash` are
+**retired** (nothing reads or writes them); `users.refresh_token_hash` survives
+only so `/api/auth/refresh` can adopt a pre-sessions site cookie once.
+
+**Every bearer token carries `sid`, the id of its session row**, and every gate
+(`requireAuth`, `requireAdmin`, `requireRoot`) looks that row up on every
+request — same account, same realm, not expired — after the signature check.
+No row → `401 SESSION_REVOKED` ("This session has ended. Please sign in
+again."). Signing out, changing or resetting a password, being banned, or an
+admin's "revoke sessions" **deletes the rows**, so a bearer stops working with
+the request in flight, not when its JWT expires. The signing functions throw
+if handed no session: a bearer nothing can revoke is a bug, never a default.
+The 15-minute TTL is the second layer, bounding what a token proves on its
+own; the SPAs already refresh on a 401, so nobody notices.
+
+| Realm | Cookie | Path | Sitting | Opened by | Rotated by | Ended by |
+|---|---|---|---|---|---|---|
+| `site` | `ndm_refresh` | `/api/auth` | 30d | `/api/auth/login`, `/google`, `/change-password` (caller only) | `/api/auth/refresh` | `/api/auth/logout`, and every revocation |
+| `admin` | `ndm_admin_refresh` | `/api/admin` | 8h | `/api/admin/login` (+`/login/2fa`) | `/api/admin/refresh` | `/api/admin/logout`, revocations, demotion |
+| `root` | `ndm_root_refresh` | `/api/root` | 4h | `/api/root/login` (+`/login/2fa`) | `/api/root/refresh` | `/api/root/logout`, revocations |
+
+Rotation on `/refresh` swaps the hash **in place** (`UserSession.rotate`,
+conditional on the old hash so two tabs cannot both win), so the row id — and
+therefore every bearer bound to it — survives a refresh; a second tab's older
+bearer keeps working. Each realm's `/refresh` and `/logout` answer only for
+their own realm's rows, so a staff cookie presented to `/api/auth/refresh`
+finds nothing. Because the cookie paths differ, a staff session and a creator
+session coexist in one browser without either being able to act as the other.
+
 ```js
 res.cookie('ndm_refresh', token, {
   httpOnly: true, sameSite: 'lax', secure: config.isProd,
   maxAge: 30 * 24 * 60 * 60 * 1000, path: '/api/auth',
 });
 ```
+After a page refresh a panel SPA calls `POST /api/<realm>/refresh` (cookie only,
+no bearer) to get a new `{ token }`, then `GET /api/<realm>/me` for its identity.
 
-**Admin refresh token:** same scheme for the admin SPA, cookie **`ndm_admin_refresh`**,
-hash stored on `User.adminRefreshTokenHash` (`users.admin_refresh_token_hash`, 64-char hex).
-Set by `POST /api/admin/login`, rotated by `POST /api/admin/refresh`, cleared by
-`POST /api/admin/logout` and by `POST /api/admin/users/:id/revoke-sessions`:
-```js
-res.cookie('ndm_admin_refresh', token, {
-  httpOnly: true, sameSite: 'lax', secure: config.isProd,
-  maxAge: 8 * 60 * 60 * 1000, path: '/api/admin',
-});
-```
-The lifetime matches the 8h admin JWT; after a page refresh the SPA calls
-`POST /api/admin/refresh` (cookie only, no bearer) to get a new `{ token }`, then
-`GET /api/admin/me` for its identity.
-
-**Root refresh token:** the same scheme again for the creator console, cookie
-**`ndm_root_refresh`**, hash stored on `User.rootRefreshTokenHash`
-(`users.root_refresh_token_hash`, 64-char hex), path `/api/root`, 4h lifetime.
-Set by `POST /api/root/login`, rotated by `POST /api/root/refresh`, cleared by
-`POST /api/root/logout`. Because the cookie paths differ (`/api/admin` vs
-`/api/root`), a staff session and a creator session coexist in one browser
-without either being able to act as the other.
+**Revocation semantics.** `UserSession.removeAllForUser(id)` ends every realm at
+once — the account is what is being locked, not one door — and that is what a
+password reset/change, a ban, `POST /api/admin/users/:id/revoke-sessions` and
+`POST /api/root/admins/:id/{revoke-sessions,reset-password,reset-2fa}` do (the
+two revoke routes answer `{ revoked: true, sessions: <rows deleted> }`).
+Demoting a staff admin (`DELETE /api/root/admins/:id`, or `role:'user'` via
+`PUT`) ends only their `admin` sessions; they stay signed in to the website as
+the ordinary user they now are.
 
 ### Two admin tiers
 
@@ -163,7 +183,9 @@ one whose payload claims `role:'root'` — fails signature verification against
   Route guards use this to let the creator through checks that block staff.
 - `req.root` — the creator's user row (set by `requireRoot` only).
 
-Access JWT payload: `{ sub, email, role, typ:'access', iat, exp }`.
+Access JWT payload: `{ sub, email, role, sid, typ:'access', iat, exp }` — `sid` is the
+`user_sessions.id` the token is bound to; admin and root payloads carry it too.
+`req.session` is that row, set by every gate beside `req.user` / `req.admin`.
 
 ---
 
@@ -215,9 +237,10 @@ Schema field notes:
 
 ## 5. Models (fields)
 
-- **User**: numeric `id`, `name`, `email`(unique,lowercase,index), `passwordHash`, `role`['user','admin','root' default 'user' — 'root' is settable only by the `create-root` CLI], `emailVerified`(bool def false), `banned`(bool def false), `refreshTokenHash`(String def null), `adminRefreshTokenHash`(`admin_refresh_token_hash` VARCHAR(64) null — admin SPA cookie hash), `rootRefreshTokenHash`(`root_refresh_token_hash` VARCHAR(64) null — creator console cookie hash), `trialUsed`(`trial_used` TINYINT(1) def 0 — the no-card trial is one-shot), timestamps (`createdAt`/`updatedAt`).
+- **User**: numeric `id`, `name`, `email`(unique,lowercase,index), `passwordHash`, `role`['user','admin','root' default 'user' — 'root' is settable only by the `create-root` CLI], `emailVerified`(bool def false), `banned`(bool def false), `refreshTokenHash`(String def null — the pre-sessions site cookie slot, adopted once by `/auth/refresh`; `admin_refresh_token_hash` and `root_refresh_token_hash` still exist on the table but are **retired**: not in `UPDATABLE_COLUMNS`, never read — panel sessions are `user_sessions` rows), `trialUsed`(`trial_used` TINYINT(1) def 0 — the no-card trial is one-shot), timestamps (`createdAt`/`updatedAt`).
 - **Subscription**: numeric `id`, `userId`(FK users.id), `plan`['free','pro','team'], `status`['active','expired','cancelled' def 'active'], `licenseKey`(unique), legacy `deviceFingerprint`, `seats`, dates, `trialEndsAt`(`trial_ends_at` DATETIME null — set only for the 7-day Pro trial; cleared by paid activation), Stripe ids, timestamps. Device assignments are in `license_activations` and are transactionally capped by `seats`.
   Helpers: `Subscription.expireTrialIfNeeded(sub)` (lazy downgrade to `plan='free', status='active', trial_ends_at=NULL, expiry_date=planExpiry('free')` when `trial_ends_at` is past and there is no `stripe_subscription_id`; returns the fresh row) and `Subscription.startTrial(userId)` (single transaction → `{ ok, subscription } | { ok:false, reason }`).
+- **UserSession**: numeric `id`, `userId`(FK users.id, cascade), `realm`['site','admin','root' def 'site'], `tokenHash`(CHAR(64), unique — SHA-256 of the realm cookie), `userAgent`, `ip`, `createdAt`, `lastUsedAt`, `expiresAt`. One row per signed-in browser per realm; `id` is the `sid` in every bearer token (§3). `Subscription.findByStripeCustomerId(id)` (newest) sits beside `findByStripeSubscriptionId` for the webhook.
 - **Payment**: `userId`, `amount`, `currency`(def 'usd'), `plan`, `billingCycle`['monthly','yearly'], `stripePaymentId`, `status`['paid','failed','refunded' def 'paid'], timestamps.
 - **Review**: `userId`, `userName`, `rating`(1..5), `comment`, `status`['pending','approved','rejected' def 'pending'], timestamps.
 - **Ad**: numeric `id`, `title`, `body`, `imageUrl`(`image_url` null), `targetUrl`(`target_url`), `ctaLabel`(`cta_label` def 'Learn more'), `placement`['app_banner','app_sidebar','app_complete' def 'app_banner'], `active`(bool def true), `weight`(1..100 def 1), `startsAt`/`endsAt`(`starts_at`/`ends_at` TIMESTAMP null — open-ended when null), `impressions`/`clicks`(INT UNSIGNED def 0, bumped only by `Ad.recordImpression/recordClick`, never writable through the admin API), `createdBy`(FK users.id, `ON DELETE SET NULL`), timestamps.
@@ -239,9 +262,9 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email |
 | POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` + `resetTokenMatches` → set new passwordHash; **single-use** |
-| POST | `/change-password` | `requireAuth`, `validate(changePasswordSchema)` | `{ currentPassword?, newPassword }` → `{ changed:true, sessionKept }` — signed-in password change |
-| POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token *(ADDED)* |
-| POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
+| POST | `/change-password` | `requireAuth`, `validate(changePasswordSchema)` | `{ currentPassword?, newPassword }` → `{ changed:true, sessionKept, token? }` — signed-in password change; `token` (a bearer for the re-opened session) only when `sessionKept` |
+| POST | `/refresh` | `sessionRefreshLimiter` | read `ndm_refresh` cookie, rotate the `site` row in place, return a new access token bound to it *(ADDED)* |
+| POST | `/logout` | — | delete this browser's `site` row (its bearer dies with it), clear `ndm_refresh` + the session hint; a pre-sessions cookie nulls `refreshTokenHash` *(ADDED)* |
 
 `POST /login` refuses a banned account with `403 FORBIDDEN` **after** the password
 matches (never before — refusing at the lookup would tell an anonymous caller which
@@ -251,9 +274,9 @@ addresses are banned).
 route re-checks it against the live row (`resetTokenMatches`) and the write is a
 conditional `UPDATE … WHERE password_hash <=> ?`, so a link dies the instant it is
 spent and a second request holding the same link loses the race. Every refusal is
-the same `INVALID_TOKEN`. It nulls all three single-slot refresh columns
-(`refreshTokenHash`, `adminRefreshTokenHash`, `rootRefreshTokenHash`) and deletes
-every `user_sessions` row.
+the same `INVALID_TOKEN`. It nulls `refreshTokenHash` (the pre-sessions cookie slot)
+and deletes every `user_sessions` row in every realm — site, staff panel and creator
+panel — which also ends every bearer those rows had issued (§3).
 
 `POST /change-password` does the same revocation, then re-opens ONE session for the
 calling browser — only if it presented a live `ndm_refresh` cookie of its own
@@ -317,24 +340,29 @@ checksum computed at upload time.
 | Method | Path | Middleware |
 |--------|------|-----------|
 | GET | `/latest` | PUBLIC — the `isLatest` release: `{ version, windowsUrl, linuxUrl, changelog, windowsSha256, linuxSha256, downloadCount, publishedAt }` (sha fields `null` when unset) |
-| GET | `/download/:os` | PUBLIC, `downloadLimiter`, `validate(downloadOsSchema)` — `os ∈ windows\|linux`. Increments `releases.download_count` of the latest release then **302** to its URL for that OS; `404 NO_RELEASE` (envelope) when there is no latest release or no URL for that OS *(ADDED)* |
+| GET | `/download/:os` | PUBLIC, `downloadLimiter`, `validate(downloadOsSchema)` — `os ∈ windows\|linux`. Streams the uploaded installer (byte ranges) or **302**s to the legacy URL. `releases.download_count` counts a download **started**, decided by `utils/downloadCounter.shouldCountDownload` on both paths: no `Range` or one from byte 0; one address per release per platform per 10 min; **never** a `HEAD`, a resume, or a request that ends `404`. `404 NO_RELEASE` (envelope) when there is no latest release, no artifact/URL for that OS, or the stored file is missing from disk *(ADDED)* |
 | GET | `/feed` | PUBLIC, `validate(feedQuerySchema)` — `?os=windows\|linux`. **LITERAL response** (see §2 exception 2), `Cache-Control: public, max-age=300` on 200 *(ADDED)* |
 
 ### `routes/admin.js` → `/api/admin`
 | Method | Path | Middleware |
 |--------|------|-----------|
-| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }` *(ADDED, open)* |
-| POST | `/refresh` | `adminLoginLimiter`, `ipWhitelist` — **open**; reads `ndm_admin_refresh`, verifies hash + `role==='admin'` + not banned, rotates cookie → `{ token }`. `401 NO_REFRESH_TOKEN` / `401 INVALID_REFRESH_TOKEN` / `403 FORBIDDEN` (banned; hash nulled) *(ADDED)* |
-| POST | `/logout` | `ipWhitelist` — **open**; clears `ndm_admin_refresh` + nulls `adminRefreshTokenHash` → `{ loggedOut: true }` *(ADDED)* |
+| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), open an `admin` session row, `signAdminToken(user, session)`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }` *(ADDED, open)* |
+| POST | `/refresh` | `adminRefreshLimiter`, `ipWhitelist` — **open**; reads `ndm_admin_refresh`, finds the live `admin` row, re-checks `role==='admin'` + not banned, rotates the row in place → `{ token }`. `401 NO_REFRESH_TOKEN` / `401 INVALID_REFRESH_TOKEN` (row gone; cookie cleared) / `403 FORBIDDEN` (banned; row deleted) *(ADDED)* |
+| POST | `/logout` | `ipWhitelist` — **open**; deletes this browser's `admin` row (its bearer dies with it) + clears `ndm_admin_refresh` → `{ loggedOut: true }` *(ADDED)* |
 | GET | `/me` | `requireAdmin` → `{ id, name, email, role }` (`id` is a string, as in `/login`) *(ADDED)* |
 | GET | `/stats` | `requireAdmin` — also returns `ads:{ total, active, impressions, clicks }` |
 | GET | `/users` | `requireAdmin`, `validate(listQuerySchema)` |
 | PUT | `/users/:id` | `requireAdmin`, `validate(updateUserSchema)` — a `plan` change also sets `trial_ends_at=NULL`. `403` if the target is an `admin`/`root` and the caller is not the creator; **no `role` field** |
-| POST | `/users/:id/revoke-sessions` | `requireAdmin` — nulls `refreshTokenHash` **and** `adminRefreshTokenHash`; `403` on a control-panel target unless the caller is the creator |
+| GET | `/users/:id/details` | `requireAdmin`, `validate(idParamSchema)` — `{ user: publicUser, subscriptions, payments, reviews }`; `403` on a control-panel target unless the caller is the creator |
+| POST | `/users/:id/revoke-sessions` | `requireAdmin`, `validate(idParamSchema)` — deletes every `user_sessions` row in every realm (ending their bearers) and nulls `refreshTokenHash` → `{ revoked:true, sessions:<rows> }`; `403` on a control-panel target unless the caller is the creator |
+| POST | `/subscriptions` | `requireAdmin`, `validate(createSubscriptionSchema)` — **one subscription per account**: `409 SUBSCRIPTION_EXISTS` with `details:{ subscriptionId, plan, status }` if the user already has a row (edit that one); `403` for a control-panel owner unless the caller is the creator |
+| PUT | `/subscriptions/:id` | `requireAdmin`, `validate(updateSubscriptionSchema)` — edits the row; `403` if its owner is a control-panel account and the caller is not the creator. `PUT /users/:id { plan }` edits the account's **newest** row, i.e. this same one — the two paths never disagree |
+| POST | `/subscriptions/:id/revoke-device` | `requireAdmin`, `validate(idParamSchema)` |
+| DELETE | `/releases/:id` | `requireAdmin`, `validate(idParamSchema)` |
 | GET | `/subscriptions` | `requireAdmin`, `validate(listQuerySchema)` |
 | GET | `/reviews/pending` | `requireAdmin` |
 | PUT | `/reviews/:id` | `requireAdmin`, `validate(updateReviewSchema)` |
-| PUT | `/releases/:id/artifact/:os` | `requireAdmin`, `validate(releaseArtifactParamsSchema)` — body is the **raw installer** (`application/octet-stream`, name in `X-Filename`), streamed to `RELEASE_UPLOAD_DIR`. SHA-256 + size computed in flight and stored; the previous file is deleted only after the new one lands. `400 BAD_FILE_TYPE` / `413 FILE_TOO_LARGE` / `400 EMPTY_UPLOAD` |
+| PUT | `/releases/:id/artifact/:os` | `requireAdmin`, `validate(releaseArtifactParamsSchema)` — body is the **raw installer** (`application/octet-stream`, name in `X-Filename`), streamed to `RELEASE_UPLOAD_DIR`. SHA-256 + size computed in flight and stored; the previous file is deleted only after the new one lands. The version the installer declares about itself (`utils/artifactVersion`: PE version resource / `.deb` control file) is read back and compared with the row: a mismatch is `409 VERSION_MISMATCH` with `details:{ artifactVersion, releaseVersion }`, the file removed and the row untouched; a match answers `{ …stored, artifactVersion, versionWarning:null, release }`; an unreadable version is accepted with `artifactVersion:null` and a `versionWarning` string (also in the audit row). A dpkg revision (`0.5.0-1`) matches `0.5.0`. `400 BAD_FILE_TYPE` / `413 FILE_TOO_LARGE` / `400 EMPTY_UPLOAD` |
 | DELETE | `/releases/:id/artifact/:os` | `requireAdmin` — clears the columns and removes the file from disk |
 | GET | `/releases` | `requireAdmin` — list ALL releases *(ADDED)* |
 | POST | `/releases` | `requireAdmin`, `validate(createReleaseSchema)` — accepts `windowsSha256`, `linuxSha256` |
@@ -392,16 +420,16 @@ but use `rootIpWhitelist`, the `ndm_root_refresh` cookie and `signRootToken`.
 | Method | Path | Middleware |
 |--------|------|-----------|
 | POST | `/login` | `adminLoginLimiter`, `rootIpWhitelist`, `validate(rootLoginSchema)` — **open**; requires `isRootUser` (role **and** `ROOT_ADMIN_EMAIL`) → `{ token, admin }` |
-| POST | `/refresh` | `adminLoginLimiter`, `rootIpWhitelist` — **open**; reads `ndm_root_refresh`, re-checks `isRootUser`, rotates → `{ token }` |
-| POST | `/logout` | `rootIpWhitelist` — **open**; clears cookie + nulls `rootRefreshTokenHash` |
+| POST | `/refresh` | `adminRefreshLimiter`, `rootIpWhitelist` — **open**; reads `ndm_root_refresh`, finds the live `root` row, re-checks `isRootUser`, rotates it in place → `{ token }` |
+| POST | `/logout` | `rootIpWhitelist` — **open**; deletes this browser's `root` row + clears the cookie |
 | GET | `/me` | `requireRoot` → `{ id, name, email, role }` |
 | GET | `/overview` | `requireRoot` → `{ totalUsers, admins, roots, banned, downloads, rootEmailPinned }` |
 | GET | `/admins` | `requireRoot` → `{ admins }` — every `role IN ('admin','root')` account |
 | POST | `/admins` | `requireRoot`, `validate(createAdminSchema)` — creates a **staff admin** (password ≥12); `role` is not accepted |
-| PUT | `/admins/:id` | `requireRoot`, `validate(updateAdminSchema)` — `{ name?, banned?, role? }`, `role` limited to `user\|admin`; banning/demoting also revokes sessions |
-| POST | `/admins/:id/reset-password` | `requireRoot`, `validate(resetAdminPasswordSchema)` — revokes sessions |
-| POST | `/admins/:id/revoke-sessions` | `requireRoot`, `validate(idParamSchema)` |
-| DELETE | `/admins/:id` | `requireRoot`, `validate(idParamSchema)` — demote to `user`, keeps the account |
+| PUT | `/admins/:id` | `requireRoot`, `validate(updateAdminSchema)` — `{ name?, banned?, role? }`, `role` limited to `user\|admin`; a ban revokes every session, a demotion only the `admin` ones |
+| POST | `/admins/:id/reset-password` | `requireRoot`, `validate(resetAdminPasswordSchema)` — revokes every session |
+| POST | `/admins/:id/revoke-sessions` | `requireRoot`, `validate(idParamSchema)` → `{ revoked:true, sessions:<rows> }` — every realm |
+| DELETE | `/admins/:id` | `requireRoot`, `validate(idParamSchema)` — demote to `user`, keeps the account and its website sign-in; ends the `admin` sessions |
 | GET | `/audit` | `requireRoot`, `validate(auditQuerySchema)` — full trail, up to 200 rows |
 | DELETE | `/users/:id` | `requireRoot`, `validate(deleteUserSchema)` — **irreversible**; body must carry the target's exact `confirmEmail`; audit row is written *before* the delete because `audit_logs.admin_user_id` is `ON DELETE SET NULL` |
 
@@ -412,7 +440,23 @@ is therefore only ever changed by the `create-root` CLI.
 ### `routes/webhooks.js` → `/api/webhooks`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Handle `checkout.session.completed` / payment success → create Payment + activate Subscription (**clears `trial_ends_at`**) + email license; handle cancellation. Respond `200 { received: true }` (plain, not envelope, for Stripe). |
+| POST | `/stripe` | — | body is a **raw Buffer** (mounted with `express.raw` in app.js). Use `stripe.constructEvent(req.body, req.headers['stripe-signature'])`. Respond `200 { received: true }` (plain, not envelope, for Stripe); `200 { received:true, duplicate:true }` for a redelivery the `stripe_webhook_events` table has already processed. |
+
+Events handled (every handler is idempotent and order-independent — it finds our row by
+`stripe_subscription_id`, then `stripe_customer_id`, then the account's newest row):
+
+| Event | Effect |
+|---|---|
+| `checkout.session.completed` | create Payment + activate Subscription (**clears `trial_ends_at`**, stores the Stripe ids) + email the licence. Owns the **first** invoice. |
+| `invoice.paid` / `invoice.payment_succeeded` | a renewal: `status='active'`, `expiry_date` = the latest line period end **+ 3 days** (`RENEWAL_GRACE_DAYS` — Stripe bills at the period end and reports the payment later, up to days with card retries; without headroom every customer would be refused in between), and a `payments` row keyed on `payment_intent` (or the invoice id) so the pair of events counts once. `billing_reason: 'subscription_create'` is **ignored** — that is the checkout handler's. |
+| `customer.subscription.created` / `.updated` | mirror Stripe: `plan` from the subscription's `metadata.plan` (put there by checkout via `subscription_data.metadata`; an unknown/free value keeps the row's plan), `seats = planSeats(plan)`, `status` via `trialing/active/past_due → active`, `unpaid/canceled/incomplete_expired → cancelled`, `paused → expired` (`incomplete` is not mirrored), `expiry_date` = `current_period_end` (top level or per item) + grace. A plan change made in Stripe's billing portal therefore lands here without a purchase. |
+| `customer.subscription.deleted` | `status='cancelled'` |
+| `invoice.payment_failed` | a `payments` row with `status='failed'`; the plan is read from the invoice's subscription details (an Invoice has no `metadata.plan` of its own) or the row. Never a 500 — Stripe would retry it for days. |
+
+Both Invoice shapes are read: `subscription` / `subscription_details` (older API versions)
+and `parent.subscription_details` (2025-03-31+); likewise `current_period_end` on the
+Subscription or on its items. An event for a subscription nobody here has is logged
+and acknowledged (retrying cannot help).
 
 **Public endpoints already in `app.js` (do NOT redefine):** `GET /api/health`,
 `GET /api/stats` → `{ users, downloads }` where `users = COUNT(users)` and
@@ -535,9 +579,10 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
 
 `utils/jwt.js`:
 ```
-signAccessToken(user) → 7d        verifyAccess(token)
-signAdminToken(user)  → 8h        verifyAdmin(token)
-  signEmailToken(user)  → 1h        verifyEmailToken(token)
+signAccessToken(user, session) → 15m   verifyAccess(token)   // `sid` = session.id; throws with no session
+signAdminToken(user, session)  → 15m   verifyAdmin(token)
+signRootToken(user, session)   → 15m   verifyRoot(token)
+signEmailToken(user)  → 1h        verifyEmailToken(token)
 signResetToken(user)  → 1h
 signLicenseToken(payload) → 24h   verifyLicense(token)
 generateRefreshToken() → { token, hash }   hashRefreshToken(token) → hex

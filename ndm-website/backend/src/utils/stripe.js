@@ -101,6 +101,15 @@ if (config.isBillingDisabled) {
           },
         ],
         metadata: { userId: String(user._id || user.id), plan, billingCycle },
+        // The same three facts on the Subscription object itself. Session
+        // metadata only travels with checkout.session.completed; every later
+        // event about this customer — renewals, plan changes made in the
+        // billing portal, cancellations — carries the Subscription, and the
+        // webhook needs to know which of OUR plans it is without guessing
+        // from a price id (routes/webhooks.js).
+        subscription_data: {
+          metadata: { userId: String(user._id || user.id), plan, billingCycle },
+        },
         success_url: successUrl,
         cancel_url: cancelUrl,
         // Let Stripe apply a promotion code: either the one the user typed

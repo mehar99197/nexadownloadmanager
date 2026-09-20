@@ -12,18 +12,57 @@ function basePayload(user) {
   };
 }
 
-function signAccessToken(user) {
-  return jwt.sign({ ...basePayload(user), typ: 'access' }, config.JWT_SECRET, { expiresIn: '7d' });
+// How long a bearer token is believed without going back to the database.
+//
+// It used to be seven days for the site and the whole cookie lifetime for the
+// panels, which made "revoke sessions" a promise the server could not keep:
+// deleting the session rows stopped the holder minting a NEW token at
+// /refresh, and did nothing to the one already in their hand. Every gate now
+// checks the token's session row on every request (the `sid` claim below), so
+// revocation is immediate regardless of this number — it is the second layer,
+// bounding what a token proves on its own, and fifteen minutes is the longest
+// any client has to go without asking. The SPAs already refresh on a 401, so
+// nobody sees it.
+const BEARER_TTL = '15m';
+
+// Every bearer token names the session row it was minted for. The gates
+// (middleware/auth.js, middleware/adminAuth.js) refuse a token whose row is
+// gone, so signing out, changing a password, being banned or having an admin
+// revoke your sessions ends access at once — not when the JWT expires.
+//
+// Required, never optional: a token without a session is precisely the kind
+// nothing can ever take back, so a caller that has none is a bug, and this
+// throws instead of quietly minting one.
+function sessionClaim(session) {
+  const sid = Number(session && session.id);
+  if (!Number.isInteger(sid) || sid <= 0)
+    throw new Error('a bearer token must be bound to a session row');
+  return { sid };
 }
 
-function signAdminToken(user) {
-  return jwt.sign({ ...basePayload(user), typ: 'admin' }, config.JWT_ADMIN_SECRET, { expiresIn: '8h' });
+function signAccessToken(user, session) {
+  return jwt.sign(
+    { ...basePayload(user), ...sessionClaim(session), typ: 'access' },
+    config.JWT_SECRET, { expiresIn: BEARER_TTL }
+  );
+}
+
+function signAdminToken(user, session) {
+  return jwt.sign(
+    { ...basePayload(user), ...sessionClaim(session), typ: 'admin' },
+    config.JWT_ADMIN_SECRET, { expiresIn: BEARER_TTL }
+  );
 }
 
 // Root/creator sessions are a distinct token family signed with their own
-// secret, and expire sooner than the 8h staff session.
-function signRootToken(user) {
-  return jwt.sign({ ...basePayload(user), typ: 'root' }, config.JWT_ROOT_SECRET, { expiresIn: '4h' });
+// secret. Same TTL as the others: the creator's refresh cookie is the short
+// one (4h against the staff panel's 8h), which is where the tier's tighter
+// lifetime is enforced.
+function signRootToken(user, session) {
+  return jwt.sign(
+    { ...basePayload(user), ...sessionClaim(session), typ: 'root' },
+    config.JWT_ROOT_SECRET, { expiresIn: BEARER_TTL }
+  );
 }
 
 function signEmailToken(user) {
@@ -135,4 +174,5 @@ module.exports = {
   verifyAccess, verifyAdmin, verifyRoot, verifyEmailToken, verifyResetToken, verifyLicense,
   resetTokenMatches,
   generateRefreshToken, hashRefreshToken,
+  BEARER_TTL,
 };

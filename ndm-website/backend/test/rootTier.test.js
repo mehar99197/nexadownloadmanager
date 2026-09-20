@@ -22,25 +22,27 @@ const { isRootUser } = require('../src/middleware/adminAuth');
 
 const staff = { id: 7, email: 'staff@example.test', role: 'admin' };
 const creator = { id: 1, email: 'creator@example.test', role: 'root' };
+// The user_sessions row each token is bound to (H-08); only the id matters here.
+const session = { id: 3 };
 
 test('root and admin tokens are separate families', () => {
-  assert.equal(verifyRoot(signRootToken(creator)).typ, 'root');
-  assert.equal(verifyAdmin(signAdminToken(staff)).typ, 'admin');
+  assert.equal(verifyRoot(signRootToken(creator, session)).typ, 'root');
+  assert.equal(verifyAdmin(signAdminToken(staff, session)).typ, 'admin');
 });
 
 test('a staff-admin token can never verify as a root token', () => {
-  const adminToken = signAdminToken(staff);
+  const adminToken = signAdminToken(staff, session);
   assert.throws(() => verifyRoot(adminToken));
 });
 
 test('a staff token claiming role=root still cannot verify as root', () => {
   // The role in the payload is decoration; the signing secret is the boundary.
-  const forged = signAdminToken({ ...staff, role: 'root' });
+  const forged = signAdminToken({ ...staff, role: 'root' }, session);
   assert.throws(() => verifyRoot(forged));
 });
 
 test('a root token cannot verify as an admin token', () => {
-  assert.throws(() => verifyAdmin(signRootToken(creator)));
+  assert.throws(() => verifyAdmin(signRootToken(creator, session)));
 });
 
 test('isRootUser requires BOTH the stored role and the configured email', () => {

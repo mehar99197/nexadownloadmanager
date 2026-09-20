@@ -136,7 +136,7 @@ export default function Releases() {
     try {
       // Raw binary body, not multipart: the server streams it straight to disk
       // and hashes it in flight, so nothing is ever buffered whole in memory.
-      await unwrap(api.put(`/admin/releases/${release.id}/artifact/${os}`, file, {
+      const result = await unwrap(api.put(`/admin/releases/${release.id}/artifact/${os}`, file, {
         headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
         timeout: 0,
         onUploadProgress: (event) => {
@@ -144,7 +144,15 @@ export default function Releases() {
           setProgress((p) => ({ ...p, [os]: Math.round((event.loaded / total) * 100) }));
         },
       }));
-      setNotice(`${file.name} uploaded. Checksum computed automatically.`);
+      // The server reads the version the installer declares about itself and
+      // refuses a mismatch outright (that arrives as an error below). A build
+      // it could not read is accepted but flagged, and that flag is the one
+      // thing worth showing here — a checksum alone cannot catch the wrong file.
+      if (result?.versionWarning) {
+        setNotice(`${file.name} uploaded, but its version could not be verified: ${result.versionWarning}`);
+      } else {
+        setNotice(`${file.name} uploaded — build ${result?.artifactVersion || release.version} verified, checksum computed automatically.`);
+      }
       await refreshAnd(release.id);
     } catch (err) {
       setError(errorMessage(err, 'Upload failed.'));

@@ -192,7 +192,7 @@ async function retireLegacyRecoveryCodes(user) {
  * @param realm         'admin' | 'root'
  * @param secret        that realm's JWT secret (challenge signing)
  * @param eligible(u)   is this user allowed to sign in to this realm at all?
- * @param finishLogin(res, user) → response data once both factors passed
+ * @param finishLogin(req, res, user) → response data once both factors passed
  * @param audit(req, action, user, summary)
  * @param gate          the realm's requireAdmin / requireRoot middleware array
  */
@@ -237,7 +237,7 @@ function mountTwoFactor(router, { realm, secret, eligible, finishLogin, audit, g
             `${user.email}: retired ${retired} recovery code${retired === 1 ? '' : 's'} hashed before bcrypt — generate a new set from Security`);
         }
       }
-      return ok(res, await finishLogin(res, user));
+      return ok(res, await finishLogin(req, res, user));
     })
   );
 

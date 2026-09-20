@@ -19,11 +19,11 @@ process.env.RATE_LIMIT_DISABLED = '1';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const zlib = require('node:zlib');
+const bcrypt = require('bcryptjs');
 const srv = require('./helpers/testServer');
 
 const Release = require('../src/models/Release');
 const { query } = require('../src/config/db');
-const { signAdminToken } = require('../src/utils/jwt');
 
 // ── a minimal but structurally real .deb ────────────────────────────────────
 
@@ -67,13 +67,23 @@ function makeDeb(version) {
   ]);
 }
 
-async function makeAdmin() {
+// Signed in through the real endpoint: a bearer is bound to the session row
+// the sign-in opens (H-08), so one minted by hand with no row would be refused.
+async function makeAdmin(baseUrl) {
   const email = `admin${Date.now()}@example.test`;
-  const res = await query(
+  const password = 'release-admin-password';
+  await query(
     'INSERT INTO users (name, email, password_hash, role, email_verified) VALUES (?, ?, ?, ?, 1)',
-    ['Release Admin', email, 'x', 'admin']
+    ['Release Admin', email, await bcrypt.hash(password, 4), 'admin']
   );
-  return signAdminToken({ id: res.insertId, email, role: 'admin' });
+  const res = await fetch(`${baseUrl}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.data?.token) throw new Error(`admin login failed: ${JSON.stringify(body)}`);
+  return body.data.token;
 }
 
 /** Raw octet-stream PUT, the way the admin panel uploads an installer. */
@@ -104,7 +114,7 @@ test('release version invariant', async (t) => {
 
   let token;
   try {
-    token = await makeAdmin();
+    token = await makeAdmin(baseUrl);
   } catch (err) {
     t.skip(`could not seed an admin: ${err.message}`);
     await srv.stop();

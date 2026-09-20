@@ -23,27 +23,50 @@ const { ok, fail } = require('../utils/respond');
 const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
-const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
+const {
+  storeUpload, removeStored, artifactFor, resolveStoredPath,
+} = require('../utils/releaseFiles');
+const { artifactVersionFromFile, versionsMatch } = require('../utils/artifactVersion');
 const { ctr } = require('../utils/ads');
 const { publicUser } = require('../utils/userView');
 
 // Admin SPA session: opaque token in an httpOnly cookie scoped to /api/admin;
-// only its SHA-256 hash is stored (users.admin_refresh_token_hash). Lifetime
-// matches the 8h admin JWT so a page refresh can mint a new bearer token.
+// only its SHA-256 hash is stored, as a user_sessions row of realm 'admin'
+// (the old single slot, users.admin_refresh_token_hash, is retired — see
+// config/schema.js). Eight hours is the whole sitting: the bearer token is
+// short-lived (utils/jwt.js) and /refresh below mints a new one from the
+// cookie for as long as the row is alive, so a page reload never signs the
+// admin out and a revocation signs them out at once.
 const ADMIN_REFRESH_COOKIE = 'ndm_admin_refresh';
 const ADMIN_REFRESH_PATH = '/api/admin';
+const ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
 
 function adminRefreshCookieOptions() {
   return {
     httpOnly: true, sameSite: 'lax', secure: config.isProd,
-    maxAge: 8 * 60 * 60 * 1000, path: ADMIN_REFRESH_PATH,
+    maxAge: ADMIN_SESSION_MS, path: ADMIN_REFRESH_PATH,
   };
 }
 
-async function issueAdminSession(res, user) {
+function adminSessionExpiry() {
+  return new Date(Date.now() + ADMIN_SESSION_MS);
+}
+
+function clearAdminCookie(res) {
+  res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+}
+
+// Open a NEW panel session for this browser and hand the row back, so the
+// bearer can be minted against it. Same shape as routes/auth.js openSession.
+async function issueAdminSession(req, res, user) {
   const { token: refreshToken, hash } = generateRefreshToken();
-  await User.update(user.id, { adminRefreshTokenHash: hash });
+  const session = await UserSession.create({
+    userId: user.id, tokenHash: hash, realm: 'admin',
+    userAgent: req.get('user-agent') || null, ip: req.ip || null,
+    expiresAt: adminSessionExpiry(),
+  });
   res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, adminRefreshCookieOptions());
+  return session;
 }
 
 function adminIdentity(user) {
@@ -55,6 +78,7 @@ const {
   updateUserSchema, updateReviewSchema, updateSubscriptionSchema,
   createSubscriptionSchema, reviewListQuerySchema, bulkReviewSchema,
   createReleaseSchema, updateReleaseSchema, releaseArtifactParamsSchema, listQuerySchema,
+  idParamSchema,
 } = require('../schemas/admin.schema');
 const {
   createAdSchema, updateAdSchema, adIdParamSchema,
@@ -114,13 +138,13 @@ router.post(
         challenge: signChallenge(user, { secret: config.JWT_ADMIN_SECRET, realm: 'admin' }),
       });
     }
-    return ok(res, await finishAdminLogin(res, user));
+    return ok(res, await finishAdminLogin(req, res, user));
   })
 );
 
-async function finishAdminLogin(res, user) {
-  await issueAdminSession(res, user);
-  return { token: signAdminToken(user), admin: adminIdentity(user) };
+async function finishAdminLogin(req, res, user) {
+  const session = await issueAdminSession(req, res, user);
+  return { token: signAdminToken(user, session), admin: adminIdentity(user) };
 }
 
 mountTwoFactor(router, {
@@ -132,25 +156,44 @@ mountTwoFactor(router, {
   audit: (req, action, user, summary) => audit({ admin: req.admin || user }, action, 'user', user.id, summary),
 });
 
-// Mint a fresh admin bearer token from the ndm_admin_refresh cookie (rotated on
-// every call). Open like /login: IP gate + login limiter, no bearer required.
+// Mint a fresh admin bearer token from the ndm_admin_refresh cookie (rotated
+// in place on every call, so the session row — and the `sid` every bearer
+// carries — stays the same). Open like /login: IP gate + login limiter, no
+// bearer required.
 router.post(
   '/refresh', adminRefreshLimiter, ipWhitelist,
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[ADMIN_REFRESH_COOKIE];
     if (!cookie) return fail(res, 'NO_REFRESH_TOKEN', 'Missing admin refresh token', 401);
-    const user = await User.findByAdminRefreshTokenHash(hashRefreshToken(cookie));
-    if (!user || user.role !== 'admin') {
-      res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+    const hash = hashRefreshToken(cookie);
+    const invalid = () => {
+      clearAdminCookie(res);
       return fail(res, 'INVALID_REFRESH_TOKEN', 'Admin session is invalid or has expired', 401);
+    };
+
+    const session = await UserSession.findLiveByTokenHash(hash, 'admin');
+    if (!session) return invalid();
+    const user = await User.findById(session.user_id);
+    // A demoted admin's cookie is dead, not dormant: drop the row so it is
+    // not sitting there waiting for a re-promotion to revive it.
+    if (!user || user.role !== 'admin') {
+      await UserSession.removeByTokenHash(hash);
+      return invalid();
     }
     if (user.banned) {
-      await User.update(user.id, { adminRefreshTokenHash: null });
-      res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+      await UserSession.removeByTokenHash(hash);
+      clearAdminCookie(res);
       return fail(res, 'FORBIDDEN', 'Account is banned', 403);
     }
-    await issueAdminSession(res, user);
-    return ok(res, { token: signAdminToken(user) });
+
+    const { token: rt, hash: newHash } = generateRefreshToken();
+    // Conditional on the OLD hash: two tabs refreshing at once cannot both
+    // win, and the loser is told to sign in rather than handed a cookie that
+    // the winner's rotation has already superseded.
+    if (!(await UserSession.rotate(session.id, hash, newHash, adminSessionExpiry())))
+      return invalid();
+    res.cookie(ADMIN_REFRESH_COOKIE, rt, adminRefreshCookieOptions());
+    return ok(res, { token: signAdminToken(user, session) });
   })
 );
 
@@ -158,11 +201,10 @@ router.post(
   '/logout', ipWhitelist,
   asyncHandler(async (req, res) => {
     const cookie = req.cookies && req.cookies[ADMIN_REFRESH_COOKIE];
-    if (cookie) {
-      const user = await User.findByAdminRefreshTokenHash(hashRefreshToken(cookie));
-      if (user) await User.update(user.id, { adminRefreshTokenHash: null });
-    }
-    res.clearCookie(ADMIN_REFRESH_COOKIE, { path: ADMIN_REFRESH_PATH });
+    // Only THIS browser's panel session ends; the bearer it issued dies with
+    // the row, since the gate re-checks the row on every request.
+    if (cookie) await UserSession.removeByTokenHash(hashRefreshToken(cookie));
+    clearAdminCookie(res);
     return ok(res, { loggedOut: true });
   })
 );
@@ -316,9 +358,9 @@ router.get(
 );
 
 router.get(
-  '/users/:id/details',
+  '/users/:id/details', validate(idParamSchema),
   asyncHandler(async (req, res) => {
-    const user = await User.findById(Number(req.params.id));
+    const user = await User.findById(req.params.id);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     // Reading is gated like writing: a fellow admin's or the creator's account
     // is the root panel's business, not a staff admin's.
@@ -354,8 +396,11 @@ router.put(
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
       if (currentSubscription) {
         // An explicit admin plan change ends any running trial so lazy trial
-        // expiry cannot silently undo it later.
-        await Subscription.updateByUserId(user.id, { plan, seats: planSeats(plan), trialEndsAt: null });
+        // expiry cannot silently undo it later. The NEWEST row and only that
+        // one — it is the row every reader shows, and the row PUT
+        // /subscriptions/:id edits; writing every row for the account made
+        // the two paths disagree about which subscription is "the" one.
+        await Subscription.update(currentSubscription.id, { plan, seats: planSeats(plan), trialEndsAt: null });
       } else {
         await Subscription.create({
           userId: user.id,
@@ -382,10 +427,11 @@ router.post(
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
+    // refreshTokenHash is the pre-sessions site cookie slot, still honoured
+    // once by /auth/refresh, so it goes with the rows.
     await User.update(user.id, {
       passwordHash: await bcrypt.hash(req.body.password, 12),
       refreshTokenHash: null,
-      adminRefreshTokenHash: null,
     });
     await UserSession.removeAllForUser(user.id);
     await audit(req, 'user.password_reset', 'user', user.id, `Reset password for ${user.email}`);
@@ -393,13 +439,16 @@ router.post(
   })
 );
 
+// Sign the account out everywhere, and mean it: every bearer token is bound
+// to one of these rows and refused once it is gone, so the count reported
+// here is the number of browsers that lost access with this request.
 router.post(
-  '/users/:id/revoke-sessions',
+  '/users/:id/revoke-sessions', validate(idParamSchema),
   asyncHandler(async (req, res) => {
-    const user = await User.findById(Number(req.params.id));
+    const user = await User.findById(req.params.id);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    await User.update(user.id, { refreshTokenHash: null, adminRefreshTokenHash: null });
+    await User.update(user.id, { refreshTokenHash: null });
     const sessions = await UserSession.removeAllForUser(user.id);
     await audit(req, 'user.sessions_revoked', 'user', user.id,
       `Revoked sessions for ${user.email}`, { sessions });
@@ -424,11 +473,24 @@ router.get(
   })
 );
 
+// One subscription per account. Every reader in the codebase takes the
+// account's newest row and ignores the rest, so a second row would be one
+// that keeps `status = 'active'` and its own licence key for ever while
+// nothing on the site ever shows it — and /license/validate would honour that
+// key regardless. Registration already gives every account a free row, so
+// this route is for the rare account that has none; anything else is an edit.
 router.post(
   '/subscriptions', validate(createSubscriptionSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findById(req.body.userId);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    const existing = (await Subscription.findByUserId(user.id))[0];
+    if (existing) {
+      return fail(res, 'SUBSCRIPTION_EXISTS',
+        `${user.email} already has a ${existing.plan} subscription (#${existing.id}) — edit that one instead of creating a second.`,
+        409, { subscriptionId: existing.id, plan: existing.plan, status: existing.status });
+    }
     const plan = req.body.plan;
     const subscription = await Subscription.create({
       userId: user.id,
@@ -447,9 +509,13 @@ router.post(
 router.put(
   '/subscriptions/:id', validate(updateSubscriptionSchema),
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
+    const id = req.params.id;
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    // The subscription is the account's: a staff admin may no more alter the
+    // creator's plan than the creator's account. user_id is a foreign key, so
+    // the owner always exists.
+    if (blockedStaffTarget(req, res, await User.findById(subscription.user_id))) return undefined;
 
     const { plan, status, seats } = req.body;
     const updates = {};
@@ -467,9 +533,9 @@ router.put(
 );
 
 router.post(
-  '/subscriptions/:id/revoke-device',
+  '/subscriptions/:id/revoke-device', validate(idParamSchema),
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
+    const id = req.params.id;
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     // Drop every live seat lease. The activation rows stay, so the devices are
@@ -580,11 +646,26 @@ router.put(
  *
  * The SHA-256 is computed while streaming and stored, so the desktop updater's
  * checksum enforcement works for uploads without anyone typing a hash by hand.
+ *
+ * The checksum says the bytes arrived intact; it cannot say they are the
+ * RIGHT bytes. WP-03 was exactly that: /download advertised 0.3.0 while
+ * serving nexa_0.2.0_amd64.deb with a perfectly matching hash, because nothing
+ * compared the installer's own idea of its version with the release row it
+ * was attached to. So once the file is on disk, the version it declares about
+ * itself (utils/artifactVersion.js — the PE version resource, the .deb control
+ * file) is read back and checked against the row:
+ *
+ *   - a definite mismatch is refused with 409 VERSION_MISMATCH, the file is
+ *     removed and the row is left exactly as it was;
+ *   - a version that cannot be read is accepted — refusing would block every
+ *     format the reader does not know — but the response and the audit row
+ *     carry a `versionWarning` saying it went unchecked, so the operator can
+ *     look rather than trust.
  */
 router.put(
   '/releases/:id/artifact/:os', validate(releaseArtifactParamsSchema),
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
+    const id = req.params.id;
     const { os } = req.params;
     const release = await Release.findById(id);
     if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
@@ -603,6 +684,16 @@ router.put(
       throw err;
     }
 
+    const declared = await artifactVersionFromFile(resolveStoredPath(stored.file), os);
+    if (declared.version && !versionsMatch(declared.version, release.version)) {
+      await removeStored(stored.file);
+      return fail(res, 'VERSION_MISMATCH',
+        `This installer says it is version ${declared.version}, but the release is ${release.version}. Upload the ${release.version} build, or attach this file to the ${declared.version} release.`,
+        409, { artifactVersion: declared.version, releaseVersion: release.version });
+    }
+    const versionWarning = declared.version ? null
+      : `Could not read a version from the ${os} installer (${declared.reason}); it was not checked against release ${release.version}.`;
+
     // Replacing an artifact: remove the previous file only after the new one is
     // safely on disk, so a failed upload never leaves the release with nothing.
     const previous = os === 'windows' ? release.windows_file : release.linux_file;
@@ -619,9 +710,13 @@ router.put(
     if (previous && previous !== stored.file) await removeStored(previous);
 
     await audit(req, 'release.artifact_uploaded', 'release', id,
-      `Uploaded ${os} installer for v${release.version} (${stored.filename})`,
-      { os, size: stored.size, sha256: stored.sha256 });
-    return ok(res, { ...stored, release: await Release.findById(id) });
+      `Uploaded ${os} installer for v${release.version} (${stored.filename})`
+        + (versionWarning ? ' — version unchecked' : ''),
+      { os, size: stored.size, sha256: stored.sha256, artifactVersion: declared.version, versionWarning });
+    return ok(res, {
+      ...stored, artifactVersion: declared.version, versionWarning,
+      release: await Release.findById(id),
+    });
   })
 );
 
@@ -646,9 +741,9 @@ router.delete(
 );
 
 router.delete(
-  '/releases/:id',
+  '/releases/:id', validate(idParamSchema),
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
+    const id = req.params.id;
     const release = await Release.findById(id);
     if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
     if (release.is_latest) return fail(res, 'LATEST_RELEASE', 'Set another release as latest before deleting this one', 400);

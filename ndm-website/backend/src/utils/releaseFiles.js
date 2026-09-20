@@ -153,6 +153,23 @@ async function removeStored(storedName) {
 }
 
 /**
+ * Is the artifact's file actually on disk?
+ *
+ * The release row can name a file that is gone — a wiped upload directory, a
+ * restore from a database backup without the files, a stored name edited by
+ * hand. sendFile() answers that with a 404 already; this lets the route ask
+ * BEFORE it decides anything else about the request, such as whether to count
+ * it as a download. A broken release used to count every attempt to fetch it.
+ */
+function artifactOnDisk(artifact) {
+  try {
+    return Boolean(artifact) && fs.statSync(artifact.absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Serve a file with byte-range support.
  *
  * NDM is a download manager: its own users — and the app's updater — expect to
@@ -217,6 +234,6 @@ function sendFile(req, res, artifact) {
 
 module.exports = {
   OS_KEYS, ALLOWED_EXTENSIONS,
-  uploadDir, ensureUploadDir, storeUpload, artifactFor, removeStored, sendFile,
+  uploadDir, ensureUploadDir, storeUpload, artifactFor, artifactOnDisk, removeStored, sendFile,
   safeExtension, safeDisplayName, resolveStoredPath,
 };
