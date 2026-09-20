@@ -35,8 +35,8 @@ it works.
 | Medium | 15 | 9 | 6 |
 | Low | 10 | 8 | 2 |
 | Test debt | 2 | 0 | 2 |
-| Operational | 3 | 2 | 1 |
-| **Total** | **38** | **19** | **19** |
+| Operational | 3 | 3 (1 in progress) | 0 |
+| **Total** | **38** | **20** | **18** |
 
 Baseline at audit time: backend unit tests **86/86 pass**; full backend suite
 **95 pass / 5 skipped** with no database; frontend **23/23 pass**; admin +
@@ -1007,7 +1007,7 @@ without fighting.
 
 ## O-03 — The integration tests never actually run
 
-**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `npm test` on MariaDB 11.8.9 locally (288 tests, 0 skipped) and the `website` GitHub Actions workflow on `windows-fixes-v3` — a `mariadb:11.8` service, Node 22, and a summary check that fails the job unless ≥ 200 tests ran with 0 skipped
+**Status:** IN PROGRESS — code complete, CI run blocked by the GitHub account &nbsp;|&nbsp; **Verified by:** `npm test` on MariaDB 11.8.9 locally (288 tests, 0 skipped); the `website` workflow is in place and parses, but its first run (`35515478457`) was refused before any job started: *"The job was not started because recent account payments have failed or your spending limit needs to be increased"* — every `build.yml` run on `main` since 2026-09-16 has failed the same way. The repository is private, so Actions minutes are billed. **Owner action:** GitHub → Settings → Billing & plans (fix the payment or raise the spending limit), or make the repository public; then re-run the workflow. Nothing in the code is waiting on it.
 
 `npm test` reports **95 pass / 5 skipped** and exits green. All five skips are
 the integration suites — `api`, `smoke`, `rateLimit`, `downloadCounter`,
@@ -1101,12 +1101,12 @@ Things that are supposed to stop someone and do not.
   only two of the three slots), and CONTRACT.md documents every new contract.
 - **Opened:** H-08.
 
-### Phase 3 — Test infrastructure  &#9745; **DONE 2026-09-20**
+### Phase 3 — Test infrastructure  &#9745; **code DONE 2026-09-20** — the CI run itself waits on the GitHub billing fix (O-03)
 Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 - [x] O-03a — a reachable database for the test run (portable MariaDB 11.8.9 on :3399; 0 skipped)
 - [x] O-03b — `backend/test/tools/testdb.sh` + a README section, run end-to-end from a cold start
 - [x] O-03c — `.github/workflows/website.yml`: `npm test` against `mariadb:11.8` on every branch, ≥ 200 tests / 0 skipped enforced
-- **Verified:** 0 skipped locally on a cold start and in the GitHub Actions run on this branch.
+- **Verified:** 0 skipped locally on a cold start. The GitHub Actions run is blocked at the account level (see O-03); the moment billing is fixed, the existing run can be re-run from the Actions tab and this line updated.
 
 ### Phase 4 — Correctness  &#9745; **DONE 2026-09-20**
 - [x] H-08 — session-bound bearers for all three realms (`sid` + a live-row check in every gate, 15-min TTL); the `KNOWN GAP` tripwire in `passwordChangeSessions` flipped. Closes M-01.
@@ -1152,5 +1152,5 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 | 2026-09-19 | **Phase 1 done** — H-01, L-04, H-02 fixed and verified (201 tests, 188 pass, no new failures). Opened M-14, M-15, L-10. 37 findings, 3 fixed. |
 | 2026-09-19 | Phase 2's adversarial review surfaced H-08: `requireAuth` never checks `user_sessions`, so every "revoke sessions" action is a no-op for the 7-day life of the access token. Blocks M-01. 38 findings. |
 | 2026-09-20 | **Phase 2 done** — H-05, H-03, M-02, M-03 fixed; M-01 fixed as far as a route can be (access-token half waits on H-08). Password change moved to `POST /auth/change-password`. 252 tests / 239 pass. 7 fixed. |
-| 2026-09-20 | **Phase 3 done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. 19 fixed. |
+| 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
