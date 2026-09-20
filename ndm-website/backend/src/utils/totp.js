@@ -6,10 +6,15 @@
  * The secret is stored encrypted (AES-256-GCM) so a database dump alone does
  * not let an attacker mint codes; the key is derived from TOTP_ENCRYPTION_KEY
  * (falls back to the admin JWT secret, which is already a deployment secret).
- * Recovery codes are stored as SHA-256 hashes, like refresh tokens.
+ * Recovery codes are stored as bcrypt hashes, like passwords: they are the one
+ * credential here that a database dump would otherwise let an attacker grind
+ * through offline. Rows enrolled before that change hold SHA-256; those still
+ * verify until routes/twoFactor.js retires them (see consumeRecoveryCode).
  */
 
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+
 const config = require('../config/env');
 
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -127,39 +132,110 @@ function decryptSecret(stored) {
 /* --------------------------------------------------------- recovery */
 
 const RECOVERY_COUNT = 8;
+const RECOVERY_LENGTH = 10;
+// Lower-case letters and digits: what a person reads off a printout and types
+// back without wondering about case. Ten independent uniform picks from 36
+// symbols carry log2(36^10) ≈ 51.7 bits — the full entropy of a code this shape.
+const RECOVERY_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+// Passwords use cost 12; recovery codes get 10 — the OWASP floor, and plenty
+// for ~52 random bits that no dictionary helps with. The price is paid on a
+// WRONG code, which bcrypt-compares against every stored entry in series:
+// 0.1–0.2 s each on the machines measured, so one bad attempt costs the event
+// loop 1–2 s. That is bounded rather than free — twoFactorLimiter allows ten
+// attempts per address per quarter hour, and consumeRecoveryCode refuses
+// anything that is not code-shaped before paying a single compare.
+const RECOVERY_BCRYPT_COST = 10;
+// Rows enrolled before recovery codes moved to bcrypt hold bare SHA-256 hex.
+// bcrypt output always starts with "$2", so the two shapes cannot be confused.
+// Legacy entries verify until routes/twoFactor.js retires them (the account's
+// next authenticator sign-in, or a regenerate); this branch can go once no
+// staff row holds one.
+const LEGACY_SHA256_HEX = /^[0-9a-f]{64}$/;
+// Exactly what bcryptjs parses: "$2", a revision letter, "$", a two-digit
+// cost, "$", then 22 salt + 31 digest characters in bcrypt's own base64
+// alphabet — 60 characters. Anything else in the column is corruption.
+const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 
-function hashRecoveryCode(code) {
-  const normalized = String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  return crypto.createHash('sha256').update(normalized).digest('hex');
+/** Dashes, spaces and case are for humans; only the alphanumerics are the code. */
+function normalizeRecoveryCode(code) {
+  return String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** Eight one-time codes like "k7f3q-9x2mp"; only their hashes are stored. */
-function generateRecoveryCodes() {
-  const codes = [];
-  for (let i = 0; i < RECOVERY_COUNT; i += 1) {
-    const raw = crypto.randomBytes(8).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10)
-      .padEnd(10, '0');
-    codes.push(`${raw.slice(0, 5)}-${raw.slice(5, 10)}`);
+/** One plaintext code like "k7f3q-9x2mp". */
+function randomRecoveryCode() {
+  // One crypto.randomInt per character: uniform over the alphabet, with the
+  // rejection sampling done inside Node, so there is no modulo bias to reason
+  // about. The previous generator lower-cased base64url output instead, which
+  // folded A-Z onto a-z and silently threw away a chunk of the 64 bits it
+  // started from.
+  let raw = '';
+  for (let i = 0; i < RECOVERY_LENGTH; i += 1) {
+    raw += RECOVERY_ALPHABET[crypto.randomInt(RECOVERY_ALPHABET.length)];
   }
-  return { codes, hashes: codes.map(hashRecoveryCode) };
+  return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+}
+
+/** bcrypt hash of the normalised code — the only form that reaches the database. */
+async function hashRecoveryCode(code) {
+  return bcrypt.hash(normalizeRecoveryCode(code), RECOVERY_BCRYPT_COST);
+}
+
+/** Eight one-time codes; the caller shows `codes` once and stores `hashes`. */
+async function generateRecoveryCodes() {
+  const codes = Array.from({ length: RECOVERY_COUNT }, () => randomRecoveryCode());
+  const hashes = await Promise.all(codes.map((code) => hashRecoveryCode(code)));
+  return { codes, hashes };
+}
+
+/** Does one stored entry match the normalised code? Never throws on odd data. */
+async function recoveryEntryMatches(entry, normalized) {
+  const stored = typeof entry === 'string' ? entry : '';
+  if (LEGACY_SHA256_HEX.test(stored)) {
+    const digest = crypto.createHash('sha256').update(normalized).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(stored), Buffer.from(digest));
+  }
+  // A corrupted entry must fail itself — not the whole login request, and not
+  // the valid entries after it. The shape check is the cheap part; the
+  // try/catch is the guarantee, because bcryptjs reports a hash it cannot
+  // parse by rejecting rather than returning false, and a 60-character entry
+  // that starts with "$2" but carries a bad revision, cost or salt gets past
+  // its own length check and throws from inside compare.
+  if (!BCRYPT_HASH.test(stored)) return false;
+  try {
+    return await bcrypt.compare(normalized, stored);
+  } catch {
+    return false;
+  }
+}
+
+/** Is this stored entry a pre-bcrypt SHA-256 one? routes/twoFactor.js retires those. */
+function isLegacyRecoveryHash(entry) {
+  return typeof entry === 'string' && LEGACY_SHA256_HEX.test(entry);
 }
 
 /**
- * Consume a recovery code: returns the remaining hashes when it matched, or
- * null when it did not. Each code works exactly once.
+ * Consume a recovery code: resolves to the remaining hashes when it matched,
+ * or null when it did not. Each code works exactly once.
  */
-function consumeRecoveryCode(hashes, code) {
+async function consumeRecoveryCode(hashes, code) {
   const list = Array.isArray(hashes) ? hashes : [];
-  const target = hashRecoveryCode(code);
-  const index = list.findIndex((h) => h.length === target.length
-    && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(target)));
-  if (index === -1) return null;
-  return list.filter((_, i) => i !== index);
+  const normalized = normalizeRecoveryCode(code);
+  // Every code ever issued normalises to exactly RECOVERY_LENGTH characters
+  // (the legacy generator padded to it too), so anything else — typically a
+  // mistyped 6-digit TOTP that fell through to here — cannot match and is not
+  // worth RECOVERY_COUNT bcrypt compares.
+  if (normalized.length !== RECOVERY_LENGTH) return null;
+  for (let i = 0; i < list.length; i += 1) {
+    // Sequential on purpose: stop at the first match rather than pay for all
+    // eight compares on every successful recovery login.
+    if (await recoveryEntryMatches(list[i], normalized)) return list.filter((_, j) => j !== i);
+  }
+  return null;
 }
 
 module.exports = {
   generateSecret, totpAt, verifyTotp, otpauthUrl,
   encryptSecret, decryptSecret,
-  generateRecoveryCodes, consumeRecoveryCode, hashRecoveryCode,
+  generateRecoveryCodes, consumeRecoveryCode, hashRecoveryCode, randomRecoveryCode, isLegacyRecoveryHash,
   base32Encode, base32Decode, STEP_SECONDS, DIGITS, ISSUER, RECOVERY_COUNT,
 };

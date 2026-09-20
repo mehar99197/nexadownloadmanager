@@ -24,6 +24,7 @@ const { requireRoot, rootIpWhitelist, isRootUser } = require('../middleware/admi
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
 const { signRootToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
+const { publicUser } = require('../utils/userView');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const {
   rootLoginSchema, createAdminSchema, updateAdminSchema,
@@ -51,14 +52,6 @@ async function issueRootSession(res, user) {
 
 function rootIdentity(user) {
   return { id: String(user.id), name: user.name, email: user.email, role: user.role };
-}
-
-function safeUser(user) {
-  if (!user) return null;
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
-  } = user;
-  return safe;
 }
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
@@ -170,7 +163,7 @@ router.get(
 
 router.get(
   '/admins',
-  asyncHandler(async (req, res) => ok(res, { admins: (await User.listStaff()).map(safeUser) }))
+  asyncHandler(async (req, res) => ok(res, { admins: (await User.listStaff()).map(publicUser) }))
 );
 
 router.post(
@@ -184,7 +177,7 @@ router.post(
       role: 'admin', emailVerified: true,
     });
     await audit(req, 'admin.created', 'user', user.id, `Created staff admin ${email}`);
-    return ok(res, { admin: safeUser(user) }, 201);
+    return ok(res, { admin: publicUser(user) }, 201);
   })
 );
 
@@ -229,7 +222,7 @@ router.put(
 
     const fresh = await User.findById(user.id);
     await audit(req, 'admin.updated', 'user', user.id, `Updated staff admin ${fresh.email}`, req.body);
-    return ok(res, { admin: safeUser(fresh) });
+    return ok(res, { admin: publicUser(fresh) });
   })
 );
 

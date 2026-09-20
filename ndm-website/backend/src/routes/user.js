@@ -16,22 +16,11 @@ const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
+const { publicUser } = require('../utils/userView');
 
 const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
 const SESSION_HINT_COOKIE = 'ndm_session';
-
-function sanitizeUser(user) {
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
-  } = user;
-  // The site needs to know whether password sign-in is available for this
-  // account without ever seeing the hash: a Google-created account shows
-  // "Set a password" instead of "Change password".
-  safe.hasPassword = Boolean(password_hash);
-  safe.hasGoogle = Boolean(user.google_id);
-  return safe;
-}
 
 function toIso(value) {
   if (!value) return null;
@@ -71,7 +60,7 @@ router.get(
       findUserSubscription(req.user.id), teamMembership(req.user.id),
     ]);
     return ok(res, {
-      user: sanitizeUser(req.user),
+      user: publicUser(req.user),
       subscription: subscriptionSummary(sub),
       team: team ? { role: 'member', ownerName: team.owner_name, plan: team.owner_plan } : null,
     });
@@ -98,7 +87,7 @@ router.put(
     }
     if (Object.keys(updates).length) await User.update(req.user.id, updates);
     const user = await User.findById(req.user.id);
-    return ok(res, { user: sanitizeUser(user) });
+    return ok(res, { user: publicUser(user) });
   })
 );
 

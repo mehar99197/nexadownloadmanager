@@ -117,7 +117,10 @@ async function initSchema() {
   // Control-panel two-factor auth. The TOTP secret is AES-GCM encrypted
   // (utils/totp.js); `totp_enabled` flips only after a first code verifies, so
   // a half-finished setup never locks anyone out. Recovery codes are stored as
-  // a JSON array of SHA-256 hashes and removed one by one as they are used.
+  // a JSON array of bcrypt hashes, removed one by one as they are used; eight
+  // of them are ~520 characters, well inside TEXT. Rows from before that
+  // change hold SHA-256 hex, which still verifies until the account's next
+  // authenticator sign-in retires it (routes/twoFactor.js).
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
