@@ -12,7 +12,7 @@ const UPDATABLE_COLUMNS = new Set([
   'name', 'email', 'password_hash', 'role', 'email_verified', 'banned',
   'google_id', 'avatar_url', 'refresh_token_hash', 'admin_refresh_token_hash',
   'root_refresh_token_hash', 'trial_used', 'totp_secret', 'totp_enabled',
-  'totp_recovery',
+  'totp_recovery', 'totp_last_step',
 ]);
 
 const User = {
@@ -80,6 +80,59 @@ const User = {
     if (sets.length === 0) return;
     vals.push(id);
     await execute(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, vals);
+  },
+
+  /**
+   * Spend a TOTP step: raise users.totp_last_step to `step`, but only from
+   * something lower — or from NULL, an account that has never used a code.
+   * Resolves true when THIS call is the one that took it, false when another
+   * request got there first (or the row is gone).
+   *
+   * It has to be one statement rather than a read, a comparison in JS and an
+   * update(). Every await in routes/twoFactor.js yields the event loop, so two
+   * /login/2fa requests carrying the same six digits both read the row before
+   * either writes, both see an unspent step, and a blind UPDATE lets both
+   * through — the replay the column exists to stop. A real-time phishing proxy
+   * relays the victim's code and fires its own login alongside it by
+   * construction, and behind pm2/cluster the two requests are in different
+   * processes where no JS-side guard could see each other at all. The row is
+   * the only place the check and the write happen together.
+   *
+   * affectedRows answers "did the condition hold", not "did the value move":
+   * mysql2 connects with CLIENT_FOUND_ROWS in its default flag set, so the
+   * count that comes back is MATCHED rows. Nothing here leans on that — when
+   * the WHERE matches, `step` is strictly greater than what was stored, so the
+   * row changes too and either of MySQL's two counts says the same thing.
+   */
+  async spendTotpStep(id, step) {
+    const result = await execute(
+      `UPDATE users SET totp_last_step = ?
+       WHERE id = ? AND (totp_last_step IS NULL OR totp_last_step < ?)`,
+      [step, id, step]
+    );
+    return result.affectedRows > 0;
+  },
+
+  /**
+   * Replace the stored recovery-code set, but only while it still holds
+   * `expected` — the exact column text the caller matched the offered code
+   * against. Resolves true when this call is the one that took it.
+   *
+   * Same race as spendTotpStep, one credential over: two logins offering the
+   * same recovery code each find it in their own snapshot of the row, and two
+   * blind writes of "the set minus that code" would admit both. `<=>` is
+   * MySQL's NULL-safe equality, so a row with no codes yet compares as equal
+   * to null instead of never matching. affectedRows is the matched count here
+   * (see spendTotpStep), and callers only ever pass a `next` that differs from
+   * `expected` in any case, so it reads as "the condition held" whichever of
+   * the two counts the driver is configured for.
+   */
+  async swapRecoveryCodes(id, expected, next) {
+    const result = await execute(
+      'UPDATE users SET totp_recovery = ? WHERE id = ? AND totp_recovery <=> ?',
+      [next, id, expected === undefined ? null : expected]
+    );
+    return result.affectedRows > 0;
   },
 
   async count(filter = {}) {

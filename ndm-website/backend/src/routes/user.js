@@ -16,22 +16,10 @@ const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
+const { publicUser } = require('../utils/userView');
 
-const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
 const SESSION_HINT_COOKIE = 'ndm_session';
-
-function sanitizeUser(user) {
-  const {
-    password_hash, refresh_token_hash, admin_refresh_token_hash, root_refresh_token_hash, ...safe
-  } = user;
-  // The site needs to know whether password sign-in is available for this
-  // account without ever seeing the hash: a Google-created account shows
-  // "Set a password" instead of "Change password".
-  safe.hasPassword = Boolean(password_hash);
-  safe.hasGoogle = Boolean(user.google_id);
-  return safe;
-}
 
 function toIso(value) {
   if (!value) return null;
@@ -71,7 +59,7 @@ router.get(
       findUserSubscription(req.user.id), teamMembership(req.user.id),
     ]);
     return ok(res, {
-      user: sanitizeUser(req.user),
+      user: publicUser(req.user),
       subscription: subscriptionSummary(sub),
       team: team ? { role: 'member', ownerName: team.owner_name, plan: team.owner_plan } : null,
     });
@@ -81,24 +69,12 @@ router.get(
 router.put(
   '/profile', requireAuth, validate(updateProfileSchema),
   asyncHandler(async (req, res) => {
-    const { name, currentPassword, newPassword } = req.body;
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (newPassword !== undefined) {
-      // A Google-created account has no password yet; the session alone is
-      // enough to set the first one. Every account that already has one must
-      // still prove it, so a hijacked tab cannot silently change it.
-      if (req.user.password_hash) {
-        if (!currentPassword)
-          return fail(res, 'VALIDATION_ERROR', 'Current password is required to set a new password', 400);
-        const matches = await bcrypt.compare(currentPassword, req.user.password_hash);
-        if (!matches) return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
-      }
-      updates.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-    }
-    if (Object.keys(updates).length) await User.update(req.user.id, updates);
+    // Name only. Changing the password is POST /auth/change-password: it has to
+    // revoke every other session and keep the caller's, and the refresh cookie
+    // that identifies the caller is scoped to /api/auth — it never arrives here.
+    await User.update(req.user.id, { name: req.body.name });
     const user = await User.findById(req.user.id);
-    return ok(res, { user: sanitizeUser(user) });
+    return ok(res, { user: publicUser(user) });
   })
 );
 

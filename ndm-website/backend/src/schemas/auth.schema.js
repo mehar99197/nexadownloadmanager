@@ -49,6 +49,19 @@ const resetPasswordSchema = {
     .strict(),
 };
 
+// A signed-in user replacing their own password. `currentPassword` is required
+// whenever the account HAS one — enforced in routes/auth.js, not here, because
+// the schema cannot see the account: a Google-created account has no password
+// yet and sets its first with the session alone.
+const changePasswordSchema = {
+  body: z
+    .object({
+      currentPassword: z.string().min(1).optional(),
+      newPassword: strongPassword,
+    })
+    .strict(),
+};
+
 // "Continue with Google": the ID token minted by Google Identity Services in the
 // browser. Length is bounded so a bogus multi-megabyte body is rejected before
 // any crypto work; a real Google ID token is well under 4 KB.
@@ -66,5 +79,6 @@ module.exports = {
   verifyEmailSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
   googleSchema,
 };

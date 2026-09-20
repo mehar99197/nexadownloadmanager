@@ -89,6 +89,7 @@ async function initSchema() {
       admin_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL,
       root_refresh_token_hash VARCHAR(64) NULL DEFAULT NULL,
       trial_used TINYINT(1) NOT NULL DEFAULT 0,
+      totp_last_step BIGINT NULL DEFAULT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_users_google_id (google_id),
@@ -117,10 +118,24 @@ async function initSchema() {
   // Control-panel two-factor auth. The TOTP secret is AES-GCM encrypted
   // (utils/totp.js); `totp_enabled` flips only after a first code verifies, so
   // a half-finished setup never locks anyone out. Recovery codes are stored as
-  // a JSON array of SHA-256 hashes and removed one by one as they are used.
+  // a JSON array of bcrypt hashes, removed one by one as they are used; eight
+  // of them are ~520 characters, well inside TEXT. Rows from before that
+  // change hold SHA-256 hex, which still verifies until the account's next
+  // authenticator sign-in retires it (routes/twoFactor.js).
   await addColumnIfMissing('users', 'totp_secret VARCHAR(255) NULL DEFAULT NULL');
   await addColumnIfMissing('users', 'totp_enabled TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('users', 'totp_recovery TEXT NULL DEFAULT NULL');
+  // The last 30-second TOTP step this account has spent, so a code cannot be
+  // replayed inside the ±1-step window it stays arithmetically valid for
+  // (routes/twoFactor.js). A step is a counter (unix seconds / 30), not a
+  // date: BIGINT stores exactly what the app computes, with no TIMESTAMP range
+  // to think about, and the driver hands it back as a plain number. NULL means
+  // "has never used a code" — which must keep working — so there is no default.
+  // The column is also the lock: User.spendTotpStep raises it with a single
+  // conditional UPDATE, which is the only place two concurrent logins carrying
+  // the same code can be told apart (they are not necessarily even in the same
+  // process). Keep it a plain scalar the database can compare in the WHERE.
+  await addColumnIfMissing('users', 'totp_last_step BIGINT NULL DEFAULT NULL');
 
   // Site sessions: one row per signed-in browser, keyed by the SHA-256 of its
   // refresh token. This replaces users.refresh_token_hash, which was a single

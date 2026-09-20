@@ -4,6 +4,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 
 const config = require('../config/env');
+const { execute } = require('../config/db');
 const User = require('../models/User');
 const UserSession = require('../models/UserSession');
 const Subscription = require('../models/Subscription');
@@ -16,16 +17,17 @@ const {
   sessionRefreshLimiter, verifyEmailLimiter,
 } = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
+const { requireAuth } = require('../middleware/auth');
 const { ok, fail } = require('../utils/respond');
 
 const {
   registerSchema, loginSchema, verifyEmailSchema,
-  forgotPasswordSchema, resetPasswordSchema, googleSchema,
+  forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, googleSchema,
 } = require('../schemas/auth.schema');
 
 const {
   signAccessToken, signEmailToken, signResetToken,
-  verifyEmailToken, verifyResetToken, generateRefreshToken, hashRefreshToken,
+  verifyEmailToken, verifyResetToken, resetTokenMatches, generateRefreshToken, hashRefreshToken,
 } = require('../utils/jwt');
 
 const { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } = require('../utils/email');
@@ -70,6 +72,21 @@ async function openSession(req, res, user) {
   });
   res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
   setSessionHint(res);
+}
+
+// The session row behind the refresh cookie THIS request carries, or null when
+// it carries no live one — an API client, or somebody holding nothing but a
+// stolen access token. The cookie and the bearer token arrive independently
+// and need not name the same account, so the row's owner is re-checked.
+//
+// Only reachable from routes mounted under /api/auth: the cookie is scoped to
+// that path, so anywhere else the browser never sends it and this would always
+// be null. That is why /change-password lives here and not on /user/profile.
+async function callerSession(req, user) {
+  const cookie = req.cookies && req.cookies[REFRESH_COOKIE];
+  if (!cookie) return null;
+  const session = await UserSession.findLiveByTokenHash(hashRefreshToken(cookie));
+  return session && Number(session.user_id) === Number(user.id) ? session : null;
 }
 
 router.post(
@@ -140,12 +157,24 @@ router.post(
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
 
-    if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
-      return fail(res, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', 403);
-
     // Proof of ownership: drop whatever slowdown a guesser had built up, so a
     // burst of wrong passwords never costs the real owner anything afterwards.
+    // Done before the refusals below and not after them on purpose — the
+    // password WAS correct, so there is no attacker left for the per-account
+    // delay to punish, and a banned or unverified owner should not keep paying
+    // for someone else's guessing every time they are turned away.
     clearLoginFailures(email);
+
+    // The ban is enforced HERE and not at the lookup above: refusing before the
+    // bcrypt comparison would answer an anonymous caller who only has a list of
+    // addresses, turning sign-in into an oracle for which accounts are banned.
+    // After the password matches, the caller already owns the account. Same
+    // wording as /auth/google, and it precedes signAccessToken/openSession so a
+    // banned account gets no token and no session row at all.
+    if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+
+    if (!user.email_verified && config.EMAIL_VERIFICATION_REQUIRED)
+      return fail(res, 'EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', 403);
 
     const token = signAccessToken(user);
     await openSession(req, res, user);
@@ -334,20 +363,114 @@ router.post(
   '/reset-password', validate(resetPasswordSchema), resetPasswordLimiter,
   asyncHandler(async (req, res) => {
     const { token, password } = req.body;
+    // One wording for every refusal, so the holder of a dead link is never told
+    // whether it was already spent or simply timed out.
+    const dead = () => fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
+
     let payload;
     try { payload = verifyResetToken(token); }
-    catch { return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400); }
+    catch { return dead(); }
     const user = await User.findById(Number(payload.sub));
-    if (!user) return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
-    await User.update(user.id, {
-      passwordHash: await bcrypt.hash(password, BCRYPT_COST),
-      refreshTokenHash: null,
-      adminRefreshTokenHash: null,
-    });
+    // resetTokenMatches re-checks the token against the password hash it was
+    // minted for (utils/jwt.js): a link that has already been spent no longer
+    // matches. Asking for a NEWER reset email does not retire this one — both
+    // are bound to the same unchanged hash — but only one of the batch can ever
+    // be spent, because the first reset moves the hash and kills the rest.
+    if (!user || !resetTokenMatches(payload, user)) return dead();
+
+    const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+
+    // ...and by the time that hash exists the check above is ~300 ms stale:
+    // bcrypt at cost 12 is that slow, and a second request holding the SAME
+    // link passes the same check inside the window. So the WRITE is the guard,
+    // not the read. It lands only while password_hash is still the value the
+    // token was minted for (null-safe <=>, so the NULL of a Google-created
+    // account compares equal), and InnoDB serialises two of these on one row —
+    // the loser updates nothing and is told the link is dead, which by then it
+    // is. Spelled out here rather than through User.update because that helper
+    // discards affectedRows.
+    // All three single-slot refresh columns go, not two: root_refresh_token_hash
+    // is the creator's control-panel session, re-issued on every /api/root
+    // refresh with no expiry of its own, and it must not be the one session a
+    // password reset leaves standing.
+    const result = await execute(
+      `UPDATE users
+          SET password_hash = ?, refresh_token_hash = NULL,
+              admin_refresh_token_hash = NULL, root_refresh_token_hash = NULL
+        WHERE id = ? AND password_hash <=> ?`,
+      [passwordHash, user.id, user.password_hash]
+    );
+    // Every bcrypt hash carries a fresh salt, so a matched row is always a
+    // changed row: 0 here means the WHERE missed, never that the write was a
+    // no-op the driver declined to count.
+    if (!(result.affectedRows || 0)) return dead();
+
     // A password reset signs the account out EVERYWHERE — that is the point of
     // one, and with per-browser sessions it now has to be said explicitly.
     await UserSession.removeAllForUser(user.id);
     return ok(res, { reset: true });
+  })
+);
+
+/**
+ * POST /auth/change-password — a signed-in user replacing their own password.
+ *
+ * Same consequence as a reset: whoever changes a password is usually locking
+ * somebody else out, so every session opened under the old one dies with it,
+ * along with the three single-slot control-panel cookies. The difference is
+ * that a reset arrives from an email link with no live session to keep, while
+ * this is a signed-in person doing routine hygiene — dumping them on the login
+ * screen only teaches them not to bother. So one session is re-opened for the
+ * browser that asked, and ONLY when it presented a live refresh cookie of its
+ * own: minting one for anyone who merely holds an access token would hand a
+ * stolen 7-day bearer thirty days of fresh persistence, and on an account with
+ * no password yet a lockout primitive it did not have a moment earlier.
+ *
+ * Lives here rather than on PUT /user/profile because the refresh cookie is
+ * scoped to /api/auth and never reaches /api/user — on that path "keep the
+ * caller signed in" could not work, and the two had grown a duplicated copy
+ * of every cookie helper above to try.
+ *
+ * What this cannot do is end the other browsers' ACCESS tokens: requireAuth
+ * checks the JWT and the banned flag and never consults user_sessions, so a
+ * bearer already issued keeps working until it expires (AUDIT.md H-08). The
+ * suite pins that gap so the day it closes, it is noticed.
+ */
+router.post(
+  '/change-password', requireAuth, validate(changePasswordSchema),
+  asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const user = req.user;
+    // A Google-created account has no password yet; the session alone is
+    // enough to set the first one. Every account that already has one must
+    // still prove it, so a hijacked tab cannot silently change it.
+    if (user.password_hash) {
+      if (!currentPassword)
+        return fail(res, 'VALIDATION_ERROR', 'Current password is required to set a new password', 400);
+      if (!(await bcrypt.compare(currentPassword, user.password_hash)))
+        return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
+    }
+
+    // Resolved BEFORE the revocation: afterwards there is no row left to tell
+    // a browser that really held a session from a bare bearer token.
+    const own = await callerSession(req, user);
+
+    await User.update(user.id, {
+      passwordHash: await bcrypt.hash(newPassword, BCRYPT_COST),
+      refreshTokenHash: null, adminRefreshTokenHash: null, rootRefreshTokenHash: null,
+    });
+    await UserSession.removeAllForUser(user.id);
+
+    if (own) {
+      await openSession(req, res, user);
+    } else if (req.cookies && req.cookies[REFRESH_COOKIE]) {
+      // A cookie was sent but no live row stands behind it: say so, rather
+      // than leave the browser advertising a session it no longer has. A
+      // caller that sent nothing is left with nothing.
+      res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+      res.clearCookie(SESSION_HINT_COOKIE, { path: '/' });
+    }
+    return ok(res, { changed: true, sessionKept: Boolean(own) });
   })
 );
 

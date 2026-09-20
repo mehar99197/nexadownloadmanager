@@ -25,6 +25,7 @@ const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license'
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
 const { ctr } = require('../utils/ads');
+const { publicUser } = require('../utils/userView');
 
 // Admin SPA session: opaque token in an httpOnly cookie scoped to /api/admin;
 // only its SHA-256 hash is stored (users.admin_refresh_token_hash). Lifetime
@@ -70,21 +71,17 @@ function monthlyPrice(plan) {
   return 0;
 }
 
-function safeUser(user) {
-  if (!user) return null;
-  const { password_hash, refresh_token_hash, admin_refresh_token_hash, ...safe } = user;
-  return safe;
-}
-
 /**
  * A staff admin may only act on ordinary customer accounts. Banning, resetting
  * or revoking a fellow admin — and above all the creator — is reserved for the
- * root panel (/api/root/admins). A root token passing through here keeps its
- * reach, since req.isRoot is only ever set by the root token family.
+ * root panel (/api/root/admins), and so is reading one: the details view is
+ * the account's whole row. A root token passing through here keeps its reach,
+ * since req.isRoot is only ever set by the root token family. `verb` keeps the
+ * refusal truthful for a read ("view") as well as a write.
  */
-function blockedStaffTarget(req, res, user) {
+function blockedStaffTarget(req, res, user, verb = 'modify') {
   if (req.isRoot || user.role === 'user') return false;
-  fail(res, 'FORBIDDEN', 'Only the creator can modify a control-panel account', 403);
+  fail(res, 'FORBIDDEN', `Only the creator can ${verb} a control-panel account`, 403);
   return true;
 }
 
@@ -270,7 +267,7 @@ router.post(
       expiryDate: planExpiry(plan),
     });
     await audit(req, 'user.created', 'user', user.id, `Created user ${email}`, { role: 'user', plan });
-    return ok(res, { user: safeUser(user), subscription }, 201);
+    return ok(res, { user: publicUser(user), subscription }, 201);
   })
 );
 
@@ -283,7 +280,7 @@ router.get(
       banned: req.query.banned === undefined ? undefined : req.query.banned === 'true',
       emailVerified: req.query.emailVerified === undefined ? undefined : req.query.emailVerified === 'true',
     });
-    return ok(res, users.map(safeUser));
+    return ok(res, users.map(publicUser));
   })
 );
 
@@ -309,7 +306,9 @@ router.get(
 
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...u, plan: sub ? sub.plan : 'free', subscription: sub };
+      // User.list already selects a narrow column set; the projection keeps
+      // that true if the query is ever widened.
+      return { ...publicUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -321,12 +320,15 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    // Reading is gated like writing: a fellow admin's or the creator's account
+    // is the root panel's business, not a staff admin's.
+    if (blockedStaffTarget(req, res, user, 'view')) return undefined;
     const [subscriptions, payments, reviews] = await Promise.all([
       Subscription.findByUserId(user.id),
       Payment.findByUserId(user.id),
       Review.listByUserId(user.id),
     ]);
-    return ok(res, { user: safeUser(user), subscriptions, payments, reviews });
+    return ok(res, { user: publicUser(user), subscriptions, payments, reviews });
   })
 );
 
@@ -370,7 +372,7 @@ router.put(
     const sub = (await Subscription.findByUserId(user.id))[0] || null;
     const fresh = await User.findById(user.id);
     await audit(req, 'user.updated', 'user', user.id, `Updated user ${fresh.email}`, req.body);
-    return ok(res, { user: safeUser(fresh), subscription: sub });
+    return ok(res, { user: publicUser(fresh), subscription: sub });
   })
 );
 
