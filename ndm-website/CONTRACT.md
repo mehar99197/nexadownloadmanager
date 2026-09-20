@@ -305,7 +305,7 @@ Schema field notes:
 
 - **User**: numeric `id`, `name`, `email`(unique,lowercase,index), `passwordHash`, `role`['user','admin','root' default 'user' — 'root' is settable only by the `create-root` CLI], `emailVerified`(bool def false), `banned`(bool def false), `refreshTokenHash`(String def null), `adminRefreshTokenHash`(`admin_refresh_token_hash` VARCHAR(64) null — admin SPA cookie hash), `rootRefreshTokenHash`(`root_refresh_token_hash` VARCHAR(64) null — creator console cookie hash), `trialUsed`(`trial_used` TINYINT(1) def 0 — the no-card trial is one-shot), timestamps (`createdAt`/`updatedAt`).
 - **UserSession** (`user_sessions`, `models/UserSession.js`) *(ADDED)*: `id`, `user_id`(FK, cascade), `family` CHAR(32), `token_hash` CHAR(64) unique, `prev_token_hash` CHAR(64) null, `user_agent`, `ip`, `created_at`, `last_used_at`, `rotated_at` null, `expires_at`, `revoked_at` null. `create`, `findLive(hash)`, `findReplaced(hash)` → `{ session, withinGrace }`, `rotate(id, fromHash, toHash, ttlMs)`, `revokeFamily`, `revokeById`, `revokeAllForUser`, `listForUser`, `pruneDead`. `User.refreshTokenHash` is no longer used for customers.
-- **SecurityEvent** (`security_events`, `utils/securityEvents.js`) *(ADDED)*: `id`, `kind` (`login.failed`, `login.locked`, `login.success`, `session.reuse_detected`, `session.revoked`, `2fa.failed|replayed|recovery_used|enabled|disabled`, `google.nonce_rejected|token_rejected|token_replayed`, `admin.login.failed|success`, `root.login.failed|success`, `account.deleted`, `password.changed`, `password.reset`, `password.reset_requested`), `severity` info|warning|critical, `user_id`, `email`, `ip`, `user_agent`, `detail`, `created_at`. `record(kind, { req, user?, email?, severity?, detail? })` writes the row, prints one `[security] {json}` line to stdout (for log shipping) and, for the kinds in `RULES`, emails `SECURITY_ALERT_EMAIL` (≥ one alert per kind per cooldown). Pruned after 90 days by `utils/housekeeping.js`, which also drops dead sessions, spent `used_id_tokens` (`jti` PK, `expires_at`) and expired `rate_limits`.
+- **SecurityEvent** (`security_events`, `utils/securityEvents.js`) *(ADDED)*: `id`, `kind` (`login.failed`, `login.locked`, `login.success`, `session.reuse_detected`, `session.revoked`, `2fa.failed|replayed|recovery_used|enabled|disabled|recovery_codes_regenerated`, `google.nonce_rejected|token_rejected|token_replayed`, `admin.login.failed|success`, `root.login.failed|success`, `account.deleted`, `password.changed`, `password.reset`, `password.reset_requested`), `severity` info|warning|critical, `user_id`, `email`, `ip`, `user_agent`, `detail`, `created_at`. `record(kind, { req, user?, email?, severity?, detail? })` writes the row, prints one `[security] {json}` line to stdout (for log shipping) and, for the kinds in `RULES`, emails `SECURITY_ALERT_EMAIL` (≥ one alert per kind per cooldown). Pruned after 90 days by `utils/housekeeping.js`, which also drops dead sessions, spent `used_id_tokens` (`jti` PK, `expires_at`) and expired `rate_limits`.
 - **Subscription**: numeric `id`, `userId`(FK users.id), `plan`['free','pro','team'], `status`['active','expired','cancelled' def 'active'], `licenseKey`(unique), legacy `deviceFingerprint`, `seats`, dates, `trialEndsAt`(`trial_ends_at` DATETIME null — set only for the 7-day Pro trial; cleared by paid activation), Stripe ids, timestamps. Device assignments are in `license_activations` and are transactionally capped by `seats`.
   Helpers: `Subscription.expireTrialIfNeeded(sub)` (lazy downgrade to `plan='free', status='active', trial_ends_at=NULL, expiry_date=planExpiry('free')` when `trial_ends_at` is past and there is no `stripe_subscription_id`; returns the fresh row) and `Subscription.startTrial(userId)` (single transaction → `{ ok, subscription } | { ok:false, reason }`).
 - **Payment**: `userId`, `amount`, `currency`(def 'usd'), `plan`, `billingCycle`['monthly','yearly'], `stripePaymentId`, `status`['paid','failed','refunded' def 'paid'], timestamps.
@@ -332,9 +332,10 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/refresh` | — | read `ndm_refresh` cookie, find the live `user_sessions` row, **rotate** it (§3), return a new 15-minute access token. A hash matching only `prev_token_hash` is a replay: re-sent within the 30-s grace, otherwise the family is revoked and `401 INVALID_REFRESH_TOKEN`. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row has its session revoked and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued *(CHANGED)* |
 | POST | `/logout` | — | revoke this browser's session family + clear `ndm_refresh` / `ndm_session` *(CHANGED)* |
 | POST | `/login/2fa` | `twoFactorLimiter`, `validate(twoFactorLoginSchema)` | `{ challenge, code }` → the normal `{ token, user }` + cookie, for an account whose `/login` (or `/google`) answered `{ requiresTwoFactor:true, challenge }`. Challenge is a 5-min JWT `typ:"2fa-user"` under `JWT_SECRET` (`routes/twoFactor.js`, realm `user`) *(ADDED)* |
-| GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft }` *(ADDED)* |
+| GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }` *(ADDED)* |
 | POST | `/2fa/setup` | `requireAuth` | `{ secret, otpauthUrl }` — stored encrypted, not yet enabled *(ADDED)* |
 | POST | `/2fa/enable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorEnableSchema)` | `{ code }` → `{ enabled:true, recoveryCodes[8] }` shown once *(ADDED)* |
+| POST | `/2fa/recovery-codes` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` → `{ recoveryCodes[8] }` — a fresh set, shown once; same proof rules as `/2fa/disable` *(ADDED)* |
 | POST | `/2fa/disable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` — the password is mandatory for every account that has one (`400 INVALID_PASSWORD`); a Google-created account (no `password_hash`) turns it off with the code alone, the same allowance `DELETE /user/account` makes *(ADDED)* |
 | GET | `/google/nonce` | — | `{ nonce, expiresInSeconds }` — the OIDC nonce for "Continue with Google", also kept in the httpOnly cookie `ndm_gnonce` (path `/api/auth/google`, 30 min, Strict). Signed (`random.exp.hmac`), so nothing is stored *(ADDED)* |
 | POST | `/google` | `authLimiter`, `validate(googleSchema)` | `{ credential, nonce? }`. The ID token must carry the nonce this server issued to **this browser** (cookie), else `401 GOOGLE_NONCE_INVALID` — the page fetches a fresh nonce and re-initialises Google. One token opens one session: its `jti` goes in `used_id_tokens` until the token's own `exp`; a second presentation is `401 GOOGLE_AUTH_FAILED` + a `google.token_replayed` critical event. A 2FA account gets `{ requiresTwoFactor, challenge, created }` instead of a session *(CHANGED)* |
@@ -795,8 +796,15 @@ Mounted by `routes/admin.js` (`realm:'admin'`, `JWT_ADMIN_SECRET`),
 (`realm:'user'`, `JWT_SECRET`, gate `requireAuth`, subject `req.user`,
 `finishLogin` → `issueSession`) *(CHANGED)*. Columns on `users`:
 `totp_secret` (AES-256-GCM via `utils/totp.js`, key = `TOTP_ENCRYPTION_KEY` or
-`JWT_ADMIN_SECRET`), `totp_enabled`, `totp_recovery` (JSON array of SHA-256
-hashes; a code is removed when used). Optional for customers (account page);
+`JWT_ADMIN_SECRET`), `totp_enabled`, `totp_recovery` (JSON array of **bcrypt**
+hashes, cost 10; a code is removed when used — by a conditional swap of the
+set, so two requests carrying the same code cannot both spend it). Codes are
+ten uniform picks from `[a-z0-9]` (≈51.7 bits). Rows enrolled before the
+bcrypt change hold unsalted SHA-256 hex; those still verify, and are
+**retired on the account's next authenticator sign-in** (audit
+`<realm>.recovery_codes_retired`) — the moment that proves the phone still
+exists — so `GET <realm>/2fa` reports `recoveryCodesLegacy:true` until then and
+the panel should offer a fresh set. Optional for customers (account page);
 **mandatory for the panels** when `ADMIN_2FA_REQUIRED` is on (the default on a
 public deployment): `requireTwoFactorEnrolled` in `middleware/adminAuth.js`
 answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
@@ -804,10 +812,15 @@ answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
 
 - `POST <realm>/login` with 2FA on → `{ requiresTwoFactor:true, challenge }` (5-min JWT `typ:"2fa-<realm>"`), NO session/cookie.
 - `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
-- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/disable { password, code }`.
+- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/recovery-codes { password, code }` → `{ recoveryCodes[8] }` — a fresh set behind the same proof as disabling (the offered code is spent first, so it cannot go on to complete a login), audit `<realm>.recovery_codes_regenerated`; `POST <realm>/2fa/disable { password, code }`.
 - `GET <realm>/me` adds `twoFactorEnabled`; `User.listStaff` includes `totp_enabled`; root `POST /api/root/admins/:id/reset-2fa` clears a staff admin's second factor and revokes sessions.
 - **A code is spent once.** `users.totp_last_step` is a monotonic high-water mark
   and `checkCode` refuses `step <= totp_last_step` with `401 CODE_ALREADY_USED`.
+  The spend itself is a **conditional UPDATE** (`User.spendTotpStep`: raise the
+  column only from a lower value or NULL; `User.swapRecoveryCodes` for the
+  recovery set), because a phishing relay submits its login *beside* the
+  victim's and both requests read the row before either writes — the request
+  that loses the race is refused as the replay it is.
   Without it a code stayed usable for its own step plus the drift step either
   side — up to 90 seconds, which is exactly the window a real-time phishing
   proxy works in. Enrolment burns its step too, so the code that switched 2FA on

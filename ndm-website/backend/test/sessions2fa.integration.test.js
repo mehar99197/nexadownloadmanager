@@ -184,7 +184,7 @@ test('customer two-factor authentication', async (t) => {
     const token = (await login(api, 'totp@example.test')).body.data.token;
 
     const state = await api.get('/api/auth/2fa', { token });
-    assert.deepEqual(state.body.data, { enabled: false, pending: false, recoveryCodesLeft: 0 });
+    assert.deepEqual(state.body.data, { enabled: false, pending: false, recoveryCodesLeft: 0, recoveryCodesLegacy: false });
     const setup = await api.post('/api/auth/2fa/setup', {}, { token });
     assert.equal(setup.status, 200, JSON.stringify(setup.body));
     assert.match(setup.body.data.otpauthUrl, /^otpauth:\/\/totp\/.*issuer=Nexa\+Download\+Manager/);

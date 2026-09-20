@@ -292,7 +292,7 @@ test('hardening', async (t) => {
     // The creator, with 2FA on — so the row genuinely holds a TOTP seed and
     // recovery hashes, which is the material this is about.
     const secret = totp.generateSecret();
-    const { hashes } = totp.generateRecoveryCodes();
+    const { hashes } = await totp.generateRecoveryCodes();
     await srv.query(
       `INSERT INTO users (name, email, password_hash, role, email_verified,
                           totp_secret, totp_enabled, totp_recovery, root_refresh_token_hash)
@@ -397,7 +397,7 @@ test('hardening', async (t) => {
     const bcrypt = require('bcryptjs');
     const totp = require('../src/utils/totp');
     const secret = totp.generateSecret();
-    const { hashes } = totp.generateRecoveryCodes();
+    const { hashes } = await totp.generateRecoveryCodes();
     await srv.query(
       `INSERT INTO users (name, email, password_hash, role, email_verified,
                           totp_secret, totp_enabled, totp_recovery)
