@@ -76,7 +76,7 @@ const {
   updateContactStatusSchema, contactReplySchema,
 } = require('../schemas/contact.schema');
 const { sendContactReply } = require('../utils/email');
-const { stripSensitive } = require('../utils/sanitize');
+const { publicUser } = require('../utils/userView');
 const { isReservedEmail } = require('../utils/reservedEmail');
 
 function monthlyPrice(plan) {
@@ -85,21 +85,23 @@ function monthlyPrice(plan) {
   return 0;
 }
 
-// Never hand-roll this list again: /users/:id/details reads the row with
-// SELECT *, so anything missed here reaches a staff admin — including, when it
-// stripped only these three hashes, the creator's TOTP secret and recovery
-// hashes. utils/sanitize.js is the single definition.
-const safeUser = stripSensitive;
+// Never hand-roll a projection here: /users/:id/details reads the row with
+// SELECT *, so anything a deny-list missed reached a staff admin — including,
+// when it stripped only three hashes, the creator's TOTP secret and recovery
+// hashes. utils/userView.js is the single, allow-listed definition.
+const safeUser = publicUser;
 
 /**
  * A staff admin may only act on ordinary customer accounts. Banning, resetting
  * or revoking a fellow admin — and above all the creator — is reserved for the
- * root panel (/api/root/admins). A root token passing through here keeps its
- * reach, since req.isRoot is only ever set by the root token family.
+ * root panel (/api/root/admins), and so is reading one: the details view is
+ * the account's whole row. A root token passing through here keeps its
+ * reach, since req.isRoot is only ever set by the root token family. `verb`
+ * keeps the refusal truthful for a read ("view") as well as a write.
  */
-function blockedStaffTarget(req, res, user) {
+function blockedStaffTarget(req, res, user, verb = 'modify') {
   if (req.isRoot || user.role === 'user') return false;
-  fail(res, 'FORBIDDEN', 'Only the creator can modify a control-panel account', 403);
+  fail(res, 'FORBIDDEN', `Only the creator can ${verb} a control-panel account`, 403);
   return true;
 }
 
@@ -353,7 +355,7 @@ router.get(
 
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...u, plan: sub ? sub.plan : 'free', subscription: sub };
+      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -365,6 +367,9 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    // Reading is gated like writing: a fellow admin's or the creator's account
+    // is the root panel's business, not a staff admin's.
+    if (blockedStaffTarget(req, res, user, 'view')) return undefined;
     const [subscriptions, payments, reviews] = await Promise.all([
       Subscription.findByUserId(user.id),
       Payment.findByUserId(user.id),

@@ -18,7 +18,7 @@ const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
-const { stripSensitive } = require('../utils/sanitize');
+const { publicUser } = require('../utils/userView');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
 const DeviceAuth = require('../models/DeviceAuth');
 const { subscriptionForUser, effectivePlanFor } = require('../utils/accountPlan');
@@ -29,36 +29,14 @@ const { passwordProblem } = require('../utils/passwordPolicy');
 
 const BCRYPT_COST = 12;
 
-function sanitizeUser(user) {
-  // stripSensitive() removes every credential column, including the ones this
-  // used to miss (totp_secret, totp_recovery, token_version) — a user reading
-  // their own profile has no business seeing their own TOTP seed either, since
-  // an XSS or a leaked response body would then be a second factor.
-  const safe = stripSensitive(user);
-  const password_hash = user.password_hash;
-  // The site needs to know whether password sign-in is available for this
-  // account without ever seeing the hash: a Google-created account shows
-  // "Set a password" instead of "Change password".
-  safe.hasPassword = Boolean(password_hash);
-  safe.hasGoogle = Boolean(user.google_id);
-  // CONTRACT.md describes the User as carrying `createdAt`/`updatedAt` and
-  // `emailVerified`, but stripSensitive() copies the DB row, which is
-  // snake_case. The site read `user.createdAt` and got undefined every time,
-  // so the profile page said "Member since —" for every account that has ever
-  // existed. Expose the documented names (the raw columns stay for anything
-  // already reading them).
-  safe.createdAt = toIso(user.created_at);
-  safe.updatedAt = toIso(user.updated_at);
-  safe.emailVerified = Boolean(user.email_verified);
-  // Lockout bookkeeping is the server's business (and the admin panel's); the
-  // sign-in form is deliberately told nothing about it, so the profile must
-  // not become the place it leaks from either.
-  delete safe.failed_logins;
-  delete safe.locked_until;
-  delete safe.lock_level;
-  delete safe.lock_notified_at;
-  return safe;
-}
+// A user reading their own profile has no business seeing their own TOTP seed
+// or recovery codes either — an XSS or a leaked response body would then be a
+// second factor. publicUser() is an allow-list (utils/userView.js), so the
+// profile carries exactly the documented fields: hasPassword / hasGoogle for
+// the "Set a password" vs "Change password" choice, the camelCase timestamps
+// CONTRACT.md promises (the site reads `user.createdAt`), and none of the
+// lockout bookkeeping the sign-in form is deliberately told nothing about.
+const sanitizeUser = publicUser;
 
 function toIso(value) {
   if (!value) return null;

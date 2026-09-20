@@ -313,21 +313,42 @@ test('hardening', async (t) => {
     const token = login.body.data.token;
 
     // /users/:id/details reads the row with SELECT *, so whatever the response
-    // filter forgets is handed straight to a staff admin. It used to forget the
+    // filter forgot was handed straight to a staff admin. It used to forget the
     // TOTP seed, the recovery hashes and the root refresh hash — a path from
     // staff to creator, since the recovery codes are plain SHA-256 of a
-    // ten-character alphanumeric and crack offline.
+    // ten-character alphanumeric and crack offline. Two layers now: a
+    // control-panel account is not a staff admin's to read at all (403, like
+    // every write), and what does go out is an allow-list (utils/userView.js).
     const details = await staff.get(`/api/admin/users/${owner.id}/details`, { token });
-    assert.equal(details.status, 200, details.text);
-    const body = JSON.stringify(details.body);
+    assert.equal(details.status, 403, details.text);
+    assert.equal(details.body.error.code, 'FORBIDDEN');
+    const refusal = JSON.stringify(details.body);
+    assert.equal(refusal.includes(secret), false, 'the refusal carries nothing of the row');
+    assert.equal(refusal.includes('owner@example.test'), false);
+
+    // A customer's details are the staff admin's job, and they arrive projected:
+    // the fields the panel renders, none of the credential columns.
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified, google_id,
+                          totp_secret, totp_enabled, totp_recovery)
+       VALUES ('Customer', 'customer@example.test', ?, 'user', 1, 'google-sub-123', ?, 1, ?)`,
+      [await bcrypt.hash('customer-password-123', 12), totp.encryptSecret(secret), JSON.stringify(hashes)]
+    );
+    const [customer] = await srv.query('SELECT id FROM users WHERE email = ?', ['customer@example.test']);
+    const mine = await staff.get(`/api/admin/users/${customer.id}/details`, { token });
+    assert.equal(mine.status, 200, mine.text);
+    const body = JSON.stringify(mine.body);
     for (const leak of ['totp_secret', 'totp_recovery', 'root_refresh_token_hash',
-      'refresh_token_hash', 'password_hash', 'token_version']) {
+      'refresh_token_hash', 'password_hash', 'token_version', 'google_id', 'google-sub-123',
+      'failed_logins', 'locked_until']) {
       assert.equal(body.includes(leak), false, `${leak} must not leave the server`);
     }
     assert.equal(body.includes(secret), false, 'the raw TOTP seed must not appear either');
-    // The fields the panel actually renders still arrive.
-    assert.equal(details.body.data.user.email, 'owner@example.test');
-    assert.equal(details.body.data.user.role, 'root');
+    assert.equal(mine.body.data.user.email, 'customer@example.test');
+    assert.equal(mine.body.data.user.role, 'user');
+    assert.equal(mine.body.data.user.totp_enabled, 1);
+    assert.equal(mine.body.data.user.hasPassword, true);
+    assert.equal(mine.body.data.user.hasGoogle, true);
 
     // The listing is the same rule.
     const list = await staff.get('/api/admin/users', { token });

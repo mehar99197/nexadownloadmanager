@@ -25,7 +25,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireRoot, rootIpWhitelist, isRootUser } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
-const { stripSensitive } = require('../utils/sanitize');
+const { publicUser } = require('../utils/userView');
 const { signRootToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const {
@@ -53,9 +53,9 @@ function rootIdentity(user) {
   return { id: String(user.id), name: user.name, email: user.email, role: user.role };
 }
 
-// Shared with the staff panel — see utils/sanitize.js for why this is not a
-// per-file destructure any more.
-const safeUser = stripSensitive;
+// Shared with the staff panel — utils/userView.js is the one allow-listed
+// projection of a users row.
+const safeUser = publicUser;
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
