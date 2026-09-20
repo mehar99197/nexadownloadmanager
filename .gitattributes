@@ -1,0 +1,7 @@
+# Shell scripts must be LF on every checkout. A Windows clone with
+# core.autocrlf=true otherwise writes them as CRLF, and deploy/build-and-upload.sh
+# rsyncs the working copy as-is — which put a CRLF backup.sh on the Hostinger
+# host, where `set -o pipefail\r` fails and no backup was ever written.
+# JS/JSON are left to autocrlf: Node reads either ending.
+*.sh text eol=lf
+*.bash text eol=lf

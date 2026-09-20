@@ -16,14 +16,19 @@ out_dir="${1:-${BACKUP_DIR:-$here/backups}}"
 keep_days="${BACKUP_KEEP_DAYS:-14}"
 
 # Pull MYSQL_* out of .env without executing it (values may contain spaces).
+# A here-string rather than `< <(grep …)`: process substitution needs
+# /dev/fd, which CageFS on the shared host does not provide ("/dev/fd/63: No
+# such file or directory"), and a plain `grep | while` would run the loop in
+# a subshell and lose the exports.
 if [ -f "$here/.env" ]; then
+  env_lines="$(grep -E '^MYSQL_(HOST|PORT|USER|PASS|DB)=' "$here/.env" || true)"
   while IFS='=' read -r key value; do
     case "$key" in
       MYSQL_HOST|MYSQL_PORT|MYSQL_USER|MYSQL_PASS|MYSQL_DB)
         value="${value%\"}"; value="${value#\"}"
         export "$key=$value" ;;
     esac
-  done < <(grep -E '^MYSQL_(HOST|PORT|USER|PASS|DB)=' "$here/.env" || true)
+  done <<< "$env_lines"
 fi
 
 : "${MYSQL_HOST:=127.0.0.1}"
@@ -50,6 +55,8 @@ if [ ! -s "$file" ]; then
   exit 1
 fi
 gunzip -t "$file"
+# The dump is every user row and hash; nobody but the account owner reads it.
+chmod 600 "$file"
 size="$(du -h "$file" | cut -f1)"
 echo "[backup] ok ($size)"
 

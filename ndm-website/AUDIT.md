@@ -662,12 +662,12 @@ edits and every reader shows; `Subscription.updateByUserId` is gone.
 `blockedStaffTarget()` on the owner, so a staff admin cannot alter the
 creator's plan.
 
-**Not done:** a `UNIQUE` index on `subscriptions.user_id`, which would make the
-invariant the database's. Production may already hold duplicates from before
-this fix, and an index that fails to build would stop the API booting — it
-needs a look at the live table (and a de-duplication that honours
-`team_members` / `license_activations` foreign keys) first. Tracked as a
-follow-up, not a boot-time migration.
+**Also done (deploy prep, 2026-09-20):** the `UNIQUE` index `uq_subscriptions_user
+(user_id)`, added as an idempotent boot-time migration after production was
+checked for duplicates (6 subscriptions, 6 distinct owners — none). Every
+insert site already creates a row only when the account has none, and the
+full suite passes with the index in place (290/290); a race between two
+creates now surfaces as `ER_DUP_ENTRY` → `409 DUPLICATE` instead of two rows.
 
 **Where:** `backend/src/routes/admin.js` (`POST /subscriptions`, `PUT /users/:id`)
 
@@ -990,6 +990,20 @@ is **2026-09-13**. `crontab` is unavailable in the Hostinger shell and
 Knock-on effect: `sendTrialReminders.js` has never run either, so nobody on a
 7-day trial has ever received the "your trial ends in 2 days" email.
 
+**Found during deploy prep (2026-09-20):** even with the cron in place the backup
+would have failed twice over. (1) The deployed `src/scripts/backup.sh` had
+**CRLF** line endings — `deploy/build-and-upload.sh` rsyncs the Windows
+working copy byte for byte, and `core.autocrlf=true` writes every file as
+CRLF — so `set -o pipefail` was "invalid option name" on the host. (2) It
+read `.env` through `< <(grep …)`, and CageFS provides no `/dev/fd`, so the
+process substitution failed with "/dev/fd/63: No such file or directory".
+Both fixed: a `.gitattributes` pins `*.sh` to LF on every checkout, the
+deploy script strips CRs from staged scripts and refuses to ship one that
+still has them, and `backup.sh` reads `.env` through a here-string (and
+`chmod 600`s the dump). Verified on the host: `nexa-20260920-1412.sql.gz`,
+22 tables, `gunzip -t` clean — the first backup since 2026-09-13. The hPanel
+cron is still the owner's to create.
+
 ## O-02 — Nothing restarts the API after a reboot
 
 **Status:** OPEN &nbsp;|&nbsp; **Needs:** hPanel → Advanced → Cron Jobs
@@ -1118,7 +1132,7 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 - [x] M-04 — no `sqlMessage` (or raw throw text) in production responses; `headersSent` handled
 - [x] M-13 — zod on all five `:id` params
 - **Verified:** full suite **288 / 288, 0 skipped** — first green run. `downloadCounter` 14/14 and `releaseVersionInvariant` 5/5 for real; new `webhookRenewal` (14) and `errorHandler` (7) suites; frontend 23/23; both SPAs lint clean and build.
-- **Follow-up:** the `UNIQUE` index behind M-07 waits on a look at production data (see the finding).
+- **Follow-up closed:** production checked (no duplicates); `uq_subscriptions_user` added.
 
 ### Phase 5 — Hardening and operations  &#9744;
 - [ ] M-14 — a way for the creator to recover from a lost authenticator **(do this before trusting H-02's legacy retirement)**
@@ -1152,5 +1166,6 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 | 2026-09-19 | **Phase 1 done** — H-01, L-04, H-02 fixed and verified (201 tests, 188 pass, no new failures). Opened M-14, M-15, L-10. 37 findings, 3 fixed. |
 | 2026-09-19 | Phase 2's adversarial review surfaced H-08: `requireAuth` never checks `user_sessions`, so every "revoke sessions" action is a no-op for the 7-day life of the access token. Blocks M-01. 38 findings. |
 | 2026-09-20 | **Phase 2 done** — H-05, H-03, M-02, M-03 fixed; M-01 fixed as far as a route can be (access-token half waits on H-08). Password change moved to `POST /auth/change-password`. 252 tests / 239 pass. 7 fixed. |
+| 2026-09-20 | Deploy prep: production checked for duplicate subscriptions (none) and `uq_subscriptions_user` added (M-07 closed fully); the deployed `backup.sh` found broken twice over (CRLF from the Windows checkout, and `/dev/fd` under CageFS) and fixed — first verified backup since 09-13. |
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |

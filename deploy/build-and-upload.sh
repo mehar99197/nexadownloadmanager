@@ -186,6 +186,17 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   cp "${BACKEND}/package.json" "${BACKEND}/package-lock.json" "${STAGE}/"
   cp -R "${BACKEND}/src" "${STAGE}/src"
 
+  # A Windows checkout with core.autocrlf=true holds CRLF files, and rsync
+  # ships bytes as they are. Node does not care; bash does — the deployed
+  # backup.sh failed on `set -o pipefail\r` and no nightly dump was ever
+  # written. .gitattributes now pins *.sh to LF, and this guards the stage
+  # anyway so a clone made before it (or without it) cannot deploy a broken
+  # script.
+  find "${STAGE}/src" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+  if grep -rl $'\r' "${STAGE}/src" --include='*.sh' >/dev/null 2>&1; then
+    die "a staged shell script still carries CR line endings"
+  fi
+
   (
     cd "${STAGE}"
     npm ci --omit=dev --no-audit --no-fund
