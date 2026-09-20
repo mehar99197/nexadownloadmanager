@@ -787,22 +787,11 @@ jobs:
   quality:
     name: Tests, audits, and extension packages
     runs-on: ubuntu-latest
-    # A real MySQL so the backend integration tests actually run here. Without
-    # it they skip themselves, which would quietly hide regressions in the SQL
-    # (transactions, seat caps, webhook idempotency, timestamp handling).
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: ci_root_password_1234
-          MYSQL_DATABASE: ndm_test
-          MYSQL_USER: ndm
-          MYSQL_PASSWORD: test_password_at_least_16_chars
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_root_password_1234"
-          --health-interval=10s --health-timeout=5s --health-retries=12
+    # The website's own checks — backend unit + integration tests against a
+    # MariaDB service, frontend and admin lint/test/build/audit — live in
+    # website.yml, which runs on every branch that touches ndm-website/, not
+    # only main. This job keeps the C++ tests, the browser e2e suite, static
+    # analysis and the extension packages.
     steps:
       - uses: actions/checkout@v4
       - name: Install C++ dependencies
@@ -815,37 +804,8 @@ jobs:
           cmake -B build-quality -G Ninja -DCMAKE_BUILD_TYPE=Debug -DNEXA_BUILD_TESTS=ON
           cmake --build build-quality
           ctest --test-dir build-quality --output-on-failure
-      - name: Backend tests, syntax, and production dependency audit
-        working-directory: ndm-website/backend
-        env:
-          MYSQL_HOST: 127.0.0.1
-          MYSQL_PORT: "3306"
-          MYSQL_USER: ndm
-          MYSQL_PASS: test_password_at_least_16_chars
-          MYSQL_DB: ndm_test
-        run: |
-          npm ci
-          npm test
-          # The integration suites skip themselves when no database is reachable,
-          # which would make a broken service look like a pass. Prove they ran.
-          npm test 2>&1 | tee /tmp/backend-tests.log
-          if grep -qE "^. skipped [1-9]" /tmp/backend-tests.log; then
-            echo "::error::backend integration tests were skipped - the MySQL service is not reachable"
-            exit 1
-          fi
-          find src test -type f -name '*.js' -print0 | xargs -0 -n1 node --check
-          npm audit --omit=dev --audit-level=high
-      - name: Frontend and admin builds, tests, lint and audits
-        run: |
-          npm --prefix ndm-website/frontend ci
-          npm --prefix ndm-website/frontend run lint
-          npm --prefix ndm-website/frontend test
-          npm --prefix ndm-website/frontend run build
-          npm --prefix ndm-website/frontend audit --omit=dev --audit-level=high
-          npm --prefix ndm-website/admin ci
-          npm --prefix ndm-website/admin run lint
-          npm --prefix ndm-website/admin run build
-          npm --prefix ndm-website/admin audit --omit=dev --audit-level=high
+      - name: Install frontend dependencies (Playwright + the jsdom the extension tests use)
+        run: npm --prefix ndm-website/frontend ci
 
       - name: End-to-end (built site, stubbed API)
         working-directory: ndm-website/frontend
@@ -893,6 +853,6 @@ jobs:
           node tests/ExtensionProviderConfigTest.js
           node tests/ExtensionSettingsTest.js
           # jsdom comes from the frontend's node_modules, installed by the
-          # "Frontend and admin builds" step above. NEXA_REQUIRE_JSDOM makes a
+          # "Install frontend dependencies" step above. NEXA_REQUIRE_JSDOM makes a
           # missing dependency fail here rather than skip to a green tick.
           NEXA_REQUIRE_JSDOM=1 node tests/ExtensionContentTest.js

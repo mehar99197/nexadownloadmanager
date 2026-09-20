@@ -63,6 +63,16 @@ and a green run with skips has not tested the HTTP or SQL layer at all.
 `test/helpers/testServer.js` fills in every other env var (test secrets, a
 loopback admin allowlist) and truncates all tables between suites.
 
+### In CI
+
+`.github/workflows/website.yml` runs this suite on **every push to any branch**
+that touches `ndm-website/`, against a `mariadb:11.8` service (production's
+engine and version) on Node 22 (production's runtime). It reads the summary
+line and fails the job unless at least 200 tests ran with **0 skipped** — so a
+database service that quietly stops answering cannot turn into a green tick.
+The frontend and admin panel are linted, tested and built in two parallel
+jobs alongside it.
+
 ## Notes
 
 - `RATE_LIMIT_DISABLED=1` lifts the rate limits so the suites can drive hundreds
