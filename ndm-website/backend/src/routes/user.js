@@ -18,7 +18,6 @@ const stripe = require('../utils/stripe');
 const { isTrialActive } = require('../utils/license');
 const { publicUser } = require('../utils/userView');
 
-const BCRYPT_COST = 12;
 const REFRESH_COOKIE = 'ndm_refresh';
 const SESSION_HINT_COOKIE = 'ndm_session';
 
@@ -70,22 +69,10 @@ router.get(
 router.put(
   '/profile', requireAuth, validate(updateProfileSchema),
   asyncHandler(async (req, res) => {
-    const { name, currentPassword, newPassword } = req.body;
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (newPassword !== undefined) {
-      // A Google-created account has no password yet; the session alone is
-      // enough to set the first one. Every account that already has one must
-      // still prove it, so a hijacked tab cannot silently change it.
-      if (req.user.password_hash) {
-        if (!currentPassword)
-          return fail(res, 'VALIDATION_ERROR', 'Current password is required to set a new password', 400);
-        const matches = await bcrypt.compare(currentPassword, req.user.password_hash);
-        if (!matches) return fail(res, 'INVALID_PASSWORD', 'Current password is incorrect', 400);
-      }
-      updates.passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
-    }
-    if (Object.keys(updates).length) await User.update(req.user.id, updates);
+    // Name only. Changing the password is POST /auth/change-password: it has to
+    // revoke every other session and keep the caller's, and the refresh cookie
+    // that identifies the caller is scoped to /api/auth — it never arrives here.
+    await User.update(req.user.id, { name: req.body.name });
     const user = await User.findById(req.user.id);
     return ok(res, { user: publicUser(user) });
   })

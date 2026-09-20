@@ -31,12 +31,12 @@ it works.
 
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
-| High | 7 | 5 | 2 |
-| Medium | 15 | 15 | 0 |
+| High | 8 | 4 | 4 |
+| Medium | 15 | 13 (1 in progress) | 2 |
 | Low | 10 | 9 | 1 |
 | Test debt | 2 | 2 | 0 |
-| Operational | 3 | 3 | 0 |
-| **Total** | **37** | **34** | **3** |
+| Operational | 3 | 3 (1 in progress) | 0 |
+| **Total** | **38** | **31** | **7** |
 
 Baseline at audit time: backend unit tests **86/86 pass**; full backend suite
 **95 pass / 5 skipped** with no database; frontend **23/23 pass**; admin +
@@ -51,6 +51,10 @@ test that predates a deliberate contract change (T-01, T-02). See O-03.
 After Phase 1: **201 tests, 188 pass, 13 fail, 0 skipped** — 20 new tests, and
 the failures are byte-for-byte the same eight leaves as the baseline. No
 regressions.
+
+After Phase 2: **252 tests, 239 pass, 13 fail, 0 skipped** — 51 more tests
+(three new integration suites drive the real endpoints), same eight leaves.
+Frontend 23/23, ESLint clean.
 
 ---
 
@@ -166,7 +170,27 @@ is already a dependency and is used for passwords.
 
 ## H-03 — Banning a user does not stop their desktop app
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/licenseBan.integration.test.js` (12 tests against the real endpoints) + full suite
+
+**Fixed by:** `Subscription.findByLicenseKeyForValidation()` joins the owner's
+`banned` flag onto the lookup `/validate` and `/heartbeat` were already doing
+(no extra query on the desktop app's hot path), and `resolveSubscription()`
+answers `reason: 'banned'` before status or expiry are even looked at.
+`/release` deliberately still skips the check — handing a seat back is
+housekeeping, not a privilege, and refusing it would only pin the banned
+user's seat for the rest of its lease.
+
+The part the first cut missed, caught by the adversarial review: a **Team**
+licence is one key shared by the whole roster, and the request carries only
+that key and a device fingerprint — so when a *member* is banned the server
+cannot tell their machine from a colleague's. The only thing that can be taken
+from someone who already holds a shared secret is the secret. So the first
+`/validate` or `/heartbeat` to see a banned member on the roster drops the
+banned members, **rotates the licence key**, and revokes every seat
+(`Subscription.revokeBannedMembers`, one transaction, runs once). Everyone
+still entitled re-copies the key from their dashboard; the banned member,
+who can no longer sign in, cannot. CONTRACT.md documents the new reason and
+the rotation.
 
 **Where:** `backend/src/routes/license.js` (`resolveSubscription`), `backend/src/routes/admin.js` (`PUT /users/:id`)
 
@@ -220,7 +244,14 @@ payment) and `customer.subscription.updated` (mirror plan and status).
 
 ## H-05 — `POST /api/auth/login` never checks `banned`
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/authResetBan.integration.test.js` + full suite
+
+**Fixed by:** one `if (user.banned)` after the bcrypt comparison succeeds and
+before `signAccessToken`/`openSession` — after, not before, so an anonymous
+caller with a list of addresses cannot use sign-in as an oracle for which
+accounts are banned. Same `403 FORBIDDEN` wording as `/auth/google`.
+`clearLoginFailures` runs first: the password was correct, so there is no
+attacker left for the per-account slowdown to punish.
 
 **Where:** `backend/src/routes/auth.js:115-150`
 
@@ -318,15 +349,87 @@ file and answer 409 before touching the row; otherwise carry
 
 ---
 
+## H-08 — "Revoke sessions" does not revoke access
+
+**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+
+**Where:** `backend/src/middleware/auth.js:13-25` (`requireAuth`), `backend/src/utils/jwt.js:15-17` (`signAccessToken`)
+
+`requireAuth` verifies the access JWT's signature and re-reads the user row. It
+never checks that the session the token was issued for still exists:
+
+```js
+const payload = verifyAccess(token);
+const user = await User.findById(Number(payload.sub));
+if (!user)       return fail(res, 'UNAUTHORIZED', …, 401);
+if (user.banned) return fail(res, 'FORBIDDEN',    …, 403);
+req.user = user;                       // ← no user_sessions lookup
+```
+
+Access tokens last **7 days** (`expiresIn: '7d'`). Deleting every
+`user_sessions` row therefore only stops the holder minting a *new* access
+token at `/auth/refresh`; the one they already hold keeps full access to the
+account for up to a week.
+
+Ten call sites believe otherwise. The ban paths survive by accident —
+`requireAuth` re-reads `user.banned`, so H-05 and the admin ban are genuinely
+enforced. Everything else is not:
+
+| Call site | Claims | Actually |
+|---|---|---|
+| `auth.js:389` password reset | "signs the account out EVERYWHERE" | attacker keeps access ≤ 7 days |
+| `admin.js:390` admin reset-password | — | same |
+| `admin.js:403` admin revoke-sessions | answers `{ revoked: true, sessions: n }` | same |
+| `root.js:238/250/268` | reset-password / revoke-sessions / reset-2fa | same |
+| `user.js:167` profile password change | M-01's fix | same |
+| `admin.js:351`, `root.js:221` ban | — | **works** (`requireAuth` re-reads `banned`) |
+
+So the single most important thing an admin can do to a compromised
+account — "revoke sessions" — is close to a no-op for a week, and it reports
+success.
+
+Found by the Phase 2 adversarial review of M-01: three independent reviewers
+refused to accept that revoking session rows signs the other browser out. They
+were right, and the problem is older and wider than that lane.
+
+**Fix:** make revocation mean something. Either put a session id in the access
+token and have `requireAuth` confirm a live `user_sessions` row for it (one
+indexed lookup, next to the `User.findById` already on every request), or cut
+the access-token TTL to minutes so `/auth/refresh` — which *does* check the
+session — becomes the revocation point. The first revokes immediately; the
+second bounds the damage. Doing both is the usual answer.
+
+**Blocks M-01:** a profile password change cannot sign other browsers out until
+this is fixed, whatever `PUT /user/profile` does.
+
 ---
 
 # MEDIUM
 
 ## M-01 — Changing your password does not sign out your other sessions
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** IN PROGRESS — the route does everything a route can; the remaining half is H-08 &nbsp;|&nbsp; **Verified by:** `test/passwordChangeSessions.integration.test.js` (11 tests, two independent cookie jars)
 
 **Where:** `backend/src/routes/user.js` (`PUT /profile`)
+
+**Done:** the password change moved to **`POST /auth/change-password`**. It
+revokes every `user_sessions` row and all three single-slot control-panel
+cookies, then re-opens ONE session for the calling browser — only if it
+presented a live `ndm_refresh` cookie of its own (`sessionKept: true`); a bare
+bearer token is never upgraded into a session. `PUT /user/profile` is
+name-only again.
+
+Why it moved: the refresh cookie is scoped to `Path=/api/auth`, so on
+`/api/user/profile` the browser never sends it — "keep the caller signed in"
+was unreachable there, and the first cut had grown a duplicated copy of every
+cookie helper trying. The route-level test only passed because the harness's
+cookie jar ignores `Path`; two of the adversarial reviewers caught it. Under
+`/api/auth` there is exactly one `openSession`, shared with `/auth/login`.
+
+**Not done, and not doable from this route:** the other browser's *access
+token* keeps working until it expires — see H-08. The suite pins that gap on
+purpose (`KNOWN GAP: the revoked browser keeps its access token`) so the day
+H-08 lands, the assertion flips.
 
 `/api/auth/reset-password` correctly calls `UserSession.removeAllForUser(user.id)`
 and comments that a reset signs you out everywhere. `PUT /api/user/profile`,
@@ -334,9 +437,27 @@ which is the other way to change a password, does not. Someone who suspects
 their account is compromised and changes their password from the profile page
 leaves the attacker's session alive for its full 30 days.
 
+**Blocked by H-08.** Deleting the session rows does not end the other browser's
+access — `requireAuth` never looks at `user_sessions`, so a 7-day access token
+outlives the revocation. This finding cannot be closed on its own.
+
 ## M-02 — Password-reset tokens stay valid after use
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/jwt.test.js` (+5), `test/authResetBan.integration.test.js` + full suite
+
+**Fixed by:** the token now carries `pv`, a 16-hex prefix of
+`sha256(password_hash)`, and `resetTokenMatches(payload, user)` re-checks it
+against the live row — no new column. The reset itself rewrites the hash, so
+the link just spent (and every older reset email for the same account) stops
+matching in the same instant. A Google-created account with no password yet
+folds `null` to a stable value, so its first-password link still works.
+
+The write is the guard, not the read: `resetTokenMatches` is ~300 ms stale by
+the time bcrypt finishes, so the `UPDATE` is conditional on
+`password_hash <=> ?` and a second request holding the same link loses the
+race and is told the link is dead. Every refusal is the same `INVALID_TOKEN`.
+Tokens minted before `pv` existed never match — deliberately; in-flight reset
+emails across the deploy expire early and the user asks for a new one.
 
 **Where:** `backend/src/utils/jwt.js` (`signResetToken`)
 
@@ -350,12 +471,28 @@ current `password_hash`, or a per-user token version column).
 
 ## M-03 — TOTP codes can be replayed inside their window
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/totp.test.js` (+12, including two-request races) + full suite
 
 **Where:** `backend/src/routes/twoFactor.js` (`checkCode`)
 
 `verifyTotp` accepts ±1 step, and no last-used counter is stored. A code
 observed or phished can be replayed for up to 90 seconds.
+
+**Fixed by:** `users.totp_last_step` (BIGINT, idempotent migration) and one
+conditional statement, `User.spendTotpStep`: `UPDATE users SET totp_last_step
+= ? WHERE … totp_last_step < ?`. A step at or below the stored one is refused,
+which also refuses a clock that drifted backwards without locking anyone out
+(the next step is always above what was stored). Every accepting path —
+`/login/2fa`, `/2fa/enable`, `/2fa/recovery-codes`, `/2fa/disable` — spends
+the code *before* doing what it proves, so the code that turns 2FA on cannot
+then complete a login. Recovery codes are spent the same way by
+`User.swapRecoveryCodes`, a conditional replace of the whole stored set.
+
+The adversarial review caught the first cut doing a read-then-write across two
+awaits, which two concurrent logins carrying the same digits — exactly what a
+real-time phishing relay produces — would both pass. The conditional `UPDATE`
+is the only place the check and the write happen together; the loser is
+refused with the same `INVALID_CODE` as a wrong code.
 
 ## M-04 — `errorHandler` returns raw SQL error text in production
 
@@ -830,14 +967,21 @@ Closes the one chain that leads to a full account takeover.
   pre-Phase-1 baseline.
 - **Opened:** M-14, M-15 (both consequences of the legacy-code retirement).
 
-### Phase 2 — Enforcement gaps  &#9744;
+### Phase 2 — Enforcement gaps  &#9745; **DONE 2026-09-20** (H-08 carried forward)
 Things that are supposed to stop someone and do not.
-- [ ] H-05 — `banned` check in `/auth/login`
-- [ ] H-03 — `banned` check in licence validate + heartbeat
-- [ ] M-01 — revoke sessions on profile password change
-- [ ] M-02 — single-use reset tokens
-- [ ] M-03 — single-use TOTP codes
-- **Verify:** integration tests (needs Phase 3 first) covering ban → login, ban → licence, reset-token replay.
+- [x] H-05 — `banned` check in `/auth/login`
+- [x] H-03 — `banned` check in licence validate + heartbeat; Team key rotation for a banned member
+- [ ] H-08 — make session revocation actually revoke access **(blocks the second half of M-01; moved to Phase 4)**
+- [x] M-01 — `POST /auth/change-password`: sessions revoked, caller kept — the access-token half waits on H-08
+- [x] M-02 — single-use reset tokens (`pv` claim + conditional write)
+- [x] M-03 — single-use TOTP and recovery codes (conditional spends)
+- **Verified:** three new integration suites drive the real endpoints —
+  `authResetBan`, `licenseBan`, `passwordChangeSessions` — plus `jwt.test.js`
+  and `totp.test.js` extended with race tests. Full suite **252 tests / 239
+  pass**, same eight pre-existing failures. Also fixed on the way:
+  `/auth/reset-password` now clears `root_refresh_token_hash` too (it cleared
+  only two of the three slots), and CONTRACT.md documents every new contract.
+- **Opened:** H-08.
 
 ### Phase 3 — Test infrastructure  &#9744;
 Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
@@ -847,6 +991,7 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 - **Verify:** `npm test` reports 0 skipped, on a second machine or in CI.
 
 ### Phase 4 — Correctness  &#9744;
+- [ ] H-08 — session-bound access tokens (then flip the `KNOWN GAP` assertion in `passwordChangeSessions`)
 - [ ] H-06 — wire up `shouldCountDownload`; stop counting HEADs and 404s
 - [ ] H-07 — wire up `artifactVersionFromFile` in the upload route
 - [ ] T-01, T-02 — rewrite the two stale tests to the current contracts
@@ -886,3 +1031,5 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 | 2026-09-19 | Stood up MariaDB 11.8.9 for the tests (O-03a). Baseline run exposed H-07 (release-version check unwired) and two stale tests (T-01, T-02); H-06 confirmed empirically. 34 findings. |
 | 2026-09-19 | O-03b: `test/tools/testdb.sh` checked in and verified from a cold start. |
 | 2026-09-19 | **Phase 1 done** — H-01, L-04, H-02 fixed and verified (201 tests, 188 pass, no new failures). Opened M-14, M-15, L-10. 37 findings, 3 fixed. |
+| 2026-09-19 | Phase 2's adversarial review surfaced H-08: `requireAuth` never checks `user_sessions`, so every "revoke sessions" action is a no-op for the 7-day life of the access token. Blocks M-01. 38 findings. |
+| 2026-09-20 | **Phase 2 done** — H-05, H-03, M-02, M-03 fixed; M-01 fixed as far as a route can be (access-token half waits on H-08). Password change moved to `POST /auth/change-password`. 252 tests / 239 pass. 7 fixed. |

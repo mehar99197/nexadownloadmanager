@@ -79,17 +79,32 @@ function totpAt(secretBase32, when = Date.now()) {
 
 /**
  * Constant-time check of a 6-digit code, accepting one step of clock drift
- * either way (the usual ±30 s allowance).
+ * either way (the usual ±30 s allowance), reporting WHICH step matched:
+ * { ok:true, step } or { ok:false, step:null }. The caller remembers the step
+ * so the same code cannot be spent twice — accepting ±1 step otherwise leaves
+ * a code live for up to 90 seconds, which is long enough to replay one read
+ * over a shoulder or captured by a phishing page (see routes/twoFactor.js).
+ *
+ * The window is walked oldest first and the first match wins, so if two
+ * neighbouring steps happened to produce the same six digits (one chance in a
+ * million) the OLDER step is reported — the answer a replay guard refuses
+ * rather than the one it waves through.
  */
-function verifyTotp(secretBase32, code, { when = Date.now(), window = 1 } = {}) {
+function verifyTotpStep(secretBase32, code, { when = Date.now(), window = 1 } = {}) {
   const given = String(code || '').replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(given)) return false;
+  if (!/^\d{6}$/.test(given)) return { ok: false, step: null };
   const counter = Math.floor(when / 1000 / STEP_SECONDS);
   for (let i = -window; i <= window; i += 1) {
     const expected = hotp(secretBase32, counter + i);
-    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given))) return true;
+    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given)))
+      return { ok: true, step: counter + i };
   }
-  return false;
+  return { ok: false, step: null };
+}
+
+/** The boolean form, for callers with no step to remember. */
+function verifyTotp(secretBase32, code, opts) {
+  return verifyTotpStep(secretBase32, code, opts).ok;
 }
 
 function otpauthUrl({ secret, account, issuer = ISSUER }) {
@@ -234,7 +249,7 @@ async function consumeRecoveryCode(hashes, code) {
 }
 
 module.exports = {
-  generateSecret, totpAt, verifyTotp, otpauthUrl,
+  generateSecret, totpAt, verifyTotp, verifyTotpStep, otpauthUrl,
   encryptSecret, decryptSecret,
   generateRecoveryCodes, consumeRecoveryCode, hashRecoveryCode, randomRecoveryCode, isLegacyRecoveryHash,
   base32Encode, base32Decode, STEP_SECONDS, DIGITS, ISSUER, RECOVERY_COUNT,

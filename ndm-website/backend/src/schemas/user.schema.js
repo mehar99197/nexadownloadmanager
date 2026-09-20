@@ -2,23 +2,15 @@
 
 const { z } = require('zod');
 
-// Update name and/or password. At least one field required.
-//
-// `currentPassword` is required whenever the account HAS a password — that rule
-// is enforced in routes/user.js, not here, because the schema cannot see the
-// account. An account created with "Continue with Google" has no password at
-// all and may set its first one with the session alone.
+// Profile edits: the display name. The password is NOT changed here — that is
+// POST /auth/change-password, which revokes the other sessions and has to live
+// under /api/auth to see the refresh cookie (see routes/auth.js).
 const updateProfileSchema = {
   body: z
     .object({
-      name: z.string().trim().min(1).max(100).optional(),
-      currentPassword: z.string().min(1).optional(),
-      newPassword: z.string().min(8, 'Password must be at least 8 characters').optional(),
+      name: z.string().trim().min(1).max(100),
     })
-    .strict()
-    .refine((d) => d.name !== undefined || d.newPassword !== undefined, {
-      message: 'Provide a name or a new password to update',
-    }),
+    .strict(),
 };
 
 // Self-service account deletion is irreversible, so it takes the password AND

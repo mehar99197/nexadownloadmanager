@@ -51,6 +51,48 @@ test('verifyTotp accepts the current step and one step of drift, rejects further
   }
 });
 
+test('verifyTotpStep reports which step matched — the current one and ±1 of drift', () => {
+  const secret = totp.generateSecret();
+  const now = 1_700_000_000_000;
+  const step = Math.floor(now / 1000 / totp.STEP_SECONDS);
+  assert.deepEqual(totp.verifyTotpStep(secret, totp.totpAt(secret, now), { when: now }), { ok: true, step });
+  assert.deepEqual(totp.verifyTotpStep(secret, totp.totpAt(secret, now - 30_000), { when: now }), { ok: true, step: step - 1 });
+  // The step AFTER this one is only reached if neither earlier candidate
+  // matched first; two neighbours colliding on the same six digits is a
+  // one-in-a-million accident, so skip rather than flake on it.
+  const ahead = totp.totpAt(secret, now + 30_000);
+  const earlier = [totp.totpAt(secret, now - 30_000), totp.totpAt(secret, now)];
+  if (!earlier.includes(ahead))
+    assert.deepEqual(totp.verifyTotpStep(secret, ahead, { when: now }), { ok: true, step: step + 1 });
+  // Outside the window there is nothing to report: a refusal carries no step.
+  const far = totp.totpAt(secret, now + 90_000);
+  if (!earlier.includes(far) && far !== ahead)
+    assert.deepEqual(totp.verifyTotpStep(secret, far, { when: now }), { ok: false, step: null });
+  for (const bad of ['', '12345', 'abcdef', null, undefined]) {
+    assert.deepEqual(totp.verifyTotpStep(secret, bad, { when: now }), { ok: false, step: null }, `bad=${bad}`);
+  }
+  // verifyTotp is the same check with the step dropped.
+  assert.equal(totp.verifyTotp(secret, totp.totpAt(secret, now), { when: now }), true);
+});
+
+test('a remembered step is what makes a code single-use', () => {
+  const secret = totp.generateSecret();
+  const now = 1_700_000_000_000;
+  const spent = totp.verifyTotpStep(secret, totp.totpAt(secret, now), { when: now });
+  assert.equal(spent.ok, true);
+  // Half a minute later the same six digits still verify arithmetically — the
+  // ±1 window keeps them alive — but they report the step they came from, so
+  // a caller holding `spent.step` can tell a replay from a fresh code.
+  const later = now + 30_000;
+  const replay = totp.verifyTotpStep(secret, totp.totpAt(secret, now), { when: later });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.step, spent.step);
+  // The next step's own code is above it, so waiting 30 s always gets you in.
+  const next = totp.verifyTotpStep(secret, totp.totpAt(secret, later), { when: later });
+  assert.equal(next.ok, true);
+  assert.ok(next.step > spent.step, `${next.step} > ${spent.step}`);
+});
+
 test('otpauth URL carries issuer, account, and the secret', () => {
   const url = totp.otpauthUrl({ secret: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', account: 'admin@example.com', issuer: 'Nexa Admin' });
   assert.ok(url.startsWith('otpauth://totp/Nexa%20Admin%3Aadmin%40example.com?'));
@@ -192,17 +234,35 @@ async function staffRow({ recovery, enabled = 1 } = {}) {
       totp_secret: totp.encryptSecret(secret),
       totp_enabled: enabled,
       totp_recovery: recovery === undefined ? null : JSON.stringify(recovery),
+      // Never used a code: the column is NULL on every row until one is spent.
+      totp_last_step: null,
     },
   };
 }
 
 /**
  * Stub the User model around one row for the duration of fn(updates), then
- * restore it. findById hands back a COPY, as a SELECT would; `updates` collects
- * every write, in order, in the model's camelCase field shape.
+ * restore it. The stub is faithful to mysql2 in the two ways the replay guard
+ * depends on, because a friendlier stub would hide the very race M-03 is about:
+ *
+ *   - findById hands back a COPY. A SELECT is a snapshot; a request holding one
+ *     cannot see a write another request made after it was taken. Sharing one
+ *     object would make the in-memory comparison in checkCode look like a
+ *     guard, which it is not.
+ *   - spendTotpStep and swapRecoveryCodes compare and write in ONE synchronous
+ *     tick, with no await in between. That is exactly what the conditional
+ *     UPDATE buys in the database, and it is the only reason two interleaved
+ *     requests can be told apart.
+ *
+ * `updates` collects the writes that LANDED, in order, in the model's
+ * camelCase field shape whichever method made them — so a conditional spend
+ * that lost the race leaves no entry.
  */
 async function withUserRow(row, fn) {
-  const original = { findById: User.findById, update: User.update };
+  const original = {
+    findById: User.findById, update: User.update,
+    spendTotpStep: User.spendTotpStep, swapRecoveryCodes: User.swapRecoveryCodes,
+  };
   const updates = [];
   const column = (k) => k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
   User.findById = async (id) => (Number(id) === row.id ? { ...row } : null);
@@ -210,6 +270,23 @@ async function withUserRow(row, fn) {
     assert.equal(id, row.id);
     updates.push(fields);
     for (const [k, v] of Object.entries(fields)) row[column(k)] = v;
+  };
+  User.spendTotpStep = async (id, step) => {
+    assert.equal(id, row.id);
+    const last = row.totp_last_step === null || row.totp_last_step === undefined
+      ? null : Number(row.totp_last_step);
+    if (last !== null && last >= step) return false;
+    row.totp_last_step = step;
+    updates.push({ totpLastStep: step });
+    return true;
+  };
+  User.swapRecoveryCodes = async (id, expected, next) => {
+    assert.equal(id, row.id);
+    const current = row.totp_recovery === undefined ? null : row.totp_recovery;
+    if (current !== (expected === undefined ? null : expected)) return false;
+    row.totp_recovery = next;
+    updates.push({ totpRecovery: next });
+    return true;
   };
   try { await fn(updates); } finally { Object.assign(User, original); }
 }
@@ -287,7 +364,10 @@ test('an authenticator sign-in retires the pre-bcrypt recovery codes and says so
     const res = await call('POST /login/2fa', { body: { challenge, code: totp.totpAt(secret) } });
     assert.equal(res.statusCode, 200, JSON.stringify(res.body));
     assert.equal(res.body.data.token, 'session');
-    assert.deepEqual(updates, [{ totpRecovery: '[]' }]);
+    // The spent step is written first — before the session exists — then the
+    // legacy recovery codes go.
+    assert.equal(typeof updates[0].totpLastStep, 'number');
+    assert.deepEqual(updates.slice(1), [{ totpRecovery: '[]' }]);
     assert.deepEqual(auditLog.map((a) => a.action), ['admin.recovery_codes_retired']);
     assert.match(auditLog[0].summary, /retired 2 recovery codes/);
     assert.deepEqual(twoFactor.twoFactorState(row), { enabled: true, pending: false, recoveryCodesLeft: 0, recoveryCodesLegacy: false });
@@ -302,7 +382,9 @@ test('an authenticator sign-in leaves a bcrypt recovery set alone', async () => 
     const challenge = twoFactor.signChallenge(row, REALM);
     const res = await call('POST /login/2fa', { body: { challenge, code: totp.totpAt(secret) } });
     assert.equal(res.statusCode, 200, JSON.stringify(res.body));
-    assert.deepEqual(updates, [], 'the bcrypt set is untouched');
+    // Only the spent step is written: the bcrypt set is untouched.
+    assert.deepEqual(Object.keys(updates[0]), ['totpLastStep']);
+    assert.equal(updates.length, 1);
     assert.deepEqual(auditLog, []);
   });
 });
@@ -358,8 +440,11 @@ test('POST /2fa/recovery-codes replaces the set behind the password and a curren
     const { recoveryCodes } = res.body.data;
     assert.equal(recoveryCodes.length, totp.RECOVERY_COUNT);
     for (const c of recoveryCodes) assert.match(c, /^[a-z0-9]{5}-[a-z0-9]{5}$/);
-    assert.equal(updates.length, 1);
-    const stored = JSON.parse(updates[0].totpRecovery);
+    // Two writes now, in this order: the proof code is spent conditionally
+    // first, then the fresh set replaces the old one.
+    assert.equal(updates.length, 2);
+    assert.equal(typeof updates[0].totpLastStep, 'number');
+    const stored = JSON.parse(updates[1].totpRecovery);
     assert.equal(stored.length, totp.RECOVERY_COUNT);
     for (const h of stored) assert.ok(h.startsWith('$2'), h);
     assert.deepEqual(auditLog.map((a) => a.action), ['root.recovery_codes_regenerated']);
@@ -380,5 +465,182 @@ test('POST /2fa/recovery-codes refuses when two-factor is off', async () => {
     assert.equal(res.statusCode, 400);
     assert.equal(res.body.error.code, 'NOT_ENABLED');
     assert.deepEqual(updates, []);
+  });
+});
+
+/* ------------------------------------------------ single-use codes (M-03) */
+
+test('checkCode spends a TOTP step: the same code is refused next time, the next one is not', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  // An account that has never used a code carries NULL, and signs in normally.
+  assert.equal(row.totp_last_step, null);
+  const code = totp.totpAt(secret);
+  const first = await twoFactor.checkCode(row, code);
+  assert.equal(first.ok, true);
+  assert.equal(first.usedRecovery, false);
+  assert.equal(typeof first.step, 'number');
+
+  // What the routes persist. From here the row remembers the spent step.
+  row.totp_last_step = first.step;
+  assert.deepEqual(await twoFactor.checkCode(row, code), { ok: false });
+  // A BIGINT can come back from the driver as a string; same answer.
+  row.totp_last_step = String(first.step);
+  assert.deepEqual(await twoFactor.checkCode(row, code), { ok: false });
+  row.totp_last_step = first.step;
+
+  // The step BEFORE the spent one is stale, not fresh: a clock drifting
+  // backwards must not reopen a code that has already been used.
+  const stale = totp.totpAt(secret, (first.step - 1) * totp.STEP_SECONDS * 1000);
+  assert.equal((await twoFactor.checkCode(row, stale)).ok, false);
+
+  // The next step's code is above the stored one and still works — refusing a
+  // replay never locks the account out of the code it is about to be shown.
+  const nextStep = first.step + 1;
+  const nextCode = totp.totpAt(secret, nextStep * totp.STEP_SECONDS * 1000);
+  const neighbours = [nextStep - 2, nextStep - 1].map((s) => totp.totpAt(secret, s * totp.STEP_SECONDS * 1000));
+  // (Two neighbouring steps minting the same six digits is a one-in-a-million
+  // accident; the window would match the earlier one, so skip rather than flake.)
+  if (!neighbours.includes(nextCode)) {
+    const next = await twoFactor.checkCode(row, nextCode);
+    assert.equal(next.ok, true);
+    assert.equal(next.step, nextStep);
+  }
+});
+
+test('a TOTP code cannot sign in twice — the second attempt is refused on the step', async () => {
+  const { hashes } = await totp.generateRecoveryCodes();
+  const { secret, row } = await staffRow({ recovery: hashes });
+  const { call } = mountFake();
+  await withUserRow(row, async () => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const code = totp.totpAt(secret);
+    const first = await call('POST /login/2fa', { body: { challenge, code } });
+    assert.equal(first.statusCode, 200, JSON.stringify(first.body));
+    assert.equal(typeof row.totp_last_step, 'number');
+
+    // The challenge is still live and the code still inside its ±1 window —
+    // which is exactly the replay a shoulder-read or a phishing page gets.
+    const second = await call('POST /login/2fa', { body: { challenge, code } });
+    assert.equal(second.statusCode, 401);
+    assert.equal(second.body.error.code, 'INVALID_CODE');
+    // A recovery code is single-use by construction and is unaffected.
+    const recovery = await call('POST /login/2fa', { body: { challenge, code: 'zzzzz-zzzzz' } });
+    assert.equal(recovery.statusCode, 401);
+  });
+});
+
+test('the code that turns 2FA on cannot then complete a login', async () => {
+  const { secret, row } = await staffRow({ enabled: 0 });
+  const { call } = mountFake();
+  await withUserRow(row, async () => {
+    const code = totp.totpAt(secret);
+    const enabled = await call('POST /2fa/enable', { admin: row, body: { code } });
+    assert.equal(enabled.statusCode, 200, JSON.stringify(enabled.body));
+    assert.equal(enabled.body.data.recoveryCodes.length, totp.RECOVERY_COUNT);
+    assert.equal(typeof row.totp_last_step, 'number');
+    // /2fa/enable verifies the code itself rather than through checkCode, so
+    // this is the step that route has to remember on its own.
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const res = await call('POST /login/2fa', { body: { challenge, code } });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.body.error.code, 'INVALID_CODE');
+  });
+});
+
+test('the code that turns 2FA off is spent before the secret is cleared', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  const { call } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const res = await call('POST /2fa/disable', { admin: row, body: { password: 'correct horse', code: totp.totpAt(secret) } });
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+    // The spend cannot ride along in the clearing write: it has to be the
+    // conditional statement, and it has to come first, or a second request
+    // carrying the same code would be inside the door before it lands.
+    assert.equal(updates.length, 2);
+    assert.equal(typeof updates[0].totpLastStep, 'number');
+    assert.deepEqual(updates[1], { totpEnabled: 0, totpSecret: null, totpRecovery: null });
+  });
+});
+
+test('a recovery-code sign-in records no step — it is single-use by construction', async () => {
+  const { row } = await staffRow({ recovery: [await totp.hashRecoveryCode('k7f3q-9x2mp')] });
+  const { call } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const res = await call('POST /login/2fa', { body: { challenge, code: 'k7f3q-9x2mp' } });
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+    assert.deepEqual(updates, [{ totpRecovery: '[]' }]);
+    assert.equal(row.totp_last_step, null);
+  });
+});
+
+/* --------------------------------- concurrent replay (M-03, the real shape) */
+
+// A stolen code is not replayed a polite second later — a real-time phishing
+// relay forwards the victim's digits and submits its own login beside theirs,
+// so the two requests are in flight together. Delivering them with Promise.all
+// is that shape, not a contrived one: every await in the handler yields the
+// event loop, so both load the row before either writes to it. Only a
+// conditional write can tell them apart, which is why these run through the
+// routes rather than through checkCode.
+
+test('two logins racing with the SAME authenticator code: one session, not two', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  const { call } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const code = totp.totpAt(secret);
+    const [a, b] = await Promise.all([
+      call('POST /login/2fa', { body: { challenge, code } }),
+      call('POST /login/2fa', { body: { challenge, code } }),
+    ]);
+    const statuses = [a.statusCode, b.statusCode].sort();
+    assert.deepEqual(statuses, [200, 401], `${JSON.stringify(a.body)} / ${JSON.stringify(b.body)}`);
+    // The loser is refused exactly as a wrong code is: nothing in the reply
+    // tells the relay that the digits it forwarded were genuine.
+    const loser = a.statusCode === 401 ? a : b;
+    assert.equal(loser.body.error.code, 'INVALID_CODE');
+    assert.equal(loser.body.error.message, 'That code is not valid');
+    // And the step was taken exactly once — one write landed, not two.
+    assert.deepEqual(updates, [{ totpLastStep: Number(row.totp_last_step) }]);
+  });
+});
+
+test('two logins racing with the SAME recovery code spend it once', async () => {
+  const { hashes } = await totp.generateRecoveryCodes();
+  const { row } = await staffRow({ recovery: [await totp.hashRecoveryCode('k7f3q-9x2mp'), ...hashes] });
+  const { call } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const [a, b] = await Promise.all([
+      call('POST /login/2fa', { body: { challenge, code: 'k7f3q-9x2mp' } }),
+      call('POST /login/2fa', { body: { challenge, code: 'k7f3q-9x2mp' } }),
+    ]);
+    assert.deepEqual([a.statusCode, b.statusCode].sort(), [200, 401], `${JSON.stringify(a.body)} / ${JSON.stringify(b.body)}`);
+    assert.equal(updates.length, 1);
+    // The set on the row lost that one code and kept the rest, once.
+    assert.deepEqual(JSON.parse(row.totp_recovery), hashes);
+    assert.equal(await totp.consumeRecoveryCode(JSON.parse(row.totp_recovery), 'k7f3q-9x2mp'), null);
+  });
+});
+
+test('a second enable racing on the same code cannot mint a second recovery set', async () => {
+  const { secret, row } = await staffRow({ enabled: 0, recovery: undefined });
+  const { call } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const code = totp.totpAt(secret);
+    // req.admin is the row the gate loaded, so both requests see 2FA off —
+    // the same pre-check both would pass before either wrote.
+    const [a, b] = await Promise.all([
+      call('POST /2fa/enable', { admin: { ...row }, body: { code } }),
+      call('POST /2fa/enable', { admin: { ...row }, body: { code } }),
+    ]);
+    assert.deepEqual([a.statusCode, b.statusCode].sort(), [200, 400], `${JSON.stringify(a.body)} / ${JSON.stringify(b.body)}`);
+    // Exactly one printed set of recovery codes, and it is the one stored.
+    const winner = a.statusCode === 200 ? a : b;
+    const stored = JSON.parse(row.totp_recovery);
+    assert.equal(stored.length, totp.RECOVERY_COUNT);
+    assert.ok(await totp.consumeRecoveryCode(stored, winner.body.data.recoveryCodes[0]));
+    assert.deepEqual(updates.map((u) => Object.keys(u)), [['totpLastStep'], ['totpEnabled', 'totpRecovery']]);
   });
 });

@@ -213,11 +213,14 @@ export default function Profile() {
     }
     setChangingPassword(true);
     try {
-      await api.put('/user/profile', {
-        currentPassword,
+      // /auth/change-password signs every OTHER browser out and keeps this one.
+      // An account created with Google has no current password to send; the
+      // field is left out rather than sent empty, which the API would reject.
+      await api.post('/auth/change-password', {
+        ...(currentPassword ? { currentPassword } : {}),
         newPassword,
       });
-      toast.success('Password changed.');
+      toast.success('Password changed. Any other signed-in devices were signed out.');
       setCurrentPassword('');
       setNewPassword('');
     } catch (err) {

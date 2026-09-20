@@ -51,9 +51,17 @@ This endpoint is consumed by the NDM **C++ app**, so it returns a LITERAL shape,
 // valid
 { "valid": true, "plan": "pro", "expires": "2027-01-01T00:00:00.000Z", "token": "<24h jwt>", "trial": false }
 // invalid
-{ "valid": false, "reason": "expired", "trial": false }   // reason ∈ not_found | expired | cancelled | device_mismatch | invalid
+{ "valid": false, "reason": "expired", "trial": false }   // reason ∈ not_found | banned | expired | cancelled | seat_limit | seat_revoked | invalid
 ```
 Always HTTP 200 with this body (even when `valid:false`) so the C++ client parses it cleanly.
+`banned` outranks every other reason and is checked first: the owning account is
+banned, so plan state is irrelevant. On a Team licence, a banned *member* cannot be
+told apart from a colleague (the request carries only a key and a fingerprint), so
+the first `/validate` or `/heartbeat` to see one drops the banned members from the
+roster, **rotates the licence key** and revokes every seat; everyone still entitled
+re-copies the new key from their dashboard (`/api/user/license` reads it live) and
+the banned member, who can no longer sign in, cannot. `/release` deliberately skips
+the ban check — handing a seat back is housekeeping, not a privilege.
 `trial` is **always present**: `true` while the 7-day no-card Pro trial is running
 (`subscriptions.trial_ends_at` in the future, no `stripe_subscription_id`), else `false`.
 The handler calls `Subscription.expireTrialIfNeeded(sub)` first, so a finished trial
@@ -230,17 +238,35 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/login` | `authLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
 | POST | `/forgot-password` | `authLimiter`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email |
-| POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash |
+| POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` + `resetTokenMatches` → set new passwordHash; **single-use** |
+| POST | `/change-password` | `requireAuth`, `validate(changePasswordSchema)` | `{ currentPassword?, newPassword }` → `{ changed:true, sessionKept }` — signed-in password change |
 | POST | `/refresh` | — | read `ndm_refresh` cookie, rotate, return new access token *(ADDED)* |
 | POST | `/logout` | — | clear `ndm_refresh` cookie + null out `refreshTokenHash` *(ADDED)* |
 
-`POST /reset-password` also nulls `adminRefreshTokenHash`.
+`POST /login` refuses a banned account with `403 FORBIDDEN` **after** the password
+matches (never before — refusing at the lookup would tell an anonymous caller which
+addresses are banned).
+
+`POST /reset-password` tokens carry `pv`, a prefix of `sha256(password_hash)`; the
+route re-checks it against the live row (`resetTokenMatches`) and the write is a
+conditional `UPDATE … WHERE password_hash <=> ?`, so a link dies the instant it is
+spent and a second request holding the same link loses the race. Every refusal is
+the same `INVALID_TOKEN`. It nulls all three single-slot refresh columns
+(`refreshTokenHash`, `adminRefreshTokenHash`, `rootRefreshTokenHash`) and deletes
+every `user_sessions` row.
+
+`POST /change-password` does the same revocation, then re-opens ONE session for the
+calling browser — only if it presented a live `ndm_refresh` cookie of its own
+(`sessionKept:true`); a bare bearer token is never upgraded into a session. It lives
+under `/api/auth` because that cookie is scoped to `/api/auth` and would never reach
+`/api/user`. A Google-created account with no password yet omits `currentPassword`.
+Neither route can end an access token already issued — see AUDIT.md H-08.
 
 ### `routes/user.js` → `/api/user` (all `requireAuth`)
 | Method | Path | Middleware |
 |--------|------|-----------|
 | GET | `/me` | `requireAuth` — profile + subscription; `subscription` includes `trial: boolean`, `trialEndsAt: ISO\|null` (after `expireTrialIfNeeded`) |
-| PUT | `/profile` | `requireAuth`, `validate(updateProfileSchema)` |
+| PUT | `/profile` | `requireAuth`, `validate(updateProfileSchema)` — `{ name }` only; the password is `POST /auth/change-password` |
 | GET | `/license` | `requireAuth` — license key (+ `trial`, `trialEndsAt`) |
 | GET | `/billing` | `requireAuth` — payment history |
 
@@ -450,7 +476,9 @@ hashes; a code is removed when used).
 
 - `POST <realm>/login` with 2FA on → `{ requiresTwoFactor:true, challenge }` (5-min JWT `typ:"2fa-<realm>"`), NO session/cookie.
 - `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
-- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/disable { password, code }`.
+- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled; resets `totp_last_step`); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/recovery-codes { password, code }` → `{ recoveryCodes[8] }` fresh set, shown once; `POST <realm>/2fa/disable { password, code }`.
+- Recovery codes are ten `[a-z0-9]` characters as `xxxxx-xxxxx` (≈52 bits), stored as **bcrypt** (cost 10). Rows enrolled before that hold SHA-256 hex; they still verify, are reported as `recoveryCodesLegacy:true`, and are retired on the account's next authenticator sign-in (audit `<realm>.recovery_codes_retired`).
+- **Every accepted code is single-use.** A TOTP code's 30-second step is spent with one conditional `UPDATE users SET totp_last_step = ? WHERE … totp_last_step < ?` (`User.spendTotpStep`); a step at or below the stored one is refused, so a code cannot be replayed inside its ±1-step window and two concurrent logins carrying the same digits cannot both succeed. A recovery code is spent by `User.swapRecoveryCodes`, a conditional replace of the whole stored set. Losing either race answers the same `INVALID_CODE` as a wrong code.
 - `GET <realm>/me` adds `twoFactorEnabled`; `User.listStaff` includes `totp_enabled`; root `POST /api/root/admins/:id/reset-2fa` clears a staff admin's second factor and revokes sessions.
 
 ### Turnstile — `middleware/turnstile.js`
