@@ -9,6 +9,7 @@ evidence for each one is recorded so nothing has to be re-derived later.
 - **Branch:** `windows-fixes-v3` @ `40980ed`
 - **Scope:** `ndm-website/backend` (8,495 LOC), `ndm-website/frontend` (7,767 LOC), `ndm-website/admin` (30 files)
 - **Live target:** https://nexadownloadmanager.com (NODE_ENV=production, billing `disabled`)
+- **Deployed:** Phases 1–4 went live 2026-09-20 14:26 UTC from `c30cfd9` (see the change log); API pid 137132, `[db] schema initialized`, 0 errors since.
 
 ## How to use this file
 
@@ -308,7 +309,9 @@ the wording already used in `/auth/google`.
 
 ## H-06 — The download-counter fix was written, tested, and never wired up
 
-**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/downloadCounter.integration.test.js` — the 3 failing leaves now pass, plus 5 new (HEAD on both paths, resume of an uploaded file, missing file → 404 and uncounted); 14/14
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/downloadCounter.integration.test.js` — the 3 failing leaves now pass, plus 5 new (HEAD on both paths, resume of an uploaded file, missing file → 404 and uncounted); 14/14. Confirmed live at the origin after the deploy: HEAD +0, resume +0, fresh start +1.
+
+**Live caveat:** through Hostinger's edge a `HEAD` still counts once — the CDN turns it into a `GET` at the origin to fill its cache, and nothing distinguishes that GET from a real one. The per-address window bounds it: a link-preview bot's HEAD is one download at most, and a person who downloads within ten minutes of it is not counted twice. The three test increments were removed from the live counter (672).
 
 **Fixed by:** `routes/releases.js` asks `shouldCountDownload()` on both the
 uploaded-file and the legacy-redirect path, through one `countsAsDownload()`
@@ -1166,6 +1169,7 @@ Do this early: Phases 2, 4 and 5 cannot be properly verified without it.
 | 2026-09-19 | **Phase 1 done** — H-01, L-04, H-02 fixed and verified (201 tests, 188 pass, no new failures). Opened M-14, M-15, L-10. 37 findings, 3 fixed. |
 | 2026-09-19 | Phase 2's adversarial review surfaced H-08: `requireAuth` never checks `user_sessions`, so every "revoke sessions" action is a no-op for the 7-day life of the access token. Blocks M-01. 38 findings. |
 | 2026-09-20 | **Phase 2 done** — H-05, H-03, M-02, M-03 fixed; M-01 fixed as far as a route can be (access-token half waits on H-08). Password change moved to `POST /auth/change-password`. 252 tests / 239 pass. 7 fixed. |
+| 2026-09-20 | **Phases 1–4 deployed to production** with `deploy/build-and-upload.sh` after a verified backup. Two deploy-script bugs found on the way and fixed (`c30cfd9`): the MSYS runtime turned `VITE_API_URL=/api` into `C:/Program Files/Git/api` inside the bundle, and the Cygwin rsync could not take Git Bash paths or spawn its ssh. Live checks: health up, all three migrations present, auth/refresh/gate answers as specified, counter honest at the origin (CDN HEAD caveat under H-06), new site + admin bundles with `/api` and the Google client ID (button now renders; the server always had the ID). Admins must sign in once more (H-08). |
 | 2026-09-20 | Deploy prep: production checked for duplicate subscriptions (none) and `uq_subscriptions_user` added (M-07 closed fully); the deployed `backup.sh` found broken twice over (CRLF from the Windows checkout, and `/dev/fd` under CageFS) and fixed — first verified backup since 09-13. |
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
