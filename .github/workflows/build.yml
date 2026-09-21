@@ -49,6 +49,12 @@ env:
   FFMPEG_TAG: 'autobuild-2026-09-08-23-15'
   FFMPEG_ASSET: 'ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip'
   FFMPEG_SHA256: '508400eb2ecfab27e2f0383817b54e2bf1946940a8aeda6fe3df9438ff511bf1'
+  # Same release, same ffmpeg version, static Linux build. The .deb used to copy
+  # the runner's apt /usr/bin/ffmpeg, which is dynamically linked against eight
+  # libav*/libsw*/libpostproc libraries the package never shipped — see the
+  # bundling step below.
+  FFMPEG_ASSET_LINUX: 'ffmpeg-n8.1.2-51-g7ba069f4f1-linux64-gpl-8.1.tar.xz'
+  FFMPEG_SHA256_LINUX: '04905bf1b10da0e53cd61e78ab284fd60125d1f1cd0a9e7681f7d73c8f3f3bed'
   # Build-time only — these never reach a user's machine, but they DO execute on
   # a runner that holds the signing secrets.
   LINUXDEPLOY_TAG: '1-alpha-20251107-1'
@@ -250,8 +256,51 @@ jobs:
 
           # ── yt-dlp + ffmpeg (self-contained, no apt needed) ───────────────
           cp /usr/local/bin/yt-dlp ${PKG}/usr/lib/nexa/yt-dlp
-          cp /usr/bin/ffmpeg       ${PKG}/usr/lib/nexa/ffmpeg 2>/dev/null || true
-          chmod +x ${PKG}/usr/lib/nexa/yt-dlp ${PKG}/usr/lib/nexa/ffmpeg 2>/dev/null || true
+          chmod +x ${PKG}/usr/lib/nexa/yt-dlp
+
+          # IMPORTANT: do NOT `cp /usr/bin/ffmpeg` here. Ubuntu's ffmpeg is
+          # DYNAMICALLY linked against libavdevice/libavfilter/libavformat/
+          # libavcodec/libpostproc/libswresample/libswscale/libavutil, and the
+          # linuxdeploy pass above only walks the closure of nexa / nexa-host —
+          # never ffmpeg — so none of those eight ever got bundled. The copied
+          # binary could not start on ANY machine ("libavdevice.so.60: cannot
+          # open shared object file"), yt-dlp reported `exe versions: none`, and
+          # every YouTube download ended as two unmerged files on disk
+          # (…f602.mp4 + …f233.mp4) instead of one video. HLS muxing and audio
+          # extraction broke the same way. This is the identical mistake the
+          # Windows job documents at "Bundle ffmpeg (static, self-contained)";
+          # it was fixed there and left standing here, so Linux kept the bug.
+          # The `2>/dev/null || true` on the old copy meant it could never fail
+          # loudly either.
+          #
+          # Same pinned BtbN release as Windows, linux64-gpl = static. ffprobe
+          # too: yt-dlp probes with it and falls back to ffmpeg without it.
+          curl -sSL --fail \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET_LINUX}" \
+            -o ffmpeg-linux.tar.xz
+          echo "${FFMPEG_SHA256_LINUX}  ffmpeg-linux.tar.xz" | sha256sum -c - \
+            || { echo "ERROR: ffmpeg archive failed its checksum"; exit 1; }
+          tar -xf ffmpeg-linux.tar.xz --strip-components=2 \
+            -C ${PKG}/usr/lib/nexa/ \
+            "${FFMPEG_ASSET_LINUX%.tar.xz}/bin/ffmpeg" \
+            "${FFMPEG_ASSET_LINUX%.tar.xz}/bin/ffprobe"
+          rm ffmpeg-linux.tar.xz
+          chmod +x ${PKG}/usr/lib/nexa/ffmpeg ${PKG}/usr/lib/nexa/ffprobe
+
+          # Sanity-gate: a static build resolves every library and RUNS. Both are
+          # asserted, because "the file exists" is exactly what the old copy
+          # satisfied while being unable to execute. patchelf must not touch
+          # these — the loop above globs *.so* only, so it already doesn't.
+          for tool in ffmpeg ffprobe; do
+            if ldd ${PKG}/usr/lib/nexa/$tool 2>/dev/null | grep -q "not found"; then
+              echo "ERROR: bundled $tool has unresolved libraries — not self-contained"
+              ldd ${PKG}/usr/lib/nexa/$tool | grep "not found"
+              exit 1
+            fi
+            ${PKG}/usr/lib/nexa/$tool -version >/dev/null 2>&1 \
+              || { echo "ERROR: bundled $tool cannot execute"; exit 1; }
+          done
+          echo "ffmpeg + ffprobe are static / self-contained and run"
 
           # ── Icons & desktop entry ─────────────────────────────────────────
           cp assets/nexa-256.png ${PKG}/usr/share/icons/hicolor/256x256/apps/nexa.png
@@ -980,6 +1029,21 @@ jobs:
           test -n "$(find /usr/lib/nexa/plugins/tls -name '*.so' 2>/dev/null)" \
             && echo "✅ TLS backend present (https works)" \
             || { echo "❌ TLS backend MISSING — every https download would fail"; fail=1; }
+          # The bundled tools are checked the only way that means anything: by
+          # RUNNING them. `check` above (and every ldd gate) passes for a binary
+          # that exists and is executable, which is precisely what the broken
+          # ffmpeg copy was — present, +x, and unable to start for want of
+          # libavdevice. yt-dlp then merged nothing and YouTube downloads ended
+          # as two files. A clean container is where that has to be caught.
+          for tool in ffmpeg ffprobe yt-dlp; do
+            check /usr/lib/nexa/$tool
+            if /usr/lib/nexa/$tool -version >/dev/null 2>&1 \
+               || /usr/lib/nexa/$tool --version >/dev/null 2>&1; then
+              echo "✅ $tool runs"
+            else
+              echo "❌ $tool is present but CANNOT RUN — video merging is broken"; fail=1
+            fi
+          done
           if [ "$fail" -ne 0 ]; then
             echo "::error::.deb is NOT self-contained — see missing libs above"
             exit 1
