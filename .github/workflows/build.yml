@@ -354,10 +354,22 @@ jobs:
           mkdir -p ${PKG}/usr/lib/mozilla/native-messaging-hosts
           echo "$FIREFOX_JSON" > ${PKG}/usr/lib/mozilla/native-messaging-hosts/com.nexa.host.json
 
-          # ── Set LD_LIBRARY_PATH wrapper so bundled libs are found ─────────
+          # ── Launcher ──────────────────────────────────────────────────────
+          # Deliberately NO LD_LIBRARY_PATH. The rpath pass above gives both
+          # binaries $ORIGIN and the plugins $ORIGIN/../.., so every bundled .so
+          # already resolves without it — that is exactly what the comment there
+          # says it is for. Exporting it anyway was a leftover, and it is not
+          # harmless: the environment is inherited by every child process, so
+          # our OpenSSL shadowed the system one for the SYSTEM python that runs
+          # yt-dlp, and importing ssl died with
+          #   ImportError: /usr/lib/nexa/libcrypto.so.3: version
+          #   `OPENSSL_3.3.0' not found (required by …/_ssl…so)
+          # before a single byte was fetched. The bundled libcrypto is built for
+          # the runner's distro and cannot satisfy an arbitrary host's python.
+          # PATH stays: it only affects which executables are found, never which
+          # libraries are loaded, and it is how a child reaches bundled yt-dlp.
           cat > ${PKG}/usr/bin/nexa <<'SH'
           #!/bin/sh
-          export LD_LIBRARY_PATH=/usr/lib/nexa:$LD_LIBRARY_PATH
           export PATH=/usr/lib/nexa:$PATH
           exec /usr/lib/nexa/nexa "$@"
           SH
