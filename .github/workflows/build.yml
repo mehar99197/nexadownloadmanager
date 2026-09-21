@@ -410,7 +410,7 @@ jobs:
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libglx0, libopengl0, libegl1
+          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libglx0, libopengl0, libegl1, python3
           Description: Nexa Download Manager
            Fast multi-protocol download manager with browser integration.
            Supports HTTP/HTTPS segmented downloads, HLS video streams,
