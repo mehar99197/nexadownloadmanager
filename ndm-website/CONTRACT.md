@@ -483,8 +483,16 @@ A release carries **either** an uploaded installer (`windows_file` / `linux_file
 + `*_filename`, `*_size`, `*_sha256`) **or** a legacy external URL. Uploads win;
 the `*_url` columns stay so releases published before uploads keep resolving.
 `GET /api/releases/download/:os` streams an uploaded file with `Accept-Ranges`
-(206/416 handled — NDM's own users resume downloads) and only bumps
-`download_count` for a fresh start, never for a resumed chunk. `buildFeed` uses
+(206/416 handled — NDM's own users resume downloads). `download_count` records
+that a download **started** — completion is not observable — and only when one
+did (`utils/downloadCounter.js`, asked once per request on both the uploaded
+and the legacy-redirect path): not for a resume (a `Range` from anywhere but
+byte 0), not for the app's one-byte `bytes=0-0` size probe, not for a `HEAD`
+(Express routes it to the GET handler), not for the same address starting the
+same release + platform again inside a 10-minute window (a cancel-and-restart,
+a retry, a scanner), and not for a release whose file is missing from disk —
+the 404 is decided before the count. The dedupe is in-process; several API
+instances could over-count by at most one each per window. `buildFeed` uses
 `hasArtifact()`, so a file-only release still appears in the update feed with the
 checksum computed at upload time.
 

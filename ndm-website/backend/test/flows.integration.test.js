@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const srv = require('./helpers/testServer');
+const { resetDownloadCounter } = require('../src/utils/downloadCounter');
 
 const dbUp = () => srv.available();
 
@@ -804,6 +805,16 @@ test('backend flows', async (t) => {
       assert.equal(resume.status, 206);
       const tail = Buffer.from(await resume.arrayBuffer());
       assert.equal(tail.equals(body.subarray(body.length - 1000)), true);
+      // Another start from the same address inside the window is the same
+      // person retrying — a cancel-and-restart, a scanner, a second click —
+      // and is served in full but not counted again (utils/downloadCounter.js).
+      const retry = await dl({ range: 'bytes=0-65535' });
+      assert.equal(retry.status, 206);
+      assert.equal((await api.get('/api/releases/latest')).body.data.downloadCount, 1,
+        'a restart from the same address in the window is not a second download');
+      // Forget this address — what the next window looks like — and the same
+      // segmented start is a download.
+      resetDownloadCounter();
       const segment = await dl({ range: 'bytes=0-65535' });
       assert.equal(segment.status, 206, 'a real segmented start counts');
       assert.equal((await api.get('/api/releases/latest')).body.data.downloadCount, 2);
