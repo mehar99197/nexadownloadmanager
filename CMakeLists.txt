@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Nexa VERSION 0.3.0 LANGUAGES CXX DESCRIPTION "Nexa Download Manager")
+project(Nexa VERSION 0.3.1 LANGUAGES CXX DESCRIPTION "Nexa Download Manager")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
