@@ -419,8 +419,25 @@ jobs:
           CTRL
 
           # ── Build the package ─────────────────────────────────────────────
-          dpkg-deb --build ${PKG}
+          # --root-owner-group: without it dpkg-deb stamps the STAGING tree's
+          # ownership into the archive, which on a runner is uid 1001, and dpkg
+          # faithfully installs /usr/lib/nexa/* owned by 1001 on the user's
+          # machine. Beyond being wrong for system files, it silently disabled
+          # launching from the browser: nexa-host refuses to exec an engine that
+          # is owned by neither the calling user nor root (a link/replace
+          # guard), so on any machine whose user is not uid 1001 — i.e. almost
+          # all of them, since the first account is normally 1000 — the handoff
+          # only worked if Nexa was ALREADY open. Owned by root and mode 755 it
+          # passes both that check and the companion "not group/other writable"
+          # one.
+          dpkg-deb --root-owner-group --build ${PKG}
           ls -lh ${PKG}.deb
+          # Assert it, because the symptom (browser handoff does nothing unless
+          # the app is already running) looks like an IPC bug, not a chown one.
+          dpkg-deb -c ${PKG}.deb | grep -E ' \./usr/lib/nexa/nexa$' \
+            | grep -q '^[^ ]* *root/root ' \
+            || { echo "ERROR: engine is not root-owned — browser launch would be refused"; \
+                 dpkg-deb -c ${PKG}.deb | grep ' \./usr/lib/nexa/nexa$'; exit 1; }
           echo "✅ Self-contained .deb ready: $(du -sh ${PKG}.deb | cut -f1)"
 
       - name: Upload .deb artifact
