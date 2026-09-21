@@ -769,10 +769,24 @@ bool SiteCrawler::matchesAnyPattern(const QStringList &patterns, const QString &
         // "*.jpg" silently matched nothing, so every preset downloaded zero
         // files. Matching the NAME rather than the path is also what a person
         // typing "*.jpg" means.
+        //
+        // That flag is Qt 6.6; the CI runner and Ubuntu 24.04 are on 6.4, where
+        // it does not compile at all. The two conversions differ only in how
+        // '*' treats '/' — 6.6 lets it cross a separator, earlier Qt emits
+        // [^/]* — and everything here is matched against a bare file name that
+        // can never contain one (callers pass QFileInfo::fileName()), so the
+        // fallback agrees with it for every input this function can see.
+        // SiteCrawlerTest pins that behaviour on both.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
         const QRegularExpression rx(
             QRegularExpression::wildcardToRegularExpression(
                 trimmed, QRegularExpression::NonPathWildcardConversion),
             QRegularExpression::CaseInsensitiveOption);
+#else
+        const QRegularExpression rx(
+            QRegularExpression::wildcardToRegularExpression(trimmed),
+            QRegularExpression::CaseInsensitiveOption);
+#endif
         if (rx.match(fileName).hasMatch())
             return true;
     }
