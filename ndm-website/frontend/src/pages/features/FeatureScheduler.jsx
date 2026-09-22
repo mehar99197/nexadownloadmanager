@@ -86,7 +86,7 @@ export default function FeatureScheduler() {
           ['Per-download cap', 'KB/s for one row, from its right-click menu, layered under the global cap'],
           ['Torrent limits', 'Separate download and upload caps, plus the seed-ratio target'],
           ['Concurrency', 'How many files run at once — 3 on Free, unlimited on Pro'],
-          ['Connections per file', 'Up to 16; interacts with the speed cap rather than overriding it'],
+          ['Connections per file', 'Up to 16 on Free, 32 on Pro; interacts with the speed cap rather than overriding it'],
           ['When everything is done', 'Nothing, open the folder, sleep, or shut down — with a cancellable countdown'],
           ['Queue reordering', 'Drag rows, or move the selection with the Downloads menu'],
           ['Clipboard monitoring', <>Optional: copy a link anywhere and Nexa offers to queue it</>],

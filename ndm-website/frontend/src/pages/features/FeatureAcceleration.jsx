@@ -8,13 +8,13 @@ export default function FeatureAcceleration() {
   usePageMeta({
     title: 'Segmented download acceleration',
     description:
-      'How Nexa splits a file across up to 16 connections, steals the tail of the slowest segment as others finish, and resumes exactly where it stopped after a crash or a reboot.',
+      'How Nexa splits a file across up to 32 connections, steals the tail of the slowest segment as others finish, and resumes exactly where it stopped after a crash or a reboot.',
   });
 
   return (
     <FeatureShell
       title="Segmented acceleration"
-      tagline="One file, up to sixteen connections, and none of them left idle while another finishes."
+      tagline="One file, up to thirty-two connections, and none of them left idle while another finishes."
       hero={
         <Figure kind="Screenshot">
           The download details window mid-transfer, showing the per-connection segment bars and the
@@ -88,7 +88,7 @@ export default function FeatureAcceleration() {
           ['HTTP / HTTPS', 'Yes — the main path, including HTTP/2 servers'],
           ['Range requests', <>Required for splitting. Nexa detects <Code>Accept-Ranges</Code> and falls back to a single connection when the server refuses.</>],
           ['Unknown file size', <>Handled: a chunked response with no <Code>Content-Length</Code> downloads on one connection and is re-segmented if the size becomes known.</>],
-          ['Connections per file', 'Up to 16, set in Settings → Downloads. The default is chosen from the file size.'],
+          ['Connections per file', 'Chosen from the file size — 1 below 1 MB, 8 to 10 MB, 16 to 100 MB, 32 above. Capped at 16 on Free, 32 on Pro.'],
           ['Concurrent files', 'Free: 3 at a time. Pro and Team: unlimited.'],
           ['Speed limits', 'Global and per-download caps, applied with a shared token bucket'],
           ['Resume after restart', 'Yes — segment offsets live in the local database'],
@@ -107,7 +107,7 @@ export default function FeatureAcceleration() {
           <>Add a download — paste a URL with <Code>Ctrl+V</Code>, use the <strong className="text-white">+</strong> button, or click <strong className="text-white">Download with Nexa</strong> in your browser.</>,
           <>Nexa probes the URL, shows the real filename and size, and tells you whether the server supports resuming.</>,
           <>Open the row to watch the segments. Each bar is one connection; the numbers underneath are that connection&apos;s throughput.</>,
-          <>To change how aggressive it is, open <strong className="text-white">Settings → Downloads</strong> and set the maximum connections per file. Sixteen is the ceiling; eight is plenty for most servers.</>,
+          <>You do not have to tune anything: Nexa picks the count from the file&apos;s size — one connection below 1&nbsp;MB, eight up to 10&nbsp;MB, sixteen up to 100&nbsp;MB, and thirty-two beyond that, up to the ceiling your plan allows (16 on Free, 32 on Pro). Past about eight the server is usually the limit anyway.</>,
           <>Right-click a running download for <strong className="text-white">Limit speed…</strong> if you need to leave bandwidth for something else.</>,
         ]}
       />
@@ -182,7 +182,7 @@ export default function FeatureAcceleration() {
               <>
                 That is the Free plan&apos;s concurrency cap; the rest are queued, not failing. Pro
                 removes it. Note this is files at a time, not connections — each of those three
-                still uses up to 16 connections. See <Link to="/pricing" className="text-brand-300 hover:underline">pricing</Link>.
+                still uses up to 16 connections on Free, or 32 on Pro. See <Link to="/pricing" className="text-brand-300 hover:underline">pricing</Link>.
               </>
             ),
           },

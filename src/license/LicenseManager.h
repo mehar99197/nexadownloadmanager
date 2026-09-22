@@ -23,6 +23,12 @@ namespace nexa {
  */
 struct Entitlements {
     int         maxConcurrentDownloads = 3;      // 0 = unlimited
+    // Parallel connections per file. The segment count already scales with file
+    // size (see DownloadTask::preferredSegmentCount); this is the ceiling that
+    // scaling is clamped to, so Free reaches 16 where a paid plan reaches 32.
+    // Defaults to the Free value, like every field here: a build that has never
+    // reached the licence server gates rather than leaks.
+    int         maxConnectionsPerFile  = 16;
     QString     themes                 = QStringLiteral("basic");  // "basic" | "all"
     QStringList freeThemes             = {QStringLiteral("system"),
                                           QStringLiteral("dark"),

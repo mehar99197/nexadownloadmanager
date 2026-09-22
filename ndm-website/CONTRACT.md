@@ -639,6 +639,7 @@ plan-gated endpoint agree. Unknown/absent/forged plans resolve to `free`.
 | Key | free | pro / team |
 |---|---|---|
 | `maxConcurrentDownloads` | 3 | 0 (unlimited) |
+| `maxConnectionsPerFile` | 16 | 32 |
 | `themes` | `'basic'` (`freeThemes`: system, dark, light) | `'all'` |
 | `authSiteDownloads` (Udemy, Coursera…) | false | true |
 | `aiRename` | false | true |

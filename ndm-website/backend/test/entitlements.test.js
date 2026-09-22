@@ -25,6 +25,7 @@ test('free is the floor for every unrecognised plan', () => {
 test('free is restricted exactly as the pricing page claims', () => {
   const e = entitlementsFor('free');
   assert.equal(e.maxConcurrentDownloads, 3);
+  assert.equal(e.maxConnectionsPerFile, 16);
   assert.equal(e.themes, 'basic');
   assert.equal(e.authSiteDownloads, false);   // Udemy, Coursera, LinkedIn Learning…
   assert.equal(e.aiRename, false);
@@ -39,7 +40,22 @@ test('pro unlocks themes, login-gated sites and removes ads', () => {
   assert.equal(e.aiRename, true);
   assert.equal(e.adFree, true);
   assert.equal(e.maxConcurrentDownloads, 0);  // 0 = unlimited
+  assert.equal(e.maxConnectionsPerFile, 32);  // double the Free ceiling
   assert.equal(e.seats, 1);
+});
+
+// The desktop segmenter clamps its size-based ladder to this number, so a plan
+// that silently lost the key would hand every user the unrestricted ceiling —
+// which is exactly the state this gate was added to end.
+test('every plan states a connection ceiling, and free is lower than paid', () => {
+  for (const plan of ['free', 'pro', 'team']) {
+    const n = entitlementsFor(plan).maxConnectionsPerFile;
+    assert.equal(typeof n, 'number', `${plan} must state maxConnectionsPerFile`);
+    assert.ok(n >= 1 && n <= 32, `${plan} ceiling ${n} must be within 1..32`);
+  }
+  assert.ok(entitlementsFor('free').maxConnectionsPerFile
+            < entitlementsFor('pro').maxConnectionsPerFile,
+    'free must be capped below pro or the upgrade buys nothing');
 });
 
 test('team is pro with five concurrent seats', () => {
@@ -47,7 +63,8 @@ test('team is pro with five concurrent seats', () => {
   const team = entitlementsFor('team');
   assert.equal(team.seats, 5);
   assert.equal(pro.seats, 1);
-  for (const key of ['themes', 'authSiteDownloads', 'aiRename', 'adFree', 'maxConcurrentDownloads']) {
+  for (const key of ['themes', 'authSiteDownloads', 'aiRename', 'adFree', 'maxConcurrentDownloads',
+                     'maxConnectionsPerFile']) {
     assert.equal(team[key], pro[key], `team must match pro on ${key}`);
   }
 });

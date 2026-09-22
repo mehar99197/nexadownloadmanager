@@ -69,8 +69,8 @@ const GROUPS = [
     rows: [
       {
         label: 'Max connections per file',
-        values: ['16', '32', '16', '20', '32', '32', '16', '16'],
-        note: 'A ceiling, not a recommendation — past about eight, the server is usually the limit.',
+        values: ['32', '32', '16', '20', '32', '32', '16', '16'],
+        note: 'A ceiling, not a recommendation — past about eight, the server is usually the limit. Nexa scales with file size and reaches 32 on Pro; the Free plan stops at 16.',
       },
       { label: 'Multi-connection HTTP', values: [true, true, true, true, true, true, true, true] },
       { label: 'Resume broken downloads', values: [true, true, true, true, true, true, true, true] },

@@ -18,7 +18,7 @@ export const FEATURE_NAV = [
   {
     to: '/features/acceleration',
     label: 'Segmented acceleration',
-    blurb: 'Up to 16 connections per file, with the tail of the slowest one stolen by whoever finishes first.',
+    blurb: 'Up to 32 connections per file, with the tail of the slowest one stolen by whoever finishes first.',
   },
   {
     to: '/features/video-grabber',

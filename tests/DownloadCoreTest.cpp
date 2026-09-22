@@ -208,6 +208,22 @@ static void testPureHelpers()
     CHECK(DownloadTask::preferredSegmentCount(10 * 1024 * 1024) == 16, "10 MB -> 16 segments");
     CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024) == 32, "100 MB -> 32 segments");
 
+    // The licence ceiling (Entitlements::maxConnectionsPerFile) clamps the
+    // ladder above without changing its shape: a paid plan reaches 32, Free
+    // stops at 16, and a file too small to be worth splitting is still not
+    // split on either. The clamp must never turn a 1-segment answer into more.
+    CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024, 32) == 32, "paid ceiling -> 32");
+    CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024, 16) == 16, "free ceiling caps 32 -> 16");
+    CHECK(DownloadTask::preferredSegmentCount(10 * 1024 * 1024, 16) == 16, "10 MB unaffected by a 16 ceiling");
+    CHECK(DownloadTask::preferredSegmentCount(1024 * 1024, 16) == 8, "1 MB stays 8 under a 16 ceiling");
+    CHECK(DownloadTask::preferredSegmentCount(1024 * 1024, 4) == 4, "a lower ceiling also caps the 8 rung");
+    CHECK(DownloadTask::preferredSegmentCount(1024 * 1024 - 1, 32) == 1, "< 1 MB is never split, ceiling or not");
+    CHECK(DownloadTask::preferredSegmentCount(0, 32) == 1, "0 bytes stays 1 whatever the ceiling");
+    // Defensive: a garbage/absent ceiling must not disable downloading.
+    CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024, 0) == 32, "0 ceiling falls back to 32");
+    CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024, -5) == 32, "negative ceiling falls back to 32");
+    CHECK(DownloadTask::preferredSegmentCount(100 * 1024 * 1024, 999) == 32, "a ceiling above 32 cannot exceed 32");
+
     using DT = DownloadTask;
     CHECK(DT::filenameFromContentDisposition("attachment; filename=\"a b.zip\"") == "a b.zip",
           "quoted plain filename");

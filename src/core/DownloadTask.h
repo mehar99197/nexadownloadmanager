@@ -120,7 +120,14 @@ public:
     int            categoryId() const { return m_categoryId; }
     void           setCategoryId(int id) { m_categoryId = id; }
 
-    static int preferredSegmentCount(qint64 totalBytes);
+    // Licence ceiling on parallel connections (Free 16, paid 32). Read when the
+    // segments are laid out, so changing it mid-transfer does not disturb a task
+    // that is already running; the next start or resume picks it up.
+    void           setMaxConnections(int n) { m_maxConnections = qBound(1, n, 32); }
+
+    // `maxConnections` clamps the size-based scaling; the default is the
+    // unrestricted ceiling so existing callers and tests keep their behaviour.
+    static int preferredSegmentCount(qint64 totalBytes, int maxConnections = 32);
 
 signals:
     void progress(int id, qint64 done, qint64 total, double bytesPerSec);
@@ -189,6 +196,7 @@ private:
     bool                      m_rangesSupported = false;
     int                       m_categoryId = 0;            // 0 = uncategorised
     bool                      m_dynamicResegment = true;   // work-stealing on by default
+    int                       m_maxConnections = 16;       // licence ceiling; Free value by default
     bool                      m_publicNetworkOnly = false;
         QString                   m_etag;
     QString                   m_lastModified;

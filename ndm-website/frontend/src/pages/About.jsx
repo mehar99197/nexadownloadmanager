@@ -28,7 +28,7 @@ export default function About() {
         <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
           Nexa started with a simple annoyance: the best-known download manager on Windows is
           paid, closed and Windows-only, and browsers still download big files on a single
-          connection. Nexa splits a file across up to 16 connections, resumes exactly where it
+          connection. Nexa splits a file across up to 32 connections, resumes exactly where it
           stopped, grabs video from the page you are on, and handles torrents and cloud links in
           the same queue — on Windows and Linux.
         </p>

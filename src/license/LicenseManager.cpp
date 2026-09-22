@@ -605,6 +605,7 @@ void LicenseManager::setFeaturesForPlan(const QString &plan)
     Entitlements f;                       // defaults are the Free set
     if (paid) {
         f.maxConcurrentDownloads = 0;     // unlimited
+        f.maxConnectionsPerFile = 32;
         f.themes = QStringLiteral("all");
         f.authSiteDownloads = true;
         f.aiRename = true;
@@ -626,6 +627,11 @@ void LicenseManager::applyFeatures(const QJsonObject &f, const QString &plan)
     Entitlements e = m_features;
     if (f.contains(QStringLiteral("maxConcurrentDownloads")))
         e.maxConcurrentDownloads = qMax(0, f.value(QStringLiteral("maxConcurrentDownloads")).toInt(e.maxConcurrentDownloads));
+    // Clamped to 1..32: 0 here would mean "no connections at all", and a server
+    // claiming more than the segmenter can produce buys nothing.
+    if (f.contains(QStringLiteral("maxConnectionsPerFile")))
+        e.maxConnectionsPerFile = qBound(1,
+            f.value(QStringLiteral("maxConnectionsPerFile")).toInt(e.maxConnectionsPerFile), 32);
     if (f.value(QStringLiteral("themes")).isString())
         e.themes = f.value(QStringLiteral("themes")).toString();
     if (f.value(QStringLiteral("freeThemes")).isArray()) {
@@ -783,6 +789,7 @@ bool LicenseManager::deriveFromToken(QString *plan, Entitlements *features) cons
                               || claims.plan == QLatin1String("team");
             if (paid) {
                 derived.maxConcurrentDownloads = 0;
+                derived.maxConnectionsPerFile = 32;
                 derived.themes = QStringLiteral("all");
                 derived.authSiteDownloads = true;
                 derived.aiRename = true;
@@ -793,6 +800,9 @@ bool LicenseManager::deriveFromToken(QString *plan, Entitlements *features) cons
             if (f.contains(QStringLiteral("maxConcurrentDownloads")))
                 derived.maxConcurrentDownloads =
                     qMax(0, f.value(QStringLiteral("maxConcurrentDownloads")).toInt(derived.maxConcurrentDownloads));
+            if (f.contains(QStringLiteral("maxConnectionsPerFile")))
+                derived.maxConnectionsPerFile = qBound(1,
+                    f.value(QStringLiteral("maxConnectionsPerFile")).toInt(derived.maxConnectionsPerFile), 32);
             if (f.value(QStringLiteral("themes")).isString())
                 derived.themes = f.value(QStringLiteral("themes")).toString();
             if (f.value(QStringLiteral("freeThemes")).isArray()) {

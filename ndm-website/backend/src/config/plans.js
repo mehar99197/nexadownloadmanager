@@ -26,6 +26,7 @@ const PLANS = {
     features: [
       'Everything in Free',
       'Unlimited concurrent downloads',
+      '32 connections per file — double the Free limit',
       'No ads',
       'All 64 themes',
       'Udemy, Coursera & other login-gated sites',
@@ -67,6 +68,7 @@ const FREE_THEMES = ['system', 'dark', 'light'];
 const ENTITLEMENTS = {
   free: {
     maxConcurrentDownloads: 3,
+    maxConnectionsPerFile: 16,
     themes: 'basic',
     freeThemes: FREE_THEMES,
     authSiteDownloads: false,
@@ -75,6 +77,7 @@ const ENTITLEMENTS = {
   },
   pro: {
     maxConcurrentDownloads: 0,
+    maxConnectionsPerFile: 32,
     themes: 'all',
     freeThemes: FREE_THEMES,
     authSiteDownloads: true,
@@ -83,6 +86,7 @@ const ENTITLEMENTS = {
   },
   team: {
     maxConcurrentDownloads: 0,
+    maxConnectionsPerFile: 32,
     themes: 'all',
     freeThemes: FREE_THEMES,
     authSiteDownloads: true,

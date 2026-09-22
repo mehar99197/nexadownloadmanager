@@ -86,7 +86,7 @@ export default function Home() {
   usePageMeta({
     title: 'Fast downloads for Windows and Linux',
     description:
-      'Nexa Download Manager accelerates HTTP downloads with up to 16 connections per file and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
+      'Nexa Download Manager accelerates HTTP downloads with up to 32 connections per file and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
   });
 
   const [stats, setStats] = useState(null);
@@ -130,7 +130,7 @@ export default function Home() {
   if (release?.version) {
     tiles.push({ value: `v${release.version}`, label: 'latest version' });
   }
-  tiles.push({ value: 'Up to 16', label: 'connections per file' });
+  tiles.push({ value: 'Up to 32', label: 'connections per file' });
   if (tiles.length < 3) tiles.push({ value: 'Win + Linux', label: 'native desktop app' });
 
   return (

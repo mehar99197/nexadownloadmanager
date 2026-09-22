@@ -176,6 +176,14 @@ void DownloadEngine::applyLicensePlan(const QString &plan)
     m_maxConcurrent = cap > 0 ? qMin(cap, m_requestedMaxConcurrent) : m_requestedMaxConcurrent;
     m_aiRename = m_aiRenameRequested && f.aiRename;
     m_authSiteDownloads = f.authSiteDownloads;
+    m_maxConnectionsPerFile = qBound(1, f.maxConnectionsPerFile, 32);
+    // Push the new ceiling at every task, not only the ones created from here
+    // on. A task reads it when it lays out segments, so a transfer already in
+    // flight keeps the shape it started with and picks this up on its next
+    // start or resume — a licence that lapses mid-download does not tear up a
+    // file that is half fetched.
+    for (DownloadTask *t : std::as_const(m_tasks))
+        if (t) t->setMaxConnections(m_maxConnectionsPerFile);
     schedule();
 }
 
@@ -928,6 +936,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     t->setRateLimiter(m_limiter);
     t->setCloudProviders(m_providers);
     t->setPublicNetworkOnly(publicNetworkOnly);
+    t->setMaxConnections(m_maxConnectionsPerFile);
     // Merge domain-scoped auth into the browser headers; SegmentDownloader replays
     // them via its existing setRawHeader loop, with no coupling to the manager.
     HeaderList merged = mergeAuthHeaders(headers, authHeaders);

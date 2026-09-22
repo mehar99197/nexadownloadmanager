@@ -527,14 +527,19 @@ static QUrl parseConfirmPage(const QByteArray &body, const QUrl &base,
     return QUrl();
 }
 
-// Choose how many parallel connections to use, scaling with file size up to 32.
-int DownloadTask::preferredSegmentCount(qint64 totalBytes)
+// Choose how many parallel connections to use, scaling with file size up to 32,
+// then clamped to what the licence allows (Free 16, paid 32 — see
+// Entitlements::maxConnectionsPerFile). The clamp is applied last so the
+// size-based scaling stays the same shape on every plan: a small file is still
+// not worth splitting, it is only the ceiling that differs.
+int DownloadTask::preferredSegmentCount(qint64 totalBytes, int maxConnections)
 {
+    const int cap = (maxConnections > 0) ? qMin(maxConnections, 32) : 32;
     if (totalBytes <= 0)                  return 1;
     if (totalBytes < 1 * 1024 * 1024)     return 1;    // < 1 MB: not worth splitting
-    if (totalBytes < 10 * 1024 * 1024)    return 8;    // 1–10 MB
-    if (totalBytes < 100 * 1024 * 1024)   return 16;   // 10–100 MB
-    return 32;                                          // ≥ 100 MB: max acceleration
+    if (totalBytes < 10 * 1024 * 1024)    return qMin(8, cap);    // 1–10 MB
+    if (totalBytes < 100 * 1024 * 1024)   return qMin(16, cap);   // 10–100 MB
+    return cap;                                         // ≥ 100 MB: max acceleration
 }
 
 void DownloadTask::start()
@@ -1100,7 +1105,7 @@ void DownloadTask::buildSegments(qint64 total, bool rangesSupported)
     // Apple Music CDN: single connection only — parallel ranges cause errors.
     if (isAppleMusicCdn(m_url))
         m_dynamicResegment = false;
-    const int n = isAppleMusicCdn(m_url) ? 1 : preferredSegmentCount(total);
+    const int n = isAppleMusicCdn(m_url) ? 1 : preferredSegmentCount(total, m_maxConnections);
     const qint64 chunk = total / n;
     for (int i = 0; i < n; ++i) {
         SegmentInfo s;

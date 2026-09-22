@@ -401,6 +401,9 @@ private:
     // Mirrors Entitlements::authSiteDownloads. Free by default so a build that
     // has not yet heard from the licence server gates rather than leaks.
     bool                   m_authSiteDownloads = false;
+    // Mirrors Entitlements::maxConnectionsPerFile, and Free by default for the
+    // same reason as the flag above.
+    int                    m_maxConnectionsPerFile = 16;
     bool                   m_aiRenameRequested = false;
     QString                m_licensePlan = QStringLiteral("free");
     bool                   m_inSchedule = false;
