@@ -36,8 +36,12 @@ no(){ printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=1; }
 info(){ printf '  ----  %s\n' "$*"; }
 head_(){ printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-DOCKER="docker"
-docker info >/dev/null 2>&1 || DOCKER="sudo docker"
+# Override when docker needs a wrapper here, e.g. NEXA_DOCKER='sudo -A docker'
+# in CI or on a box where the account is not in the docker group.
+DOCKER="${NEXA_DOCKER:-docker}"
+if [ -z "${NEXA_DOCKER:-}" ] && ! docker info >/dev/null 2>&1; then
+  DOCKER="sudo docker"
+fi
 
 ensure_image() {
   if $DOCKER image inspect "$IMAGE" >/dev/null 2>&1; then
