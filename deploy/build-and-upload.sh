@@ -263,7 +263,17 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   if grep -lE '[A-Za-z]:/(msys64|Users|Program)' "${FRONTEND}"/dist/assets/*.js >/dev/null 2>&1; then
     die "frontend bundle contains a local filesystem path — VITE_API_URL is '${VITE_API_URL}', check the build environment"
   fi
-  grep -q "baseURL:\"${VITE_API_URL}\"" "${FRONTEND}"/dist/assets/index-*.js \
+  # ...and the value that did survive is the one we asked for. Which quote the
+  # minifier picks is its own business and changes between versions — Vite 8
+  # emits baseURL:`/api` where the version before it emitted baseURL:"/api" —
+  # so accept all three rather than re-learning that on the next upgrade. The
+  # value is still matched exactly, quote to quote: "carries /api somewhere"
+  # would be true of a bundle pointing at /api.example.com too.
+  # -F, so a value with a dot or a slash in it stays a value and not a pattern.
+  grep -qF -e "baseURL:\"${VITE_API_URL}\"" \
+           -e "baseURL:'${VITE_API_URL}'" \
+           -e "baseURL:\`${VITE_API_URL}\`" \
+           "${FRONTEND}"/dist/assets/index-*.js \
     || die "frontend bundle does not carry baseURL:\"${VITE_API_URL}\" — the value did not survive the build environment"
   echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL}; API base ${VITE_API_URL})."
 else
