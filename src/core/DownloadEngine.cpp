@@ -84,6 +84,16 @@ DownloadEngine::DownloadEngine(QObject *parent)
     m_ai = new AiClient(m_license, this);
     connect(m_license, &LicenseManager::entitlementChanged,
             this, &DownloadEngine::applyLicensePlan);
+    // entitlementChanged fires only when the plan NAME changes, so a server
+    // that keeps the plan but tightens its limits (the queue cap, auth sites,
+    // AI rename) never reached the gates here. Queued, because featuresChanged
+    // arrives before the plan is updated and applyLicensePlan reads
+    // verifiedFeatures(); see the warning on the signal.
+    connect(m_license, &LicenseManager::featuresChanged, this,
+            [this]() { applyLicensePlan(m_license->plan()); }, Qt::QueuedConnection);
+    // Every completed download counts toward the next quiet re-verification.
+    connect(this, &DownloadEngine::taskFinished,
+            m_license, &LicenseManager::noteCompletedDownload);
 
     // Domain-scoped authentication (cookies.txt / bearer tokens). One instance
     // owned here; addDownload() resolves auth per URL and hands the APPLIED result
