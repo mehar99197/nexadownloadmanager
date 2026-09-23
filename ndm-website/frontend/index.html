@@ -82,9 +82,11 @@
       `.ndm-booting`, so a crawler, a reader with JS off, or a browser where
       that script throws sees no overlay at all rather than a permanent one.
 
-      It costs nothing on a slow connection — the 700 ms floor only applies
-      when the app is ready sooner than that — and nothing at all on in-site
-      navigation, which never reloads the document.
+      It costs nothing on a slow connection, and nothing at all on in-site
+      navigation, which never reloads the document. On a fast one it costs
+      nothing either: the overlay does not begin to appear for 160 ms, and a
+      warm load is removed before that, so it is never seen rather than seen
+      briefly.
     -->
     <style>
       #ndm-boot { display: none; }
@@ -97,11 +99,24 @@
         inset: 0;
         z-index: 9999;
         background: #04060d;
-        opacity: 1;
-        transition: opacity 320ms ease;
+        /* Held back, not shown and then held. A warm load is painted well
+           inside this delay, so the overlay is removed while it is still
+           fully transparent and the reader sees no boot screen at all —
+           which is the right amount of boot screen for a page that was
+           already in the cache. A cold load is nowhere near ready at
+           160 ms, so it gets the screen exactly as before. The number is
+           repeated as SHOW_AT in the script below; keep the two in step. */
+        opacity: 0;
+        animation: ndm-boot-appear 200ms ease 160ms forwards;
       }
       html.ndm-booting[data-theme="light"] #ndm-boot { background: #f6f7fb; }
-      html.ndm-booting #ndm-boot[data-leaving="1"] { opacity: 0; }
+      /* Replaces the fade-in rather than fighting it: swapping the animation
+         out would drop opacity back to 0 in a single frame. */
+      html.ndm-booting #ndm-boot[data-leaving="1"] {
+        animation: ndm-boot-leave 320ms ease forwards;
+      }
+      @keyframes ndm-boot-appear { to { opacity: 1; } }
+      @keyframes ndm-boot-leave { from { opacity: 1; } to { opacity: 0; } }
 
       /* Same two arcs as components/Spinner.jsx, and the same two theme stops:
          #63dcff / #d09bff on dark, #1f56b8 / #6b3bc4 on light. Restated rather
@@ -173,25 +188,39 @@
         html.className += ' ndm-booting';
 
         var started = Date.now();
-        var MIN_MS = 700;   /* below this it reads as a flicker, not a screen */
-        var MAX_MS = 8000;  /* nothing may leave the reader stuck behind it */
+        var SHOW_AT = 160;      /* the animation-delay above: nothing is on
+                                   screen before this */
+        var MIN_VISIBLE = 260;  /* once it IS on screen, long enough to read
+                                   as a screen rather than as a flicker */
+        var MAX_MS = 8000;      /* nothing may leave the reader stuck behind it */
         var done = false;
 
-        function finish() {
+        function finish(immediate) {
           if (done) return;
           done = true;
           var boot = document.getElementById('ndm-boot');
-          if (!boot) { html.className = html.className.replace(' ndm-booting', ''); return; }
-          boot.setAttribute('data-leaving', '1');
-          setTimeout(function () {
+          var drop = function () {
             html.className = html.className.replace(' ndm-booting', '');
-            if (boot.parentNode) boot.parentNode.removeChild(boot);
-          }, 340);
+            if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
+          };
+          if (!boot || immediate === true) { drop(); return; }
+          boot.setAttribute('data-leaving', '1');
+          setTimeout(drop, 340);
         }
 
-        /* React calls this once it has painted (see src/main.jsx). */
+        /* React calls this once it has painted (see src/main.jsx).
+
+           The old rule held the screen for a flat 700 ms whatever happened,
+           which on a warm cache meant staring at a spinner over a page that
+           had finished. The floor now applies to the time the screen is
+           actually VISIBLE, and the fast path skips it entirely: below
+           SHOW_AT the overlay is still transparent, so there is nothing to
+           fade and nothing was ever seen. A cold load is unaffected — the
+           measured 959 ms boot is past the floor before it is consulted. */
         window.__ndmBootDone = function () {
-          setTimeout(finish, Math.max(0, MIN_MS - (Date.now() - started)));
+          var spent = Date.now() - started;
+          if (spent <= SHOW_AT) { finish(true); return; }
+          setTimeout(finish, Math.max(0, SHOW_AT + MIN_VISIBLE - spent));
         };
         /* And this runs whatever happens — a failed chunk, a thrown module, a
            browser that never fires the call above. A boot screen that can
