@@ -14,26 +14,23 @@ evidence for each one is recorded so nothing has to be re-derived later.
 
 ---
 
-## ⚠ Temporary loosenings — PUT THESE BACK
+## ⚠ Temporary loosening — PUT THIS BACK
 
-Two guards on the control panels are **deliberately off** on the live
-deployment, at the owner's request, because the panel is being worked on daily
-and both were getting in the way. Neither is a finding and neither is a
-mistake; they are a decision with an expiry date that nothing else will
-enforce.
+**One guard** on the control panels is still **deliberately off** on the live
+deployment, at the owner's request. It is not a finding and not a mistake; it
+is a decision with an expiry date that nothing else will enforce. The other
+was put back the day after it went off.
 
-| Setting | Live value | What it should be |
-|---|---|---|
-| `ADMIN_2FA_REQUIRED` | `false` | unset (defaults to on) |
-| `ADMIN_ALLOWED_IPS` | `*` | the operator's address |
+| Setting | Live value | What it should be | State |
+|---|---|---|---|
+| `ADMIN_ALLOWED_IPS` | `*` | the operator's address or ISP range | **still open** |
+| `ADMIN_2FA_REQUIRED` | `true` | `true` | put back 2026-09-22 |
 
-**What this costs while it is off.** The staff and creator panels accept a
-sign-in from any address on the internet, and a never-enrolled account is not
-made to add a second factor. Both together mean **a leaked panel password is
-enough, from anywhere** — and that panel reads customer emails, licence keys
-and subscription records. An account that has *already* enrolled, which is the
-case for this deployment's creator, is still asked for its code; turning the
-requirement off does not disable a second factor that already exists.
+**What the open one costs.** The staff and creator panels accept a sign-in
+from any address on the internet, so the only thing standing between a leaked
+panel password and customer emails, licence keys and subscription records is
+the second factor. 2FA being back on is what keeps this survivable rather
+than serious — do not turn that off again while the gate is open.
 
 **Why `*` and not an empty list.** `config/env.js` refuses to start a hardened
 deployment on an empty `ADMIN_ALLOWED_IPS`, and that refusal is worth keeping:
@@ -42,25 +39,23 @@ to write, so it can be allowed and then **warned about on every single boot** �
 which is a reminder that reaches whoever restarts the process, months from now,
 instead of one that lives in a file nobody opens.
 
-**Putting them back** — on the server, in `nexa-api/.env`:
+**Putting it back** no longer needs a file edit or a restart. Sign in at
+`/root` → **Security** → *Who can reach the panels*, add the range, and
+disable the `*` row. The panel refuses any change that would lock out the
+address making it (`WOULD_LOCK_YOU_OUT`), so this cannot go wrong the way the
+old `.env` edit could. `.env` still works and stays the break-glass route:
+the effective list is the union of it and the enabled panel rows.
 
-```
-ADMIN_ALLOWED_IPS=<the operator's current address>
-# and delete the ADMIN_2FA_REQUIRED=false line
-```
+**Both things that made this annoying enough to turn off are fixed**, which is
+why there is nothing left to wait for:
 
-then restart the API. Nothing needs redeploying; both are read at boot.
-
-**Before that, two things should land**, because they are what made these
-annoying enough to turn off:
-
-- **M-06** — `ipAllowed` matches addresses exactly, so a consumer connection
-  that rotates its IP locks the panel out completely. CIDR support turns the
-  allow-list back into something that can hold a real ISP range instead of one
-  address that expires.
-- **M-14** — a creator who loses their authenticator has no way back in. With
-  2FA required and no recovery route, that is the other reason this felt risky
-  to leave on.
+- **M-06** — `ipAllowed` matched addresses exactly, so a consumer connection
+  that rotates its IP locked the panel out completely. It now matches CIDR and
+  IPv6, so the list can hold a real ISP range instead of one address that
+  expires — and it is editable from the panel.
+- **M-14** — a creator who loses their authenticator now has a way back in:
+  `npm run reset-2fa`, which was used on this deployment on 2026-09-22 for
+  exactly that.
 
 ## How to use this file
 
