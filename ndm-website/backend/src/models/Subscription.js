@@ -539,20 +539,6 @@ const Subscription = {
   },
 
   /**
-   * Retire every OTHER subscription a user holds, so issuing a new licence by
-   * hand cannot leave the previous key still validating. Without this an admin
-   * "upgrade" handed the customer two working licences.
-   */
-  async retireOthers(userId, keepId) {
-    const result = await execute(
-      `UPDATE subscriptions SET status = 'expired', cancel_at_period_end = 0
-        WHERE user_id = ? AND id <> ? AND status <> 'expired'`,
-      [userId, keepId]
-    );
-    return result.affectedRows || 0;
-  },
-
-  /**
    * What a finished trial looks like, written in ONE place: back to free/active,
    * no trial date left behind, the licence key untouched so the desktop app
    * keeps working on Free. Both the lazy expiry (the date passed) and the

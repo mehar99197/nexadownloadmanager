@@ -211,6 +211,14 @@ async function initSchema() {
   // Existing databases: stamped when the "trial ending" email went out, so the
   // nightly job can never mail the same person twice.
   await addColumnIfMissing('subscriptions', 'trial_reminder_sent_at DATETIME NULL DEFAULT NULL');
+  // One subscription per account, enforced by the database and not only by
+  // the routes: every reader takes the account's newest row, so a second row
+  // would be an invisible one that still validated its own licence key
+  // (AUDIT.md M-07). Production was checked for duplicates before this index
+  // existed (6 subscriptions, 6 distinct owners), so it builds cleanly; a race
+  // between two creates now surfaces as ER_DUP_ENTRY → 409 rather than as two
+  // rows.
+  await addUniqueIndexIfMissing('subscriptions', 'uq_subscriptions_user (user_id)');
   // Cancelling stops the RENEWAL, not the plan: the customer keeps what they
   // paid for until expiry_date, and this flag is what the site reads to say
   // "ends on the 3rd" instead of pretending nothing happened.

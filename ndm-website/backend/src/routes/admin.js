@@ -613,6 +613,22 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await User.findById(req.body.userId);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    // The subscription is the account's, and so is the refusal: a staff admin
+    // may no more issue the creator a plan than ban them.
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    // One row per account. Registration already gives every account a free
+    // one, so this route is for the rare account with none; anything else is
+    // an edit of the row that exists — which is also the only way the licence
+    // key on it can be reached. Creating a second row used to leave the first
+    // one active, invisible to every reader, and validating its own key for
+    // ever. uq_subscriptions_user now makes that impossible; this answers
+    // before the database has to.
+    const existing = (await Subscription.findByUserId(user.id))[0];
+    if (existing) {
+      return fail(res, 'SUBSCRIPTION_EXISTS',
+        `${user.email} already has a ${existing.plan} subscription (#${existing.id}) — edit that one instead of creating a second.`,
+        409, { subscriptionId: existing.id, plan: existing.plan, status: existing.status });
+    }
     const plan = req.body.plan;
     const subscription = await Subscription.create({
       userId: user.id,
@@ -623,14 +639,8 @@ router.post(
       startDate: new Date(),
       expiryDate: req.body.expiryDate ? new Date(req.body.expiryDate) : planExpiry(plan),
     });
-    // The previous licence key must stop working, or the customer walks away
-    // holding two that both validate — every read path only ever sees the
-    // newest row, so the old one was invisible here but live at /api/license.
-    const retired = await Subscription.retireOthers(user.id, subscription.id);
     await audit(req, 'subscription.created', 'subscription', subscription.id,
-      `Created ${plan} subscription for ${user.email}`
-        + (retired ? ` (retired ${retired} earlier licence(s))` : ''),
-      { userId: user.id, plan, retired });
+      `Created ${plan} subscription for ${user.email}`, { userId: user.id, plan });
     return ok(res, subscription, 201);
   })
 );
@@ -641,6 +651,10 @@ router.put(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    // The subscription is the account's: a staff admin may no more alter the
+    // creator's plan than the creator's account. user_id is a foreign key with
+    // ON DELETE CASCADE, so the owner always exists.
+    if (blockedStaffTarget(req, res, await User.findById(subscription.user_id))) return undefined;
 
     const { plan, status, seats, expiryDate } = req.body;
     const updates = {};

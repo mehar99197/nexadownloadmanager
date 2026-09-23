@@ -100,31 +100,55 @@ test('hardening', async (t) => {
     assert.equal(read.status, 200);
   });
 
-  await t.test('issuing a licence by hand retires the one it replaces', async () => {
+  await t.test('an account cannot end up holding two licence keys', async () => {
+    // A customer used to be able to walk away with two keys that both
+    // validated: "Issue subscription" inserted a second row, every reader took
+    // the newest, and the older one stayed active with its own key, invisible
+    // on the site and honoured by /api/license/validate for ever.
     const user = await srv.makeUser(api, 'reissue');
-    const oldKey = (await api.get('/api/user/license', { token: user.token })).body.data.licenseKey;
-
-    // Straight to the model: this is the admin "Issue subscription" path, and
-    // the point under test is what happens to the PREVIOUS key.
-    const Subscription = require('../src/models/Subscription');
+    const key = (await api.get('/api/user/license', { token: user.token })).body.data.licenseKey;
     const [me] = await srv.query('SELECT id FROM users WHERE email = ?', [user.email]);
-    const created = await Subscription.create({
-      userId: me.id, plan: 'pro', status: 'active',
-      licenseKey: 'NDM-ZZZZ-YYYY-XXXX', seats: 1,
-      startDate: new Date(), expiryDate: new Date(Date.now() + 30 * 86400000),
-    });
-    await Subscription.retireOthers(me.id, created.id);
 
-    // The customer used to walk away holding two keys that both validated.
-    const stale = await api.post('/api/license/validate',
-      { license_key: oldKey, device_fingerprint: DEVICE });
-    assert.equal(stale.body.valid, false);
-    assert.equal(stale.body.reason, 'expired');
+    // The admin route answers rather than creating the second row, and names
+    // the row to edit instead.
+    const bcrypt = require('bcryptjs');
+    const staff = srv.client();
+    await srv.query(
+      `INSERT INTO users (name, email, password_hash, role, email_verified)
+       VALUES ('Staff', 'issuer@example.test', ?, 'admin', 1)`,
+      [await bcrypt.hash('staff-password-123', 12)]
+    );
+    const login = await staff.post('/api/admin/login',
+      { email: 'issuer@example.test', password: 'staff-password-123' });
+    assert.equal(login.status, 200, login.text);
+    const token = login.body.data.token;
 
-    const fresh = await api.post('/api/license/validate',
+    const second = await staff.post('/api/admin/subscriptions',
+      { userId: me.id, plan: 'pro', status: 'active' }, { token });
+    assert.equal(second.status, 409, second.text);
+    assert.equal(second.body.error.code, 'SUBSCRIPTION_EXISTS');
+    assert.equal(second.body.error.details.plan, 'free');
+
+    // And the database refuses one whatever asks — the route's answer is the
+    // courtesy, uq_subscriptions_user is the guarantee.
+    await assert.rejects(
+      srv.query(
+        `INSERT INTO subscriptions (user_id, plan, status, license_key, seats, start_date, expiry_date)
+         VALUES (?, 'pro', 'active', 'NDM-ZZZZ-YYYY-XXXX', 1, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY))`,
+        [me.id]
+      ),
+      (err) => err.code === 'ER_DUP_ENTRY'
+    );
+
+    const rows = await srv.query('SELECT license_key FROM subscriptions WHERE user_id = ?', [me.id]);
+    assert.equal(rows.length, 1, 'one account, one subscription');
+    assert.equal(rows[0].license_key, key);
+    const still = await api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: DEVICE });
+    assert.equal(still.body.valid, true);
+    const never = await api.post('/api/license/validate',
       { license_key: 'NDM-ZZZZ-YYYY-XXXX', device_fingerprint: DEVICE });
-    assert.equal(fresh.body.valid, true);
-    assert.equal(fresh.body.plan, 'pro');
+    assert.equal(never.body.valid, false);
   });
 
   await t.test('one ad token cannot be replayed into a counter', async () => {
