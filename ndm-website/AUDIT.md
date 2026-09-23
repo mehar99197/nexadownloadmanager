@@ -2078,6 +2078,110 @@ colour schemes, both tap bars, and no sideways scroll. Both jobs run them.
 Final: **0 axe violations** across 13 site pages and 9 panel screens, in dark
 and light.
 
+# Advanced platform pass — 2026-09-23
+
+Asked for as "apply these advanced features too, and let nothing break".
+Ten items, each one a browser feature the codebase was not using. Applied to
+the site and, where it earns its place, to the panel.
+
+What the codebase already did well, and was left alone: `prefers-reduced-motion`
+in eleven places, `font-display: swap` on both families, `clamp()` on the two
+page-intro heading levels, per-route code splitting.
+
+### Three of them do not survive contact with a real page
+
+These are the reason this section exists. Each was caught by a test, not by
+looking, and each would have shipped as a quiet regression.
+
+**A scroll-driven animation holds; it does not finish.** `animation-timeline:
+view()` maps scroll position to animation progress, so an element half-way
+through its range sits there for as long as the reader leaves the page alone.
+That is fine for a transform and wrong for anything else:
+
+- `opacity` became a contrast ratio that depends on how far down the page a
+  paragraph is. axe found body text on `/features`, `/compare`, `/faq` and
+  `/docs` sitting at **0.89 opacity and failing contrast** while nothing was
+  moving and nothing would move until someone scrolled.
+- `scale(0.985)` became a tap target that depends on scroll position. 0.985 of
+  a 44px button is **43.3px**, `getBoundingClientRect` reports the scaled box,
+  and three controls on `/contact` dropped under the minimum and stayed there.
+  It also leaves every glyph in the section rasterised off-pixel.
+
+The reveal is now a translate and nothing else. The IntersectionObserver path
+still fades and scales, because there those values are binary: 0 until the
+section has been seen, then a transition to 1 on a clock of its own.
+
+**`content-visibility: auto` skips an element's contents, not the element.** A
+control inside a skipped subtree still answers `getBoundingClientRect` with a
+box and answers `innerText` with nothing, so the FAQ's closed rows made the
+tap-target probe report an unnamed **63x43.7** button that no finger can reach
+because it is not being rendered. The probe now asks
+`checkVisibility({ contentVisibilityAuto: true })`, which is the one predicate
+that covers `display`, `visibility` and `content-visibility` together.
+
+**Matching the row count is not matching the layout.** The panel's loading
+state was the single centred word "Loading…", so twenty arriving rows moved
+everything under the table. Drawing twelve stand-in rows instead fixed the
+count and left **336px** of movement, because a real row is a name over an
+email and a stand-in was one line. `DataTable` now remembers both the count
+and the measured row height from the last successful render, so every refetch
+— a filter, a page change, Refresh — holds its height to within 8px. Only the
+very first load, which has never seen a row, has a number to guess.
+
+### What went in
+
+| | |
+|---|---|
+| **Metric-matched fallback faces** | Arial is 1.94% narrower than Instrument Sans and 5.11% wider than Sora, with different ascent and descent, so the `font-display: swap` repaint moved every line on the page. Two `@font-face` rules with `size-adjust` and ascent/descent overrides now make the fallback occupy the web font's box. |
+| **Fluid display type** | `--text-2xl` through `--text-5xl` became `clamp()`. Each keeps its old value as the **cap**, so nothing on a laptop moves; only the narrow end tightens. Body sizes (sm/base/lg/xl) deliberately untouched — shrinking reading text to save scrolling is a trade nobody asked for. |
+| **Fluid section rhythm** | `.section` was 4.5rem below `md` and 6.5rem above it. Now `clamp(3.25rem, 7.5vw, 6.5rem)`: same desktop rhythm, 20px less per edge on a phone. |
+| **`text-wrap: balance` / `pretty`** | Headings even their line lengths, paragraphs stop ending on one orphaned word. Two rules, no markup, measured at **0px** height cost on `/contact` and `/faq`. |
+| **`content-visibility: auto`** | `/faq`'s 55 rows and `/compare`'s two matrices. `contain-intrinsic-size: auto` makes the browser remember the real height after a row has been rendered once, so the scrollbar stays honest. |
+| **Container queries** | `.card` is now a query container. The team card sits in a `sm:grid-cols-2` grid, so at a 640px window it is ~300px wide — and `sm:flex-row` chose that exact moment to put a text field and a button side by side. The row now asks the card. |
+| **Scroll-driven reveals** | `Section` hands the reveal to CSS where `animation-timeline: view()` exists: no observer per section, no callback on the main thread, in step with a fling scroll. Firefox keeps the IntersectionObserver path unchanged. |
+| **View transitions** | The routed area is deferred by one React transition (`startTransition`), which both keeps the current page on screen while the next route's chunk downloads — instead of tearing it down for a spinner — and is the signal `<ViewTransition>` needs to run the swap inside `document.startViewTransition`. Only the page is named, so the navbar and footer are lifted out and hold still. A hairline at the top of the window acknowledges a tap whose chunk is not yet cached. |
+| **Skeletons that hold the layout** | `/pricing` and `/reviews` were a one-line centred spinner and then ~600px of arriving content. Both now stand in at the shape they land at. Same for every table in the panel. |
+| **An adaptive boot screen** | Was a flat 700ms floor whatever happened. The overlay now does not begin to appear for 160ms, and a warm load is removed before that — **measured peak opacity 0.000, gone in 66–87ms**, against ~1040ms before. A cold load is unaffected: the measured 959ms boot is past the floor before it is consulted. |
+| **`/compare`, rebuilt for a phone** | Eight products by thirty-four rows was 9.2 screens **and** a sideways scroll, which is two gestures to read one cell. Nobody compares eight products at once; they compare the one they use with the one they are considering. The phone build asks that question — pick a rival, and every group but the one being read folds away. Same data, same table semantics. |
+
+### Measured
+
+Screens at 390px, settled (two identical samples per page):
+
+| Page | Before the UI pass | After it | Now |
+|---|---|---|---|
+| `/compare` | 9.67 | 9.19 | **5.43** |
+| `/faq` | 8.60 | 7.20 | **6.96** |
+| `/` | 5.70 | 5.22 | **5.13** |
+| `/contact` | 3.46 | 2.97 | 2.99 |
+| `/pricing` | 1.87 | 1.39 | **1.37** |
+| `/download` | 1.91 | 1.42 | **1.40** |
+
+`/download` reads 1.73 if it is measured before its release-feed request has
+failed and rendered its error state; 1.40 is the settled page. Worth writing
+down because the first measurement of it was the unsettled one.
+
+### Held by tests, in CI
+
+`frontend/e2e/advanced.spec.js` (5) and `admin/e2e/advanced.spec.js` (2). Each
+covers a failure that is invisible unless it is measured:
+
+- a route change runs exactly one view transition and names nothing twice
+  (a duplicate `view-transition-name` throws and silently aborts the swap, so
+  the failure looks identical to the feature not being there)
+- every revealed section settles in place, checked on both opacity and the
+  translate, because a held animation fails **closed**
+- the FAQ skips the rows nobody is near **and** un-skips when reached
+- `/compare` on a phone: a rival picker, folding groups, nothing scrolling
+  sideways, under 6 screens
+- the fallback font lands within **0.5%** of the web font's line width, with
+  the raw Arial figure asserted as a control so the test cannot pass by
+  measuring nothing
+- the panel's tables hold their height across a refetch
+
+Totals after this pass: backend 599, frontend 82 unit + **26** e2e, admin 16
+unit + **6** e2e.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth

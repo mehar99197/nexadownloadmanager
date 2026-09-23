@@ -21,6 +21,7 @@ const browserGlobals = {
   alert: 'readonly',
   crypto: 'readonly',
   CSS: 'readonly',
+  getComputedStyle: 'readonly',
   requestAnimationFrame: 'readonly',
   cancelAnimationFrame: 'readonly',
   performance: 'readonly',

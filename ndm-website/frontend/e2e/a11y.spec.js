@@ -83,8 +83,13 @@ const PROBE = `
   const SEL = 'a[href], button, input:not([type="hidden"]), select, textarea, [role="button"]';
   const out = [];
   for (const el of document.querySelectorAll(SEL)) {
-    const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    // checkVisibility, not a display check: a control inside a subtree the
+    // browser is skipping for content-visibility still answers
+    // getBoundingClientRect with a box, and answers innerText with nothing —
+    // so the FAQ's closed rows reported an unnamed 63x43.7 button that no
+    // finger can reach because it is not being rendered at all. This is the
+    // one predicate that covers display, visibility AND content-visibility.
+    if (!el.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true })) continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
     if (el.tagName === 'A') {
