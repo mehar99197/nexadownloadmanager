@@ -6,7 +6,12 @@ const config = require('../config/env');
 function notFound(req, res) {
   return res.status(404).json({
     ok: false,
-    error: { code: 'NOT_FOUND', message: `Route not found: ${req.method} ${req.originalUrl}` },
+    // The URL is deliberately not echoed (AUDIT.md L-08). The content type is
+    // JSON so reflecting it was never browser-exploitable, but repeating
+    // attacker-supplied text back to them earns nothing: the caller already
+    // knows what they asked for, and the full URL is in the access log for
+    // anyone who needs it.
+    error: { code: 'NOT_FOUND', message: `Route not found: ${req.method}` },
   });
 }
 

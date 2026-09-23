@@ -276,9 +276,26 @@ async function sendTrialEndingEmail(user, daysLeft) {
  * A message from the website's contact form, delivered to the support inbox
  * with Reply-To set to the visitor so support can answer from their client.
  */
+// Anything going into a Subject: line, flattened (AUDIT.md L-09).
+//
+// Nodemailer encodes headers, so a newline here is not injectable today. The
+// point is that it should not reach the encoder in the first place — header
+// safety would then be one dependency's implementation detail away, and the
+// next thing to build a header from this text might not encode at all. Also
+// trims, because a subject is one line and 200 characters is already long.
+function headerSafe(value, max = 200) {
+  return String(value == null ? '' : value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
 async function sendContactMessage({ name, email, topic, message, userAgent }) {
   const to = config.SUPPORT_EMAIL || config.FROM_EMAIL;
-  const subject = `[Nexa contact] ${topic}${name ? ` — ${name}` : ''}`;
+  const safeTopic = headerSafe(topic, 60);
+  const safeName = headerSafe(name, 60);
+  const subject = `[Nexa contact] ${safeTopic}${safeName ? ` — ${safeName}` : ''}`;
   const text = [
     message,
     '',

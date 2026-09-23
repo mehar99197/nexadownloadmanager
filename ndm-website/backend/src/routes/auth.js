@@ -475,7 +475,13 @@ router.post(
 );
 
 router.post(
-  '/verify-email', validate(verifyEmailSchema),
+  // authLimiter in the same position as every other limited route in this
+  // file (AUDIT.md L-01). The finding was written against a lineage where this
+  // route had a limiter in the wrong place; here it had none, which is the
+  // same hole with less to argue about. The token is an unguessable JWT, so
+  // this is not about brute force — it is that an unauthenticated endpoint
+  // doing signature verification and a database write should not be free.
+  '/verify-email', authLimiter, validate(verifyEmailSchema),
   asyncHandler(async (req, res) => {
     const { token } = req.body;
     let payload;

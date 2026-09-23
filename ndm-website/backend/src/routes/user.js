@@ -423,8 +423,14 @@ router.get(
       } : null,
       team: team ? { ownerName: team.owner_name, joinedAt: toIso(team.accepted_at) } : null,
     };
+    // Sent bare, NOT through ok() (AUDIT.md L-03). This response is a file the
+    // person downloads and keeps: wrapping it in {"ok":true,"data":{…}} means
+    // nexa-account-7.json is not the export, it is the export inside a
+    // transport envelope that only makes sense to this API. Every other route
+    // here is read by our own client and keeps the envelope.
     res.setHeader('Content-Disposition', `attachment; filename="nexa-account-${u.id}.json"`);
-    return ok(res, document);
+    res.type('application/json');
+    return res.send(`${JSON.stringify(document, null, 2)}\n`);
   })
 );
 

@@ -460,6 +460,10 @@ test('backend flows', async (t) => {
         email: 'bot@example.test', message: 'buy cheap things here please now', website: 'http://spam',
       });
       assert.equal(res.status, 400, 'a filled honeypot fails validation');
+      // ...and without saying which field did it. A 400 carrying
+      // fieldErrors.website tells the bot exactly what to leave blank next
+      // time, which is the one thing a honeypot must not do.
+      assert.doesNotMatch(res.text, /website/i, 'the trap does not name itself');
     });
 
     let threadId;
@@ -720,7 +724,12 @@ test('backend flows', async (t) => {
       const res = await api.get('/api/user/export', { token: u.token });
       assert.equal(res.status, 200, res.text);
       assert.match(res.headers.get('content-disposition'), /attachment/);
-      const doc = res.body.data;
+      // The file IS the document — no { ok, data } wrapper (AUDIT.md L-03).
+      // Somebody opening nexa-account-7.json should find their account, not
+      // this API's transport envelope around it.
+      const doc = JSON.parse(res.text);
+      assert.equal(doc.ok, undefined, 'no envelope in a downloaded file');
+      assert.ok(doc.exportedAt, 'the document starts where the document starts');
       assert.equal(doc.account.email, u.email);
       assert.equal(doc.subscriptions[0].licenseKey, key);
       assert.doesNotMatch(res.text, /password_hash|refresh_token|totp/);
