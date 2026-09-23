@@ -6,6 +6,7 @@ import Badge from '../components/Badge.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
 import DataTable from '../components/DataTable.jsx';
+import IpAllowList from '../components/IpAllowList.jsx';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
 import { formatDateTime } from '../utils.js';
@@ -406,6 +407,8 @@ export default function Security() {
           which is exactly what you cannot produce once the device is gone.
         </p>
       </div>
+
+      {!mustEnrol && IS_ROOT && <IpAllowList />}
 
       {!mustEnrol && <SecurityEvents />}
 

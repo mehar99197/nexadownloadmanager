@@ -649,6 +649,30 @@ async function initSchema() {
   // 9.2e18 before a signed BIGINT runs out — so the two behave identically and
   // it is not worth a table rewrite either.
 
+  // Who may reach the control panels, managed from the panel itself rather
+  // than only from the server .env (AUDIT.md M-06). The .env list is still
+  // read and still wins — it is the break-glass that a panel mistake cannot
+  // take away, which matters because this is the one table whose contents can
+  // lock its own editor out.
+  //
+  // An entry is an address, a CIDR range or '*' (see utils/ipMatch.js). It is
+  // kept as text rather than as packed bytes so the panel can show the
+  // operator the same thing they typed, and because the list is tiny and read
+  // through a cache.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS admin_ip_rules (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      value VARCHAR(64) NOT NULL,
+      label VARCHAR(100) NULL DEFAULT NULL,
+      enabled TINYINT(1) NOT NULL DEFAULT 1,
+      created_by INT UNSIGNED NULL DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_admin_ip_rules_value (value),
+      INDEX idx_admin_ip_rules_enabled (enabled)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   // Security events (utils/securityEvents.js): sign-in failures and locks,
   // two-factor outcomes, resets, session replays, control-panel sign-ins —
   // what a SIEM would ingest, kept where the admin panel and the alert rules

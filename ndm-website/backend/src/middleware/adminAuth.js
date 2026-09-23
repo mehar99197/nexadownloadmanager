@@ -4,29 +4,47 @@ const { verifyAdmin, verifyRoot } = require('../utils/jwt');
 const { fail } = require('../utils/respond');
 const config = require('../config/env');
 const User = require('../models/User');
+const AdminIpRule = require('../models/AdminIpRule');
+const { ipMatches } = require('../utils/ipMatch');
 
+/**
+ * Matching lives in utils/ipMatch.js, which understands CIDR ranges and IPv6
+ * and treats '*' as every address (AUDIT.md M-06). An empty list still allows
+ * everything — config/env.js refuses to START a hardened deployment on an
+ * empty ADMIN_ALLOWED_IPS, because an unset variable is nearly always an
+ * oversight, so in production the only way to an open gate is writing '*' and
+ * being warned about it on every boot.
+ */
 function ipAllowed(list, req) {
-  if (!list || list.length === 0) return true;
-  // The deliberate opt-out. config/env.js refuses to start on an EMPTY list,
-  // because an unset variable is nearly always an oversight rather than a
-  // decision — so '*' is how an operator says they meant it, and env.js warns
-  // about it on every boot for as long as it is there.
-  if (list.includes('*')) return true;
-  const ip = req.ip;
-  const normalized = ip && ip.startsWith('::ffff:') ? ip.slice(7) : ip;
-  return list.includes(ip) || list.includes(normalized);
+  return ipMatches(list, req.ip);
 }
 
-function ipWhitelist(req, res, next) {
-  if (ipAllowed(config.ADMIN_ALLOWED_IPS, req)) return next();
+// The .env list plus whatever the panel has been told to allow. The .env half
+// cannot be edited from the panel, deliberately: it is the break-glass that a
+// mistake made in the IP screen cannot take away.
+async function ipWhitelist(req, res, next) {
+  try {
+    if (ipAllowed(await AdminIpRule.effectiveList(), req)) return next();
+  } catch (err) {
+    return next(err);
+  }
   return fail(res, 'IP_FORBIDDEN', 'Access from this IP is not allowed', 403);
 }
 
 // The creator panel must never be *less* restricted than the staff panel, so an
 // empty ROOT_ALLOWED_IPS falls back to the admin list rather than to "allow all".
-function rootIpWhitelist(req, res, next) {
-  const list = config.ROOT_ALLOWED_IPS.length ? config.ROOT_ALLOWED_IPS : config.ADMIN_ALLOWED_IPS;
-  if (ipAllowed(list, req)) return next();
+// A ROOT list of its own is .env-only and is NOT widened by the panel's rules:
+// somebody who can edit those rules should not be able to reach further than
+// the creator decided, and the creator edits ROOT_ALLOWED_IPS over SSH.
+async function rootIpWhitelist(req, res, next) {
+  try {
+    const list = config.ROOT_ALLOWED_IPS.length
+      ? config.ROOT_ALLOWED_IPS
+      : await AdminIpRule.effectiveList();
+    if (ipAllowed(list, req)) return next();
+  } catch (err) {
+    return next(err);
+  }
   return fail(res, 'IP_FORBIDDEN', 'Access from this IP is not allowed', 403);
 }
 
@@ -159,7 +177,7 @@ const requireAdmin = [ipWhitelist, verifyAdminToken, requireTwoFactorEnrolled];
 const requireRoot = [rootIpWhitelist, verifyRootToken, requireTwoFactorEnrolled];
 
 module.exports = {
-  ipWhitelist, rootIpWhitelist,
+  ipWhitelist, rootIpWhitelist, ipAllowed,
   requireAdmin, requireRoot,
   verifyAdminToken, verifyRootToken,
   isRootUser,

@@ -104,6 +104,9 @@ async function reset() {
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
     'team_members',
     'contact_replies', 'contact_messages',
+    // Who may reach the panels. A rule left behind by an earlier suite would
+    // change which addresses the gate admits in the next one.
+    'admin_ip_rules',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',
   ]) {
     await query(`TRUNCATE TABLE ${table}`).catch(() => { /* table may not exist yet */ });
@@ -154,6 +157,7 @@ function client() {
     get: (p, o) => request('GET', p, o),
     post: (p, body, o) => request('POST', p, { ...o, body }),
     put: (p, body, o) => request('PUT', p, { ...o, body }),
+    patch: (p, body, o) => request('PATCH', p, { ...o, body }),
     del: (p, o) => request('DELETE', p, o),
     cookies: jar,
     clearCookies: () => jar.clear(),
