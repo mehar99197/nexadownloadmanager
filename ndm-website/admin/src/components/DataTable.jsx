@@ -30,7 +30,16 @@ export default function DataTable({
     rowKey ? rowKey(row, i) : (row?.id ?? row?._id ?? i);
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-admin-border bg-admin-surface">
+    // Focusable, because it scrolls. Every table in the panel is wider than a
+    // phone, and a scroll box only a pointer can reach puts the right-hand
+    // columns — which is where the row actions live — out of a keyboard's
+    // reach entirely (axe: scrollable-region-focusable).
+    <div
+      className="overflow-x-auto rounded-xl border border-admin-border bg-admin-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-admin-accent)]"
+      tabIndex={0}
+      role="region"
+      aria-label={caption ? `${caption} — scrolls sideways` : 'Table — scrolls sideways'}
+    >
       <table className="admin-table">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>

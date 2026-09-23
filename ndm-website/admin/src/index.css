@@ -138,8 +138,13 @@ body::before {
     box-shadow: inset 3px 0 0 #9b75ff, inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
+  /* min-h-11 carries every text field AND every <select> in the panel over the
+     44px touch minimum in one line — they measured 42 and 43, close enough to
+     look right on a desktop and to be missed on a phone. The filters at the top
+     of Users, Subscriptions, Reviews and Contact are all selects, and they are
+     the first thing anyone touches on those screens. */
   .admin-input {
-    @apply w-full rounded-xl border border-admin-border bg-admin-surface-2 px-3 py-2.5 text-sm text-admin-text placeholder:text-admin-faint outline-none transition;
+    @apply w-full min-h-11 rounded-xl border border-admin-border bg-admin-surface-2 px-3 py-2.5 text-sm text-admin-text placeholder:text-admin-faint outline-none transition;
   }
 
   .admin-input:focus {

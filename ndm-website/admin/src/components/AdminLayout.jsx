@@ -89,7 +89,9 @@ export default function AdminLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 items-center justify-between border-b border-admin-border bg-admin-surface/80 px-6 backdrop-blur-xl">
           <div className="flex items-center gap-3">
-            <button type="button" aria-label="Open navigation" className="rounded-lg border border-admin-border bg-admin-surface-2 px-2.5 py-2 text-admin-muted md:hidden" onClick={() => setMobileOpen(true)}>☰</button>
+            {/* 44x44. At 36x42 this was the smallest control in the panel and
+                the only way to reach navigation on a phone. */}
+            <button type="button" aria-label="Open navigation" className="flex h-11 w-11 items-center justify-center rounded-lg border border-admin-border bg-admin-surface-2 text-admin-muted md:hidden" onClick={() => setMobileOpen(true)}>☰</button>
             <div>
             <p className="text-xs font-semibold tracking-wide text-admin-faint">NexaDownloadManager</p>
             <h1 className="mt-0.5 text-sm font-semibold text-admin-text">{PANEL_HEADING}</h1>

@@ -69,4 +69,19 @@ export default [
     files: ['src/**/*.test.{js,jsx}', 'src/test/**/*.{js,jsx}', 'vitest.config.js'],
     languageOptions: { globals: { ...browserGlobals, ...testGlobals } },
   },
+  {
+    // Playwright specs run in Node but evaluate code inside the page, so they
+    // legitimately name both sets of globals in one file.
+    files: ['e2e/**/*.{js,jsx}', 'playwright.config.js'],
+    languageOptions: {
+      globals: {
+        ...browserGlobals,
+        ...testGlobals,
+        getComputedStyle: 'readonly',
+        innerWidth: 'readonly',
+        innerHeight: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
 ];

@@ -146,9 +146,11 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   admin:
-    name: Admin panel — lint, test, build
+    name: Admin panel — lint, test, e2e, build
     runs-on: ubuntu-latest
-    timeout-minutes: 10   # 14 s in practice; same reason
+    # Raised from 10 when the panel's e2e run was added: it builds, serves and
+    # drives a real Chrome over nine screens in two colour schemes.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ndm-website/admin
@@ -164,5 +166,10 @@ jobs:
       # Added with T-06. Before this the most sensitive surface in the project
       # was checked for syntax and nothing else.
       - run: npm test
+      # The panel's own accessibility and touch-target run. jsdom has no box
+      # model, so the component tests above cannot see a 16px checkbox or a
+      # table nothing can scroll with a keyboard; this can.
+      - run: npx playwright install --with-deps chrome
+      - run: npm run test:e2e
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
