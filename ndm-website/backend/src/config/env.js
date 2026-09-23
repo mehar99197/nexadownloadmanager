@@ -200,6 +200,13 @@ const config = {
   LOGIN_LOCKOUT_THRESHOLD: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_THRESHOLD, 10)),
   LOGIN_LOCKOUT_MINUTES: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_MINUTES, 15)),
 
+  // How long a team invitation stays acceptable (AUDIT.md M-12). invited_at was
+  // recorded and never read, so a link worked for ever — a year-old forwarded
+  // invitation still joined the team. Fourteen days is long enough for somebody
+  // on holiday, and short enough that a forgotten mailbox is not a standing key
+  // to someone else's subscription.
+  TEAM_INVITE_TTL_DAYS: Math.max(1, intOrDefault(process.env.TEAM_INVITE_TTL_DAYS, 14)),
+
   // Refuse passwords found in known breaches (utils/passwordPolicy.js, HIBP
   // k-anonymity range API — the password never leaves this server). Fails
   // open when the API is unreachable within the timeout.

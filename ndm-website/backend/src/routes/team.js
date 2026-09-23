@@ -75,12 +75,22 @@ function memberView(m) {
     status: m.status,
     invitedAt: toIso(m.invited_at),
     acceptedAt: toIso(m.accepted_at),
+    // So the roster can show a dead invite as dead, rather than as a seat the
+    // owner cannot work out why they are short of.
+    expired: TeamMember.isExpired(m),
   };
 }
 
 async function ownerPayload(sub) {
   const members = await TeamMember.listBySubscription(sub.id);
   const seats = Math.max(1, Number(sub.seats) || 1);
+  // An expired invitation is not a seat in use (AUDIT.md M-12). Counting it
+  // would be the unwanted half of adding expiry: the invite can no longer be
+  // accepted, so holding a place for it just means a five-seat team quietly
+  // becoming a four-seat one, with nothing on the roster explaining why.
+  // The row stays — the owner can resend it, which revives it — but it stops
+  // taking up room until they do.
+  const held = members.filter((m) => !TeamMember.isExpired(m)).length + 1;
   return {
     role: 'owner',
     plan: sub.plan,
@@ -88,8 +98,8 @@ async function ownerPayload(sub) {
     usable: teamUsable(sub),
     seats,
     // The owner occupies one place on the roster.
-    used: members.length + 1,
-    canInvite: teamUsable(sub) && members.length + 1 < seats,
+    used: held,
+    canInvite: teamUsable(sub) && held < seats,
     members: members.map(memberView),
   };
 }
@@ -117,6 +127,12 @@ router.get(
     const invite = await TeamMember.findByTokenHash(hashToken(req.params.token));
     if (!invite || invite.status !== 'invited')
       return fail(res, 'INVITE_NOT_FOUND', 'This invitation is no longer valid', 404);
+    // Said plainly rather than folded into NOT_FOUND. There is no oracle to
+    // protect here — holding the token is already proof of having been
+    // invited — and "expired, ask for another" is actionable where "no longer
+    // valid" leaves somebody guessing.
+    if (TeamMember.isExpired(invite))
+      return fail(res, 'INVITE_EXPIRED', 'This invitation has expired. Ask the team owner to send a new one.', 410);
     return ok(res, { ownerName: invite.owner_name, email: invite.email, plan: invite.owner_plan });
   })
 );
@@ -216,6 +232,8 @@ router.post(
     const invite = await TeamMember.findByTokenHash(hashToken(req.body.token));
     if (!invite || invite.status !== 'invited')
       return fail(res, 'INVITE_NOT_FOUND', 'This invitation is no longer valid', 404);
+    if (TeamMember.isExpired(invite))
+      return fail(res, 'INVITE_EXPIRED', 'This invitation has expired. Ask the team owner to send a new one.', 410);
     // The link may have been forwarded; only the invited address may accept.
     if (invite.email !== String(req.user.email).toLowerCase())
       return fail(res, 'EMAIL_MISMATCH', `This invitation was sent to ${invite.email}. Sign in with that address to accept it.`, 403);
