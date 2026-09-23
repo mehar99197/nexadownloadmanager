@@ -366,13 +366,20 @@ if [[ "${DEPLOY_HTACCESS}" == "1" ]]; then
   STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
   ssh -p "${SSH_PORT}" "${REMOTE}" \
     "mkdir -p ~/${REMOTE_SITE}/htaccess-backups && cp ~/${WEBROOT}/.htaccess ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP} 2>/dev/null || true"
-  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
-    "${SITE}/deploy/hostinger/public_html.htaccess" "${REMOTE}:${WEBROOT}/.htaccess"
+  # SYNC + local_path, like every other phase. These two were left as a plain
+  # rsync with a POSIX path when the Windows support went in, because nothing
+  # had ever run this phase from Git Bash: DEPLOY_HTACCESS is off by default.
+  # From there MSYS rewrites "/c/Users/..." to "C:/Users/..." on the way to the
+  # Cygwin rsync, which reads "C" as a hostname and stops with "the source and
+  # destination cannot both be remote" - after the server-side backup and
+  # before any upload, so it fails safe, but it fails.
+  "${SYNC[@]}" -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
+    "$(local_path "${SITE}/deploy/hostinger/public_html.htaccess")" "${REMOTE}:${WEBROOT}/.htaccess"
   echo ".htaccess uploaded (previous copy: ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP})"
   # The PHP overrides for api-proxy.php travel with it. lsphp reads .user.ini
   # per directory (php_value in .htaccess is a 500 on this host); the frontend
   # sync below excludes it, otherwise --delete-after removed it on every deploy.
-  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" "${SITE}/deploy/hostinger/public_html.user.ini" "${REMOTE}:${WEBROOT}/.user.ini"
+  "${SYNC[@]}" -az --chmod=Fu=rw,Fgo=r -e "${RSH}" "$(local_path "${SITE}/deploy/hostinger/public_html.user.ini")" "${REMOTE}:${WEBROOT}/.user.ini"
   echo ".user.ini uploaded"
 fi
 
