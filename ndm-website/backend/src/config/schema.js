@@ -624,6 +624,30 @@ async function initSchema() {
   await addColumnIfMissing('user_sessions', 'last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
   await addIndexIfMissing('user_sessions', 'idx_session_family (family)');
   await addIndexIfMissing('user_sessions', 'idx_session_prev (prev_token_hash)');
+  // Another build — the one production is running as this is written — created
+  // these two as TIMESTAMP. Every other date in this schema is DATETIME for the
+  // reason the ads columns record below: TIMESTAMP stops at 2038-01-19, and it
+  // is silently converted between the session timezone and UTC on the way in
+  // and out, so two columns of different types on one row do not mean the same
+  // thing. A session row is short-lived, so this is tidiness rather than a
+  // bug — but a schema that reads one way and behaves another is how the last
+  // timezone defect started. Idempotent: ensureColumnType only rewrites a
+  // column whose type is actually wrong.
+  await ensureColumnType('user_sessions', 'created_at', 'datetime',
+    'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  await ensureColumnType('user_sessions', 'last_used_at', 'datetime',
+    'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  // Same build gave the table a `realm` ENUM, because it kept the panels'
+  // sessions in here too; this one keeps them in the token generation counter
+  // instead (users.token_version, see middleware/adminAuth.js). Nothing writes
+  // the column any more and its NOT NULL carries a default, so every insert
+  // here is unaffected. It is left in place deliberately: dropping a column
+  // rewrites the table, and an unread column costs nothing.
+  //
+  // users.totp_last_step is signed there and unsigned here, which is the same
+  // kind of leftover. A TOTP step is floor(epoch/30) — about 5.8e7 today and
+  // 9.2e18 before a signed BIGINT runs out — so the two behave identically and
+  // it is not worth a table rewrite either.
 
   // Security events (utils/securityEvents.js): sign-in failures and locks,
   // two-factor outcomes, resets, session replays, control-panel sign-ins —
