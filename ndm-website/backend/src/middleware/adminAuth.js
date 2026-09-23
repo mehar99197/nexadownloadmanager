@@ -86,12 +86,30 @@ async function verifyAdminToken(req, res, next) {
       return fail(res, 'FORBIDDEN', 'Admin access required', 403);
     }
 
+    if (!currentGeneration(payload, user))
+      return fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
+
     req.admin = user;
     req.isRoot = family === 'root';
     return next();
   } catch (err) {
     return next(err);
   }
+}
+
+/**
+ * Is this bearer from the generation the account is currently on?
+ *
+ * Panel tokens carry `tv` (utils/jwt.js basePayload) exactly as customer ones
+ * do, and User.revokeSessions bumps users.token_version — but only
+ * middleware/auth.js was comparing the two. So "revoke sessions" on a staff
+ * admin, and the demotion path in routes/root.js that calls it, left the
+ * target's live panel bearer working for the rest of its life: eight hours for
+ * staff, four for the creator. The refresh cookie was cleared, which is why it
+ * looked like it had worked.
+ */
+function currentGeneration(payload, user) {
+  return (Number(payload.tv) || 0) === (Number(user.token_version) || 0);
 }
 
 /** Creator-only gate for /api/root/*. Staff-admin tokens can never pass this. */
@@ -103,6 +121,8 @@ async function verifyRootToken(req, res, next) {
     const user = await User.findById(Number(payload.sub));
     if (!user || !isRootUser(user)) return fail(res, 'FORBIDDEN', 'Root access required', 403);
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    if (!currentGeneration(payload, user))
+      return fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
     req.admin = user;
     req.root = user;
     req.isRoot = true;
