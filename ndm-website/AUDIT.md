@@ -139,10 +139,10 @@ Against this base, after the port:
 |---|---|---|---|
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
-| Low | 12 | 1 | 11 |
+| Low | 12 | 0 | 12 |
 | Test debt | 8 | 3 | 5 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **46** | **6** | **40** |
+| **Total** | **46** | **5** | **41** |
 
 **Every defect found by reading the code is fixed.** The six left are of two
 kinds, and neither is a bug sitting in a code path:
@@ -1317,7 +1317,7 @@ because a subject is one line and sixty characters of topic is already generous.
 
 ## L-11 — the edge drops `Access-Control-Allow-Origin` but keeps `Allow-Credentials`
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** probed live, both sides of the proxy
+**Status:** FIXED (the half that mattered) &nbsp;|&nbsp; **Verified by:** re-asserted in `public_html.htaccess` and probed live across four origins
 
 Express answers correctly. Asked from the server itself, bypassing everything
 in front of it:
@@ -1350,10 +1350,36 @@ It is still worth recording. `Allow-Credentials: true` with no `Allow-Origin`
 is a header pair that means nothing, and it reads to anyone who looks as if
 CORS were configured permissively when the opposite is true. The day something
 legitimately needs cross-origin access — a panel on a subdomain, a status
-page — it will fail with no clue pointing at the host stack rather than the
-code. **Fix:** re-assert both headers in `public_html/.htaccess`, where the
-edge cannot drop them, or accept it and note it beside the `cors()` call so
-the next person does not debug Express.
+page — it would fail with no clue pointing at the host stack rather than the
+code.
+
+**Fixed** by re-asserting the header in `public_html.htaccess`, where the host
+stack sets its own headers and therefore cannot drop this one. The echo is
+narrow on purpose — a whole-string match on the two origins
+`config.CORS_ORIGINS` already allows, never a reflected arbitrary `Origin` —
+and both lines are guarded on that match, so anything else leaves with no CORS
+headers at all. Probed live afterwards:
+
+| Origin sent | `Access-Control-Allow-Origin` |
+|---|---|
+| `https://nexadownloadmanager.com` | echoed |
+| `https://www.nexadownloadmanager.com` | echoed |
+| `https://evil.example.com` | **absent** |
+| `https://nexadownloadmanager.com.evil.com` | **absent** — the match is anchored at both ends |
+
+**One half could not be repaired, and saying so is the point.** `Vary: Origin`
+still does not arrive: the host stack rewrites `Vary` to `Accept-Encoding` after
+mod_headers has run, so an `append` there is lost too. That would matter if an
+origin-varying response could be cached — but as of L-12 every API response
+is `no-store, private` except the release feed, which is public data the
+desktop app fetches with no credentials at all. So the remaining gap has
+nothing left to expose. If a second cacheable route is ever added, this
+becomes real again, which is why it is written down rather than closed.
+
+Found along the way, and worth keeping: a query key the schema does not know
+(`?cb=12345`) is refused with `VALIDATION_ERROR` rather than ignored. That is
+strict zod doing its job, and it also means a cache-busting probe against this
+API has to use a key the route declares.
 
 ---
 

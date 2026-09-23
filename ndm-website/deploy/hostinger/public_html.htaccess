@@ -64,6 +64,30 @@ DirectoryIndex index.html index.php
     Header always set Cross-Origin-Opener-Policy "same-origin-allow-popups"
     Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
 
+    # CORS, re-asserted here because the API's own headers do not survive the
+    # trip out (AUDIT.md, L-11). Asked directly on 127.0.0.1:3001 Express
+    # answers with Access-Control-Allow-Origin AND Vary: Origin; the client
+    # sees neither, while Access-Control-Allow-Credentials arrives intact.
+    # api-proxy.php forwards everything except hop-by-hop headers and neither
+    # of the two is in that list, so the loss is in the host stack, below
+    # anything this repository ships.
+    #
+    # Nothing was exposed by that: without Allow-Origin a browser refuses to
+    # hand the body to a cross-origin caller whatever Allow-Credentials says,
+    # so the failure was closed. It is worth repairing anyway. The pair that
+    # did arrive reads, to anyone who looks, like a permissive CORS setup when
+    # the truth is the opposite -- and the day a subdomain or a status page
+    # legitimately needs cross-origin access, it would fail with nothing at
+    # all pointing at the host stack rather than at the Express config.
+    #
+    # The echo is deliberately narrow: only the two origins config.CORS_ORIGINS
+    # already allows, matched whole, never a reflected arbitrary Origin. Both
+    # lines are guarded on that match, so a request from anywhere else leaves
+    # with no CORS headers and is refused exactly as it is today.
+    SetEnvIf Origin "^https://(www\.)?nexadownloadmanager\.com$" NDM_CORS_ORIGIN=$0
+    Header always set Access-Control-Allow-Origin "%{NDM_CORS_ORIGIN}e" env=NDM_CORS_ORIGIN
+    Header always append Vary Origin env=NDM_CORS_ORIGIN
+
     # Content-Security-Policy. The static site and BOTH control panels are
     # served from this document root, so one policy covers all three.
     #
