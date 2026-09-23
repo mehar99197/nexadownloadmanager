@@ -127,6 +127,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Every rsync goes through this. On Linux/macOS it is rsync itself. From Git
+# Bash on Windows two things break a plain call: the MSYS runtime rewrites
+# POSIX-looking arguments for native programs, so "/c/Users/…/dist/" reaches a
+# Cygwin-built rsync (the Chocolatey package) as "C:/Users/…" — which rsync
+# reads as host "C" and refuses with "source and destination cannot both be
+# remote"; and that rsync cannot spawn Git Bash's MSYS ssh ("dup() in/out/err
+# failed"), it needs the ssh.exe shipped beside it. So on Windows the call
+# disables the rewrite, hands rsync /cygdrive/ paths, and uses the sibling
+# ssh with the key and known_hosts resolved from ~/.ssh/config, because that
+# ssh has no HOME of its own to find them in.
+SYNC=(rsync)
+local_path() { printf '%s' "$1"; }   # a local path as rsync should see it
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    rsync_dir="$(dirname "$(command -v rsync)")"
+    if [[ -f "${rsync_dir}/cygwin1.dll" || -f "${rsync_dir}/../lib/rsync/tools/bin/ssh.exe" ]]; then
+      # cygpath -m gives "C:/…" for any MSYS path (/c/…, /tmp/…, /usr/…);
+      # the Cygwin rsync wants that as /cygdrive/c/….
+      cygdrive() { cygpath -m "$1" | sed -E 's#^([A-Za-z]):#/cygdrive/\L\1#'; }
+      local_path() { cygdrive "$1"; }
+      cw_ssh=""
+      for cand in "${rsync_dir}/ssh.exe" "${rsync_dir}/../lib/rsync/tools/bin/ssh.exe"; do
+        if [[ -f "${cand}" ]]; then cw_ssh="${cand}"; break; fi
+      done
+      [[ -n "${cw_ssh}" ]] || die "found a Cygwin rsync at ${rsync_dir} but no ssh.exe beside it"
+      key="$(ssh -G "${SSH_HOST}" 2>/dev/null | awk '/^identityfile /{print $2; exit}')"
+      key="${key/#\~/$HOME}"
+      [[ -f "${key}" ]] || die "no identity file for ${SSH_HOST} in ~/.ssh/config (ssh -G gave '${key}')"
+      RSH="$(cygdrive "${cw_ssh}") -p ${SSH_PORT} -i $(cygdrive "${key}") -o BatchMode=yes"
+      RSH+=" -o UserKnownHostsFile=$(cygdrive "${HOME}/.ssh/known_hosts") -o StrictHostKeyChecking=accept-new"
+      SYNC=(env MSYS_NO_PATHCONV=1 rsync)
+      echo "Windows: using Cygwin rsync at ${rsync_dir} with its own ssh; local paths mapped to /cygdrive/"
+    fi
+    ;;
+esac
+
 # --------------------------------------------------------------------------
 # Phase 0 — preflight
 # --------------------------------------------------------------------------
@@ -227,7 +263,9 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   if grep -lE '[A-Za-z]:/(msys64|Users|Program)' "${FRONTEND}"/dist/assets/*.js >/dev/null 2>&1; then
     die "frontend bundle contains a local filesystem path — VITE_API_URL is '${VITE_API_URL}', check the build environment"
   fi
-  echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL})."
+  grep -q "baseURL:\"${VITE_API_URL}\"" "${FRONTEND}"/dist/assets/index-*.js \
+    || die "frontend bundle does not carry baseURL:\"${VITE_API_URL}\" — the value did not survive the build environment"
+  echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL}; API base ${VITE_API_URL})."
 else
   phase "Phase 1: SKIPPED (frontend)"
 fi
@@ -272,6 +310,15 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   # local development .env.
   cp "${BACKEND}/package.json" "${BACKEND}/package-lock.json" "${STAGE}/"
   cp -R "${BACKEND}/src" "${STAGE}/src"
+  # The host runs these; bash there reads a CR as part of the command and
+  # fails with "set: pipefail<CR>: invalid option name". .gitattributes pins
+  # *.sh to LF now, but a working copy checked out before that rule — or a
+  # file some editor rewrote — would still ship CRLF, and the nightly backup
+  # stopped for exactly that reason. Strip, then refuse if anything is left.
+  find "${STAGE}/src" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+  if grep -rlq "$(printf '\r')" "${STAGE}/src" --include='*.sh' 2>/dev/null; then
+    die "a staged shell script still carries CR line endings"
+  fi
 
   (
     cd "${STAGE}"
@@ -328,7 +375,7 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   # but the excludes below are delete-protected: .htaccess, .user.ini,
   # api-proxy.php, admin/ and .well-known/ live in public_html yet are owned
   # elsewhere (.well-known by the hosting platform itself).
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     --exclude='.htaccess' \
     --exclude='.user.ini' \
@@ -336,7 +383,7 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
     --exclude='admin/' \
     --exclude='.well-known/' \
     -e "${RSH}" \
-    "${FRONTEND}/dist/" "${REMOTE}:${WEBROOT}/"
+    "$(local_path "${FRONTEND}/dist")/" "${REMOTE}:${WEBROOT}/"
   echo "Frontend uploaded."
 else
   phase "Phase 5: SKIPPED (frontend upload)"
@@ -347,10 +394,10 @@ fi
 # --------------------------------------------------------------------------
 if [[ "${SKIP_ADMIN}" != "1" ]]; then
   phase "Phase 6: uploading admin dist -> ${WEBROOT}/admin/"
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     -e "${RSH}" \
-    "${ADMIN}/dist/" "${REMOTE}:${WEBROOT}/admin/"
+    "$(local_path "${ADMIN}/dist")/" "${REMOTE}:${WEBROOT}/admin/"
   echo "Admin uploaded (serves both /admin and /root via .htaccess)."
 else
   phase "Phase 6: SKIPPED (admin upload)"
@@ -375,7 +422,7 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   # backups appeared to be working (a good log line every night) while no dump
   # ever survived to the next deploy. Anything server-only MUST be listed here,
   # not merely described above.
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --exclude='.env' \
     --exclude='.env.bak-*' \
     --exclude='.api.pid' \
@@ -385,7 +432,7 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
     --exclude='uploads/' \
     --exclude='backups/' \
     -e "${RSH}" \
-    "${STAGE}/" "${REMOTE}:${API_DIR}/"
+    "$(local_path "${STAGE}")/" "${REMOTE}:${API_DIR}/"
   echo "Backend uploaded."
 
   if [[ "${RESTART_BACKEND}" == "1" ]]; then
