@@ -15,14 +15,43 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+// A relay reached over the network must be reached over TLS (AUDIT.md M-11).
+//
+// `secure` alone only covers port 465, where TLS wraps the connection from the
+// first byte. On 587 — the default here and the port most relays use —
+// nodemailer negotiates STARTTLS *if the server offers it* and otherwise
+// carries on in the clear, which sends SMTP_USER and SMTP_PASS, and every
+// verification link, reset token and licence key, as plaintext. It also
+// downgrades silently: an attacker who can strip the STARTTLS capability from
+// the greeting gets the same result and nothing logs a complaint.
+//
+// requireTLS turns that into a refusal to send. Failing to deliver an email is
+// a worse outcome than delivering one, but it is a much better outcome than
+// handing the credentials to whoever is on the path.
+//
+// The exception is a relay on loopback, where there is no network to be on:
+// a developer running MailHog or Mailpit on 127.0.0.1:1025 should not have to
+// terminate TLS to see a test message. Anything else, including a relay on the
+// LAN, has a network hop and has to encrypt it.
+function isLoopbackRelay(host) {
+  // Strips the brackets an IPv6 literal is written with: [::1].
+  const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || /^127\.\d+\.\d+\.\d+$/.test(h);
+}
+
 function getTransport() {
   if (config.isEmailMock) return null;
   if (!transport) {
+    const loopback = isLoopbackRelay(config.SMTP_HOST);
     transport = nodemailer.createTransport({
       host: config.SMTP_HOST,
       port: config.SMTP_PORT,
       secure: config.SMTP_PORT === 465,
+      requireTLS: !loopback,
       auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASS } : undefined,
+      // TLS 1.0 and 1.1 are withdrawn. Without a floor, node offers whatever
+      // the relay asks for, so a downgrade is the relay's decision to make.
+      tls: loopback ? undefined : { minVersion: 'TLSv1.2' },
     });
   }
   return transport;
