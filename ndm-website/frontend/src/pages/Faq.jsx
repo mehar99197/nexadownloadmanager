@@ -399,7 +399,12 @@ function Helpful({ id }) {
 
 function Item({ item, open }) {
   return (
-    <Card as="details" className="group !p-0" open={open}>
+    // cv-row: the page lays out fifty-five of these on every load. The class
+    // lets the browser skip layout and paint for the ones nowhere near the
+    // screen and stand a remembered height in for them, so the scrollbar is
+    // honest. Find-in-page, an anchor link and focus each un-skip a row on
+    // their own — nothing here becomes unreachable.
+    <Card as="details" className="cv-row group !p-0" open={open}>
       {/* Denser on a phone, unchanged from `sm` up. Fifty-five rows at
           px-6 py-5 is where /faq's 8.6 screens came from; 4px off each side of
           each row is half a screen back. py-4 still leaves the summary ~56px

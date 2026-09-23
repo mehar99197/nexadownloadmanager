@@ -393,6 +393,11 @@ body::before {
   .card {
     position: relative;
     overflow: hidden;
+    /* So the things inside a card can ask how wide THE CARD is (see the
+       container-query block near the end of this file). Safe here because no
+       card anywhere takes its width from its contents — they are all block
+       children of a grid, a flex column or a container. */
+    container-type: inline-size;
     background: linear-gradient(145deg, rgba(20, 28, 47, 0.92), rgba(9, 13, 23, 0.92));
     border: 1px solid rgba(91, 116, 171, 0.34);
     border-radius: var(--radius-4);
@@ -1295,5 +1300,63 @@ h2 {
   @keyframes bar-sheen {
     0% { transform: translateX(-100%); }
     55%, 100% { transform: translateX(220%); }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Advanced pass — render cost, container-driven layout, scroll-driven */
+/*  reveals, and view transitions between pages.                        */
+/*                                                                      */
+/*  Everything in this block is additive and feature-gated: a browser    */
+/*  without the feature keeps exactly the behaviour it had before, and   */
+/*  nothing here is the only way any content can be reached.            */
+/* ------------------------------------------------------------------ */
+
+/* 1. Render cost -----------------------------------------------------
+   content-visibility lets the browser skip layout and paint for a subtree
+   that is nowhere near the screen. /faq lays out 55 rows on every load and
+   /compare two matrices of roughly 250 cells each, whether or not anyone
+   scrolls that far. contain-intrinsic-size supplies a stand-in height so
+   the scrollbar does not jump, and its "auto" keyword makes the browser
+   remember the real height once a row has been rendered once — so the
+   second approach is exact. Find-in-page, anchor links and focus all
+   un-skip the subtree themselves, so nothing becomes unreachable. */
+.cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3.5rem;
+}
+
+.cv-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 480px;
+}
+
+/* 2. Container-driven rows -------------------------------------------
+   .card is a query container (see the .card rule above), so things inside
+   a card can be laid out from the CARD's width instead of the window's.
+   The case this fixes: the team card sits in a sm:grid-cols-2 grid, so at
+   a 640px window the card is about 300px wide — and sm:flex-row chose that
+   exact moment to put a text field and a button side by side. A container
+   query keeps them stacked until the card itself has the room, whatever
+   the window is doing. */
+.cq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@container (width >= 26rem) {
+  .cq-row {
+    flex-direction: row;
+    align-items: flex-end;
+  }
+}
+
+/* Same argument, the other way up: four stat cards across a 1024px screen
+   are about 210px each, and the icon tile was taking a fifth of that from
+   the number it labels. */
+@container (width < 13rem) {
+  .cq-drop-tight {
+    display: none;
   }
 }

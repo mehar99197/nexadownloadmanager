@@ -17,7 +17,10 @@ function StatCard({ label, value, icon }) {
   return (
     <Card className="card-hover !p-5">
       <div className="flex items-center gap-4">
-        <div className="icon-tile !h-11 !w-11 shrink-0">
+        {/* Four of these across a 1024px screen are ~210px each, and the tile
+            was taking a fifth of that from the number it labels. Below 13rem
+            of CARD width — not of window width — the number wins. */}
+        <div className="cq-drop-tight icon-tile !h-11 !w-11 shrink-0">
           {icon}
         </div>
         <div className="min-w-0">
@@ -464,8 +467,12 @@ function TeamCard({ onChanged }) {
         )}
       </ul>
 
+      {/* cq-row, not sm:flex-row: this card sits in a sm:grid-cols-2 grid, so
+          at a 640px window the card is about 300px wide — and sm: chose that
+          exact moment to put the field and the button side by side. The
+          container query asks the card how much room there is instead. */}
       {team.canInvite ? (
-        <form onSubmit={invite} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <form onSubmit={invite} className="cq-row mt-4">
           <div className="flex-1">
             <Input
               label="Invite by email"
