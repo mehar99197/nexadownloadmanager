@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
-import api, { unwrap, setAccessToken } from '../api/client';
+import api, { setAccessToken } from '../api/client';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -32,8 +32,15 @@ function DataCard({ user }) {
   const exportData = async () => {
     setExporting(true);
     try {
-      const data = unwrap(await api.get('/user/export'));
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      // The export arrives bare, as the file itself (AUDIT.md L-03), not in
+      // the {ok, data} envelope every other route uses. unwrap() found no
+      // `data` in it and saved the word "undefined", under a success toast.
+      // A server that still wraps it is read correctly too, and an empty
+      // answer is an error rather than an empty file.
+      const body = (await api.get('/user/export')).data;
+      const exported = body?.ok === true && body.data ? body.data : body;
+      if (!exported || typeof exported !== 'object') throw new Error('empty export');
+      const blob = new Blob([`${JSON.stringify(exported, null, 2)}\n`], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const config = require('../config/env');
 const { connectDB } = require('../config/db');
 const { initSchema } = require('../config/schema');
 const User = require('../models/User');
@@ -17,13 +18,24 @@ async function main() {
     .toLowerCase().trim();
   const provided = argPassword || process.env.ADMIN_PASSWORD;
   const password = provided || randomPassword();
+  // Same floor as createRoot.js: a staff account reads every customer's row.
+  if (password.length < 12) throw new Error('the admin password must be at least 12 characters');
+
+  // This script makes STAFF accounts. Pointed at the creator's address it used
+  // to overwrite role:'root' with 'admin' and set a new password — the creator
+  // silently demoted until someone ran createRoot again.
+  if (config.ROOT_ADMIN_EMAIL && email === config.ROOT_ADMIN_EMAIL)
+    throw new Error(`${email} is the creator's address (ROOT_ADMIN_EMAIL); use createRoot.js for that account`);
 
   await connectDB();
   await initSchema();
 
+  let user = await User.findByEmail(email);
+  if (user && user.role === 'root')
+    throw new Error(`${email} is the creator account; this script only makes staff accounts`);
+
   const passwordHash = await bcrypt.hash(password, 12);
 
-  let user = await User.findByEmail(email);
   if (user) {
     await User.update(user.id, {
       name, role: 'admin', emailVerified: true, banned: false, passwordHash,
