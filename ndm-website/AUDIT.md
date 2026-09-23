@@ -86,9 +86,9 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 8 | 7 |
 | Low | 10 | 7 | 3 |
-| Test debt | 3 | 0 | 3 |
+| Test debt | 5 | 0 | 5 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **39** | **17** | **22** |
+| **Total** | **41** | **17** | **24** |
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -1102,6 +1102,69 @@ process still hung) and it marked passing tests as failures on the way.
 
 ---
 
+## T-04 — a missing `});` turned five Google sign-in tests into subtests that never ran
+
+**Status:** FIXED &nbsp;|&nbsp; **Found by:** the first CI run that got past T-03 &nbsp;|&nbsp; **Verified by:** `test/googleAuth.test.js` — 10 tests, 10 pass, and a sweep confirming no other column-0 `test(` in the suite sits at a non-zero brace depth
+
+`test/googleAuth.test.js` is missing one `});`. The test that starts at
+line 107 closes its `withClientId` block and then never closes itself, so the
+next five `test(...)` calls — written flush at column 0, looking exactly like
+top-level tests — are registered **inside that test's callback**. A stray
+`});` further down is what finally closes it.
+
+The five are not incidental. They are the ones asserting that the signature
+path refuses a wrong issuer, an expired token and an unverified email; that
+`alg=none` never reaches verification; that an unknown key id forces exactly
+one refetch and the key set is otherwise cached; that nothing is verified at
+all with no client ID; and that a missing or malformed credential is refused
+before any network call. That is most of what makes Google sign-in safe.
+
+Because the parent never awaits them, Node 22 cancels them —
+`cancelledByParent`, *"test did not finish before its parent and was
+cancelled"* — so **they do not run**. Node 24 waits for them, which is why they
+pass on this machine and why the count still read 533. CI pins Node 22 because
+production runs Node 22, and this is the whole argument for pinning it: the
+suite that counts is the one on the version you ship.
+
+The damage was not limited to the five. The parent's `finally` restored
+`GOOGLE_CLIENT_ID` to empty while the cancelled children were still in
+flight, so the *next* real test failed with `Google sign-in is not
+configured` — a failure whose cause was four tests away.
+
+**Fixed** by closing the test at line 107 and removing the stray closer, each
+anchor asserted line by line before anything moved. All ten are top-level now,
+at brace depth zero, and all ten pass. A sweep of every test file says this was
+the only place it happened.
+
+---
+
+## T-05 — a fake that could only answer an abort, on a timer that does not hold the loop open
+
+**Status:** FIXED &nbsp;|&nbsp; **Found by:** the same CI run &nbsp;|&nbsp; **Verified by:** `test/passwordPolicy.test.js` — 6 pass, the slow case taking 51 ms against its 50 ms budget, and `[password] breach check skipped: aborted` in the output, which is the abort actually firing
+
+`the check fails open when HIBP is down or slow` stands up a `fetchImpl`
+that returns a promise with exactly one exit: an `abort` listener. The abort
+is supposed to arrive from the breach check's own
+`AbortSignal.timeout(PASSWORD_BREACH_TIMEOUT_MS)`.
+
+That signal's timer is **unref'd by design** — it does not keep the event loop
+alive. So the test hands the runner a promise that settles only on a timer
+which is not holding the process open, and whether the loop drains first is a
+race. On CI it drained first, and node answered *"Promise resolution is still
+pending but the event loop has already resolved"*, cancelling this test and the
+one after it.
+
+Worth separating from T-04 because nothing here is mistyped. The test is wrong
+about the runtime: it assumed a timer keeps the process alive, when this
+particular timer is documented not to.
+
+**Fixed** by giving the fake its own ref'd `setTimeout` — that is what holds
+the loop open until the abort arrives, and it is cleared when it does. If the
+abort never comes, the test now fails with *"the breach check never aborted its
+request"* rather than dissolving into a runner message about the event loop.
+
+---
+
 # OPERATIONAL
 
 These are deployment gaps, not code defects. They were found during the server
@@ -1155,7 +1218,7 @@ without fighting.
 
 ## O-03 — The integration tests never actually run
 
-**Status:** IN PROGRESS — code complete, CI run blocked by the GitHub account &nbsp;|&nbsp; **Verified by:** `npm test` on MariaDB 11.8.9 locally (288 tests, 0 skipped); the `website` workflow is in place and parses, but its first run (`35515478457`) was refused before any job started: *"The job was not started because recent account payments have failed or your spending limit needs to be increased"* — every `build.yml` run on `main` since 2026-09-16 has failed the same way. The repository is private, so Actions minutes are billed. **Owner action:** GitHub → Settings → Billing & plans (fix the payment or raise the spending limit), or make the repository public; then re-run the workflow. Nothing in the code is waiting on it.
+**Status:** IN PROGRESS — the workflow now runs; it has not been green yet &nbsp;|&nbsp; **Verified by:** `npm test` on MariaDB 11.8.9 locally — 533 tests, 0 skipped, repeatable, and repeatable under CI’s own environment. The first two runs never started at all: *"The job was not started because recent account payments have failed or your spending limit needs to be increased"*, because the repository was private and Actions minutes are billed. It was made public on 2026-09-22 and the jobs have started since. Every run that has actually executed has found something — **T-03** (a test that chose its own store and then hung the runner), then **T-04** and **T-05** (five Google sign-in tests that a missing brace stopped Node 22 from running at all, and a fake whose promise could outlive the event loop). That is the finding paying for itself, and it is also why it stays open: O-03 closes on a green run, not on a workflow that exists.
 
 **On this base (`audit-on-main`):** O-03a and O-03b came across in `d086ec9` (`test/tools/testdb.sh`, now with a resumable download, a data-only `wipe` and a `purge`). O-03c is code-complete on this base too: `website.yml` runs the suite against `mariadb:11.8` on every branch that touches `ndm-website/`, and `build.yml`'s quality job loses the duplicated website steps — including the second full `npm test` it ran only to grep the log. It stays **IN PROGRESS** until a run is green on this branch. Running the suite twice here is also what found the `faq_votes` / `license_token_rejections` leak in `srv.reset()`.
 
@@ -1406,6 +1469,7 @@ Checked live, against production:
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
+| 2026-09-23 | **The second CI run got past the hang and found two more.** With T-03 fixed the backend job ran for real — 4 m 25 s — and failed cleanly rather than hanging, which was the point of the timeouts. It failed on seven tests in two files, and neither was a flake. **T-04**: a single missing `});` in `test/googleAuth.test.js` had quietly nested five tests inside another one, so Node 22 cancelled them without running them — wrong issuer, expired token, unverified email, `alg=none`, key rotation and caching, no-client-ID, malformed credential. They pass on Node 24, which is why this machine never noticed; CI pins Node 22 because production runs it. **T-05**: the HIBP slow-path fake returned a promise that could only settle on `AbortSignal.timeout()`, whose timer is unref’d and does not hold the event loop open, so the runner could resolve out from under it. Both fixed and verified; a sweep confirms no other test file nests a column-0 `test(`. 41 findings, 24 fixed. |
 | 2026-09-22 | **CI ran for the first time, and found something.** The repository was made public, so the jobs were allowed to start (run `35747534001`). Frontend and admin green in 25 s and 14 s; the backend job printed `ok 65` and then hung — it would have burned GitHub's six-hour ceiling on a billed runner. Cause reproduced locally before fixing: `durableLimiter.test.js` documents itself as testing the in-memory fallback but never ensures one, so CI's job-level `MYSQL_*` sent it down the MySQL path instead, and the pool it opened kept the process alive while `node --test` waited for it. Opened and fixed as **T-03** — an `after()` that ends the pool, a `before()` that truncates `rate_limits` so the table-backed store starts from a clean budget, and an honest docblock. All three jobs given `timeout-minutes`. 39 findings, 22 fixed. |
 | 2026-09-22 | **`audit-on-main` pushed and deployed to production.** 15 commits pushed; the `website` workflow fired and was refused by GitHub Actions billing again (run `35745664153`, all three jobs, no step run) — the repository still reports `PRIVATE`, so O-03 stays IN PROGRESS. The deploy itself went clean after a verified full backup: schema initialized, and H-06, M-04, M-05, M-07 and both SPA bundles verified against the live site (see *The deploy*). One deploy-script bug on the way: the `baseURL` assertion added last time matched only a double-quoted literal, and Vite 8 minifies it to a backtick template, so a correct bundle failed the check. Found the creator has **no recovery codes** (`totp_recovery` = `[]`) while `ADMIN_2FA_REQUIRED` is on — see M-14. |
 | 2026-09-22 | **Deploy prerequisites cleared.** Rebased onto `origin/main` @ `5de449b` (the tip had moved nine commits; none of them touch anything this port changes) — 533/533. Checked the twelve settings `main` reads that the live `.env` has never had to satisfy: all defaulted, none can fail the boot, and three change behaviour (`ADMIN_2FA_REQUIRED` on, which the creator and every staff admin must act on at the deploy; `PASSWORD_BREACH_CHECK` on and degrading open; `LICENSE_AUTO_SUSPEND` on with thresholds no customer reaches). Checked the migration by running it: `test/tools/migrate-check.js` builds a production-shaped database, migrates it and diffs against a fresh one. It runs clean; two TIMESTAMP columns were retyped to DATETIME as a result and two harmless leftovers are documented. |
