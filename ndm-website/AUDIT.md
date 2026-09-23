@@ -1192,18 +1192,8 @@ Already fixed on `main`, nothing to port: **H-05**, **M-01**, **M-02**,
 
 ## Phase 5 — what is left
 
-**Before anything else, two things this base needs that the branch did not:**
-
-- [ ] Rebase onto `origin/main`'s current tip. It was `867341e` when this
-      branch was cut and has moved on since; the port has to sit on what is
-      actually there before it can be deployed.
-- [ ] Check `config/env.js` against the server's `.env`. `main` added features
-      the live deployment has never run — device sign-in, security events,
-      durable rate limits, FAQ votes — and `required()` fails the boot for a
-      missing secret rather than starting degraded. A deploy that trips that
-      takes the API down until the `.env` is fixed over SSH.
-
-Then, in this order:
+**The two deploy prerequisites are done** — both are recorded below under
+*Deploying this base*, and neither blocks. Then, in this order:
 
 - [ ] O-03c — one green CI run on this branch, which is what turns O-03 from
       IN PROGRESS to FIXED
@@ -1223,16 +1213,67 @@ Then, in this order:
 
 ## Deploying this base
 
-Not a routine deploy, because production is running the other lineage:
+Not a routine deploy, because production is running the other lineage. Two
+things were checked before planning it, and both came back clean.
+
+### The environment — nothing to add before the deploy
+
+`main` reads twelve settings the deployed lineage never did
+(`ACCESS_TOKEN_TTL`, `ADMIN_2FA_REQUIRED`, `AD_EVENT_SECRET`, `AI_MODEL`,
+`ANTHROPIC_API_KEY`, `LICENSE_AUTO_SUSPEND`, `LOGIN_LOCKOUT_MINUTES`,
+`LOGIN_LOCKOUT_THRESHOLD`, `PASSWORD_BREACH_CHECK`,
+`PASSWORD_BREACH_TIMEOUT_MS`, `SECURITY_ALERT_EMAIL`,
+`TURNSTILE_FAIL_CLOSED`). **Every one has a default**, so none of them can
+fail the boot — which was the worry, because `config/env.js` collects its
+problems and refuses to start rather than running degraded. The hard
+requirements themselves (the four JWT secrets, `MYSQL_PASS`,
+`ROOT_ADMIN_EMAIL`, `SMTP_HOST`, HTTPS origins, `ADMIN_ALLOWED_IPS`,
+`TRUST_PROXY`) are the same set the live `.env` already satisfies.
+
+Three of those defaults change behaviour on a live deployment, and only the
+first needs anyone to do anything:
+
+- **`ADMIN_2FA_REQUIRED` defaults to ON** for any hardened deployment. Until
+  an admin enrols an authenticator, every panel route but `/me`, `/logout`
+  and the `/2fa` enrolment routes answers `403 TWO_FACTOR_REQUIRED` and the
+  SPA parks them on the Security screen. That is the intended posture, but it
+  means **the creator and every staff admin must enrol immediately after the
+  deploy**, in the same session they sign in again for H-08.
+- **`PASSWORD_BREACH_CHECK` defaults to ON** — sign-up and reset call
+  api.pwnedpasswords.com with a 2.5 s timeout. It **degrades open**: a
+  failure logs `[password] breach check skipped` and the password is
+  accepted, so a host that cannot reach the internet costs latency, not
+  sign-ups.
+- **`LICENSE_AUTO_SUSPEND` defaults to ON.** The thresholds are far above
+  anything a customer produces — 30 devices per seat plus a flat allowance of
+  3, or 20 new devices inside the window — so a one-seat licence needs 33
+  distinct machines before it suspends. Left on.
+
+### The migration — runs clean over a production-shaped database
+
+`test/tools/migrate-check.js` builds a database with the deployed lineage's
+`initSchema`, runs this base's over the top, builds a second from nothing and
+diffs them. It succeeds: the eight new tables are created and every rotation
+column is added to `user_sessions`. Three columns differed; two were fixed
+(`user_sessions.created_at` / `last_used_at` retyped from TIMESTAMP to
+DATETIME) and one is documented and left (`users.totp_last_step` signed
+rather than unsigned — a table rewrite for a value that cannot reach either
+limit). `user_sessions.realm` stays as an unread column with a default. Run
+against itself the tool reports no drift at all, so the migration is
+idempotent.
+
+### The deploy
 
 1. Back up, and verify the dump (`backup.sh`, then `gunzip -t`).
-2. Compare `config/env.js` against the server `.env` and add what is missing
-   **before** uploading anything.
-3. Deploy, watch `[db] schema initialized` and the health endpoint.
-4. Expect every admin and the creator to sign in again — `token_version`
-   differs, and the panel gates now enforce it (H-08).
-5. Re-check the three live things the last deploy checked: auth/refresh, the
-   download counter at the origin, and both SPA bundles' API base.
+2. Deploy; watch `[db] schema initialized` and the health endpoint.
+3. **Every admin and the creator signs in again** — `token_version` differs
+   and the panel gates now enforce it (H-08) — **and enrols 2FA in the same
+   session**, or the panel will refuse everything else.
+4. Re-check what the last deploy checked: auth/refresh, the download counter
+   at the origin, and both SPA bundles' API base.
+5. Watch for `[password] breach check skipped` in the log. One or two is
+   nothing; a steady stream means the host cannot reach HIBP and the check is
+   buying latency for nothing.
 
 ---
 
@@ -1251,3 +1292,4 @@ Not a routine deploy, because production is running the other lineage:
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
+| 2026-09-22 | **Deploy prerequisites cleared.** Rebased onto `origin/main` @ `5de449b` (the tip had moved nine commits; none of them touch anything this port changes) — 533/533. Checked the twelve settings `main` reads that the live `.env` has never had to satisfy: all defaulted, none can fail the boot, and three change behaviour (`ADMIN_2FA_REQUIRED` on, which the creator and every staff admin must act on at the deploy; `PASSWORD_BREACH_CHECK` on and degrading open; `LICENSE_AUTO_SUSPEND` on with thresholds no customer reaches). Checked the migration by running it: `test/tools/migrate-check.js` builds a production-shaped database, migrates it and diffs against a fresh one. It runs clean; two TIMESTAMP columns were retyped to DATETIME as a result and two harmless leftovers are documented. |
