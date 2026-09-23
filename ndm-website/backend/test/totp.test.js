@@ -457,6 +457,50 @@ test('POST /2fa/recovery-codes replaces the set behind the password and a curren
   });
 });
 
+/**
+ * The case the panel exists for, and the one the test above skips past: an
+ * account with 2FA on and an EMPTY recovery set. That is where every account
+ * ends up that enrolled, closed the printout and never came back — including
+ * this deployment's creator, found that way after the port went live. The
+ * regenerate route must not need an existing code to mint the next set, or
+ * the only accounts that can obtain recovery codes are the ones that already
+ * have some.
+ */
+test('POST /2fa/recovery-codes works from an empty set, on the authenticator alone', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  assert.deepEqual(twoFactor.twoFactorState(row), {
+    enabled: true, pending: false, recoveryCodesLeft: 0, recoveryCodesLegacy: false,
+  });
+
+  const { call, auditLog } = mountFake({ realm: 'root' });
+  await withUserRow(row, async (updates) => {
+    const res = await call('POST /2fa/recovery-codes',
+      { admin: row, body: { password: 'correct horse', code: totp.totpAt(secret) } });
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+
+    const { recoveryCodes } = res.body.data;
+    assert.equal(recoveryCodes.length, totp.RECOVERY_COUNT);
+    const stored = JSON.parse(updates[updates.length - 1].totpRecovery);
+    assert.equal(stored.length, totp.RECOVERY_COUNT);
+    for (const h of stored) assert.ok(h.startsWith('$2'), h);
+    assert.ok(await totp.consumeRecoveryCode(stored, recoveryCodes[0]));
+    assert.deepEqual(auditLog.map((a) => a.action), ['root.recovery_codes_regenerated']);
+  });
+});
+
+test('POST /2fa/recovery-codes still refuses a wrong password when the set is empty', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  const { call, auditLog } = mountFake({ realm: 'root' });
+  await withUserRow(row, async (updates) => {
+    const res = await call('POST /2fa/recovery-codes',
+      { admin: row, body: { password: 'wrong', code: totp.totpAt(secret) } });
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.error.code, 'INVALID_PASSWORD');
+    assert.deepEqual(updates, []);
+    assert.deepEqual(auditLog, []);
+  });
+});
+
 test('POST /2fa/recovery-codes refuses when two-factor is off', async () => {
   const { row } = await staffRow({ enabled: 0 });
   const { call } = mountFake();

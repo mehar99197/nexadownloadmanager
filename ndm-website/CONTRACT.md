@@ -834,7 +834,13 @@ bcrypt change hold unsalted SHA-256 hex; those still verify, and are
 **retired on the account's next authenticator sign-in** (audit
 `<realm>.recovery_codes_retired`) — the moment that proves the phone still
 exists — so `GET <realm>/2fa` reports `recoveryCodesLegacy:true` until then and
-the panel should offer a fresh set. Optional for customers (account page);
+the panel offers a fresh set. **The panel also warns when the count is zero**,
+which is where an account lands once it has enrolled and spent or lost its one
+printout: with `ADMIN_2FA_REQUIRED` on that is one lost device from a locked
+panel, and for the creator there is no account above to reset it. Regenerating
+does **not** require an existing recovery code — the authenticator and the
+password are enough — or the only accounts that could obtain codes would be the
+ones that already had some. Optional for customers (account page);
 **mandatory for the panels** when `ADMIN_2FA_REQUIRED` is on (the default on a
 public deployment): `requireTwoFactorEnrolled` in `middleware/adminAuth.js`
 answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
