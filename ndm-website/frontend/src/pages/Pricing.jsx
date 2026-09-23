@@ -8,7 +8,9 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import { lastRead, readPublic } from '../api/reads';
+import { isBillingOpen } from '../hooks/useBillingOpen';
+import Skeleton, { useArrival } from '../components/Skeleton';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
@@ -141,6 +143,40 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy, billing
   );
 }
 
+/**
+ * What the page is about to become: the billing toggle, then three plan cards
+ * in the same grid at roughly the height they land at. The spinner this
+ * replaces was one line tall and centred, so the plans arriving pushed the
+ * page down by about 600px and threw away the reader's place.
+ */
+function PricingSkeleton() {
+  return (
+    <div role="status" aria-label="Loading the plans">
+      <div className="mt-8 flex justify-center">
+        <Skeleton className="h-12 w-60 rounded-xl" />
+      </div>
+      <div className="mx-auto mt-6 flex max-w-md gap-2">
+        <Skeleton className="h-11 flex-1 rounded-[var(--radius-2)]" />
+        <Skeleton className="h-11 w-24 rounded-[var(--radius-2)]" />
+      </div>
+      <div className="mt-12 grid gap-6 md:grid-cols-3">
+        {[0, 1, 2].map((i) => (
+          <Card key={i} className="flex flex-col !p-7">
+            <Skeleton className="h-6 w-24 rounded" />
+            <Skeleton className="mt-4 h-10 w-36 rounded-lg" />
+            <div className="mt-7 flex-1 space-y-3">
+              {[0, 1, 2, 3, 4, 5].map((j) => (
+                <Skeleton key={j} className={`h-4 rounded ${j % 3 === 2 ? 'w-3/5' : 'w-full'}`} />
+              ))}
+            </div>
+            <Skeleton className="mt-7 h-11 w-full rounded-[var(--radius-2)]" />
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Pricing() {
   usePageMeta({
     title: 'Pricing',
@@ -152,12 +188,13 @@ export default function Pricing() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [plans, setPlans] = useState(null);
-  // 'live' | 'mock' | 'disabled' — from /subscription/plans. Absent (an older
-  // API) counts as open, which is what the page always assumed before.
-  const billingOpen = !plans || plans.billing !== 'disabled';
+  // A revisit starts from the last answer (api/reads.js) and asks again underneath.
+  const [plans, setPlans] = useState(() => lastRead('/subscription/plans') ?? null);
+  // 'live' | 'mock' | 'disabled' — from /subscription/plans.
+  const billingOpen = isBillingOpen(plans);
   const [billingCycle, setBillingCycle] = useState('yearly');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => lastRead('/subscription/plans') === undefined);
+  const arrive = useArrival(loading);
   const [checking, setChecking] = useState(false);
   const [coupon, setCoupon] = useState('');
   const [couponState, setCouponState] = useState({ status: 'idle', message: '' });
@@ -165,18 +202,16 @@ export default function Pricing() {
 
   useEffect(() => {
     let cancelled = false;
-    const fetch = async () => {
-      setLoading(true);
-      try {
-        const res = await api.get('/subscription/plans');
-        if (!cancelled) setPlans(unwrap(res));
-      } catch {
-        if (!cancelled) setError('Failed to load plans.');
-      } finally {
+    readPublic('/subscription/plans')
+      .then((data) => {
+        if (!cancelled) setPlans(data);
+      })
+      .catch(() => {
+        if (!cancelled && lastRead('/subscription/plans') === undefined) setError('Failed to load plans.');
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    };
-    fetch();
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -269,20 +304,20 @@ export default function Pricing() {
       </div>
 
       {loading ? (
-        <Spinner center />
+        <PricingSkeleton />
       ) : error && !plans ? (
         <div className="mt-10 text-center">
           <p className="text-red-300">{error}</p>
         </div>
       ) : plans ? (
-        <>
+        <div className={arrive || undefined}>
           <div className="mt-8 flex justify-center">
             <div className="billing-toggle inline-flex rounded-xl border p-1 shadow-[0_16px_35px_-25px_rgba(126,108,255,0.8)]">
               {['monthly', 'yearly'].map((c) => (
                 <button
                   key={c}
                   type="button"
-                  className={`rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
+                  className={`min-h-11 rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
                     billingCycle === c
                       ? 'on-brand shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
                       : 'text-slate-400 hover:text-white'
@@ -312,28 +347,45 @@ export default function Pricing() {
             </div>
           )}
 
-          <form onSubmit={handleApplyCoupon} className="mx-auto mt-6 flex max-w-md items-center gap-2">
-            <label htmlFor="coupon" className="sr-only">Promotion code</label>
-            <input
-              id="coupon"
-              value={coupon}
-              onChange={(e) => {
-                setCoupon(e.target.value);
-                setCouponState({ status: 'idle', message: '' });
-              }}
-              placeholder="Promotion code (optional)"
-              autoComplete="off"
-              className="input-field flex-1"
-            />
-            <Button
-              type="submit"
-              variant="ghost"
-              disabled={!coupon.trim() || couponState.status === 'checking'}
-            >
-              {couponState.status === 'checking' ? 'Checking…' : 'Apply'}
-            </Button>
-          </form>
-          {couponState.message && (
+          {/* The promo field's slot, so the toggle above stays where the
+              outline drew it. With billing off there is no checkout for a
+              code to apply to; the slot says so instead, BEFORE the prices —
+              it used to be a 12px footnote under the cards, reached only after
+              a reader had flipped the cycle and tried a code. */}
+          {!billingOpen && (
+            <div role="note" className="note-warn mx-auto mt-6 max-w-2xl rounded-xl px-4 py-3 text-sm leading-6">
+              <p className="font-bold">Paid plans are not on sale yet.</p>
+              <p className="mt-1">
+                Every account can start the 7-day Pro trial with no card. Beyond that, nothing on
+                this page can be bought yet and nobody is charged — the prices below are what Pro
+                and Team will cost when payments open.
+              </p>
+            </div>
+          )}
+          {billingOpen && (
+            <form onSubmit={handleApplyCoupon} className="mx-auto mt-6 flex max-w-md items-center gap-2">
+              <label htmlFor="coupon" className="sr-only">Promotion code</label>
+              <input
+                id="coupon"
+                value={coupon}
+                onChange={(e) => {
+                  setCoupon(e.target.value);
+                  setCouponState({ status: 'idle', message: '' });
+                }}
+                placeholder="Promotion code (optional)"
+                autoComplete="off"
+                className="input-field flex-1"
+              />
+              <Button
+                type="submit"
+                variant="ghost"
+                disabled={!coupon.trim() || couponState.status === 'checking'}
+              >
+                {couponState.status === 'checking' ? 'Checking…' : 'Apply'}
+              </Button>
+            </form>
+          )}
+          {billingOpen && couponState.message && (
             <p
               role="status"
               className={`mx-auto mt-2 max-w-md text-center text-sm ${
@@ -359,22 +411,15 @@ export default function Pricing() {
             ))}
           </div>
 
-          <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
-            {billingOpen ? (
-              <>
-                Every account gets a 7-day Pro trial — no card needed. Payment
-                processing is handled securely by Stripe. Cancel anytime from your
-                billing dashboard; refunds within 14 days of a charge, see the{' '}
-                <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
-              </>
-            ) : (
-              <>
-                Every account gets a 7-day Pro trial — no card needed. Paid plans
-                open soon; until then nothing can be bought here and nobody is charged.
-              </>
-            )}
-          </p>
-        </>
+          {billingOpen && (
+            <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
+              Every account gets a 7-day Pro trial — no card needed. Payment
+              processing is handled securely by Stripe. Cancel anytime from your
+              billing dashboard; refunds within 14 days of a charge, see the{' '}
+              <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
+            </p>
+          )}
+        </div>
       ) : null}
     </Section>
   );

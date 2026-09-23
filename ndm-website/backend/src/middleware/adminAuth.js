@@ -4,24 +4,47 @@ const { verifyAdmin, verifyRoot } = require('../utils/jwt');
 const { fail } = require('../utils/respond');
 const config = require('../config/env');
 const User = require('../models/User');
+const AdminIpRule = require('../models/AdminIpRule');
+const { ipMatches } = require('../utils/ipMatch');
 
+/**
+ * Matching lives in utils/ipMatch.js, which understands CIDR ranges and IPv6
+ * and treats '*' as every address (AUDIT.md M-06). An empty list still allows
+ * everything — config/env.js refuses to START a hardened deployment on an
+ * empty ADMIN_ALLOWED_IPS, because an unset variable is nearly always an
+ * oversight, so in production the only way to an open gate is writing '*' and
+ * being warned about it on every boot.
+ */
 function ipAllowed(list, req) {
-  if (!list || list.length === 0) return true;
-  const ip = req.ip;
-  const normalized = ip && ip.startsWith('::ffff:') ? ip.slice(7) : ip;
-  return list.includes(ip) || list.includes(normalized);
+  return ipMatches(list, req.ip);
 }
 
-function ipWhitelist(req, res, next) {
-  if (ipAllowed(config.ADMIN_ALLOWED_IPS, req)) return next();
+// The .env list plus whatever the panel has been told to allow. The .env half
+// cannot be edited from the panel, deliberately: it is the break-glass that a
+// mistake made in the IP screen cannot take away.
+async function ipWhitelist(req, res, next) {
+  try {
+    if (ipAllowed(await AdminIpRule.effectiveList(), req)) return next();
+  } catch (err) {
+    return next(err);
+  }
   return fail(res, 'IP_FORBIDDEN', 'Access from this IP is not allowed', 403);
 }
 
 // The creator panel must never be *less* restricted than the staff panel, so an
 // empty ROOT_ALLOWED_IPS falls back to the admin list rather than to "allow all".
-function rootIpWhitelist(req, res, next) {
-  const list = config.ROOT_ALLOWED_IPS.length ? config.ROOT_ALLOWED_IPS : config.ADMIN_ALLOWED_IPS;
-  if (ipAllowed(list, req)) return next();
+// A ROOT list of its own is .env-only and is NOT widened by the panel's rules:
+// somebody who can edit those rules should not be able to reach further than
+// the creator decided, and the creator edits ROOT_ALLOWED_IPS over SSH.
+async function rootIpWhitelist(req, res, next) {
+  try {
+    const list = config.ROOT_ALLOWED_IPS.length
+      ? config.ROOT_ALLOWED_IPS
+      : await AdminIpRule.effectiveList();
+    if (ipAllowed(list, req)) return next();
+  } catch (err) {
+    return next(err);
+  }
   return fail(res, 'IP_FORBIDDEN', 'Access from this IP is not allowed', 403);
 }
 
@@ -86,12 +109,30 @@ async function verifyAdminToken(req, res, next) {
       return fail(res, 'FORBIDDEN', 'Admin access required', 403);
     }
 
+    if (!currentGeneration(payload, user))
+      return fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
+
     req.admin = user;
     req.isRoot = family === 'root';
     return next();
   } catch (err) {
     return next(err);
   }
+}
+
+/**
+ * Is this bearer from the generation the account is currently on?
+ *
+ * Panel tokens carry `tv` (utils/jwt.js basePayload) exactly as customer ones
+ * do, and User.revokeSessions bumps users.token_version — but only
+ * middleware/auth.js was comparing the two. So "revoke sessions" on a staff
+ * admin, and the demotion path in routes/root.js that calls it, left the
+ * target's live panel bearer working for the rest of its life: eight hours for
+ * staff, four for the creator. The refresh cookie was cleared, which is why it
+ * looked like it had worked.
+ */
+function currentGeneration(payload, user) {
+  return (Number(payload.tv) || 0) === (Number(user.token_version) || 0);
 }
 
 /** Creator-only gate for /api/root/*. Staff-admin tokens can never pass this. */
@@ -103,6 +144,8 @@ async function verifyRootToken(req, res, next) {
     const user = await User.findById(Number(payload.sub));
     if (!user || !isRootUser(user)) return fail(res, 'FORBIDDEN', 'Root access required', 403);
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
+    if (!currentGeneration(payload, user))
+      return fail(res, 'SESSION_REVOKED', 'This session has ended. Please sign in again.', 401);
     req.admin = user;
     req.root = user;
     req.isRoot = true;
@@ -134,7 +177,7 @@ const requireAdmin = [ipWhitelist, verifyAdminToken, requireTwoFactorEnrolled];
 const requireRoot = [rootIpWhitelist, verifyRootToken, requireTwoFactorEnrolled];
 
 module.exports = {
-  ipWhitelist, rootIpWhitelist,
+  ipWhitelist, rootIpWhitelist, ipAllowed,
   requireAdmin, requireRoot,
   verifyAdminToken, verifyRootToken,
   isRootUser,

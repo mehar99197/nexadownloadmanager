@@ -56,6 +56,14 @@
 #                            the source of truth. An override that differs is refused.
 #   RESTART_BACKEND=0        skip restarting the remote node process after upload
 #   SKIP_FRONTEND=1 / SKIP_ADMIN=1 / SKIP_BACKEND=1   deploy a subset
+#   DEPLOY_BRANCH            the shared branch that deploys (default main). HEAD
+#                            must BE origin/<branch>: clean, pushed, up to date.
+#   DEPLOY_CHECK_ONLY=1      run the deploy guard's checks and stop
+#   DEPLOY_ADOPT=1 / DEPLOY_BREAK_LOCK=1   see deploy/deploy-guard.sh
+#
+# The deploy guard (deploy/deploy-guard.sh) refuses any deploy that would take
+# something off the live site: the server records which commit each of
+# frontend/admin/backend is at, and a deploy must contain that commit.
 #   DEPLOY_HTACCESS=1        also upload deploy/hostinger/public_html.htaccess (the
 #                            server copy is backed up OUTSIDE public_html first)
 #                            and public_html.user.ini beside it.
@@ -120,12 +128,52 @@ SKIP_BACKEND="${SKIP_BACKEND:-0}"
 phase() { printf '\n==> %s\n' "$*"; }
 die()   { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# shellcheck source=deploy-guard.sh
+source "${REPO_ROOT}/deploy/deploy-guard.sh"
+
 STAGE=""
 cleanup() {
+  guard_unlock
   if [[ -n "${STAGE}" && -d "${STAGE}" ]]; then rm -rf "${STAGE}"; fi
   return 0
 }
 trap cleanup EXIT
+
+# Every rsync goes through this. On Linux/macOS it is rsync itself. From Git
+# Bash on Windows two things break a plain call: the MSYS runtime rewrites
+# POSIX-looking arguments for native programs, so "/c/Users/…/dist/" reaches a
+# Cygwin-built rsync (the Chocolatey package) as "C:/Users/…" — which rsync
+# reads as host "C" and refuses with "source and destination cannot both be
+# remote"; and that rsync cannot spawn Git Bash's MSYS ssh ("dup() in/out/err
+# failed"), it needs the ssh.exe shipped beside it. So on Windows the call
+# disables the rewrite, hands rsync /cygdrive/ paths, and uses the sibling
+# ssh with the key and known_hosts resolved from ~/.ssh/config, because that
+# ssh has no HOME of its own to find them in.
+SYNC=(rsync)
+local_path() { printf '%s' "$1"; }   # a local path as rsync should see it
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    rsync_dir="$(dirname "$(command -v rsync)")"
+    if [[ -f "${rsync_dir}/cygwin1.dll" || -f "${rsync_dir}/../lib/rsync/tools/bin/ssh.exe" ]]; then
+      # cygpath -m gives "C:/…" for any MSYS path (/c/…, /tmp/…, /usr/…);
+      # the Cygwin rsync wants that as /cygdrive/c/….
+      cygdrive() { cygpath -m "$1" | sed -E 's#^([A-Za-z]):#/cygdrive/\L\1#'; }
+      local_path() { cygdrive "$1"; }
+      cw_ssh=""
+      for cand in "${rsync_dir}/ssh.exe" "${rsync_dir}/../lib/rsync/tools/bin/ssh.exe"; do
+        if [[ -f "${cand}" ]]; then cw_ssh="${cand}"; break; fi
+      done
+      [[ -n "${cw_ssh}" ]] || die "found a Cygwin rsync at ${rsync_dir} but no ssh.exe beside it"
+      key="$(ssh -G "${SSH_HOST}" 2>/dev/null | awk '/^identityfile /{print $2; exit}')"
+      key="${key/#\~/$HOME}"
+      [[ -f "${key}" ]] || die "no identity file for ${SSH_HOST} in ~/.ssh/config (ssh -G gave '${key}')"
+      RSH="$(cygdrive "${cw_ssh}") -p ${SSH_PORT} -i $(cygdrive "${key}") -o BatchMode=yes"
+      RSH+=" -o UserKnownHostsFile=$(cygdrive "${HOME}/.ssh/known_hosts") -o StrictHostKeyChecking=accept-new"
+      SYNC=(env MSYS_NO_PATHCONV=1 rsync)
+      echo "Windows: using Cygwin rsync at ${rsync_dir} with its own ssh; local paths mapped to /cygdrive/"
+    fi
+    ;;
+esac
 
 # --------------------------------------------------------------------------
 # Phase 0 — preflight
@@ -153,6 +201,8 @@ ssh -p "${SSH_PORT}" -o BatchMode=yes -o ConnectTimeout=15 "${REMOTE}" \
   "command -v rsync >/dev/null" \
   || die "cannot reach ${REMOTE}:${SSH_PORT} with key auth (or rsync missing on the host)"
 echo "SSH OK. Site origin: ${VITE_SITE_URL}"
+
+guard_preflight
 
 # "Continue with Google": the button renders only when the frontend is built
 # with a client ID, and the backend accepts only tokens minted for ITS client
@@ -227,7 +277,19 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   if grep -lE '[A-Za-z]:/(msys64|Users|Program)' "${FRONTEND}"/dist/assets/*.js >/dev/null 2>&1; then
     die "frontend bundle contains a local filesystem path — VITE_API_URL is '${VITE_API_URL}', check the build environment"
   fi
-  echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL})."
+  # ...and the value that did survive is the one we asked for. Which quote the
+  # minifier picks is its own business and changes between versions — Vite 8
+  # emits baseURL:`/api` where the version before it emitted baseURL:"/api" —
+  # so accept all three rather than re-learning that on the next upgrade. The
+  # value is still matched exactly, quote to quote: "carries /api somewhere"
+  # would be true of a bundle pointing at /api.example.com too.
+  # -F, so a value with a dot or a slash in it stays a value and not a pattern.
+  grep -qF -e "baseURL:\"${VITE_API_URL}\"" \
+           -e "baseURL:'${VITE_API_URL}'" \
+           -e "baseURL:\`${VITE_API_URL}\`" \
+           "${FRONTEND}"/dist/assets/index-*.js \
+    || die "frontend bundle does not carry baseURL:\"${VITE_API_URL}\" — the value did not survive the build environment"
+  echo "Frontend dist verified (per-route canonical/og:url baked for ${VITE_SITE_URL}; API base ${VITE_API_URL})."
 else
   phase "Phase 1: SKIPPED (frontend)"
 fi
@@ -272,6 +334,15 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   # local development .env.
   cp "${BACKEND}/package.json" "${BACKEND}/package-lock.json" "${STAGE}/"
   cp -R "${BACKEND}/src" "${STAGE}/src"
+  # The host runs these; bash there reads a CR as part of the command and
+  # fails with "set: pipefail<CR>: invalid option name". .gitattributes pins
+  # *.sh to LF now, but a working copy checked out before that rule — or a
+  # file some editor rewrote — would still ship CRLF, and the nightly backup
+  # stopped for exactly that reason. Strip, then refuse if anything is left.
+  find "${STAGE}/src" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+  if grep -rlq "$(printf '\r')" "${STAGE}/src" --include='*.sh' 2>/dev/null; then
+    die "a staged shell script still carries CR line endings"
+  fi
 
   (
     cd "${STAGE}"
@@ -309,13 +380,20 @@ if [[ "${DEPLOY_HTACCESS}" == "1" ]]; then
   STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
   ssh -p "${SSH_PORT}" "${REMOTE}" \
     "mkdir -p ~/${REMOTE_SITE}/htaccess-backups && cp ~/${WEBROOT}/.htaccess ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP} 2>/dev/null || true"
-  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
-    "${SITE}/deploy/hostinger/public_html.htaccess" "${REMOTE}:${WEBROOT}/.htaccess"
+  # SYNC + local_path, like every other phase. These two were left as a plain
+  # rsync with a POSIX path when the Windows support went in, because nothing
+  # had ever run this phase from Git Bash: DEPLOY_HTACCESS is off by default.
+  # From there MSYS rewrites "/c/Users/..." to "C:/Users/..." on the way to the
+  # Cygwin rsync, which reads "C" as a hostname and stops with "the source and
+  # destination cannot both be remote" - after the server-side backup and
+  # before any upload, so it fails safe, but it fails.
+  "${SYNC[@]}" -az --chmod=Fu=rw,Fgo=r -e "${RSH}" \
+    "$(local_path "${SITE}/deploy/hostinger/public_html.htaccess")" "${REMOTE}:${WEBROOT}/.htaccess"
   echo ".htaccess uploaded (previous copy: ~/${REMOTE_SITE}/htaccess-backups/htaccess.${STAMP})"
   # The PHP overrides for api-proxy.php travel with it. lsphp reads .user.ini
   # per directory (php_value in .htaccess is a 500 on this host); the frontend
   # sync below excludes it, otherwise --delete-after removed it on every deploy.
-  rsync -az --chmod=Fu=rw,Fgo=r -e "${RSH}" "${SITE}/deploy/hostinger/public_html.user.ini" "${REMOTE}:${WEBROOT}/.user.ini"
+  "${SYNC[@]}" -az --chmod=Fu=rw,Fgo=r -e "${RSH}" "$(local_path "${SITE}/deploy/hostinger/public_html.user.ini")" "${REMOTE}:${WEBROOT}/.user.ini"
   echo ".user.ini uploaded"
 fi
 
@@ -328,7 +406,7 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
   # but the excludes below are delete-protected: .htaccess, .user.ini,
   # api-proxy.php, admin/ and .well-known/ live in public_html yet are owned
   # elsewhere (.well-known by the hosting platform itself).
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     --exclude='.htaccess' \
     --exclude='.user.ini' \
@@ -336,8 +414,9 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
     --exclude='admin/' \
     --exclude='.well-known/' \
     -e "${RSH}" \
-    "${FRONTEND}/dist/" "${REMOTE}:${WEBROOT}/"
+    "$(local_path "${FRONTEND}/dist")/" "${REMOTE}:${WEBROOT}/"
   echo "Frontend uploaded."
+  guard_record frontend
 else
   phase "Phase 5: SKIPPED (frontend upload)"
 fi
@@ -347,11 +426,12 @@ fi
 # --------------------------------------------------------------------------
 if [[ "${SKIP_ADMIN}" != "1" ]]; then
   phase "Phase 6: uploading admin dist -> ${WEBROOT}/admin/"
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
     -e "${RSH}" \
-    "${ADMIN}/dist/" "${REMOTE}:${WEBROOT}/admin/"
+    "$(local_path "${ADMIN}/dist")/" "${REMOTE}:${WEBROOT}/admin/"
   echo "Admin uploaded (serves both /admin and /root via .htaccess)."
+  guard_record admin
 else
   phase "Phase 6: SKIPPED (admin upload)"
 fi
@@ -375,7 +455,7 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
   # backups appeared to be working (a good log line every night) while no dump
   # ever survived to the next deploy. Anything server-only MUST be listed here,
   # not merely described above.
-  rsync -az --delete-after \
+  "${SYNC[@]}" -az --delete-after \
     --exclude='.env' \
     --exclude='.env.bak-*' \
     --exclude='.api.pid' \
@@ -385,8 +465,9 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
     --exclude='uploads/' \
     --exclude='backups/' \
     -e "${RSH}" \
-    "${STAGE}/" "${REMOTE}:${API_DIR}/"
+    "$(local_path "${STAGE}")/" "${REMOTE}:${API_DIR}/"
   echo "Backend uploaded."
+  guard_record backend
 
   if [[ "${RESTART_BACKEND}" == "1" ]]; then
     phase "Phase 7b: restarting backend process"

@@ -9,7 +9,13 @@ import SessionsCard, { describeUserAgent } from '../components/account/SessionsC
 
 vi.mock('../api/client', () => {
   const api = { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() };
-  return { default: api, unwrap: (res) => res?.data?.data };
+  return {
+    default: api,
+    unwrap: (res) => res?.data?.data,
+    // AuthProvider subscribes to this; vitest throws on an export the mock
+    // does not define. The real value is asserted in sessionEnded.test.jsx.
+    SESSION_ENDED_EVENT: 'ndm:session-ended',
+  };
 });
 import api from '../api/client';
 

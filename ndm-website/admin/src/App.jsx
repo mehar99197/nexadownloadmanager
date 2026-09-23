@@ -16,6 +16,7 @@ import Admins from './pages/root/Admins.jsx';
 import RootAudit from './pages/root/RootAudit.jsx';
 import DangerZone from './pages/root/DangerZone.jsx';
 import { IS_ROOT } from './realm.js';
+import { useSwappedLocation } from './navigation.js';
 
 /**
  * App routes for the mounted realm.
@@ -27,8 +28,11 @@ import { IS_ROOT } from './realm.js';
  * a staff token regardless — this is convenience, not the security boundary.
  */
 export default function App() {
+  // See navigation.js: the screen and the scroll change in one commit.
+  const shown = useSwappedLocation();
+
   return (
-    <Routes>
+    <Routes location={shown}>
       <Route path="/login" element={<AdminLogin />} />
 
       {/* Protected area — wrapped in the sidebar layout. */}

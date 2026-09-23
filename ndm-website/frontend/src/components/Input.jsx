@@ -71,7 +71,13 @@ const Input = forwardRef(function Input(
             onClick={() => setVisible((v) => !v)}
             aria-label={visible ? 'Hide password' : 'Show password'}
             aria-pressed={visible}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 transition-colors hover:text-slate-300"
+            /* The icon is 18px and so was the button, which is well under the
+               44px a fingertip needs (WCAG 2.5.5, Apple HIG) — and it sits
+               beside a field people are already mistyping into, where missing
+               it is most annoying. The box grows to 44x44 with the icon
+               centred; right-1 instead of right-3 leaves the icon where it
+               was, so nothing moves visually. */
+            className="absolute right-1 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-slate-500 transition-colors hover:text-slate-300"
           >
             {visible ? <EyeOffIcon /> : <EyeIcon />}
           </button>

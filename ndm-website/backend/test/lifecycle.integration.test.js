@@ -126,6 +126,37 @@ test('ending a subscription', async (t) => {
       { license_key: key, device_fingerprint: DEVICE });
     assert.equal(check.body.valid, true);
     assert.equal(check.body.plan, 'free');
+
+    // The lapse leaves the old Stripe id on the row, and a Free plan still
+    // renews nothing: /billing must not say "Renews" or offer to cancel.
+    const status = (await api.get('/api/subscription/status', { token: user.token })).body.data;
+    assert.equal(status.plan, 'free');
+    assert.equal(status.billed, false);
+  });
+
+  // Only a Stripe subscription renews. A plan granted without one (what the
+  // admin panel does) used to read "Renews" on /billing, beside a Cancel
+  // button and a portal link that answered an error.
+  await t.test('only a plan Stripe bills for is reported as billed', async () => {
+    const api = srv.client();
+    const user = await srv.makeUser(api, 'billed');
+    const billed = async () => {
+      const [status, me, license] = await Promise.all([
+        api.get('/api/subscription/status', { token: user.token }),
+        api.get('/api/user/me', { token: user.token }),
+        api.get('/api/user/license', { token: user.token }),
+      ]);
+      return [status.body.data.billed, me.body.data.subscription.billed, license.body.data.billed];
+    };
+
+    assert.deepEqual(await billed(), [false, false, false], 'Free');
+
+    await srv.query('UPDATE subscriptions SET plan = ?, expiry_date = ? WHERE license_key = ?',
+      ['pro', daysFromNow(30), await licenseOf(api, user.token)]);
+    assert.deepEqual(await billed(), [false, false, false], 'Pro with no payment behind it');
+
+    await makePro(api, user.email, { subId: 'sub_billed', customer: 'cus_billed' });
+    assert.deepEqual(await billed(), [true, true, true], 'Pro paid through Stripe');
   });
 
   await t.test('a plan switched in Stripe\'s own portal reaches us', async () => {
@@ -152,6 +183,47 @@ test('ending a subscription', async (t) => {
     assert.equal(status.body.data.seats, 5);
     assert.equal(status.body.data.cancelAtPeriodEnd, true);
     assert.equal(Math.floor(new Date(status.body.data.expiryDate).getTime() / 1000), seconds(periodEnd));
+  });
+
+  await t.test('a subscription created in Stripe\'s dashboard reaches us too', async () => {
+    // Not every paid subscription comes from our checkout: one started in the
+    // Stripe dashboard, or by any flow that never fires
+    // checkout.session.completed, only ever announces itself as
+    // customer.subscription.created. That event used to be ignored, so the
+    // customer stayed on Free until something else about the subscription
+    // happened to change.
+    const api = srv.client();
+    const user = await srv.makeUser(api, 'dashboard');
+    const [row] = await srv.query('SELECT id FROM users WHERE email = ?', [user.email]);
+    // The row has no Stripe ids yet — the match falls back to the customer,
+    // then to the email on the object.
+    await srv.query(
+      'UPDATE subscriptions SET stripe_customer_id = ? WHERE user_id = ?',
+      ['cus_dashboard', row.id]
+    );
+    const periodEnd = daysFromNow(30);
+
+    await sendEvent(api, {
+      id: 'evt_sub_dashboard_created', type: 'customer.subscription.created',
+      data: {
+        object: {
+          id: 'sub_dashboard', customer: 'cus_dashboard', status: 'active',
+          cancel_at_period_end: false,
+          current_period_end: seconds(periodEnd),
+          items: { data: [{ price: { unit_amount: 500, recurring: { interval: 'month' } } }] },
+        },
+      },
+    });
+
+    const status = await api.get('/api/subscription/status', { token: user.token });
+    assert.equal(status.body.data.plan, 'pro');
+    assert.equal(Math.floor(new Date(status.body.data.expiryDate).getTime() / 1000), seconds(periodEnd));
+    // And the desktop app sees it on its next check.
+    const key = await licenseOf(api, user.token);
+    const check = await api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: DEVICE });
+    assert.equal(check.body.valid, true);
+    assert.equal(check.body.plan, 'pro');
   });
 
   await t.test('an unrecognised price leaves the stored plan alone', async () => {

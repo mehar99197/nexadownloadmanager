@@ -154,7 +154,7 @@ export default function Login() {
         <Card className="auth-card !p-8 sm:!p-9">
           <h1 className="text-3xl font-extrabold tracking-tight text-white">Welcome <span className="text-gradient">back.</span></h1>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Welcome back. Enter your credentials to continue.
+            Sign in to your Nexa account to continue.
           </p>
 
           {justRegistered && (

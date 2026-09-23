@@ -1,0 +1,97 @@
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -302,6 +302,20 @@
+           ls -lh ${PKG}.deb
+           echo "✅ Self-contained .deb ready: $(du -sh ${PKG}.deb | cut -f1)"
+ 
++      # WP-03 — the .deb's control Version, its filename and the CMake project
++      # version must be the same number. /download once advertised 0.3.0 while
++      # serving nexa_0.2.0_amd64.deb with a checksum that correctly matched the
++      # 0.2.0 bytes, because nothing compared the three.
++      - name: Verify .deb version matches the project version
++        run: |
++          set -eu
++          deb="nexa_${NEXA_VERSION}_amd64.deb"
++          control_version="$(dpkg-deb -f "$deb" Version)"
++          echo "CMake=${NEXA_VERSION}  control=${control_version}  file=${deb}"
++          test "$control_version" = "$NEXA_VERSION" \
++            || { echo "::error::deb control Version ($control_version) != project version ($NEXA_VERSION)"; exit 1; }
++          node tools/verify-artifact-version.mjs "$deb" linux "$NEXA_VERSION"
++
+       - name: Upload .deb artifact
+         uses: actions/upload-artifact@v4
+         with:
+@@ -624,6 +638,73 @@
+           $mb = [math]::Round((Get-Item NexaSetup.exe).Length/1MB, 1)
+           Write-Host "NexaSetup.exe ready: $mb MB"
+ 
++      # ── Authenticode signing (WP-02) ──────────────────────────────────────
++      #
++      # An unsigned installer means every Windows user meets a SmartScreen
++      # warning before they can install, and has no way to tell our build from
++      # someone else's. Parsing the shipped 0.2.x installer showed data
++      # directory entry 4 (the Certificate Table) at RVA 0 / size 0 — there was
++      # never a signing step here at all.
++      #
++      # TODO(cert): there is no code-signing certificate yet. When one is
++      # bought, add these two repository secrets and this step starts signing
++      # with no further change:
++      #   WINDOWS_CERT_PFX_BASE64  — the .pfx, base64 encoded
++      #   WINDOWS_CERT_PASSWORD    — its password
++      # Then drop `--warn` from the verification step below so CI REFUSES an
++      # unsigned artifact instead of reporting one.
++      #
++      # Ordering matters: signing rewrites the binary, so every checksum must be
++      # taken AFTER this step. The site computes its SHA-256 when the installer
++      # is uploaded (backend storeUpload), which is later still, so it already
++      # hashes the signed bytes.
++      - name: Sign installer (Authenticode)
++        if: env.WINDOWS_CERT_PFX_BASE64 != ''
++        shell: pwsh
++        env:
++          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
++          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
++        run: |
++          $pfx = Join-Path $env:RUNNER_TEMP 'nexa-signing.pfx'
++          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
++          try {
++            $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
++              Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
++            if (-not $signtool) { throw 'signtool.exe not found on the runner' }
++            & $signtool.FullName sign `
++              /f $pfx /p $env:WINDOWS_CERT_PASSWORD `
++              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
++              /d 'Nexa Download Manager' `
++              NexaSetup.exe
++            if ($LASTEXITCODE -ne 0) { throw "signtool failed with $LASTEXITCODE" }
++          }
++          finally {
++            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
++          }
++
++      # Parses the PE Certificate Table and fails when it is empty. `--warn`
++      # keeps the build green until a certificate exists; removing it is the
++      # one-line change that turns this into a hard gate.
++      - name: Verify installer signature
++        shell: pwsh
++        run: node tools/verify-signature.mjs NexaSetup.exe --warn
++
++      # The invariant from WP-03, checked before anything is published: the
++      # installer's own product version must equal the version CMake built.
++      - name: Verify installer version matches the project version
++        shell: pwsh
++        run: |
++          $v = (Select-String -Path CMakeLists.txt -Pattern '^project\(Nexa VERSION ([0-9.]+)').Matches[0].Groups[1].Value
++          if (-not $v) { throw 'could not read the project version from CMakeLists.txt' }
++          node tools/verify-artifact-version.mjs NexaSetup.exe windows $v
++
++      - name: Checksum installer (after signing)
++        shell: pwsh
++        run: |
++          $hash = (Get-FileHash NexaSetup.exe -Algorithm SHA256).Hash.ToLower()
++          Write-Host "SHA256(NexaSetup.exe) = $hash"
++          Set-Content -Path NexaSetup.exe.sha256 -Value "$hash  NexaSetup.exe"
++
+       - name: Upload artifact
+         uses: actions/upload-artifact@v4
+         with:

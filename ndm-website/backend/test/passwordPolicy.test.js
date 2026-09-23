@@ -68,8 +68,23 @@ test('the check fails open when HIBP is down or slow', async () => {
   const down = fakeHibp(['Password123!'], { status: 503 });
   assert.equal(await passwordProblem('Password123!', { email: 'a@example.test', fetchImpl: down.fetchImpl }), null);
 
+  // A fetch that answers only when it is aborted. AbortSignal.timeout()'s
+  // timer is deliberately unref'd — it does not hold the event loop open — so
+  // a promise whose only exit is that abort can leave the runner with nothing
+  // to wait on and nothing to run: node then reports "Promise resolution is
+  // still pending but the event loop has already resolved" and cancels the
+  // test. It did exactly that on CI while passing here, because whether the
+  // loop drains first is a race. The ref'd timer below is what keeps the
+  // process alive long enough for the abort to arrive, and it fails loudly
+  // rather than hanging if the abort never comes at all.
   const slow = { fetchImpl: (url, opts) => new Promise((_, reject) => {
-    opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    const keepAlive = setTimeout(
+      () => reject(new Error('the breach check never aborted its request')), 2000
+    );
+    opts.signal.addEventListener('abort', () => {
+      clearTimeout(keepAlive);
+      reject(new Error('aborted'));
+    });
   }) };
   process.env.PASSWORD_BREACH_TIMEOUT_MS = '500';
   const config = require('../src/config/env');

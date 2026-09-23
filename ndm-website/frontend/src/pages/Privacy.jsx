@@ -3,7 +3,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 
-const LAST_UPDATED = 'August 30, 2026';
+const LAST_UPDATED = 'September 23, 2026';
 
 const PERMISSIONS = [
   {
@@ -61,7 +61,7 @@ export default function Privacy() {
   usePageMeta({
     title: 'Privacy Policy',
     description:
-      'What Nexa Download Manager collects and why: account details on the website, a sign-in token or license key and a device fingerprint from the app, and nothing from the browser extension — cookies stay on your machine.',
+      'What Nexa Download Manager collects and why: account details on the website, a sign-in token or license key and a device fingerprint from the app, a file name and address only if you turn on AI rename, and nothing from the browser extension — cookies stay on your machine.',
   });
 
   return (
@@ -70,8 +70,9 @@ export default function Privacy() {
         <span className="eyebrow"><span className="eyebrow-dot" />Legal</span>
         <h1 className="mt-5 text-white">Privacy <span className="text-gradient">Policy.</span></h1>
         <p>
-          The short version: the website knows your account, the app tells us your license
-          key and a device fingerprint, and the browser extension never talks to us at all.
+          The short version: the website knows your account; the app tells us your license key
+          and a device fingerprint — and, only if you turn on AI rename, the name and address of
+          a file it is renaming; the browser extension never talks to us at all.
           Last updated {LAST_UPDATED}.
         </p>
       </div>
@@ -96,14 +97,37 @@ export default function Privacy() {
 
         <Block title="2. The desktop app">
           <p>
-            The Windows and Linux app works fully offline for downloading. The only requests it
-            makes to our servers concern your plan: <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>
-            (sent when you sign in or activate a key, and periodically afterwards) and the
-            sign-in handshake under <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">/api/device</code>.
-            They carry your sign-in token or license key, a device fingerprint (a hash derived
-            from hardware and OS identifiers, so we can count seats), the computer&apos;s name and the
-            app version. They do not include your download history, URLs, filenames, or anything
-            about the files on your computer.
+            The Windows and Linux app works fully offline for downloading. It contacts our servers
+            for four things only:
+          </p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              <strong className="text-slate-200">Your plan.</strong>{' '}
+              <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">POST /api/license/validate</code>
+              {' '}(sent when you sign in or activate a key, and periodically afterwards) and the
+              sign-in handshake under <code className="surface-inset rounded px-1 font-mono text-[0.9em] text-brand-100">/api/device</code>.
+              They carry your sign-in token or license key, a device fingerprint (a hash derived
+              from hardware and OS identifiers, so we can count seats), the computer&apos;s name and
+              the app version.
+            </li>
+            <li>
+              <strong className="text-slate-200">Updates.</strong> Once a day — you can turn this
+              off in Settings — and whenever you choose Check for updates, the app asks whether a
+              newer release exists for your operating system.
+            </li>
+            <li>
+              <strong className="text-slate-200">Promos, on the Free plan only</strong> — see section 6.
+            </li>
+            <li>
+              <strong className="text-slate-200">AI features, on Pro and Team, only when you use
+              them</strong> — see section 5.
+            </li>
+          </ul>
+          <p>
+            Apart from the AI features, none of these requests include your download history, URLs,
+            filenames, or anything about the files on your computer. Like any web server, ours
+            records each request&apos;s IP address, the address requested and the time in access
+            logs, kept short-term for security and rate limiting.
           </p>
           <p>
             Download history, cookies exported for authenticated sites, and settings are stored in
@@ -156,20 +180,31 @@ export default function Privacy() {
           </div>
         </Block>
 
-        <Block title="5. Optional AI rename">
+        <Block title="5. Optional AI features (Pro and Team)">
           <p>
-            Off by default. If you enter an Anthropic API key in the app, the AI rename feature
-            sends the original filename (and, for scheduling, the text you type) to Anthropic&apos;s
-            API using your key. Nothing else — no file contents, no URLs beyond what is in the
-            filename. Anthropic&apos;s handling of that data is covered by their privacy policy. Remove
-            the key to switch the feature off.
+            Off by default. <strong className="text-slate-200">AI rename</strong> is a setting you
+            switch on. While it is on, each time a file finishes downloading the app sends that
+            file&apos;s name and the web address it came from — with the query string removed — to
+            our server, together with your license token so the server can check your plan. Our
+            server passes them to Anthropic&apos;s API, which suggests a cleaner name, and returns
+            the suggestion to the app.
+          </p>
+          <p>
+            <strong className="text-slate-200">Smart add (AI)</strong>, in the app&apos;s File menu,
+            works the same way with the text you type into it, and only when you submit some.
+          </p>
+          <p>
+            Our server does not store what it passes on — only its ordinary access log (section 2)
+            is kept — and the contents of your files never leave your computer. Anthropic processes
+            these requests under its own commercial terms and privacy policy. Leave AI rename off
+            and do not use Smart add, and none of this is sent.
           </p>
         </Block>
 
         <Block title="6. In-app promos on the Free plan">
           <p>
             The Free plan shows one promo strip inside the desktop app. To fetch it, Nexa asks our
-            own server for the current promo and sends the licence token it already holds — that is
+            own server for the current promo and sends the license token it already holds — that is
             the only thing sent, and it is what tells the server your plan. No profile, no browsing
             history, no download list, and no third-party ad network is involved: the promos are
             ours and they are served from our own API.
@@ -181,7 +216,7 @@ export default function Privacy() {
             site&apos;s own privacy policy applies.
           </p>
           <p>
-            Pro and Team are ad-free. The server refuses to return a promo for a paid licence, so
+            Pro and Team are ad-free. The server refuses to return a promo for a paid license, so
             no request for one is made and nothing is counted.
           </p>
         </Block>
@@ -201,7 +236,7 @@ export default function Privacy() {
             <li><strong className="text-slate-200">Stripe</strong> — payments, when you subscribe.</li>
             <li><strong className="text-slate-200">Our email provider</strong> — verification, reset and receipt emails.</li>
             <li><strong className="text-slate-200">Our hosting provider</strong> — where the database and API run.</li>
-            <li><strong className="text-slate-200">Anthropic</strong> — only if you enable AI rename with your own key.</li>
+            <li><strong className="text-slate-200">Anthropic</strong> — the file names, addresses and Smart add text described in section 5, passed on by our server, only when you use those Pro features.</li>
           </ul>
           <p>We disclose data beyond that only when legally required.</p>
         </Block>

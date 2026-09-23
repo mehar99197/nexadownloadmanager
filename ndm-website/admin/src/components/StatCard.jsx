@@ -1,8 +1,12 @@
+import { SkeletonText, useArrival } from './Skeleton.jsx';
+
 /**
  * StatCard — a labeled metric tile for the dashboard.
- * Props: label, value, hint?, icon?, accent? (border/icon color class).
+ * Props: label, value, hint?, icon?, accent? (border/icon color class),
+ * loading? (the number is on its way: its outline, in the number's own line).
  */
-export default function StatCard({ label, value, hint, icon, accent }) {
+export default function StatCard({ label, value, hint, icon, accent, loading = false }) {
+  const arrive = useArrival(loading);
   return (
     <div className="stat-card">
       {/* justify-between only earns its keep when there is a second thing to
@@ -11,7 +15,11 @@ export default function StatCard({ label, value, hint, icon, accent }) {
         <div>
           <p className="text-sm font-medium text-admin-muted">{label}</p>
           <p className="mt-2 text-3xl font-semibold text-admin-text">
-            {value ?? '—'}
+            {loading ? (
+              <SkeletonText chars={4} />
+            ) : (
+              <span className={arrive || undefined}>{value ?? '—'}</span>
+            )}
           </p>
         </div>
         {icon && (

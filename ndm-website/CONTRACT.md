@@ -54,8 +54,28 @@ This endpoint is consumed by the NDM **C++ app**, so it returns a LITERAL shape,
 { "valid": true, "plan": "pro", "token": "<15m Ed25519 jwt, sub:'user:7', acct:7>", "trial": false,
   "account": { "id": 7, "email": "owner@example.com", "name": "Owner" } }
 // invalid
-{ "valid": false, "reason": "expired", "trial": false }   // reason in not_found | expired | cancelled | device_mismatch | seat_limit | signed_out | invalid
+{ "valid": false, "reason": "expired", "trial": false }   // reason in not_found | expired | cancelled | banned | device_mismatch | seat_limit | signed_out | invalid
 ```
+
+**A ban reaches the app.** `users.banned` is read with the key on every
+`/validate` and `/heartbeat` (`Subscription.findByLicenseKeyForValidation`),
+before status, expiry or trial state: a banned owner answers
+`reason:"banned"`, which the client treats like any other terminal reason —
+it drops the stored key and falls back to Free. Without it, banning locked the
+website only and the desktop app went on collecting a fresh Pro token every
+day. A banned account's `/release` still works on purpose: handing a seat back
+is housekeeping, and a seat left pinned is one a colleague cannot take.
+
+A **Team** licence is one key shared by the roster, and `/api/user/license`
+hands a member the owner's key, so the banned person is usually not the row
+that lookup reads. The request carries no user identity — a key and a device
+fingerprint — so there is no device to single out. The shared secret is
+withdrawn instead: the first validate or heartbeat after the ban drops the
+banned members from `team_members`, rotates `license_key` and revokes every
+seat (`Subscription.revokeBannedMembers`, one transaction). That request
+answers `not_found`, because the key it sent no longer names anything;
+everyone still entitled re-copies the new key from their dashboard, and the
+banned member cannot, because the ban is what stops them signing in.
 
 **The request carries exactly one credential**: `license_key` (manual activation)
 or `device_token` (a machine signed in to an account — see `routes/device.js`).
@@ -305,8 +325,8 @@ Schema field notes:
 
 - **User**: numeric `id`, `name`, `email`(unique,lowercase,index), `passwordHash`, `role`['user','admin','root' default 'user' — 'root' is settable only by the `create-root` CLI], `emailVerified`(bool def false), `banned`(bool def false), `refreshTokenHash`(String def null), `adminRefreshTokenHash`(`admin_refresh_token_hash` VARCHAR(64) null — admin SPA cookie hash), `rootRefreshTokenHash`(`root_refresh_token_hash` VARCHAR(64) null — creator console cookie hash), `trialUsed`(`trial_used` TINYINT(1) def 0 — the no-card trial is one-shot), timestamps (`createdAt`/`updatedAt`).
 - **UserSession** (`user_sessions`, `models/UserSession.js`) *(ADDED)*: `id`, `user_id`(FK, cascade), `family` CHAR(32), `token_hash` CHAR(64) unique, `prev_token_hash` CHAR(64) null, `user_agent`, `ip`, `created_at`, `last_used_at`, `rotated_at` null, `expires_at`, `revoked_at` null. `create`, `findLive(hash)`, `findReplaced(hash)` → `{ session, withinGrace }`, `rotate(id, fromHash, toHash, ttlMs)`, `revokeFamily`, `revokeById`, `revokeAllForUser`, `listForUser`, `pruneDead`. `User.refreshTokenHash` is no longer used for customers.
-- **SecurityEvent** (`security_events`, `utils/securityEvents.js`) *(ADDED)*: `id`, `kind` (`login.failed`, `login.locked`, `login.success`, `session.reuse_detected`, `session.revoked`, `2fa.failed|replayed|recovery_used|enabled|disabled`, `google.nonce_rejected|token_rejected|token_replayed`, `admin.login.failed|success`, `root.login.failed|success`, `account.deleted`, `password.changed`, `password.reset`, `password.reset_requested`), `severity` info|warning|critical, `user_id`, `email`, `ip`, `user_agent`, `detail`, `created_at`. `record(kind, { req, user?, email?, severity?, detail? })` writes the row, prints one `[security] {json}` line to stdout (for log shipping) and, for the kinds in `RULES`, emails `SECURITY_ALERT_EMAIL` (≥ one alert per kind per cooldown). Pruned after 90 days by `utils/housekeeping.js`, which also drops dead sessions, spent `used_id_tokens` (`jti` PK, `expires_at`) and expired `rate_limits`.
-- **Subscription**: numeric `id`, `userId`(FK users.id), `plan`['free','pro','team'], `status`['active','expired','cancelled' def 'active'], `licenseKey`(unique), legacy `deviceFingerprint`, `seats`, dates, `trialEndsAt`(`trial_ends_at` DATETIME null — set only for the 7-day Pro trial; cleared by paid activation), Stripe ids, timestamps. Device assignments are in `license_activations` and are transactionally capped by `seats`.
+- **SecurityEvent** (`security_events`, `utils/securityEvents.js`) *(ADDED)*: `id`, `kind` (`login.failed`, `login.locked`, `login.success`, `session.reuse_detected`, `session.revoked`, `2fa.failed|replayed|recovery_used|enabled|disabled|recovery_codes_regenerated`, `google.nonce_rejected|token_rejected|token_replayed`, `admin.login.failed|success`, `root.login.failed|success`, `account.deleted`, `password.changed`, `password.reset`, `password.reset_requested`), `severity` info|warning|critical, `user_id`, `email`, `ip`, `user_agent`, `detail`, `created_at`. `record(kind, { req, user?, email?, severity?, detail? })` writes the row, prints one `[security] {json}` line to stdout (for log shipping) and, for the kinds in `RULES`, emails `SECURITY_ALERT_EMAIL` (≥ one alert per kind per cooldown). Pruned after 90 days by `utils/housekeeping.js`, which also drops dead sessions, spent `used_id_tokens` (`jti` PK, `expires_at`) and expired `rate_limits`.
+- **Subscription**: **one row per account** (`uq_subscriptions_user (user_id)`; every reader takes the account's newest row, so a second one would be invisible on the site and still validate its own licence key — AUDIT.md M-07). numeric `id`, `userId`(FK users.id), `plan`['free','pro','team'], `status`['active','expired','cancelled' def 'active'], `licenseKey`(unique), legacy `deviceFingerprint`, `seats`, dates, `trialEndsAt`(`trial_ends_at` DATETIME null — set only for the 7-day Pro trial; cleared by paid activation), Stripe ids, timestamps. Device assignments are in `license_activations` and are transactionally capped by `seats`.
   Helpers: `Subscription.expireTrialIfNeeded(sub)` (lazy downgrade to `plan='free', status='active', trial_ends_at=NULL, expiry_date=planExpiry('free')` when `trial_ends_at` is past and there is no `stripe_subscription_id`; returns the fresh row) and `Subscription.startTrial(userId)` (single transaction → `{ ok, subscription } | { ok:false, reason }`).
 - **Payment**: `userId`, `amount`, `currency`(def 'usd'), `plan`, `billingCycle`['monthly','yearly'], `stripePaymentId`, `status`['paid','failed','refunded' def 'paid'], timestamps.
 - **Review**: `userId`, `userName`, `rating`(1..5), `comment`, `status`['pending','approved','rejected' def 'pending'], timestamps.
@@ -332,9 +352,10 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 | POST | `/refresh` | — | read `ndm_refresh` cookie, find the live `user_sessions` row, **rotate** it (§3), return a new 15-minute access token. A hash matching only `prev_token_hash` is a replay: re-sent within the 30-s grace, otherwise the family is revoked and `401 INVALID_REFRESH_TOKEN`. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row has its session revoked and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued *(CHANGED)* |
 | POST | `/logout` | — | revoke this browser's session family + clear `ndm_refresh` / `ndm_session` *(CHANGED)* |
 | POST | `/login/2fa` | `twoFactorLimiter`, `validate(twoFactorLoginSchema)` | `{ challenge, code }` → the normal `{ token, user }` + cookie, for an account whose `/login` (or `/google`) answered `{ requiresTwoFactor:true, challenge }`. Challenge is a 5-min JWT `typ:"2fa-user"` under `JWT_SECRET` (`routes/twoFactor.js`, realm `user`) *(ADDED)* |
-| GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft }` *(ADDED)* |
+| GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }` *(ADDED)* |
 | POST | `/2fa/setup` | `requireAuth` | `{ secret, otpauthUrl }` — stored encrypted, not yet enabled *(ADDED)* |
 | POST | `/2fa/enable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorEnableSchema)` | `{ code }` → `{ enabled:true, recoveryCodes[8] }` shown once *(ADDED)* |
+| POST | `/2fa/recovery-codes` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` → `{ recoveryCodes[8] }` — a fresh set, shown once; same proof rules as `/2fa/disable` *(ADDED)* |
 | POST | `/2fa/disable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` — the password is mandatory for every account that has one (`400 INVALID_PASSWORD`); a Google-created account (no `password_hash`) turns it off with the code alone, the same allowance `DELETE /user/account` makes *(ADDED)* |
 | GET | `/google/nonce` | — | `{ nonce, expiresInSeconds }` — the OIDC nonce for "Continue with Google", also kept in the httpOnly cookie `ndm_gnonce` (path `/api/auth/google`, 30 min, Strict). Signed (`random.exp.hmac`), so nothing is stored *(ADDED)* |
 | POST | `/google` | `authLimiter`, `validate(googleSchema)` | `{ credential, nonce? }`. The ID token must carry the nonce this server issued to **this browser** (cookie), else `401 GOOGLE_NONCE_INVALID` — the page fetches a fresh nonce and re-initialises Google. One token opens one session: its `jti` goes in `used_id_tokens` until the token's own `exp`; a second presentation is `401 GOOGLE_AUTH_FAILED` + a `google.token_replayed` critical event. A 2FA account gets `{ requiresTwoFactor, challenge, created }` instead of a session *(CHANGED)* |
@@ -482,8 +503,16 @@ A release carries **either** an uploaded installer (`windows_file` / `linux_file
 + `*_filename`, `*_size`, `*_sha256`) **or** a legacy external URL. Uploads win;
 the `*_url` columns stay so releases published before uploads keep resolving.
 `GET /api/releases/download/:os` streams an uploaded file with `Accept-Ranges`
-(206/416 handled — NDM's own users resume downloads) and only bumps
-`download_count` for a fresh start, never for a resumed chunk. `buildFeed` uses
+(206/416 handled — NDM's own users resume downloads). `download_count` records
+that a download **started** — completion is not observable — and only when one
+did (`utils/downloadCounter.js`, asked once per request on both the uploaded
+and the legacy-redirect path): not for a resume (a `Range` from anywhere but
+byte 0), not for the app's one-byte `bytes=0-0` size probe, not for a `HEAD`
+(Express routes it to the GET handler), not for the same address starting the
+same release + platform again inside a 10-minute window (a cancel-and-restart,
+a retry, a scanner), and not for a release whose file is missing from disk —
+the 404 is decided before the count. The dedupe is in-process; several API
+instances could over-count by at most one each per window. `buildFeed` uses
 `hasArtifact()`, so a file-only release still appears in the update feed with the
 checksum computed at upload time.
 
@@ -497,7 +526,7 @@ checksum computed at upload time.
 ### `routes/admin.js` → `/api/admin`
 | Method | Path | Middleware |
 |--------|------|-----------|
-| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }` *(ADDED, open)* |
+| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }`. The password compare runs for **every** address through `utils/passwordCheck.js` — a customer's, an unknown one, an admin with no `password_hash` — so the clock does not answer "is this address the administrator?" any more than the body does *(ADDED, open)* |
 | POST | `/refresh` | `adminLoginLimiter`, `ipWhitelist` — **open**; reads `ndm_admin_refresh`, verifies hash + `role==='admin'` + not banned, rotates cookie → `{ token }`. `401 NO_REFRESH_TOKEN` / `401 INVALID_REFRESH_TOKEN` / `403 FORBIDDEN` (banned; hash nulled) *(ADDED)* |
 | POST | `/logout` | `ipWhitelist` — **open**; clears `ndm_admin_refresh` + nulls `adminRefreshTokenHash` → `{ loggedOut: true }` *(ADDED)* |
 | GET | `/me` | `requireAdmin` → `{ id, name, email, role, twoFactorEnabled, twoFactorRequired }` (`id` is a string, as in `/login`). `twoFactorRequired` mirrors `ADMIN_2FA_REQUIRED`; when it is on and `twoFactorEnabled` is off, every other panel route answers `403 TWO_FACTOR_REQUIRED` (`{ setupPath:'/2fa/setup' }`) and the SPA parks the account on the Security screen *(CHANGED)* |
@@ -509,9 +538,11 @@ checksum computed at upload time.
 | POST | `/users/:id/unlock` | `requireAdmin`, `validate(idParamSchema)` — lifts a sign-in lockout and zeroes its counters; `{ unlocked: true, wasLocked }`; audited as `user.unlocked`; same control-panel-target rule *(ADDED)* |
 | DELETE | `/users/:id` | `requireAdmin`, `validate(deleteUserSchema)` — **irreversible**. Body must carry the target's exact `confirmEmail` (`400 CONFIRM_MISMATCH`). Refuses the caller's own account (`400 SELF_LOCKOUT`), any creator (`403`), and — for a staff caller — any control-panel account (`blockedStaffTarget`). The audit row is written *before* the delete because `audit_logs.admin_user_id` is `ON DELETE SET NULL`. Data removal is the schema's cascade, not the route's: subscriptions, payments, reviews and (through subscriptions) `license_activations` + `team_members` are `ON DELETE CASCADE`; audit logs, ads and contact messages are `ON DELETE SET NULL`, so what was done outlives who did it. The creator's `/api/root/users/:id` is the same rule with a wider reach *(ADDED)* |
 | GET | `/subscriptions` | `requireAdmin`, `validate(listQuerySchema)` |
+| POST | `/subscriptions` | `requireAdmin`, `validate(createSubscriptionSchema)` — for an account that has **no** subscription; registration gives every account a free one, so anything else is an edit. `409 SUBSCRIPTION_EXISTS` `{ subscriptionId, plan, status }` when one exists, `409 DUPLICATE` if two creates race past that check into the unique index. `403` on a control-panel target unless the caller is the creator *(ADDED)* |
+| PUT | `/subscriptions/:id` | `requireAdmin`, `validate(updateSubscriptionSchema)` — a `plan` change also sets `trial_ends_at=NULL` and moves the expiry with the plan unless the body sets one. `403` when the **owner** is a control-panel account and the caller is not the creator *(ADDED)* |
 | GET | `/reviews/pending` | `requireAdmin` |
 | PUT | `/reviews/:id` | `requireAdmin`, `validate(updateReviewSchema)` |
-| PUT | `/releases/:id/artifact/:os` | `requireAdmin`, `validate(releaseArtifactParamsSchema)` — body is the **raw installer** (`application/octet-stream`, name in `X-Filename`), streamed to `RELEASE_UPLOAD_DIR`. SHA-256 + size computed in flight and stored; the previous file is deleted only after the new one lands. `400 BAD_FILE_TYPE` / `413 FILE_TOO_LARGE` / `400 EMPTY_UPLOAD` |
+| PUT | `/releases/:id/artifact/:os` | `requireAdmin`, `validate(releaseArtifactParamsSchema)` — body is the **raw installer** (`application/octet-stream`, name in `X-Filename`), streamed to `RELEASE_UPLOAD_DIR`. SHA-256 + size computed in flight and stored; the previous file is deleted only after the new one lands. `400 BAD_FILE_TYPE` / `413 FILE_TOO_LARGE` / `400 EMPTY_UPLOAD`. **The installer must be the release's version** (`utils/artifactVersion.js` reads the PE `VS_FIXEDFILEINFO` of an `.exe`, the `control` file of a `.deb`): a definite mismatch removes the file and answers `409 VERSION_MISMATCH` `{ artifactVersion, releaseVersion }` before the row is touched; the reply carries `artifactVersion` + `versionWarning:null` on a match, and `versionWarning` (string) when no version could be read — accepted, but flagged, and the audit summary ends "— version unchecked" |
 | DELETE | `/releases/:id/artifact/:os` | `requireAdmin` — clears the columns and removes the file from disk |
 | GET | `/releases` | `requireAdmin` — list ALL releases *(ADDED)* |
 | POST | `/releases` | `requireAdmin`, `validate(createReleaseSchema)` — accepts `windowsSha256`, `linuxSha256` |
@@ -652,7 +683,7 @@ but use `rootIpWhitelist`, the `ndm_root_refresh` cookie and `signRootToken`.
 
 | Method | Path | Middleware |
 |--------|------|-----------|
-| POST | `/login` | `adminLoginLimiter`, `rootIpWhitelist`, `validate(rootLoginSchema)` — **open**; requires `isRootUser` (role **and** `ROOT_ADMIN_EMAIL`) → `{ token, admin }` |
+| POST | `/login` | `adminLoginLimiter`, `rootIpWhitelist`, `validate(rootLoginSchema)` — **open**; requires `isRootUser` (role **and** `ROOT_ADMIN_EMAIL`) → `{ token, admin }`. Same timing rule as the staff panel (`utils/passwordCheck.js`): the address this form belongs to is the creator's, so the comparison happens before eligibility is decided and a row with no password takes the dummy branch rather than throwing |
 | POST | `/refresh` | `adminLoginLimiter`, `rootIpWhitelist` — **open**; reads `ndm_root_refresh`, re-checks `isRootUser`, rotates → `{ token }` |
 | POST | `/logout` | `rootIpWhitelist` — **open**; clears cookie + nulls `rootRefreshTokenHash` |
 | GET | `/me` | `requireRoot` → `{ id, name, email, role }` |
@@ -684,7 +715,7 @@ Events handled, and what each one writes:
 | `checkout.session.async_payment_failed` | logged; nothing was granted, so nothing to undo |
 | `invoice.payment_succeeded` / `invoice.paid` | **renewal** — push `expiry_date` to the period end Stripe just billed, record the Payment, email a receipt (only when `billing_reason === 'subscription_cycle'`, so the first invoice is not thanked twice) |
 | `invoice.payment_failed` | record a `failed` Payment. The subscription is untouched: Stripe retries for days, and `customer.subscription.deleted` is what actually ends access |
-| `customer.subscription.updated` | sync from Stripe's own billing portal: period end, `cancel_at_period_end`, and the plan when the price matches one of ours (an unrecognised price leaves the stored plan alone). `past_due`/`unpaid` change nothing — Stripe is still retrying |
+| `customer.subscription.created` / `customer.subscription.updated` | sync from Stripe's own billing portal: period end, `cancel_at_period_end`, and the plan when the price matches one of ours (an unrecognised price leaves the stored plan alone). `past_due`/`unpaid` change nothing — Stripe is still retrying. `created` takes the same path: a subscription started in the Stripe dashboard announces itself only that way, and the handler writes only what differs, so both events are idempotent |
 | `customer.subscription.deleted` | the subscription ended: downgrade to **`plan='free', status='active'`**, NOT `cancelled`. `reason:"cancelled"` makes the desktop client delete the key, so ending a subscription used to destroy the free licence underneath it. The churn event is kept as an audit row (`subscription.ended`) |
 | `charge.refunded` | mark the `payments` row `refunded` (nothing ever wrote that status, so refunded months kept counting toward MRR). A FULL refund also cancels the Stripe subscription and returns the account to Free |
 
@@ -770,14 +801,25 @@ token_hash, status invited|active, invited_by, invited_at, accepted_at)`,
 UNIQUE (subscription_id, email), cascades with the subscription and the
 member's account. Roster cap = `subscriptions.seats` including the owner.
 
+`invited_at` is load-bearing: an invitation is acceptable for
+`TEAM_INVITE_TTL_DAYS` (default 14) and then answers `410 INVITE_EXPIRED` at
+both readers — `GET /invites/:token` and `POST /join`. The rule is
+`TeamMember.isExpired`, on the model rather than in the routes, because two
+routes read a token and a rule enforced in one of them is not a rule. An
+**expired invite does not occupy a seat**: it is excluded from `used` and
+`canInvite`, and `members[].expired` marks it, so a dead invitation cannot
+quietly shrink a five-seat team. The row survives — `resend` rotates the
+token and resets `invited_at`, which revives it. An **accepted** membership
+never expires; `invited_at` is only history once `status = 'active'`.
+
 | Route | Auth | Notes |
 |---|---|---|
-| `GET /invites/:token` | none (`apiLimiter`) | `{ ownerName, email, plan }` for the join page, 404 `INVITE_NOT_FOUND` |
+| `GET /invites/:token` | none (`apiLimiter`) | `{ ownerName, email, plan }` for the join page, 404 `INVITE_NOT_FOUND`, **410 `INVITE_EXPIRED`** past `TEAM_INVITE_TTL_DAYS` (14) counted from `invited_at`. Said plainly rather than folded into NOT_FOUND: holding the token is already proof of having been invited, so there is no oracle to protect, and "ask for another" is actionable |
 | `GET /` | user | `{ role:'owner', seats, used, canInvite, usable, members[] }` · `{ role:'member', owner, licenseKey, plan, status, usable }` · `{ role:'none' }` |
 | `POST /invites` `{email}` | owner, `teamInviteLimiter` 20/h | 403 `NOT_TEAM_OWNER`, 400 `TEAM_INACTIVE`/`SELF_INVITE`/`TEAM_FULL`, 409 `ALREADY_INVITED`; sends `sendTeamInviteEmail` (link `/team/join?token=`, 32 random bytes base64url, only the SHA-256 stored). The **subject is fixed** — the inviter's display name is attacker-chosen text going out from our domain to an address they pick, so it appears only in the escaped body, beside their email address |
-| `POST /invites/:id/resend` | owner | rotates the token |
+| `POST /invites/:id/resend` | owner | rotates the token **and resets `invited_at`**, so it is the remedy for an expired invitation as well as a lost one |
 | `DELETE /members/:id` | owner | removes an invite or a member. Returns `{removed:true, keyStillValid:true, rotateHint}`: the roster edit revokes **nothing**, because the member holds the owner's real licence key and no activation row records who created it. `POST /api/user/license/rotate` is the actual remedy |
-| `POST /join` `{token}` | user | the signed-in email MUST equal the invited one (403 `EMAIL_MISMATCH`); 409 `ALREADY_ON_TEAM` |
+| `POST /join` `{token}` | user | 410 `INVITE_EXPIRED` past the TTL; the signed-in email MUST equal the invited one (403 `EMAIL_MISMATCH`); 409 `ALREADY_ON_TEAM` |
 | `POST /leave` | member | |
 
 `GET /api/user/me` gains `team: { role:'member', ownerName, plan } | null`;
@@ -795,8 +837,21 @@ Mounted by `routes/admin.js` (`realm:'admin'`, `JWT_ADMIN_SECRET`),
 (`realm:'user'`, `JWT_SECRET`, gate `requireAuth`, subject `req.user`,
 `finishLogin` → `issueSession`) *(CHANGED)*. Columns on `users`:
 `totp_secret` (AES-256-GCM via `utils/totp.js`, key = `TOTP_ENCRYPTION_KEY` or
-`JWT_ADMIN_SECRET`), `totp_enabled`, `totp_recovery` (JSON array of SHA-256
-hashes; a code is removed when used). Optional for customers (account page);
+`JWT_ADMIN_SECRET`), `totp_enabled`, `totp_recovery` (JSON array of **bcrypt**
+hashes, cost 10; a code is removed when used — by a conditional swap of the
+set, so two requests carrying the same code cannot both spend it). Codes are
+ten uniform picks from `[a-z0-9]` (≈51.7 bits). Rows enrolled before the
+bcrypt change hold unsalted SHA-256 hex; those still verify, and are
+**retired on the account's next authenticator sign-in** (audit
+`<realm>.recovery_codes_retired`) — the moment that proves the phone still
+exists — so `GET <realm>/2fa` reports `recoveryCodesLegacy:true` until then and
+the panel offers a fresh set. **The panel also warns when the count is zero**,
+which is where an account lands once it has enrolled and spent or lost its one
+printout: with `ADMIN_2FA_REQUIRED` on that is one lost device from a locked
+panel, and for the creator there is no account above to reset it. Regenerating
+does **not** require an existing recovery code — the authenticator and the
+password are enough — or the only accounts that could obtain codes would be the
+ones that already had some. Optional for customers (account page);
 **mandatory for the panels** when `ADMIN_2FA_REQUIRED` is on (the default on a
 public deployment): `requireTwoFactorEnrolled` in `middleware/adminAuth.js`
 answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
@@ -804,10 +859,16 @@ answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
 
 - `POST <realm>/login` with 2FA on → `{ requiresTwoFactor:true, challenge }` (5-min JWT `typ:"2fa-<realm>"`), NO session/cookie.
 - `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
-- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/disable { password, code }`.
+- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/recovery-codes { password, code }` → `{ recoveryCodes[8] }` — a fresh set behind the same proof as disabling (the offered code is spent first, so it cannot go on to complete a login), audit `<realm>.recovery_codes_regenerated`; `POST <realm>/2fa/disable { password, code }`.
+- **A panel bearer carries `tv` and the gate checks it**, exactly as the customer gate does: `User.revokeSessions` bumps `users.token_version`, so revoking a staff admin's sessions — or demoting them, which calls the same method — answers `401 SESSION_REVOKED` on the next request instead of leaving the token in their tab alive for its full 8h (4h for root).
 - `GET <realm>/me` adds `twoFactorEnabled`; `User.listStaff` includes `totp_enabled`; root `POST /api/root/admins/:id/reset-2fa` clears a staff admin's second factor and revokes sessions.
 - **A code is spent once.** `users.totp_last_step` is a monotonic high-water mark
   and `checkCode` refuses `step <= totp_last_step` with `401 CODE_ALREADY_USED`.
+  The spend itself is a **conditional UPDATE** (`User.spendTotpStep`: raise the
+  column only from a lower value or NULL; `User.swapRecoveryCodes` for the
+  recovery set), because a phishing relay submits its login *beside* the
+  victim's and both requests read the row before either writes — the request
+  that loses the race is refused as the replay it is.
   Without it a code stayed usable for its own step plus the drift step either
   side — up to 90 seconds, which is exactly the window a real-time phishing
   proxy works in. Enrolment burns its step too, so the code that switched 2FA on
@@ -953,7 +1014,7 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
   (`router.get('/stats', requireAdmin, handler)` — Express flattens arrays).
 - `requireRoot` — **array** `[rootIpWhitelist, verifyRootToken]`; accepts only the root
   token family. A staff token fails signature verification here (401), never 403.
-- `ipWhitelist` — IP gate only (use standalone on `/admin/login`). Empty `ADMIN_ALLOWED_IPS` is development-only; production startup rejects it.
+- `ipWhitelist` — IP gate only (use standalone on `/admin/login`). Empty `ADMIN_ALLOWED_IPS` is development-only; production startup rejects it, because an unset variable is nearly always an oversight. `ADMIN_ALLOWED_IPS=*` is the **deliberate** opt-out: it boots, it lets every address through, and `config/env.js` warns about it on every boot for as long as it is set (as it does for `ADMIN_2FA_REQUIRED=false`). Matching is exact — no CIDR yet, see AUDIT.md M-06 — so a rotating consumer IP locks the panel out.
 - `rootIpWhitelist` — IP gate for `/api/root`. Falls back to `ADMIN_ALLOWED_IPS` when
   `ROOT_ALLOWED_IPS` is empty, so the creator console is never *less* restricted.
 - `isRootUser(user)` — the creator predicate: `role === 'root'` **and** the email matches
@@ -1054,6 +1115,14 @@ is the single source of truth, read by `/api/ads` on every request.
 
 - No `STRIPE_SECRET_KEY` ⇒ `config.stripeMode` is `'mock'` on a local deployment (`utils/stripe.js` exports the mock) and `'disabled'` on production or any public `FRONTEND_URL` (checkout, portal and webhook answer `503 BILLING_UNAVAILABLE`; `GET /api/health` reports `billing`). `config.isStripeMock` / `config.isBillingDisabled` are the booleans.
 - No `SMTP_HOST` ⇒ `config.isEmailMock = true`; `utils/email.js` logs emails to the console.
+- **A relay reached over the network is reached over TLS.** `requireTLS: true`
+  plus `tls.minVersion 'TLSv1.2'`, so port 587 must negotiate STARTTLS rather
+  than merely offer it, and a stripped capability in the greeting is a refusal
+  to send instead of a silent plaintext session carrying `SMTP_PASS`, reset
+  tokens and licence keys. Port 465 keeps implicit TLS and takes the same
+  floor. **Exception:** a relay on loopback (`localhost`, `::1`, `[::1]`,
+  `127.x.x.x`) is exempt, so a local MailHog/Mailpit needs no certificate;
+  the match is exact, because a prefix check would exempt `127.evil.com`.
 - `EMAIL_VERIFICATION_REQUIRED=false` lets users log in without verifying (dev default).
 - `PUBLIC_API_URL` (optional) is the public origin fronting `/api`; defaults to `FRONTEND_URL`
   and must be HTTPS in production. Only used to build absolute URLs in the update feed.

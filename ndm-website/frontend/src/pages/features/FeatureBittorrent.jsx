@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Code, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Code, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 export default function FeatureBittorrent() {
@@ -58,16 +58,26 @@ export default function FeatureBittorrent() {
         trustworthy in a way an HTTP download is not — the integrity check is built into the
         protocol rather than optional.
       </P>
-      <Figure kind="Diagram">
-        Magnet → DHT peer discovery → metadata → piece requests across peers → per-piece SHA-1
-        verification → file on disk → seeding until the ratio target.
-      </Figure>
+      <Flow
+        caption="From a magnet link to a finished torrent."
+        steps={[
+          { title: 'Magnet link', detail: 'an info-hash, no file list' },
+          { title: 'Peers found', detail: 'through the DHT and trackers' },
+          { title: 'Metadata arrives', detail: 'real names and sizes' },
+          { title: 'Pieces from many peers', detail: 'rarest first' },
+          { title: 'Every piece checked', detail: 'against its hash in the torrent' },
+          { title: 'Files on disk' },
+          { title: 'Seeding, if you ask', detail: 'until your ratio target' },
+        ]}
+      />
       <P>
         Seeding is where a torrent client differs most from a download manager, and where Nexa is
-        explicit rather than clever. When a torrent completes it keeps uploading until it reaches
-        the seed ratio you set, then stops on its own. A ratio of <Code>1.0</Code> means you have
-        given back as much as you took; <Code>0</Code> means stop immediately on completion. The
-        default is conservative, and it is one field in Settings rather than a buried policy.
+        explicit rather than clever. Out of the box a torrent stops the moment it completes:
+        Settings &rarr; BitTorrent &rarr; <strong className="text-white">Seed to ratio</strong> starts
+        at <Code>0</Code>, shown as &ldquo;Don&apos;t seed&rdquo;. Set a ratio and a finished torrent
+        keeps uploading until it reaches it, then stops on its own &mdash; <Code>1.0</Code> means
+        you have given back as much as you took. It is one field in Settings rather than a buried
+        policy.
       </P>
       <P>
         Upload and download limits for torrents are separate from the HTTP ones, because the right
@@ -102,7 +112,7 @@ export default function FeatureBittorrent() {
           <>For a magnet, wait a moment while the metadata arrives. The row will show the real name and size once it does.</>,
           <>Watch progress as usual. The row shows peers connected, download and upload rate, and the current ratio.</>,
           <>To control bandwidth, open <strong className="text-white">Settings &rarr; BitTorrent</strong> and set the download and upload caps and the seed ratio.</>,
-          <>A completed torrent keeps seeding until it hits your ratio. Stop the row by hand at any time if you need the bandwidth back.</>,
+          <>With a seed ratio set, a completed torrent keeps seeding until it hits that ratio. Stop the row by hand at any time if you need the bandwidth back.</>,
         ]}
       />
       <Figure kind="Screenshot">
@@ -165,9 +175,9 @@ export default function FeatureBittorrent() {
             symptom: 'It keeps uploading after the download finished',
             fix: (
               <>
-                That is seeding, and it is working as configured. It stops on its own at your seed
-                ratio; set the ratio to <Code>0</Code> in Settings &rarr; BitTorrent to stop
-                immediately at completion, or stop the row by hand.
+                That is seeding, and it only happens once a seed ratio is set. It stops on its own
+                at that ratio; set it back to <Code>0</Code> (&ldquo;Don&apos;t seed&rdquo;) in
+                Settings &rarr; BitTorrent to stop at completion, or stop the row by hand.
               </>
             ),
           },

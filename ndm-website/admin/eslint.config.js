@@ -20,6 +20,24 @@ const browserGlobals = {
   confirm: 'readonly',
   alert: 'readonly',
   crypto: 'readonly',
+  Event: 'readonly',
+  CustomEvent: 'readonly',
+};
+
+// Test files run in the Vitest runner rather than the browser, so they get the
+// runner's globals on top of the browser ones. Mirrors frontend/eslint.config.js
+// rather than excluding the tests from linting, which would let a typo in a
+// mock sit there unnoticed.
+const testGlobals = {
+  describe: 'readonly',
+  it: 'readonly',
+  test: 'readonly',
+  expect: 'readonly',
+  beforeEach: 'readonly',
+  afterEach: 'readonly',
+  beforeAll: 'readonly',
+  afterAll: 'readonly',
+  vi: 'readonly',
 };
 
 export default [
@@ -45,6 +63,27 @@ export default [
       'prefer-const': 'warn',
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
+    },
+  },
+  {
+    files: ['src/**/*.test.{js,jsx}', 'src/test/**/*.{js,jsx}', 'vitest.config.js'],
+    languageOptions: { globals: { ...browserGlobals, ...testGlobals } },
+  },
+  {
+    // Playwright specs run in Node but evaluate code inside the page, so they
+    // legitimately name both sets of globals in one file.
+    files: ['e2e/**/*.{js,jsx}', 'playwright.config.js', 'playwright.live.config.js'],
+    languageOptions: {
+      globals: {
+        ...browserGlobals,
+        ...testGlobals,
+        getComputedStyle: 'readonly',
+        performance: 'readonly',
+        requestAnimationFrame: 'readonly',
+        innerWidth: 'readonly',
+        innerHeight: 'readonly',
+        process: 'readonly',
+      },
     },
   },
 ];

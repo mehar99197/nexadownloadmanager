@@ -7,8 +7,47 @@ import { useConfirm } from '../components/ConfirmDialog';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import Skeleton, { useArrival } from '../components/Skeleton';
 import usePageMeta from '../hooks/usePageMeta';
+
+/** "Current plan" as it will land: four label/value rows and the actions. */
+function PlanSkeleton() {
+  return (
+    <div className="mt-4 space-y-3" role="status" aria-label="Loading your plan">
+      {['w-16', 'w-20', 'w-24', 'w-10'].map((w, i) => (
+        <div key={i} className="flex items-center justify-between">
+          <Skeleton className="h-4 w-14 rounded" />
+          <Skeleton className={`h-4 rounded ${w}`} />
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
+        <Skeleton className="h-11 w-52 rounded-[var(--radius-2)]" />
+        <Skeleton className="h-11 w-44 rounded-[var(--radius-2)]" />
+      </div>
+    </div>
+  );
+}
+
+/** "Payment history" as it will land: the table's header and three rows. */
+function PaymentsSkeleton() {
+  return (
+    <div className="mt-4" role="status" aria-label="Loading your payments">
+      <div className="flex gap-4 border-b border-[var(--color-surface-border)] pb-2">
+        {['w-10', 'w-10', 'w-14', 'w-12'].map((w, i) => (
+          <Skeleton key={i} className={`h-3 flex-1 rounded ${w}`} />
+        ))}
+      </div>
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="flex items-center gap-4 border-b border-white/10 py-3.5 last:border-0">
+          <Skeleton className="h-4 flex-1 rounded" />
+          <Skeleton className="h-4 flex-1 rounded" />
+          <Skeleton className="h-4 flex-1 rounded" />
+          <Skeleton className="h-5 flex-1 rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function PaymentRow({ payment }) {
   return (
@@ -48,6 +87,11 @@ export default function Billing() {
   const [payments, setPayments] = useState([]);
   const [subStatus, setSubStatus] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Only the FIRST load draws the outlines. A refresh after cancelling or
+  // resuming keeps what is on screen until the new answer replaces it — it
+  // used to swap the whole page for a spinner and back.
+  const [loaded, setLoaded] = useState(false);
+  const arrive = useArrival(!loaded);
   const [error, setError] = useState('');
   const [cancelling, setCancelling] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
@@ -68,6 +112,7 @@ export default function Billing() {
       setError('Failed to load billing data.');
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }, []);
 
@@ -130,7 +175,7 @@ export default function Billing() {
     const sure = await confirm({
       title: 'End your Pro trial now?',
       message: 'Pro features stop immediately and the account returns to Free. '
-        + 'Your licence key and downloads are untouched, but the trial cannot be started again.',
+        + 'Your license key and downloads are untouched, but the trial cannot be started again.',
       confirmLabel: 'End trial now',
       cancelLabel: 'Keep my trial',
       danger: true,
@@ -173,13 +218,11 @@ export default function Billing() {
     }
   };
 
-  if (loading) return <Spinner center />;
-
   return (
     <Section>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-4xl font-extrabold tracking-tight text-white">Keep your <span className="text-gradient">flow moving.</span></h1>
+          <h1 className="text-4xl font-extrabold tracking-tight text-white">Plan &amp; <span className="text-gradient">billing.</span></h1>
           <p className="mt-2 text-sm text-slate-400">
             Manage your subscription and payment history.
           </p>
@@ -199,8 +242,10 @@ export default function Billing() {
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <Card className="card-hover !p-7">
           <h3 className="text-lg font-bold text-white">Current plan</h3>
-          {subStatus ? (
-            <div className="mt-4 space-y-3">
+          {!loaded ? (
+            <PlanSkeleton />
+          ) : subStatus ? (
+            <div className={`mt-4 space-y-3 ${arrive}`.trim()} aria-busy={loading || undefined}>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-zinc-400">Plan</span>
                 <span className="text-sm font-semibold text-white capitalize">
@@ -219,10 +264,18 @@ export default function Billing() {
                   {subStatus.cancelAtPeriodEnd ? 'Ending' : subStatus.status}
                 </span>
               </div>
-              {subStatus.expiryDate && (
+              {/* Free has no date worth printing: its stored expiry is a
+                  century out, and "Expires 2126" sat right above "The free
+                  plan never expires". */}
+              {subStatus.expiryDate && subStatus.plan !== 'free' && (
                 <div className="flex items-center justify-between">
+                  {/* Only a Stripe subscription renews. A plan granted without
+                      a payment used to read "Renews" here beside an empty
+                      payment history, with no card that could renew it. */}
                   <span className="text-sm text-zinc-400">
-                    {subStatus.cancelAtPeriodEnd ? 'Ends' : subStatus.plan === 'free' ? 'Expires' : 'Renews'}
+                    {subStatus.cancelAtPeriodEnd ? 'Ends'
+                      : subStatus.trial ? 'Trial ends'
+                      : subStatus.billed ? 'Renews' : 'Active until'}
                   </span>
                   <span className="text-sm text-white">
                     {formatDate(subStatus.expiryDate) || '—'}
@@ -235,13 +288,17 @@ export default function Billing() {
                   <span className="text-sm text-white">{subStatus.seats}</span>
                 </div>
               )}
-              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam && (
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam
+                && (subStatus.billed || subStatus.cancelAtPeriodEnd) && (
                 <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
                   {/* Stripe's own portal handles cards, invoices and receipts —
-                      things we deliberately never store ourselves. */}
-                  <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
-                    {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
-                  </Button>
+                      things we deliberately never store ourselves. A plan with
+                      no Stripe subscription has none of those to show. */}
+                  {subStatus.billed && (
+                    <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
+                      {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
+                    </Button>
+                  )}
                   {subStatus.cancelAtPeriodEnd ? (
                     <Button onClick={handleResume} disabled={cancelling}>
                       {cancelling ? 'Resuming…' : 'Resume subscription'}
@@ -257,6 +314,14 @@ export default function Billing() {
                     </Button>
                   )}
                 </div>
+              )}
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam
+                && !subStatus.billed && !subStatus.cancelAtPeriodEnd && (
+                <p className="border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
+                  This plan is not billed: it was added to your account without a payment, so
+                  nothing renews and there is nothing to cancel. It stays active until{' '}
+                  {formatDate(subStatus.expiryDate) || 'its end date'}.
+                </p>
               )}
               {subStatus.cancelAtPeriodEnd && (
                 <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-xs leading-6 text-amber-200">
@@ -309,8 +374,10 @@ export default function Billing() {
 
         <Card className="card-hover !p-7">
           <h3 className="text-lg font-bold text-white">Payment history</h3>
-          {payments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+          {!loaded ? (
+            <PaymentsSkeleton />
+          ) : payments.length === 0 ? (
+            <div className={`flex flex-col items-center justify-center gap-3 py-12 text-center ${arrive}`.trim()}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="text-slate-600" aria-hidden="true">
                 <rect x="2" y="5" width="20" height="14" rx="2" />
                 <path d="M2 10h20" />
@@ -322,7 +389,7 @@ export default function Billing() {
               </p>
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto">
+            <div className={`mt-4 overflow-x-auto ${arrive}`.trim()}>
               <table className="w-full text-left">
                 <thead>
                   <tr className="border-b border-[var(--color-surface-border)] text-xs text-zinc-500 uppercase">

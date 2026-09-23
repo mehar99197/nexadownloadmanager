@@ -18,6 +18,10 @@ export default class ErrorBoundary extends Component {
     if (import.meta.env.DEV) {
       console.error('Unhandled render error:', error, info?.componentStack);
     }
+    // The boot screen lifts when the first page renders (BootDone), and a page
+    // that threw never will — so without this the message below would sit
+    // behind the spinner until index.html's eight-second safety net.
+    window.__ndmBootDone?.();
   }
 
   render() {

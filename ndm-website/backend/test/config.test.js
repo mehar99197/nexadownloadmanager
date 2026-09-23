@@ -25,6 +25,112 @@ test('production refuses missing secrets and mock services', () => {
   assert.match(result.stderr, /required when NODE_ENV=production/);
 });
 
+/**
+ * Turning the admin IP gate off has to be a sentence someone wrote, not a
+ * variable someone forgot. Empty stays refused; `*` is accepted and then said
+ * out loud on every boot, which is the only reminder that actually reaches
+ * whoever restarts the process six weeks later.
+ */
+test('ADMIN_ALLOWED_IPS: empty is refused, * is accepted and warned about', () => {
+  const refused = loadProduction({
+    MYSQL_PASS: 'database-password',
+    JWT_SECRET: 'user-secret-012345678901234567890123456789',
+    JWT_ADMIN_SECRET: 'admin-secret-0123456789012345678901234567',
+    LICENSE_JWT_SECRET: 'license-secret-01234567890123456789012345',
+    JWT_ROOT_SECRET: 'root-secret-0123456789012345678901234567',
+    ROOT_ADMIN_EMAIL: 'creator@example.test',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+    SMTP_HOST: 'smtp.example.test', SMTP_USER: '', SMTP_PASS: '',
+    CORS_ORIGINS: 'https://www.example.test',
+    FRONTEND_URL: 'https://www.example.test',
+    TRUST_PROXY: '127.0.0.1',
+    ADMIN_ALLOWED_IPS: '',
+  });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /ADMIN_ALLOWED_IPS must explicitly restrict admin access/);
+  // The refusal names the way out, so nobody has to read env.js to find it.
+  assert.match(refused.stderr, /ADMIN_ALLOWED_IPS=*/);
+
+  const open = loadProduction({
+    MYSQL_PASS: 'database-password',
+    JWT_SECRET: 'user-secret-012345678901234567890123456789',
+    JWT_ADMIN_SECRET: 'admin-secret-0123456789012345678901234567',
+    LICENSE_JWT_SECRET: 'license-secret-01234567890123456789012345',
+    JWT_ROOT_SECRET: 'root-secret-0123456789012345678901234567',
+    ROOT_ADMIN_EMAIL: 'creator@example.test',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+    SMTP_HOST: 'smtp.example.test', SMTP_USER: '', SMTP_PASS: '',
+    CORS_ORIGINS: 'https://www.example.test',
+    FRONTEND_URL: 'https://www.example.test',
+    TRUST_PROXY: '127.0.0.1',
+    ADMIN_ALLOWED_IPS: '*',
+  });
+  assert.equal(open.status, 0, open.stderr);
+  assert.match(open.stderr, /ADMIN_ALLOWED_IPS=*/);
+  assert.match(open.stderr, /from ANY address/);
+  assert.match(open.stderr, /Temporary loosenings/);
+});
+
+test('ADMIN_2FA_REQUIRED=false is accepted on a hardened deployment, and warned about', () => {
+  const off = loadProduction({
+    MYSQL_PASS: 'database-password',
+    JWT_SECRET: 'user-secret-012345678901234567890123456789',
+    JWT_ADMIN_SECRET: 'admin-secret-0123456789012345678901234567',
+    LICENSE_JWT_SECRET: 'license-secret-01234567890123456789012345',
+    JWT_ROOT_SECRET: 'root-secret-0123456789012345678901234567',
+    ROOT_ADMIN_EMAIL: 'creator@example.test',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+    SMTP_HOST: 'smtp.example.test', SMTP_USER: '', SMTP_PASS: '',
+    CORS_ORIGINS: 'https://www.example.test',
+    FRONTEND_URL: 'https://www.example.test',
+    TRUST_PROXY: '127.0.0.1',
+    ADMIN_ALLOWED_IPS: '203.0.113.10',
+    ADMIN_2FA_REQUIRED: 'false',
+  });
+  assert.equal(off.status, 0, off.stderr);
+  assert.match(off.stderr, /ADMIN_2FA_REQUIRED=false/);
+  // With the IP gate still on, the warning must not claim the panel is open.
+  assert.doesNotMatch(off.stderr, /from anywhere/);
+
+  // Both off at once is the combination worth naming on its own.
+  const both = loadProduction({
+    MYSQL_PASS: 'database-password',
+    JWT_SECRET: 'user-secret-012345678901234567890123456789',
+    JWT_ADMIN_SECRET: 'admin-secret-0123456789012345678901234567',
+    LICENSE_JWT_SECRET: 'license-secret-01234567890123456789012345',
+    JWT_ROOT_SECRET: 'root-secret-0123456789012345678901234567',
+    ROOT_ADMIN_EMAIL: 'creator@example.test',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+    SMTP_HOST: 'smtp.example.test', SMTP_USER: '', SMTP_PASS: '',
+    CORS_ORIGINS: 'https://www.example.test',
+    FRONTEND_URL: 'https://www.example.test',
+    TRUST_PROXY: '127.0.0.1',
+    ADMIN_ALLOWED_IPS: '*',
+    ADMIN_2FA_REQUIRED: 'false',
+  });
+  assert.equal(both.status, 0, both.stderr);
+  assert.match(both.stderr, /a leaked panel password is enough, from anywhere/);
+});
+
+test('the default is unchanged: a hardened deployment with neither set says nothing', () => {
+  const quiet = loadProduction({
+    MYSQL_PASS: 'database-password',
+    JWT_SECRET: 'user-secret-012345678901234567890123456789',
+    JWT_ADMIN_SECRET: 'admin-secret-0123456789012345678901234567',
+    LICENSE_JWT_SECRET: 'license-secret-01234567890123456789012345',
+    JWT_ROOT_SECRET: 'root-secret-0123456789012345678901234567',
+    ROOT_ADMIN_EMAIL: 'creator@example.test',
+    STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+    SMTP_HOST: 'smtp.example.test', SMTP_USER: '', SMTP_PASS: '',
+    CORS_ORIGINS: 'https://www.example.test',
+    FRONTEND_URL: 'https://www.example.test',
+    TRUST_PROXY: '127.0.0.1',
+    ADMIN_ALLOWED_IPS: '203.0.113.10',
+  });
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.doesNotMatch(quiet.stderr, /guard turned off/);
+});
+
 test('production accepts an explicit secure configuration', () => {
   const result = loadProduction({
     MYSQL_PASS: 'database-password',

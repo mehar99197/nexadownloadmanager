@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import api, {
   setAdminAccessToken,
   clearAdminAccessToken,
   refreshAdminToken,
   unwrap,
   TWO_FACTOR_REQUIRED_EVENT,
+  SESSION_ENDED_EVENT,
 } from '../api/client.js';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
+import { dissolve } from '../navigation.js';
 
 const AdminAuthContext = createContext(null);
 
@@ -27,10 +30,16 @@ export function AdminAuthProvider({ children }) {
   const loadMe = useCallback(async () => {
     try {
       const me = await unwrap(api.get(`${AUTH_NS}/me`));
-      setAdmin(me || { authenticated: true });
+      setAdmin(me || null);
       return me;
     } catch {
-      setAdmin({ authenticated: true });
+      // Do NOT invent a profile here (AUDIT.md M-09). This used to set
+      // { authenticated: true }, which said the opposite of what had just
+      // happened and had a second cost: the placeholder carries no role, so
+      // isRoot below computed false and the creator-only navigation vanished
+      // for the actual creator. A 401 has already been turned into
+      // SESSION_ENDED_EVENT by the interceptor; anything else is a blip, and
+      // leaving the last known profile alone is the honest answer to it.
       return null;
     }
   }, []);
@@ -44,6 +53,19 @@ export function AdminAuthProvider({ children }) {
     return () => window.removeEventListener(TWO_FACTOR_REQUIRED_EVENT, onRequired);
   }, []);
 
+  // The session is over and the module-level token has already gone. Clearing
+  // the React token is what actually bounces the panel to /login, because
+  // ProtectedAdminRoute gates on isAuthenticated — which is Boolean(token)
+  // below, not on the variable inside api/client.js (AUDIT.md M-09).
+  useEffect(() => {
+    const onEnded = () => {
+      setToken(null);
+      setAdmin(null);
+    };
+    window.addEventListener(SESSION_ENDED_EVENT, onEnded);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -55,7 +77,9 @@ export function AdminAuthProvider({ children }) {
           await loadMe();
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        // The panel (or the sign-in screen) replaces its outline in a
+        // dissolve, rather than cutting from an empty screen to everything.
+        if (!cancelled) dissolve(() => flushSync(() => setLoading(false)));
       }
     })();
     return () => {
@@ -71,7 +95,7 @@ export function AdminAuthProvider({ children }) {
     }
     setAdminAccessToken(adminToken);
     setToken(adminToken);
-    setAdmin(data.admin || { authenticated: true });
+    setAdmin(data.admin || null);
     await loadMe();
     return data;
   }, [loadMe]);

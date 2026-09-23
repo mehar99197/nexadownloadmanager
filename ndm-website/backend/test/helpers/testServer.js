@@ -96,9 +96,17 @@ async function reset() {
     // report of a "new" token look like a replay, which is a confusing way to
     // fail — the counters are the thing under test.
     'ad_event_nonces',
+    // Counters keyed by their own subject rather than by a user: a row from an
+    // earlier run survives every other truncate here, and the suites that
+    // count them ("a vote reaches the table") then see somebody else's total.
+    // They passed only against a database that had never been used before.
+    'faq_votes', 'license_token_rejections',
     'license_activations', 'license_email_deliveries', 'stripe_webhook_events',
     'team_members',
     'contact_replies', 'contact_messages',
+    // Who may reach the panels. A rule left behind by an earlier suite would
+    // change which addresses the gate admits in the next one.
+    'admin_ip_rules',
     'payments', 'reviews', 'audit_logs', 'ads', 'subscriptions', 'releases', 'users',
   ]) {
     await query(`TRUNCATE TABLE ${table}`).catch(() => { /* table may not exist yet */ });
@@ -149,6 +157,7 @@ function client() {
     get: (p, o) => request('GET', p, o),
     post: (p, body, o) => request('POST', p, { ...o, body }),
     put: (p, body, o) => request('PUT', p, { ...o, body }),
+    patch: (p, body, o) => request('PATCH', p, { ...o, body }),
     del: (p, o) => request('DELETE', p, o),
     cookies: jar,
     clearCookies: () => jar.clear(),

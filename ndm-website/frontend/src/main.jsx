@@ -6,6 +6,12 @@ import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import './index.css';
 
+// The app sets the scroll itself on every page change (navigation.jsx). Left
+// on "auto", the browser restores a Back's scroll position the instant the
+// URL changes — onto the page being LEFT, a frame before the page being
+// returned to is swapped in — and the reader watches the wrong page jump.
+if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
+
 // Optional, privacy-friendly analytics. Nothing is loaded unless the site
 // operator sets VITE_PLAUSIBLE_DOMAIN at build time (see .env.example).
 const plausibleDomain = import.meta.env.VITE_PLAUSIBLE_DOMAIN;
@@ -29,15 +35,14 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   </React.StrictMode>
 );
 
-// Tell the first-run boot screen in index.html that the app is up. Two frames,
-// not zero: render() only schedules the work, so calling straight after it
-// would dismiss the screen while the page behind is still blank — the one
-// moment the screen exists to cover. The second frame is the first one after
-// React has actually painted.
+// The boot screen in index.html is lifted by <BootDone> (navigation.jsx), not
+// from here. This used to call it two frames after render() — which is when
+// the SHELL has painted, not the page: on every route that loads on demand the
+// page arrives a network round trip later, so the screen lifted onto a navbar
+// and a spinner and the page then popped in underneath the reader. BootDone
+// sits inside the Suspense boundary next to the page and cannot mount before
+// it has.
 //
-// index.html does not depend on this arriving. It dismisses itself on a timer
-// regardless, because a chunk that 404s or a module that throws would otherwise
-// leave a reader looking at a spinner for ever.
-requestAnimationFrame(() => {
-  requestAnimationFrame(() => window.__ndmBootDone?.());
-});
+// index.html still does not depend on that arriving. It dismisses itself on a
+// timer regardless, and ErrorBoundary lifts it too, because a chunk that 404s
+// or a module that throws would otherwise leave a reader looking at a spinner.

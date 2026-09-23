@@ -25,6 +25,112 @@ const Subscription = {
   async findByLicenseKey(key) {
     return queryOne('SELECT * FROM subscriptions WHERE license_key = ?', [key]);
   },
+  /**
+   * Resolve a licence key for /validate and /heartbeat, with both halves of a
+   * ban attached.
+   *
+   * A ban lives on `users`, but the only thing the desktop app ever presents is
+   * a licence key, so the two have to be read together or a banned account keeps
+   * validating for ever. Those two routes are that app's hot path — a beat from
+   * every running client every five minutes — so both flags ride on the lookup
+   * that was already happening instead of costing a query each.
+   *
+   * `owner_banned` is the account the subscription belongs to. `banned_member`
+   * is the other half, and it exists because a Team licence is ONE key shared
+   * by the whole roster: routes/user.js hands a member the OWNER's key on
+   * purpose, so the person who was banned is very often not the row this lookup
+   * reads. The request carries no user identity at all (a key and a device
+   * fingerprint), so the flag can only say THAT someone on the roster is
+   * banned, never which device is theirs — revokeBannedMembers() below is what
+   * that answer leads to.
+   *
+   * The owner join is an INNER one on purpose: `subscriptions.user_id` is a
+   * `ON DELETE CASCADE` foreign key, so a row with no owner cannot exist, and if
+   * one ever did it must not validate. The roster half is an EXISTS subquery so
+   * it stops at the first banned member and adds no rows to the result; it is
+   * not restricted to `plan = 'team'`, because a roster that outlived a
+   * downgrade still leaves ex-members holding the key.
+   *
+   * The flags are aliased `owner_banned`/`banned_member`, never `banned`, so
+   * neither can be mistaken for a column of the subscription itself.
+   */
+  async findByLicenseKeyForValidation(key) {
+    return queryOne(
+      `SELECT s.*, u.banned AS owner_banned,
+              EXISTS (
+                SELECT 1 FROM team_members m
+                  JOIN users mu ON mu.id = m.user_id
+                 WHERE m.subscription_id = s.id AND m.status = 'active' AND mu.banned = 1
+              ) AS banned_member
+         FROM subscriptions s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.license_key = ?`,
+      [key]
+    );
+  },
+
+  /**
+   * A banned member is holding this licence's key — take the key away.
+   *
+   * /license/validate is handed a key and a device fingerprint and nothing
+   * else, so when one person on a shared licence is banned the server cannot
+   * tell their machine from a colleague's: there is no device to revoke and no
+   * request to refuse. The only thing that can be taken from someone who
+   * already holds a shared secret is the secret itself. So the ban drops the
+   * banned members from the roster — being banned ends their entitlement, and
+   * `team_members.status` is an invited/active enum with no third state to park
+   * them in — and rotates the licence key. Every seat goes with it, because
+   * every device now has to re-activate on the new key anyway.
+   *
+   * Everyone still entitled re-copies that key from their dashboard, which is
+   * one click: /api/user/license and /api/team both read `license_key` live, so
+   * the new one is already there. The banned member cannot, because being
+   * banned is precisely what stops them signing in. Leaving the key alone is
+   * the whole H-03 bug for every multi-seat licence — the banned user keeps
+   * full Pro entitlements, a freshly signed 24-hour token every day, and one of
+   * the owner's seats, for ever.
+   *
+   * Removing the roster rows is also what makes this run ONCE. Nothing records
+   * that a rotation happened; if a banned member stayed `active` the next
+   * request would see the same flag and rotate again five minutes later, for
+   * ever. The subscription row is locked FOR UPDATE and the DELETE's
+   * affectedRows is the decider, so two clients racing on the same licence
+   * rotate it once between them rather than twice.
+   */
+  async revokeBannedMembers(id) {
+    return withTransaction(async (connection) => {
+      const [rows] = await connection.execute(
+        'SELECT id FROM subscriptions WHERE id = ? FOR UPDATE', [id]
+      );
+      if (!rows.length) return { rotated: false, removed: 0, licenseKey: null };
+
+      const [removed] = await connection.execute(
+        `DELETE m FROM team_members m
+           JOIN users u ON u.id = m.user_id
+          WHERE m.subscription_id = ? AND m.status = 'active' AND u.banned = 1`,
+        [id]
+      );
+      const count = removed.affectedRows || 0;
+      // Lost the race: whoever got here first has already rotated the key, and
+      // rotating a second time would only cost the team another re-key.
+      if (!count) return { rotated: false, removed: 0, licenseKey: null };
+
+      const licenseKey = generateLicenseKey();
+      await connection.execute(
+        'UPDATE subscriptions SET license_key = ? WHERE id = ?', [licenseKey, id]
+      );
+      // revoked_at, not a bare lease drop — same reason as releaseAllSeats: the
+      // machines being cut off are still running, and a plain drop would be
+      // undone by their next heartbeat.
+      await connection.execute(
+        `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
+          WHERE subscription_id = ?`,
+        [id]
+      );
+      return { rotated: true, removed: count, licenseKey };
+    });
+  },
+
 
   async findByStripeSubscriptionId(id) {
     return queryOne('SELECT * FROM subscriptions WHERE stripe_subscription_id = ?', [id]);
@@ -536,20 +642,6 @@ const Subscription = {
       [planSeats('free'), planExpiry('free'), sub.id]
     );
     return Subscription.findById(sub.id);
-  },
-
-  /**
-   * Retire every OTHER subscription a user holds, so issuing a new licence by
-   * hand cannot leave the previous key still validating. Without this an admin
-   * "upgrade" handed the customer two working licences.
-   */
-  async retireOthers(userId, keepId) {
-    const result = await execute(
-      `UPDATE subscriptions SET status = 'expired', cancel_at_period_end = 0
-        WHERE user_id = ? AND id <> ? AND status <> 'expired'`,
-      [userId, keepId]
-    );
-    return result.affectedRows || 0;
   },
 
   /**

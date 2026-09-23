@@ -23,13 +23,15 @@ const SITE_NAME = 'Nexa Download Manager';
 const SITE_URL = (process.env.VITE_SITE_URL || 'https://nexadownloadmanager.com').replace(/\/$/, '');
 
 // Public routes only: anything behind auth must not be indexed or shared.
+// [route, title, description, options?] — `{ noindex: true }` serves the page
+// but keeps it out of search results (a page that is live but not ready).
 const ROUTES = [
   ['/', null, 'A free, open desktop download manager for Windows and Linux. Multi-connection HTTP, HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue.'],
   ['/download', 'Download', 'Download Nexa Download Manager for Windows or Linux, with SHA-256 checksums and the browser extension.'],
   ['/pricing', 'Pricing', 'Nexa is free to use. Pro removes the 3-download limit and adds AI renaming — $5/month or $45/year, with a 7-day trial and no card required.'],
   ['/compare', 'Nexa vs IDM vs FDM', 'An honest feature comparison of Nexa, Internet Download Manager, Free Download Manager and JDownloader.'],
   ['/features', 'Features', 'In-depth guides to segmented acceleration, the HLS/DASH video grabber, YouTube via yt-dlp, BitTorrent, the browser extension, scheduling and the phone dashboard.'],
-  ['/features/acceleration', 'Segmented acceleration', 'How Nexa splits a file across up to 16 connections, steals the tail of the slowest segment, and resumes exactly where it stopped.'],
+  ['/features/acceleration', 'Segmented acceleration', 'How Nexa splits a file across up to 32 connections, steals the tail of the slowest segment, and resumes exactly where it stopped.'],
   ['/features/video-grabber', 'Video grabber', 'How Nexa finds the HLS or DASH stream behind a web player, fetches its segments in parallel and muxes them into a single MP4.'],
   ['/features/youtube-sites', 'YouTube & 1000+ sites', 'Nexa drives yt-dlp: quality picker, playlists, subtitles, and an updater for when a site changes.'],
   ['/features/bittorrent', 'BitTorrent', 'Magnets and .torrent files in the same queue as everything else, on a real libtorrent engine with DHT, PEX and seed-ratio control.'],
@@ -37,7 +39,7 @@ const ROUTES = [
   ['/features/scheduler', 'Scheduler & speed limits', 'Start downloads at a chosen time, cap bandwidth globally or per download, and shut the machine down when the queue is empty.'],
   ['/features/remote-dashboard', 'Remote dashboard', 'Watch and control the Nexa queue from your phone, behind an access token and TLS.'],
   ['/benchmarks', 'Benchmarks', 'Measured download throughput at 1, 4, 8 and 16 concurrent connections against two real hosts, plus Nexa end to end — with the method and the raw spread.'],
-  ['/tutorials', 'Tutorials', 'Short video guides for installing Nexa, the browser extension, YouTube and playlists, torrents, scheduling and the remote dashboard.'],
+  ['/tutorials', 'Tutorials', 'Video guides planned for Nexa Download Manager. None are recorded yet; every topic has a written guide today.', { noindex: true }],
   ['/security', 'Security & privacy', 'Exactly what Nexa sends, what it never sends, and what every browser-extension permission is for.'],
   ['/faq', 'FAQ', 'Answers about pricing, supported systems, YouTube downloads, safety, refunds and where your files are saved.'],
   ['/about', 'About', 'Who builds Nexa Download Manager, why it exists, and what we will and will not do with your data.'],
@@ -53,7 +55,7 @@ const ROUTES = [
   ['/docs/courses', 'Downloading courses', 'Download enrolled Udemy and Coursera courses with the Nexa browser extension.'],
   ['/docs/torrents', 'Torrents', 'Magnet links, .torrent files, seeding ratio and speed limits in Nexa.'],
   ['/docs/remote', 'Phone dashboard', 'Control your downloads from a phone on the same network, and what TLS is required.'],
-  ['/docs/license', 'Signing in & seats', 'Sign in to Nexa with your account, how seats work, manual licence keys, and what happens offline.'],
+  ['/docs/license', 'Signing in & seats', 'Sign in to Nexa with your account, how seats work, manual license keys, and what happens offline.'],
   ['/login', 'Sign in', 'Sign in to your Nexa account.'],
   ['/register', 'Create an account', 'Create a Nexa account and start a 7-day Pro trial — no card required.'],
 ];
@@ -71,7 +73,7 @@ function setContent(html, matcher, value) {
 }
 
 let written = 0;
-for (const [route, title, description] of ROUTES) {
+for (const [route, title, description, options = {}] of ROUTES) {
   const fullTitle = title ? `${title} · ${SITE_NAME}` : SITE_NAME;
   const canonical = `${SITE_URL}${route === '/' ? '/' : route}`;
 
@@ -87,6 +89,9 @@ for (const [route, title, description] of ROUTES) {
   html = setContent(html, 'property="og:url"', canonical);
   html = setContent(html, 'name="twitter:title"', fullTitle);
   html = setContent(html, 'name="twitter:description"', description);
+  if (options.noindex) {
+    html = html.replace('</head>', '    <meta name="robots" content="noindex, follow" />\n  </head>');
+  }
 
   // "/" is dist/index.html itself; everything else gets its own directory.
   const target = route === '/' ? join(dist, 'index.html') : join(dist, route, 'index.html');

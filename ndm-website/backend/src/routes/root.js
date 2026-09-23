@@ -18,6 +18,7 @@ const Release = require('../models/Release');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const { passwordMatches } = require('../utils/passwordCheck');
 const security = require('../utils/securityEvents');
 
 const validate = require('../middleware/validate');
@@ -25,13 +26,16 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireRoot, rootIpWhitelist, isRootUser } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
-const { stripSensitive } = require('../utils/sanitize');
+const { publicUser } = require('../utils/userView');
 const { signRootToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
 const {
   rootLoginSchema, createAdminSchema, updateAdminSchema,
   resetAdminPasswordSchema, idParamSchema, auditQuerySchema, deleteUserSchema,
+  ipRuleSchema, ipRuleUpdateSchema,
 } = require('../schemas/root.schema');
+const AdminIpRule = require('../models/AdminIpRule');
+const { ipMatches } = require('../utils/ipMatch');
 
 // Scoped to /api/root so the browser never sends the creator's session cookie
 // to a staff endpoint — and a stolen staff cookie is useless here.
@@ -53,9 +57,9 @@ function rootIdentity(user) {
   return { id: String(user.id), name: user.name, email: user.email, role: user.role };
 }
 
-// Shared with the staff panel — see utils/sanitize.js for why this is not a
-// per-file destructure any more.
-const safeUser = stripSensitive;
+// Shared with the staff panel — utils/userView.js is the one allow-listed
+// projection of a users row.
+const safeUser = publicUser;
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
@@ -72,16 +76,15 @@ router.post(
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
     // isRootUser (not `role === 'root'`) so a row whose email no longer matches
-    // ROOT_ADMIN_EMAIL cannot sign in here.
-    // A password-less (Google-created) row cannot sign in here: bcrypt.compare
-    // against null throws, which would answer 500 rather than rejecting.
-    if (!isRootUser(user) || !user.password_hash) {
-      await security.record('root.login.failed', { req, email, severity: 'critical' });
-      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
-    }
-    const match = await bcrypt.compare(password, user.password_hash);
+    // ROOT_ADMIN_EMAIL cannot sign in here. The comparison runs either way and
+    // costs the same, so this form cannot be timed to find the creator's
+    // address (AUDIT.md M-05); a password-less (Google-created) row takes the
+    // dummy branch instead of throwing from inside bcrypt.
+    const eligible = Boolean(isRootUser(user));
+    const match = await passwordMatches(password, eligible ? user.password_hash : null);
     if (!match) {
-      await security.record('root.login.failed', { req, user, severity: 'critical' });
+      await security.record('root.login.failed',
+        user ? { req, user, severity: 'critical' } : { req, email, severity: 'critical' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
@@ -294,6 +297,108 @@ router.delete(
     });
     await audit(req, 'admin.demoted', 'user', user.id, `Demoted ${user.email} to user`);
     return ok(res, { demoted: true });
+  })
+);
+
+/* ------------------------------------------------------- panel IP allow-list */
+
+/**
+ * Who may reach the control panels, editable from the panel (AUDIT.md M-06).
+ *
+ * Creator-only on purpose. This list decides who can reach the screen that
+ * edits this list, so handing it to staff admins would let one of them shut
+ * the creator out of their own deployment.
+ *
+ * Every write goes through wouldLockOut() first. A list you can edit into
+ * refusing you is not a feature, it is a trap — and on this deployment the
+ * recovery is an SSH session, which is exactly the thing this screen exists to
+ * avoid needing.
+ */
+
+// Would the effective list, after this change, still admit the person making
+// it? The .env entries are included because they are part of the real gate,
+// so an operator whose address is in .env is correctly told they cannot lock
+// themselves out no matter what they do here.
+async function wouldLockOut(req, nextRules) {
+  const list = [...config.ADMIN_ALLOWED_IPS, ...nextRules];
+  return !ipMatches(list, req.ip);
+}
+
+router.get(
+  '/ip-rules',
+  asyncHandler(async (req, res) => {
+    const rules = await AdminIpRule.list();
+    return ok(res, {
+      rules,
+      // The .env half, shown read-only so the screen is honest about the whole
+      // gate rather than only the part it controls.
+      envList: config.ADMIN_ALLOWED_IPS,
+      rootEnvList: config.ROOT_ALLOWED_IPS,
+      // Pre-fills "add my address", and tells the operator what the server
+      // actually sees — which is not always what they think, behind a proxy.
+      yourIp: req.ip,
+      // While either is true, every rule below is decoration. Saying so is
+      // better than letting somebody build a careful list that does nothing.
+      openToEveryone: config.ADMIN_ALLOWED_IPS.includes('*')
+        || rules.some((r) => r.enabled && r.value === '*'),
+    });
+  })
+);
+
+router.post(
+  '/ip-rules', validate(ipRuleSchema),
+  asyncHandler(async (req, res) => {
+    const { value, label } = req.body;
+    const existing = await AdminIpRule.findByValue(value);
+    if (existing) return fail(res, 'ALREADY_EXISTS', 'That entry is already on the list', 409);
+    const id = await AdminIpRule.create({ value, label, createdBy: req.admin.id });
+    await audit(req, 'root.ip_rule_added', 'admin_ip_rule', id,
+      `Allowed ${value}${label ? ` (${label})` : ''} to reach the control panels`);
+    return ok(res, { id }, 201);
+  })
+);
+
+router.patch(
+  '/ip-rules/:id', validate(ipRuleUpdateSchema),
+  asyncHandler(async (req, res) => {
+    const rule = await AdminIpRule.findById(req.params.id);
+    if (!rule) return fail(res, 'NOT_FOUND', 'No such entry', 404);
+    const { enabled } = req.body;
+
+    if (!enabled) {
+      const rules = await AdminIpRule.list();
+      const next = rules.filter((r) => r.enabled && r.id !== rule.id).map((r) => r.value);
+      if (await wouldLockOut(req, next)) {
+        return fail(res, 'WOULD_LOCK_YOU_OUT',
+          `Disabling ${rule.value} would leave your own address (${req.ip}) with no way in`, 409);
+      }
+    }
+
+    await AdminIpRule.setEnabled(rule.id, enabled);
+    await audit(req, enabled ? 'root.ip_rule_enabled' : 'root.ip_rule_disabled',
+      'admin_ip_rule', rule.id,
+      `${enabled ? 'Allowed' : 'Stopped allowing'} ${rule.value}`);
+    return ok(res, { id: rule.id, enabled });
+  })
+);
+
+router.delete(
+  '/ip-rules/:id', validate(idParamSchema),
+  asyncHandler(async (req, res) => {
+    const rule = await AdminIpRule.findById(req.params.id);
+    if (!rule) return fail(res, 'NOT_FOUND', 'No such entry', 404);
+
+    const rules = await AdminIpRule.list();
+    const next = rules.filter((r) => r.enabled && r.id !== rule.id).map((r) => r.value);
+    if (await wouldLockOut(req, next)) {
+      return fail(res, 'WOULD_LOCK_YOU_OUT',
+        `Removing ${rule.value} would leave your own address (${req.ip}) with no way in`, 409);
+    }
+
+    await AdminIpRule.remove(rule.id);
+    await audit(req, 'root.ip_rule_removed', 'admin_ip_rule', rule.id,
+      `Removed ${rule.value} from the control-panel allow-list`);
+    return ok(res, { removed: true });
   })
 );
 

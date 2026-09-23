@@ -150,8 +150,12 @@ export default function Contact() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            <label className="block" htmlFor="topic">
-              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-slate-300">Topic</span>
+            {/* Labelled exactly as <Input> labels its fields; this one was set in
+                spaced capitals and read as a different kind of thing. */}
+            <div className="block">
+              <label htmlFor="topic" className="mb-2 block text-xs font-semibold tracking-wide text-slate-300">
+                Topic
+              </label>
               <select
                 id="topic"
                 name="topic"
@@ -163,7 +167,7 @@ export default function Contact() {
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
               </select>
-            </label>
+            </div>
             <Input
               label="Message"
               name="message"
@@ -178,11 +182,11 @@ export default function Contact() {
             <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} />
             <div className="flex flex-wrap items-center gap-3">
               <Button type="submit" disabled={sending || (turnstileEnabled() && !turnstileToken)}>{sending ? 'Sending…' : 'Send message'}</Button>
-              <button type="button" onClick={openMailApp} className="text-xs text-slate-500 hover:text-brand-300">
+              <button type="button" onClick={openMailApp} className="inline-flex min-h-11 items-center text-xs text-slate-500 hover:text-brand-300">
                 or open in your mail app
               </button>
               <span className="text-xs text-slate-500">
-                · <a href={`mailto:${SUPPORT_EMAIL}`} className="text-slate-300 hover:text-brand-300">{SUPPORT_EMAIL}</a>
+                · <a href={`mailto:${SUPPORT_EMAIL}`} className="inline-block py-1.5 text-slate-300 hover:text-brand-300">{SUPPORT_EMAIL}</a>
               </span>
             </div>
           </form>
@@ -204,11 +208,11 @@ export default function Contact() {
           </Card>
           <Card className="!p-6">
             <h3 className="font-bold text-white">Before you write</h3>
-            <ul className="mt-2 space-y-1.5 text-sm leading-6 text-slate-400">
+            <ul className="mt-2 text-sm leading-6 text-slate-400">
               <li><Link to="/faq" className="text-slate-200 hover:text-brand-300">FAQ</Link> — pricing, refunds, platforms</li>
-              <li><Link to="/docs/youtube" className="text-slate-200 hover:text-brand-300">YouTube 403 errors</Link></li>
-              <li><Link to="/docs/extension" className="text-slate-200 hover:text-brand-300">“Nexa: engine unavailable”</Link></li>
-              <li><Link to="/docs/license" className="text-slate-200 hover:text-brand-300">License activation & seats</Link></li>
+              <li><Link to="/docs/youtube" className="block py-1.5 text-slate-200 hover:text-brand-300">YouTube 403 errors</Link></li>
+              <li><Link to="/docs/extension" className="block py-1.5 text-slate-200 hover:text-brand-300">“Nexa: engine unavailable”</Link></li>
+              <li><Link to="/docs/license" className="block py-1.5 text-slate-200 hover:text-brand-300">License activation & seats</Link></li>
             </ul>
           </Card>
           <Card className="!p-6">

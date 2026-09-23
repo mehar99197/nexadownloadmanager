@@ -17,8 +17,8 @@ const Review = require('../models/Review');
 const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
-const { isTrialActive } = require('../utils/license');
-const { stripSensitive } = require('../utils/sanitize');
+const { isTrialActive, isBilled } = require('../utils/license');
+const { publicUser } = require('../utils/userView');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
 const DeviceAuth = require('../models/DeviceAuth');
 const { subscriptionForUser, effectivePlanFor } = require('../utils/accountPlan');
@@ -29,36 +29,14 @@ const { passwordProblem } = require('../utils/passwordPolicy');
 
 const BCRYPT_COST = 12;
 
-function sanitizeUser(user) {
-  // stripSensitive() removes every credential column, including the ones this
-  // used to miss (totp_secret, totp_recovery, token_version) — a user reading
-  // their own profile has no business seeing their own TOTP seed either, since
-  // an XSS or a leaked response body would then be a second factor.
-  const safe = stripSensitive(user);
-  const password_hash = user.password_hash;
-  // The site needs to know whether password sign-in is available for this
-  // account without ever seeing the hash: a Google-created account shows
-  // "Set a password" instead of "Change password".
-  safe.hasPassword = Boolean(password_hash);
-  safe.hasGoogle = Boolean(user.google_id);
-  // CONTRACT.md describes the User as carrying `createdAt`/`updatedAt` and
-  // `emailVerified`, but stripSensitive() copies the DB row, which is
-  // snake_case. The site read `user.createdAt` and got undefined every time,
-  // so the profile page said "Member since —" for every account that has ever
-  // existed. Expose the documented names (the raw columns stay for anything
-  // already reading them).
-  safe.createdAt = toIso(user.created_at);
-  safe.updatedAt = toIso(user.updated_at);
-  safe.emailVerified = Boolean(user.email_verified);
-  // Lockout bookkeeping is the server's business (and the admin panel's); the
-  // sign-in form is deliberately told nothing about it, so the profile must
-  // not become the place it leaks from either.
-  delete safe.failed_logins;
-  delete safe.locked_until;
-  delete safe.lock_level;
-  delete safe.lock_notified_at;
-  return safe;
-}
+// A user reading their own profile has no business seeing their own TOTP seed
+// or recovery codes either — an XSS or a leaked response body would then be a
+// second factor. publicUser() is an allow-list (utils/userView.js), so the
+// profile carries exactly the documented fields: hasPassword / hasGoogle for
+// the "Set a password" vs "Change password" choice, the camelCase timestamps
+// CONTRACT.md promises (the site reads `user.createdAt`), and none of the
+// lockout bookkeeping the sign-in form is deliberately told nothing about.
+const sanitizeUser = publicUser;
 
 function toIso(value) {
   if (!value) return null;
@@ -91,6 +69,9 @@ function subscriptionSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
     trial: viaTeam ? false : isTrialActive(sub),
     trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
     cancelAtPeriodEnd: viaTeam ? false : Boolean(Number(sub.cancel_at_period_end)),
+    // Same meaning as /subscription/status: a Stripe subscription renews, an
+    // admin-granted plan simply ends on its expiry date.
+    billed: viaTeam ? false : isBilled(sub),
     viaTeam, teamOwner,
   };
 }
@@ -232,6 +213,8 @@ router.get(
       licenseKey: sub.license_key, plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
       trial: viaTeam ? false : isTrialActive(sub),
       trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
+      // The dashboard labels expiryDate "Renews" only for a billed plan.
+      billed: viaTeam ? false : isBilled(sub),
       viaTeam, ...(viaTeam ? { teamOwner } : {}),
     });
   })
@@ -445,8 +428,14 @@ router.get(
       } : null,
       team: team ? { ownerName: team.owner_name, joinedAt: toIso(team.accepted_at) } : null,
     };
+    // Sent bare, NOT through ok() (AUDIT.md L-03). This response is a file the
+    // person downloads and keeps: wrapping it in {"ok":true,"data":{…}} means
+    // nexa-account-7.json is not the export, it is the export inside a
+    // transport envelope that only makes sense to this API. Every other route
+    // here is read by our own client and keeps the envelope.
     res.setHeader('Content-Disposition', `attachment; filename="nexa-account-${u.id}.json"`);
-    return ok(res, document);
+    res.type('application/json');
+    return res.send(`${JSON.stringify(document, null, 2)}\n`);
   })
 );
 

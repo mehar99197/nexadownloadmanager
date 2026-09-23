@@ -5,13 +5,13 @@ import DocsShell, { H2, P, Steps, Bullets, Code, Note } from './DocsShell';
 export default function DocsLicense() {
   usePageMeta({
     title: 'Signing in & seats',
-    description: 'Sign in to Nexa Download Manager with your account, how seats and device fingerprints work, manual licence keys, and what happens offline.',
+    description: 'Sign in to Nexa Download Manager with your account, how seats and device fingerprints work, manual license keys, and what happens offline.',
   });
 
   return (
     <DocsShell
       title="Signing in & seats"
-      intro="Your plan reaches the app by signing in with your account — no key to copy. A trial or an upgrade follows on its own. Licence keys still work for activating by hand."
+      intro="Your plan reaches the app by signing in with your account — no key to copy. A trial or an upgrade follows on its own. License keys still work for activating by hand."
     >
       <H2 id="sign-in">Signing in to the app</H2>
       <Steps
@@ -47,11 +47,11 @@ export default function DocsLicense() {
         ]}
       />
 
-      <H2 id="keys">Licence keys (manual activation)</H2>
+      <H2 id="keys">License keys (manual activation)</H2>
       <P>
         Paid plans still come with a key, shown on the dashboard. It is for activating by hand
         &mdash; an older version of Nexa, or a machine you set up without signing in: Settings
-        &rarr; Account &rarr; <strong className="text-white">Use a licence key instead</strong>, paste it and click
+        &rarr; Account &rarr; <strong className="text-white">Use a license key instead</strong>, paste it and click
         Activate. Keys look like <Code>NDM-XXXX-XXXX-XXXX</Code>. If a key has been shared,
         <strong className="text-white"> Replace key</strong> on the dashboard issues a new one and signs every
         machine activated with the old one out; computers signed in with an account are unaffected.

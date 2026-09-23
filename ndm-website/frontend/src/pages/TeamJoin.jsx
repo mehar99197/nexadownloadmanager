@@ -7,7 +7,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import Skeleton from '../components/Skeleton';
 
 /**
  * /team/join?token=… — the landing page of a Team invitation email.
@@ -17,7 +17,7 @@ import Spinner from '../components/Spinner';
  * happens on the account that owns the invited address.
  */
 export default function TeamJoin() {
-  usePageMeta({ title: 'Join a team', description: 'Accept an invitation to a Nexa Download Manager Team licence.' });
+  usePageMeta({ title: 'Join a team', description: 'Accept an invitation to a Nexa Download Manager Team license.' });
 
   const [params] = useSearchParams();
   const token = params.get('token') || '';
@@ -55,7 +55,7 @@ export default function TeamJoin() {
     try {
       await api.post('/team/join', { token });
       await refreshMe();
-      toast.success(`You're on ${invite.ownerName}'s team. The licence key is on your dashboard.`);
+      toast.success(`You're on ${invite.ownerName}'s team. The license key is on your dashboard.`);
       navigate('/dashboard', { replace: true });
     } catch (err) {
       setError(err?.response?.data?.error?.message || 'Could not accept the invitation.');
@@ -72,7 +72,16 @@ export default function TeamJoin() {
         </div>
         <Card className="auth-card !p-8 sm:!p-9">
           {loading || authLoading ? (
-            <Spinner center />
+            // The invitation card as it will land: who invited whom, a
+            // paragraph, and the two ways to accept.
+            <div role="status" aria-label="Loading the invitation">
+              <Skeleton className="h-8 w-4/5 rounded-lg" />
+              {['w-full', 'w-full', 'w-3/5'].map((w, i) => (
+                <Skeleton key={i} className={`h-3.5 rounded ${w} ${i ? 'mt-2.5' : 'mt-4'}`} />
+              ))}
+              <Skeleton className="mt-6 h-11 w-full rounded-[var(--radius-2)]" />
+              <Skeleton className="mt-3 h-11 w-full rounded-[var(--radius-2)]" />
+            </div>
           ) : error && !invite ? (
             <>
               <h1 className="text-2xl font-extrabold tracking-tight text-white">Invitation not found.</h1>
@@ -92,7 +101,7 @@ export default function TeamJoin() {
               <p className="mt-3 text-sm leading-6 text-slate-400">
                 {invite.ownerName} invited <span className="font-semibold text-slate-200">{invite.email}</span> to
                 their Nexa <span className="capitalize">{invite.plan}</span> plan. Accepting puts the team&rsquo;s
-                licence key on your dashboard and unlocks Pro features in the app.
+                license key on your dashboard and unlocks Pro features in the app.
               </p>
 
               {error && (

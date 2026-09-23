@@ -113,6 +113,7 @@ test('a token signed by a different key is rejected', async () => {
       /signature/i
     );
   });
+});
 
 test('wrong issuer, expiry and an unverified email are all refused', async () => {
   await withClientId(CLIENT_ID, async () => {
@@ -173,8 +174,6 @@ test('a missing or malformed credential is refused before any network call', asy
     await assert.rejects(verifyGoogleIdToken('not-a-jwt', { fetchImpl }), /Malformed Google credential/);
     assert.equal(fetchImpl.calls, 0);
   });
-});
-
 });
 
 test('the OIDC nonce is required and must match what this server issued', async () => {

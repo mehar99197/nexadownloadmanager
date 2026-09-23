@@ -1,3 +1,5 @@
+import Skeleton, { BAR_OUTLINE } from './Skeleton.jsx';
+
 /**
  * BarChart — lightweight pure-CSS/SVG bars. NO chart library.
  *
@@ -6,6 +8,8 @@
  *  - height?: number (px, default 200) — chart plotting area height
  *  - valueFormatter?: (value) => string
  *  - barClassName?: string (color of the bars)
+ *  - loading?: boolean — draw `skeletonBars` outline bars instead. It used to
+ *    say "No data" while the data was still coming, which is a claim.
  *
  * Renders vertical bars sized relative to the max value, with labels beneath.
  */
@@ -14,14 +18,41 @@ export default function BarChart({
   height = 200,
   valueFormatter = (v) => String(v),
   barClassName = 'bg-admin-accent',
+  loading = false,
+  skeletonBars = 14,
 }) {
   const max = data.reduce((m, d) => Math.max(m, Number(d.value) || 0), 0) || 1;
 
+  if (loading) {
+    const bars = BAR_OUTLINE.slice(0, skeletonBars);
+    return (
+      <div className="w-full">
+        <div className="flex items-end gap-2" style={{ height }}>
+          {bars.map((h, i) => (
+            <div key={i} className="flex h-full min-w-0 flex-1 items-end justify-center">
+              <Skeleton className="w-full max-w-16 rounded-t-md" style={{ height: `${h}%` }} />
+            </div>
+          ))}
+        </div>
+        {/* h-4: the real label row is one 16px line of text-xs. */}
+        <div className="mt-2 flex h-4 items-center gap-2">
+          {bars.map((_, i) => (
+            <div key={i} className="flex min-w-0 flex-1 justify-center">
+              <Skeleton className="h-3 w-7 max-w-full rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (data.length === 0) {
+    // As tall as a chart with its label row (8px gap + one 16px line), so an
+    // empty series takes the place its outline held instead of shrinking it.
     return (
       <div
-        className="flex items-center justify-center text-sm text-admin-muted"
-        style={{ height }}
+        className="flex items-center justify-center text-sm text-admin-muted fade-in"
+        style={{ height: height + 24 }}
       >
         No data
       </div>
@@ -29,7 +60,7 @@ export default function BarChart({
   }
 
   return (
-    <div className="w-full">
+    <div className="w-full fade-in">
       <div className="flex items-end gap-2" style={{ height }}>
         {data.map((d, i) => {
           const value = Number(d.value) || 0;

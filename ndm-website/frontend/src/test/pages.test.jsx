@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -19,15 +19,22 @@ vi.mock('../api/client', () => {
   return {
     default: api,
     unwrap: (res) => res?.data?.data,
+    // AuthProvider subscribes to this; vitest throws on an export the mock
+    // does not define. The real value is asserted in sessionEnded.test.jsx.
+    SESSION_ENDED_EVENT: 'ndm:session-ended',
   };
 });
 import api from '../api/client';
+import { forgetAllReads } from '../api/reads';
 
 const renderPage = (ui) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 beforeEach(() => {
   api.get.mockReset();
   api.post.mockReset();
+  // Public reads are remembered for the life of the tab (api/reads.js), and
+  // these tests render the same page against different answers.
+  forgetAllReads();
 });
 
 describe('Home — honest statistics', () => {
@@ -227,6 +234,18 @@ describe('usePageMeta', () => {
     await waitFor(() => expect(document.title).toMatch(/Nexa Download Manager/));
     expect(document.title).toMatch(/Download/);
   });
+
+  it('keeps a noindex page out of search results only while it is shown', async () => {
+    const usePageMeta = (await import('../hooks/usePageMeta')).default;
+    function Unfinished() {
+      usePageMeta({ title: 'Unfinished', noindex: true });
+      return null;
+    }
+    const { unmount } = renderPage(<Unfinished />);
+    expect(document.head.querySelector('meta[name="robots"]')).toHaveAttribute('content', 'noindex, follow');
+    unmount();
+    expect(document.head.querySelector('meta[name="robots"]')).toBeNull();
+  });
 });
 
 describe('trial helper', () => {
@@ -333,7 +352,10 @@ describe('Pricing while billing is disabled', () => {
     expect(await screen.findByText(/^coming soon$/i)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /get team/i })).toBeNull();
     expect(screen.queryByText(/handled securely by Stripe/i)).toBeNull();
-    expect(screen.getByText(/paid plans open soon/i)).toBeInTheDocument();
+    // Said before the prices, in the note where the promo field would be —
+    // there is no checkout for a code to apply to.
+    expect(screen.getByRole('note')).toHaveTextContent(/paid plans are not on sale yet/i);
+    expect(screen.queryByLabelText(/promotion code/i)).toBeNull();
     // The free trial needs no card and keeps working.
     expect(screen.getByRole('link', { name: /start 7-day free trial/i })).toHaveAttribute('href', '/register?trial=1');
   });
@@ -343,6 +365,8 @@ describe('Pricing while billing is disabled', () => {
     expect(await screen.findByRole('link', { name: /get team/i })).toBeInTheDocument();
     expect(screen.getByText(/handled securely by Stripe/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /coming soon/i })).toBeNull();
+    expect(screen.getByLabelText(/promotion code/i)).toBeInTheDocument();
+    expect(screen.queryByRole('note')).toBeNull();
   });
 });
 
@@ -437,5 +461,121 @@ describe('Spinner — two of them on one page stay two of them', () => {
     const mark = screen.getByRole('status', { name: 'Loading' });
     expect(mark).toHaveAttribute('width', '32');
     expect(mark).toHaveAttribute('height', '32');
+  });
+});
+
+/**
+ * Reported by the owner: pages "shift all at once, and no skeleton shows".
+ * A page waiting for data now draws the outline of what is coming — never a
+ * spinner in place of the whole page, and never a wrong answer — and a page
+ * already seen in this tab draws its last answer at once.
+ */
+describe('Waiting for data — the outline of what is coming, then the thing', () => {
+  const never = () => new Promise(() => {});
+
+  it('Download draws its cards at once and claims nothing it does not know yet', () => {
+    api.get.mockReturnValue(never());
+    renderPage(<Download />);
+
+    // It used to say "Version not published yet" until the answer came back.
+    expect(screen.queryByText(/not published yet/i)).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent(/loading the latest release/i);
+    // No spinner standing in for the page: what does not depend on the
+    // release is already there.
+    expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Windows' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /send downloads from your browser/i })).toBeInTheDocument();
+  });
+
+  it('a revisit draws the last answer in its first frame, and still asks again', async () => {
+    api.get.mockResolvedValue({ data: { ok: true, data: { version: '0.4.2', windowsUrl: 'https://e.test/a.exe' } } });
+    const first = renderPage(<Download />);
+    await waitFor(() => expect(screen.getAllByText(/0\.4\.2/).length).toBeGreaterThan(0));
+    first.unmount();
+
+    api.get.mockReturnValue(never());
+    renderPage(<Download />);
+    // Synchronously, with the second request still in flight.
+    expect(screen.getAllByText(/0\.4\.2/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/loading the latest release/i)).toBeNull();
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('Home holds the numbers as outlines until they arrive, then shows the real ones', async () => {
+    let answer;
+    api.get.mockImplementation((path) =>
+      path === '/stats'
+        ? new Promise((resolve) => { answer = resolve; })
+        : Promise.resolve({ data: { ok: true, data: {} } })
+    );
+    renderPage(<Home />);
+
+    expect(screen.getByRole('status', { name: /loading the numbers/i })).toBeInTheDocument();
+    expect(screen.queryByText(/downloads served/i)).toBeNull();
+
+    answer({ data: { ok: true, data: { users: 3, downloads: 17 } } });
+    await waitFor(() => expect(screen.getByText('17')).toBeInTheDocument());
+    expect(screen.queryByRole('status', { name: /loading the numbers/i })).toBeNull();
+  });
+
+  it('Changelog shows release-shaped outlines rather than a spinner', async () => {
+    const Changelog = (await import('../pages/Changelog')).default;
+    api.get.mockReturnValue(never());
+    renderPage(<Changelog />);
+
+    expect(screen.getByRole('status', { name: /loading the release notes/i })).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
+  });
+});
+
+describe('Home — reviews wait until there are enough of them', () => {
+  const review = (id, rating) => ({ id, rating, comment: `Review number ${id}`, userName: `Reader ${id}` });
+  const serveReviews = (reviews, totalCount) =>
+    api.get.mockImplementation((path) => (path === '/reviews'
+      ? Promise.resolve({ data: { ok: true, data: { reviews, totalCount, averageRating: 3 } } })
+      : Promise.reject(new Error('not under test'))));
+
+  // One three-star review used to become the homepage's verdict:
+  // "3.0 out of 5 from 1 review", right under the hero.
+  it('shows no reviews section for a single review', async () => {
+    serveReviews([review(1, 3)], 1);
+    renderPage(<Home />);
+    await waitFor(() => expect(screen.queryByRole('status', { name: /loading reviews/i })).toBeNull());
+    expect(screen.queryByText(/what users say/i)).toBeNull();
+    expect(screen.queryByText(/review number 1/i)).toBeNull();
+  });
+
+  it('shows them once there are five', async () => {
+    serveReviews([review(1, 5), review(2, 4), review(3, 3)], 5);
+    renderPage(<Home />);
+    expect(await screen.findByText(/what users say/i)).toBeInTheDocument();
+    expect(screen.getByText(/from 5 reviews/i)).toBeInTheDocument();
+  });
+});
+
+describe('FAQ — section shortcuts', () => {
+  it('links every section from the top, and steps aside while searching', async () => {
+    renderPage(<Faq />);
+    const nav = screen.getByRole('navigation', { name: /faq sections/i });
+    const links = within(nav).getAllByRole('link');
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      expect(href).toMatch(/^#/);
+      expect(document.getElementById(href.slice(1))).not.toBeNull();
+    }
+
+    await userEvent.type(screen.getByLabelText(/search the faq/i), 'magnet');
+    expect(screen.queryByRole('navigation', { name: /faq sections/i })).toBeNull();
+  });
+});
+
+describe('Footer', () => {
+  it('links the public source code, and not the tutorials page that has no videos yet', async () => {
+    const { default: Footer, SOURCE_URL } = await import('../components/Footer');
+    renderPage(<Footer />);
+    expect(SOURCE_URL).toMatch(/^https:\/\/github\.com\//);
+    expect(screen.getByRole('link', { name: /source code/i })).toHaveAttribute('href', SOURCE_URL);
+    expect(screen.queryByRole('link', { name: /tutorials/i })).toBeNull();
   });
 });

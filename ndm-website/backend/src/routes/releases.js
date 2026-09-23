@@ -9,9 +9,25 @@ const { downloadLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
 const { buildFeed, releaseUrlFor, signFeed } = require('../utils/releaseFeed');
 const licenseKeys = require('../config/licenseKeys');
-const { artifactFor, sendFile } = require('../utils/releaseFiles');
+const { artifactFor, artifactOnDisk, sendFile } = require('../utils/releaseFiles');
+const { shouldCountDownload } = require('../utils/downloadCounter');
 const { downloadOsSchema, feedQuerySchema } = require('../schemas/release.schema');
 const Release = require('../models/Release');
+
+/**
+ * Is THIS request a download, for the counter's purposes?
+ *
+ * utils/downloadCounter.js holds the two rules (a fresh start only — no
+ * Range, or one from byte 0 that is not the app's one-byte size probe — and
+ * one address per release per platform per window) and records the decision,
+ * so it is asked exactly once per request. Express routes a HEAD to the GET
+ * handler, and a HEAD has no Range header, so without the first line every
+ * size probe would look like a fresh start.
+ */
+function countsAsDownload(req, releaseId, os) {
+  if (req.method === 'HEAD') return false;
+  return shouldCountDownload({ ip: req.ip, releaseId, os, range: req.headers.range });
+}
 
 router.get(
   '/latest',
@@ -42,8 +58,14 @@ router.get(
  * a legacy external URL still 302s, which is how everything published before
  * uploads existed keeps working.
  *
- * The counter is only bumped for a fresh download (no Range header, or a range
- * starting at 0) — otherwise every resumed chunk would inflate the total.
+ * The counter records that a download STARTED (see utils/downloadCounter.js
+ * for why completion is not observable) and only when one did: not for a
+ * resume, not for the same address retrying inside the window, not for a HEAD,
+ * and not for a release whose file turns out to be missing — the 404 is
+ * decided first, so a broken release no longer counts every attempt to fetch
+ * it. Both paths, the uploaded file and the legacy redirect, go through the
+ * same decision. The increment lands before the first byte goes out, so a
+ * caller that reads /latest the moment the transfer ends sees it.
  */
 router.get(
   '/download/:os', downloadLimiter, validate(downloadOsSchema),
@@ -54,25 +76,20 @@ router.get(
 
     const artifact = artifactFor(release, os);
     if (artifact) {
-      const range = req.headers.range;
-      // A fresh start is no Range at all, or one beginning at byte zero — except
-      // the one-byte "bytes=0-0" size probe the desktop app sends before its
-      // real segmented transfer, which would count every app download twice.
-      const rangeText = String(range || '').trim();
-      const isFreshStart = !range
-        || (/^bytes=0-/.test(rangeText) && !/^bytes=0-0$/.test(rangeText));
-      if (isFreshStart) await Release.incrementDownloadCount(release.id);
-      const sent = sendFile(req, res, artifact);
-      // sendFile returns null when the row points at a file that is gone.
-      if (sent === null) {
+      if (!artifactOnDisk(artifact))
         return fail(res, 'NO_RELEASE', `The ${os} installer is missing from storage`, 404);
-      }
+      if (countsAsDownload(req, release.id, os)) await Release.incrementDownloadCount(release.id);
+      const sent = sendFile(req, res, artifact);
+      // The file can still vanish between the check above and the open; say
+      // so rather than leave the request hanging.
+      if (sent === null)
+        return fail(res, 'NO_RELEASE', `The ${os} installer is missing from storage`, 404);
       return sent;
     }
 
     const url = releaseUrlFor(release, os);
     if (!url) return fail(res, 'NO_RELEASE', `No ${os} release available`, 404);
-    await Release.incrementDownloadCount(release.id);
+    if (countsAsDownload(req, release.id, os)) await Release.incrementDownloadCount(release.id);
     return res.redirect(302, url);
   })
 );

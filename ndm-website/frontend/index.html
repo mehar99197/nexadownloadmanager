@@ -85,6 +85,16 @@
       It costs nothing on a slow connection — the 700 ms floor only applies
       when the app is ready sooner than that — and nothing at all on in-site
       navigation, which never reloads the document.
+
+      Shown on EVERY full load, reloads included, on purpose. A pass that held
+      it back for 160 ms so a warm load never saw it was reverted at the
+      owner's request: a boot screen that does not appear reads as one that
+      is broken, which is the lesson the note in the script already records.
+
+      "Ready" means the first PAGE has rendered, not the shell: the call below
+      comes from <BootDone> in src/navigation.jsx, which sits beside the page
+      inside its Suspense boundary. Lifting it from main.jsx after the shell
+      painted meant a lazy route's page arrived after the screen had gone.
     -->
     <style>
       #ndm-boot { display: none; }

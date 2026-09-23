@@ -90,8 +90,47 @@ async function resolveCredential(req) {
 
 // Resolve a licence key to a usable subscription, or the reason it is not.
 async function resolveSubscription(licenseKey) {
-  let sub = await Subscription.findByLicenseKey(licenseKey);
+  let sub = await Subscription.findByLicenseKeyForValidation(licenseKey);
   if (!sub) return { reason: 'not_found', sub: null };
+
+  // A banned account is refused before anything else is even looked at: the
+  // ban is on the person, so the plan's status, expiry and trial state are all
+  // irrelevant, and this is the only check that makes a ban reach a client
+  // signing in with a KEY rather than an account (a device token is already
+  // cut off in resolveCredential). Banning used to lock the website only — the
+  // app kept being handed a fresh Pro token every day, for ever.
+  if (sub.owner_banned) return { reason: 'banned', sub };
+
+  // The other half of the same ban, for a licence that is shared. A Team plan
+  // is one key with N seats, and routes/user.js deliberately hands a member the
+  // OWNER's key — "the key that actually unlocks the app for them" — so banning
+  // a member leaves them holding a credential that still works while the check
+  // above reads an owner who is perfectly fine. This request cannot tell the
+  // difference: it is a key plus a device fingerprint, with no user in it, so
+  // there is no device to single out and no caller to refuse. The shared secret
+  // itself is therefore withdrawn — the roster loses its banned members and the
+  // key is rotated (Subscription.revokeBannedMembers). This is the same lazy
+  // pattern as the trial downgrade below: the ban is reconciled the first time
+  // the licence is used after it, so no cron and no admin route has to know.
+  //
+  // The key in this request is the one that was just rotated away, whoever sent
+  // it, so `not_found` is the honest answer — accusing the caller of being
+  // banned would be a guess, and usually the wrong one. Everyone still entitled
+  // re-copies the new key from their dashboard; the banned member cannot,
+  // because the ban is what stops them signing in.
+  if (sub.banned_member) {
+    const { rotated } = await Subscription.revokeBannedMembers(sub.id);
+    if (rotated) return { reason: 'not_found', sub: null };
+    // Nothing was revoked after all: either the ban was lifted between the
+    // lookup and the write, or a request that raced this one had already
+    // re-keyed the licence. Those two want opposite answers, so re-read instead
+    // of guessing — guessing `not_found` would make the C++ client throw away
+    // a key that is still perfectly good.
+    sub = await Subscription.findByLicenseKeyForValidation(licenseKey);
+    if (!sub) return { reason: 'not_found', sub: null };
+    if (sub.owner_banned) return { reason: 'banned', sub };
+  }
+
   // Lazy downgrade: a finished no-card trial — or a paid plan whose period
   // lapsed — falls back to free/active, so the client keeps a working Free key
   // instead of being told `expired` and deleting it.

@@ -20,6 +20,9 @@ vi.mock('../api/client', () => {
   return {
     default: api,
     unwrap: (res) => res?.data?.data,
+    // AuthProvider subscribes to this; vitest throws on an export the mock
+    // does not define. The real value is asserted in sessionEnded.test.jsx.
+    SESSION_ENDED_EVENT: 'ndm:session-ended',
     setAccessToken: vi.fn(),
     clearAccessToken: vi.fn(),
     restoreSession: vi.fn(async () => false),
@@ -89,7 +92,7 @@ describe('Dashboard — a Team member', () => {
     expect(await screen.findByText(/you are on/i)).toHaveTextContent(/Ahmad/);
   });
 
-  it('shows the team licence key card, not the Free "no key needed" one', async () => {
+  it('shows the team license key card, not the Free "no key needed" one', async () => {
     renderDashboard();
     // The key is masked until "Show"; what matters here is which card renders.
     expect(await screen.findByRole('heading', { name: /license key/i })).toBeInTheDocument();

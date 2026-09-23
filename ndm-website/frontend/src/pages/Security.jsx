@@ -3,12 +3,14 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import { SOURCE_URL } from '../components/Footer';
 
 /* Every claim on this page was checked against the source before it was
-   written. Two of them are uncomfortable and are stated anyway: AI rename
-   sends a filename and a URL to our server, and the Free plan's ad request
-   reaches us with your licence token and therefore your IP. A privacy page
-   that omits its own awkward cases is marketing. */
+   written. Some of them are uncomfortable and are stated anyway: AI rename
+   sends a filename and a URL to our server, Smart add sends whatever you type
+   into it, and the Free plan's ad request reaches us with your license token
+   and therefore your IP. A privacy page that omits its own awkward cases is
+   marketing. */
 
 const PRINCIPLES = [
   {
@@ -21,7 +23,14 @@ const PRINCIPLES = [
   },
   {
     title: 'You can check all of this',
-    body: 'The app, the browser extension and the native-messaging bridge are open source. Everything on this page is a claim you can verify by reading the code rather than trusting us.',
+    body: (
+      <>
+        The app, the browser extension and the native-messaging bridge are open source. Everything
+        on this page is a claim you can verify by{' '}
+        <a href={SOURCE_URL} className="text-brand-300 hover:underline">reading the code</a>{' '}
+        rather than trusting us.
+      </>
+    ),
   },
 ];
 
@@ -48,11 +57,11 @@ const FLOWS = [
     detail: 'Your queue and history are a file in the app’s data folder. There is no sync and no backup to us.',
   },
   {
-    what: 'Licence check (every few hours)',
+    what: 'License check (every few hours)',
     where: 'Nexa app → our server',
     reaches: 'Plan, device fingerprint, app version, IP',
     tone: 'info',
-    detail: 'Sends your licence key or account token plus a device fingerprint — a SHA-256 of your primary network adapter’s MAC and machine id. The raw MAC never leaves your computer, and the fingerprint cannot be reversed into it. It carries nothing about what you are downloading.',
+    detail: 'Sends your license key or account token plus a device fingerprint — a SHA-256 of your primary network adapter’s MAC and machine id. The raw MAC never leaves your computer, and the fingerprint cannot be reversed into it. It carries nothing about what you are downloading.',
   },
   {
     what: 'Update check (daily, can be turned off)',
@@ -64,16 +73,23 @@ const FLOWS = [
   {
     what: 'Ad request — Free plan only',
     where: 'Nexa app → our server',
-    reaches: 'Licence token, placement, IP',
+    reaches: 'License token, placement, IP',
     tone: 'warn',
     detail: 'The in-app promo strip is fetched from us, so that request reaches our server with your token and therefore your IP address. It contains nothing about your downloads. Pro and Team do not make this request at all — the app stops asking once the plan is paid.',
   },
   {
-    what: 'AI rename — off by default, Pro only',
+    what: 'AI rename — off by default, Pro and Team',
     where: 'Nexa app → our server → Anthropic',
-    reaches: 'The filename, the source URL and the content type',
+    reaches: 'The filename and the source URL, minus its query string',
     tone: 'warn',
-    detail: 'This is the one feature that sends something about a download off your machine, and it is why it ships switched off. When you enable it, the current filename, the URL it came from and its content type are sent to our server, which asks Anthropic’s API for a better name and returns it. Nothing else about the file — never its contents. Leave the toggle off and none of it happens.',
+    detail: 'This is the one feature that sends something about a download off your machine on its own, and it is why it ships switched off. When you enable it, a finished file’s name and the address it came from — with the query string stripped — are sent to our server, which asks Anthropic’s API for a better name and returns it. Nothing else about the file — never its contents. Leave the toggle off and none of it happens.',
+  },
+  {
+    what: 'Smart add (AI) — Pro and Team, only when you use it',
+    where: 'Nexa app → our server → Anthropic',
+    reaches: 'Exactly the text you type into it',
+    tone: 'warn',
+    detail: 'Smart add turns a sentence such as “download these two links tonight at 2am” into queued downloads. What you type — links included — is sent with your license token to our server, which has Anthropic’s API read it and returns the result. Nothing is sent until you submit some text.',
   },
   {
     what: 'Account data (only if you sign in)',
@@ -187,8 +203,8 @@ export default function Security() {
           <h2 className="text-lg font-bold text-white">What we do not collect</h2>
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-slate-400">
             {[
-              'The URLs you download from — except when you switch AI rename on, which is covered above.',
-              'The names or contents of your files.',
+              'The URLs you download from — except when you switch AI rename on or type them into Smart add, both covered above.',
+              'The contents of your files, ever. Their names only pass through when AI rename is on, as above.',
               'Your site logins, cookies or passwords.',
               'Usage analytics. There is no analytics SDK in the desktop app — not a disabled one, none at all.',
               'Crash reports. The app has no crash reporter; the optional troubleshooting log writes to a file on your disk and is never uploaded.',
@@ -207,7 +223,7 @@ export default function Security() {
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-slate-400">
             {[
               'Your email address and name, if you created an account.',
-              'Your plan, licence key and which devices currently hold a seat — shown to you on your dashboard, where you can sign any of them out.',
+              'Your plan, license key and which devices currently hold a seat — shown to you on your dashboard, where you can sign any of them out.',
               'A device fingerprint per activated machine: a one-way hash, kept so seat limits and key-sharing checks can work at all.',
               'Payment records from Stripe — the last four digits and the amount. Card numbers are handled by Stripe and never touch our servers.',
               'Server access logs including IP addresses, kept short-term for abuse and rate limiting.',
@@ -254,9 +270,9 @@ export default function Security() {
         <Card>
           <h2 className="text-lg font-bold text-white">Security measures</h2>
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-slate-400">
-            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">HTTPS everywhere.</strong> The app refuses to talk to a licence or ads endpoint over plain HTTP, and those endpoints are compiled in — a release build cannot be pointed somewhere else by an environment variable.</span></li>
+            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">HTTPS everywhere.</strong> The app refuses to talk to a license or ads endpoint over plain HTTP, and those endpoints are compiled in — a release build cannot be pointed somewhere else by an environment variable.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Signed updates.</strong> The update feed is Ed25519-signed and verified in the app. Whoever controls a plain feed controls both the installer URL and the checksum it is checked against, so a checksum alone proves nothing.</span></li>
-            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Credentials in the OS keychain.</strong> Your licence key or account token lives in Windows Credential Manager or the Secret Service on Linux, not in a settings file.</span></li>
+            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Credentials in the OS keychain.</strong> Your license key or account token lives in Windows Credential Manager or the Secret Service on Linux, not in a settings file.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">The remote dashboard is loopback-only by default</strong>, needs a token on every request, and flatly refuses to bind to your LAN without TLS — because the token would otherwise cross your Wi-Fi in clear text.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Two-factor authentication</strong> on the website, and one session per browser that can be revoked individually.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Optional SHA-256 verification</strong> on any download, and every release on the download page publishes its checksum.</span></li>
@@ -271,7 +287,7 @@ export default function Security() {
             <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">
               support@nexadownloadmanager.com
             </a>{' '}
-            and we will action it. Deleting your account removes your profile, licence and device
+            and we will action it. Deleting your account removes your profile, license and device
             records; payment records are kept where tax law requires it.
           </p>
           <p className="mt-3 text-sm leading-6 text-slate-400">
@@ -307,6 +323,7 @@ export default function Security() {
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
           <Button to="/privacy">Privacy policy</Button>
+          <Button href={SOURCE_URL} variant="ghost">Source on GitHub</Button>
           <Button to="/contact" variant="ghost">Ask us a privacy question</Button>
         </div>
       </div>

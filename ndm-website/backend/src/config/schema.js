@@ -211,6 +211,14 @@ async function initSchema() {
   // Existing databases: stamped when the "trial ending" email went out, so the
   // nightly job can never mail the same person twice.
   await addColumnIfMissing('subscriptions', 'trial_reminder_sent_at DATETIME NULL DEFAULT NULL');
+  // One subscription per account, enforced by the database and not only by
+  // the routes: every reader takes the account's newest row, so a second row
+  // would be an invisible one that still validated its own licence key
+  // (AUDIT.md M-07). Production was checked for duplicates before this index
+  // existed (6 subscriptions, 6 distinct owners), so it builds cleanly; a race
+  // between two creates now surfaces as ER_DUP_ENTRY → 409 rather than as two
+  // rows.
+  await addUniqueIndexIfMissing('subscriptions', 'uq_subscriptions_user (user_id)');
   // Cancelling stops the RENEWAL, not the plan: the customer keeps what they
   // paid for until expiry_date, and this flag is what the site reads to say
   // "ends on the 3rd" instead of pretending nothing happened.
@@ -616,6 +624,54 @@ async function initSchema() {
   await addColumnIfMissing('user_sessions', 'last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
   await addIndexIfMissing('user_sessions', 'idx_session_family (family)');
   await addIndexIfMissing('user_sessions', 'idx_session_prev (prev_token_hash)');
+  // Another build — the one production is running as this is written — created
+  // these two as TIMESTAMP. Every other date in this schema is DATETIME for the
+  // reason the ads columns record below: TIMESTAMP stops at 2038-01-19, and it
+  // is silently converted between the session timezone and UTC on the way in
+  // and out, so two columns of different types on one row do not mean the same
+  // thing. A session row is short-lived, so this is tidiness rather than a
+  // bug — but a schema that reads one way and behaves another is how the last
+  // timezone defect started. Idempotent: ensureColumnType only rewrites a
+  // column whose type is actually wrong.
+  await ensureColumnType('user_sessions', 'created_at', 'datetime',
+    'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  await ensureColumnType('user_sessions', 'last_used_at', 'datetime',
+    'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+  // Same build gave the table a `realm` ENUM, because it kept the panels'
+  // sessions in here too; this one keeps them in the token generation counter
+  // instead (users.token_version, see middleware/adminAuth.js). Nothing writes
+  // the column any more and its NOT NULL carries a default, so every insert
+  // here is unaffected. It is left in place deliberately: dropping a column
+  // rewrites the table, and an unread column costs nothing.
+  //
+  // users.totp_last_step is signed there and unsigned here, which is the same
+  // kind of leftover. A TOTP step is floor(epoch/30) — about 5.8e7 today and
+  // 9.2e18 before a signed BIGINT runs out — so the two behave identically and
+  // it is not worth a table rewrite either.
+
+  // Who may reach the control panels, managed from the panel itself rather
+  // than only from the server .env (AUDIT.md M-06). The .env list is still
+  // read and still wins — it is the break-glass that a panel mistake cannot
+  // take away, which matters because this is the one table whose contents can
+  // lock its own editor out.
+  //
+  // An entry is an address, a CIDR range or '*' (see utils/ipMatch.js). It is
+  // kept as text rather than as packed bytes so the panel can show the
+  // operator the same thing they typed, and because the list is tiny and read
+  // through a cache.
+  await execute(`
+    CREATE TABLE IF NOT EXISTS admin_ip_rules (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      value VARCHAR(64) NOT NULL,
+      label VARCHAR(100) NULL DEFAULT NULL,
+      enabled TINYINT(1) NOT NULL DEFAULT 1,
+      created_by INT UNSIGNED NULL DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_admin_ip_rules_value (value),
+      INDEX idx_admin_ip_rules_enabled (enabled)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 
   // Security events (utils/securityEvents.js): sign-in failures and locks,
   // two-factor outcomes, resets, session replays, control-panel sign-ins —

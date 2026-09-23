@@ -64,6 +64,30 @@ DirectoryIndex index.html index.php
     Header always set Cross-Origin-Opener-Policy "same-origin-allow-popups"
     Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
 
+    # CORS, re-asserted here because the API's own headers do not survive the
+    # trip out (AUDIT.md, L-11). Asked directly on 127.0.0.1:3001 Express
+    # answers with Access-Control-Allow-Origin AND Vary: Origin; the client
+    # sees neither, while Access-Control-Allow-Credentials arrives intact.
+    # api-proxy.php forwards everything except hop-by-hop headers and neither
+    # of the two is in that list, so the loss is in the host stack, below
+    # anything this repository ships.
+    #
+    # Nothing was exposed by that: without Allow-Origin a browser refuses to
+    # hand the body to a cross-origin caller whatever Allow-Credentials says,
+    # so the failure was closed. It is worth repairing anyway. The pair that
+    # did arrive reads, to anyone who looks, like a permissive CORS setup when
+    # the truth is the opposite -- and the day a subdomain or a status page
+    # legitimately needs cross-origin access, it would fail with nothing at
+    # all pointing at the host stack rather than at the Express config.
+    #
+    # The echo is deliberately narrow: only the two origins config.CORS_ORIGINS
+    # already allows, matched whole, never a reflected arbitrary Origin. Both
+    # lines are guarded on that match, so a request from anywhere else leaves
+    # with no CORS headers and is refused exactly as it is today.
+    SetEnvIf Origin "^https://(www\.)?nexadownloadmanager\.com$" NDM_CORS_ORIGIN=$0
+    Header always set Access-Control-Allow-Origin "%{NDM_CORS_ORIGIN}e" env=NDM_CORS_ORIGIN
+    Header always append Vary Origin env=NDM_CORS_ORIGIN
+
     # Content-Security-Policy. The static site and BOTH control panels are
     # served from this document root, so one policy covers all three.
     #
@@ -79,6 +103,22 @@ DirectoryIndex index.html index.php
     # carries the new value (it prints it). Without the hash the browser
     # silently drops the script: no boot screen, and a flash of the wrong
     # theme on every load — which is exactly what happened before it was added.
+    #
+    # TWO hashes, not one. This header goes up in Phase 4a and the new
+    # index.html in Phase 5, and a cache in front of the origin can keep
+    # serving the previous document for a while after that — so for a window
+    # on either side of a deploy, the document a browser holds and the policy
+    # it is judged against come from different builds. Naming the previous
+    # build's hash as well means neither is ever refused. Carry at most two:
+    # the current build's and the one it replaced, and drop the older one on
+    # the deploy after this.
+    #
+    #   gTJlH1…  current — the boot screen shown on every full load with its
+    #            700ms floor. Restored byte-for-byte at the owner's request,
+    #            so this is the same hash it always had. The build before this
+    #            one carried the same script, so there is no previous hash to
+    #            keep; the adaptive version's (Igk0HU…) was dropped here, one
+    #            deploy after it stopped being served.
     #
     # The four third parties are the ones the site actually loads:
     #   accounts.google.com    Google Identity Services ("Continue with Google")

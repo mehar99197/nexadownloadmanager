@@ -468,7 +468,13 @@ router.post(
           break;
         case 'customer.subscription.deleted': await handleSubscriptionDeleted(obj); break;
         // Plan switches and cancellations made in Stripe's own billing portal,
-        // which /billing links to — they reach us nowhere else.
+        // which /billing links to — they reach us nowhere else. A subscription
+        // CREATED outside our checkout — in Stripe's dashboard, or by a flow
+        // that never hits checkout.session.completed — is the same mirroring
+        // job: subscriptionForStripeObject falls back to the customer id and
+        // then to the email, and the handler writes only what differs, so
+        // taking both events is idempotent rather than a second code path.
+        case 'customer.subscription.created':
         case 'customer.subscription.updated': await handleSubscriptionUpdated(obj); break;
         case 'charge.refunded': await handleChargeRefunded(obj); break;
         // Renewals. Older Stripe API versions name this invoice.payment_succeeded,

@@ -15,6 +15,7 @@ const FaqVote = require('../models/FaqVote');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const { passwordMatches } = require('../utils/passwordCheck');
 const { clearLock } = require('../utils/loginLockout');
 const security = require('../utils/securityEvents');
 const { getPool } = require('../config/db');
@@ -36,7 +37,8 @@ const sharingThresholds = {
 };
 const { generateLicenseKey, planSeats, planExpiry, expiryForPlanChange } = require('../utils/license');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
-const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
+const { storeUpload, removeStored, artifactFor, resolveStoredPath } = require('../utils/releaseFiles');
+const { artifactVersionFromFile, versionsMatch } = require('../utils/artifactVersion');
 const { ctr } = require('../utils/ads');
 
 // Admin SPA session: opaque token in an httpOnly cookie scoped to /api/admin;
@@ -76,7 +78,7 @@ const {
   updateContactStatusSchema, contactReplySchema,
 } = require('../schemas/contact.schema');
 const { sendContactReply } = require('../utils/email');
-const { stripSensitive } = require('../utils/sanitize');
+const { publicUser } = require('../utils/userView');
 const { isReservedEmail } = require('../utils/reservedEmail');
 
 function monthlyPrice(plan) {
@@ -85,21 +87,23 @@ function monthlyPrice(plan) {
   return 0;
 }
 
-// Never hand-roll this list again: /users/:id/details reads the row with
-// SELECT *, so anything missed here reaches a staff admin — including, when it
-// stripped only these three hashes, the creator's TOTP secret and recovery
-// hashes. utils/sanitize.js is the single definition.
-const safeUser = stripSensitive;
+// Never hand-roll a projection here: /users/:id/details reads the row with
+// SELECT *, so anything a deny-list missed reached a staff admin — including,
+// when it stripped only three hashes, the creator's TOTP secret and recovery
+// hashes. utils/userView.js is the single, allow-listed definition.
+const safeUser = publicUser;
 
 /**
  * A staff admin may only act on ordinary customer accounts. Banning, resetting
  * or revoking a fellow admin — and above all the creator — is reserved for the
- * root panel (/api/root/admins). A root token passing through here keeps its
- * reach, since req.isRoot is only ever set by the root token family.
+ * root panel (/api/root/admins), and so is reading one: the details view is
+ * the account's whole row. A root token passing through here keeps its
+ * reach, since req.isRoot is only ever set by the root token family. `verb`
+ * keeps the refusal truthful for a read ("view") as well as a write.
  */
-function blockedStaffTarget(req, res, user) {
+function blockedStaffTarget(req, res, user, verb = 'modify') {
   if (req.isRoot || user.role === 'user') return false;
-  fail(res, 'FORBIDDEN', 'Only the creator can modify a control-panel account', 403);
+  fail(res, 'FORBIDDEN', `Only the creator can ${verb} a control-panel account`, 403);
   return true;
 }
 
@@ -119,16 +123,17 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    // A Google-created account has NO password hash. bcrypt.compare against
-    // null throws, so an account promoted to admin that way answered 500 to
-    // every sign-in attempt instead of a plain rejection.
-    if (!user || user.role !== 'admin' || !user.password_hash) {
-      await security.record('admin.login.failed', { req, email, severity: 'warning' });
-      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
-    }
-    const match = await bcrypt.compare(password, user.password_hash);
+    // The compare happens for every address, before anything is decided on the
+    // row — a customer's address, an unknown one, a Google-created admin with
+    // no password hash at all. Returning early on "not an admin" made this
+    // form a stopwatch test for which address the panel belongs to (AUDIT.md
+    // M-05), and bcrypt.compare against a null hash threw, so a promoted
+    // Google account answered 500 to every attempt instead of rejecting.
+    const eligible = Boolean(user && user.role === 'admin');
+    const match = await passwordMatches(password, eligible ? user.password_hash : null);
     if (!match) {
-      await security.record('admin.login.failed', { req, user, severity: 'warning' });
+      await security.record('admin.login.failed',
+        user ? { req, user, severity: 'warning' } : { req, email, severity: 'warning' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);
@@ -353,7 +358,7 @@ router.get(
 
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...u, plan: sub ? sub.plan : 'free', subscription: sub };
+      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -365,6 +370,9 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    // Reading is gated like writing: a fellow admin's or the creator's account
+    // is the root panel's business, not a staff admin's.
+    if (blockedStaffTarget(req, res, user, 'view')) return undefined;
     const [subscriptions, payments, reviews] = await Promise.all([
       Subscription.findByUserId(user.id),
       Payment.findByUserId(user.id),
@@ -607,6 +615,22 @@ router.post(
   asyncHandler(async (req, res) => {
     const user = await User.findById(req.body.userId);
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
+    // The subscription is the account's, and so is the refusal: a staff admin
+    // may no more issue the creator a plan than ban them.
+    if (blockedStaffTarget(req, res, user)) return undefined;
+    // One row per account. Registration already gives every account a free
+    // one, so this route is for the rare account with none; anything else is
+    // an edit of the row that exists — which is also the only way the licence
+    // key on it can be reached. Creating a second row used to leave the first
+    // one active, invisible to every reader, and validating its own key for
+    // ever. uq_subscriptions_user now makes that impossible; this answers
+    // before the database has to.
+    const existing = (await Subscription.findByUserId(user.id))[0];
+    if (existing) {
+      return fail(res, 'SUBSCRIPTION_EXISTS',
+        `${user.email} already has a ${existing.plan} subscription (#${existing.id}) — edit that one instead of creating a second.`,
+        409, { subscriptionId: existing.id, plan: existing.plan, status: existing.status });
+    }
     const plan = req.body.plan;
     const subscription = await Subscription.create({
       userId: user.id,
@@ -617,14 +641,8 @@ router.post(
       startDate: new Date(),
       expiryDate: req.body.expiryDate ? new Date(req.body.expiryDate) : planExpiry(plan),
     });
-    // The previous licence key must stop working, or the customer walks away
-    // holding two that both validate — every read path only ever sees the
-    // newest row, so the old one was invisible here but live at /api/license.
-    const retired = await Subscription.retireOthers(user.id, subscription.id);
     await audit(req, 'subscription.created', 'subscription', subscription.id,
-      `Created ${plan} subscription for ${user.email}`
-        + (retired ? ` (retired ${retired} earlier licence(s))` : ''),
-      { userId: user.id, plan, retired });
+      `Created ${plan} subscription for ${user.email}`, { userId: user.id, plan });
     return ok(res, subscription, 201);
   })
 );
@@ -635,6 +653,10 @@ router.put(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    // The subscription is the account's: a staff admin may no more alter the
+    // creator's plan than the creator's account. user_id is a foreign key with
+    // ON DELETE CASCADE, so the owner always exists.
+    if (blockedStaffTarget(req, res, await User.findById(subscription.user_id))) return undefined;
 
     const { plan, status, seats, expiryDate } = req.body;
     const updates = {};
@@ -795,6 +817,24 @@ router.put(
       throw err;
     }
 
+    // The installer says which version it is — the PE resource of an .exe,
+    // the control file of a .deb — and that has to be the release it is being
+    // attached to. /download once advertised 0.3.0 while serving the 0.2.0
+    // .deb with a perfectly matching checksum: the hash proves the bytes are
+    // the ones uploaded, not that they are the right ones. A definite mismatch
+    // is refused before the row is touched; a build whose version cannot be
+    // read is accepted with a warning that also goes into the audit row, so
+    // the operator sees which of the two happened.
+    const declared = await artifactVersionFromFile(resolveStoredPath(stored.file), os);
+    if (declared.version && !versionsMatch(declared.version, release.version)) {
+      await removeStored(stored.file);
+      return fail(res, 'VERSION_MISMATCH',
+        `This installer says it is version ${declared.version}, but the release is ${release.version}. Upload the ${release.version} build, or attach this file to the ${declared.version} release.`,
+        409, { artifactVersion: declared.version, releaseVersion: release.version });
+    }
+    const versionWarning = declared.version ? null
+      : `Could not read a version from the ${os} installer (${declared.reason}); it was not checked against release ${release.version}.`;
+
     // Replacing an artifact: remove the previous file only after the new one is
     // safely on disk, so a failed upload never leaves the release with nothing.
     const previous = os === 'windows' ? release.windows_file : release.linux_file;
@@ -811,9 +851,13 @@ router.put(
     if (previous && previous !== stored.file) await removeStored(previous);
 
     await audit(req, 'release.artifact_uploaded', 'release', id,
-      `Uploaded ${os} installer for v${release.version} (${stored.filename})`,
-      { os, size: stored.size, sha256: stored.sha256 });
-    return ok(res, { ...stored, release: await Release.findById(id) });
+      `Uploaded ${os} installer for v${release.version} (${stored.filename})`
+        + (versionWarning ? ' — version unchecked' : ''),
+      { os, size: stored.size, sha256: stored.sha256, artifactVersion: declared.version, versionWarning });
+    return ok(res, {
+      ...stored, artifactVersion: declared.version, versionWarning,
+      release: await Release.findById(id),
+    });
   })
 );
 

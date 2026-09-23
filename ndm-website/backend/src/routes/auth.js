@@ -37,6 +37,7 @@ const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 const { isLocked, recordFailure, recordSuccess, clearLock } = require('../utils/loginLockout');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const { passwordMatches } = require('../utils/passwordCheck');
 const UserSession = require('../models/UserSession');
 const security = require('../utils/securityEvents');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
@@ -44,21 +45,8 @@ const AuditLog = require('../models/AuditLog');
 
 const BCRYPT_COST = 12;
 
-// A real bcrypt hash of a value nobody knows, compared against when an account
-// has no password of its own so that branch costs the same as a genuine check.
-// Generated at runtime rather than committed: nothing fixed to target, and no
-// constant anyone could ever make the compare accept.
-//
-// Lazily, and deliberately: bcryptjs is pure JavaScript, so hashing at cost 12
-// blocks the event loop for the better part of a second. At module load that
-// delay lands squarely in process start-up, where it holds up the listen() and
-// everything queued behind it. Here it costs one passwordless sign-in, once.
-let dummyPasswordHash = null;
-function dummyHash() {
-  if (!dummyPasswordHash)
-    dummyPasswordHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), BCRYPT_COST);
-  return dummyPasswordHash;
-}
+// passwordMatches() is the comparison that costs the same whatever the account
+// is — see utils/passwordCheck.js. The panels sign in through it too.
 
 // The session cookies, their flags and issueSession() live in utils/session.js
 // (shared with the profile route, which opens a fresh session after a
@@ -219,9 +207,7 @@ router.post(
     // real hash is never consulted while the lock holds, and the answer is the
     // same 401 after the same work, so the lock is not observable from here.
     const locked = isLocked(user);
-    const match = user && user.password_hash && !locked
-      ? await bcrypt.compare(password, user.password_hash)
-      : (await bcrypt.compare(password, dummyHash()), false);
+    const match = await passwordMatches(password, locked ? null : user && user.password_hash);
     if (!match) {
       // Only a genuine wrong guess at a customer account counts towards the
       // lock. A control-panel row is refused below whatever the password, and
@@ -489,7 +475,13 @@ router.post(
 );
 
 router.post(
-  '/verify-email', validate(verifyEmailSchema),
+  // authLimiter in the same position as every other limited route in this
+  // file (AUDIT.md L-01). The finding was written against a lineage where this
+  // route had a limiter in the wrong place; here it had none, which is the
+  // same hole with less to argue about. The token is an unguessable JWT, so
+  // this is not about brute force — it is that an unauthenticated endpoint
+  // doing signature verification and a database write should not be free.
+  '/verify-email', authLimiter, validate(verifyEmailSchema),
   asyncHandler(async (req, res) => {
     const { token } = req.body;
     let payload;

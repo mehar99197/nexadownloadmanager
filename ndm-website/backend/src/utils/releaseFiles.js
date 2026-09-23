@@ -61,6 +61,51 @@ function safeDisplayName(originalName, fallback) {
  * cleanly, so an aborted upload can never leave a truncated file that looks
  * like a valid installer. Hashes while streaming — one pass, no re-read.
  */
+/**
+ * Delete abandoned `.incoming-*` files (AUDIT.md L-05).
+ *
+ * storeUpload writes to a temporary name and renames on success, so a clean
+ * failure removes its own file. What it cannot clean up after is the process
+ * dying mid-upload — a restart, an OOM, a deploy — which leaves a partial
+ * installer of up to MAX_RELEASE_UPLOAD_MB sitting in the upload directory
+ * with nothing that will ever look at it again.
+ *
+ * Age is the whole safety mechanism: an upload in flight has a very recent
+ * mtime, so anything older than the cut-off cannot be one. The cut-off is
+ * hours rather than minutes because the file being swept is someone's
+ * half-finished release, and a slow connection pushing a 200 MB installer is
+ * a normal thing rather than a stuck one.
+ */
+const INCOMING_PREFIX = '.incoming-';
+const INCOMING_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+async function sweepIncoming({ maxAgeMs = INCOMING_MAX_AGE_MS, now = Date.now() } = {}) {
+  let names;
+  try {
+    names = await fsp.readdir(uploadDir());
+  } catch {
+    // No upload directory yet: nothing has ever been uploaded, so nothing to
+    // sweep. Not an error worth reporting on every pass.
+    return 0;
+  }
+
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(INCOMING_PREFIX)) continue;
+    const full = path.join(uploadDir(), name);
+    try {
+      const stat = await fsp.stat(full);
+      if (!stat.isFile()) continue;
+      if (now - stat.mtimeMs < maxAgeMs) continue;
+      await fsp.rm(full, { force: true });
+      removed += 1;
+    } catch {
+      // Vanished under us, or unreadable. Either way the next pass can have it.
+    }
+  }
+  return removed;
+}
+
 async function storeUpload(req, { os, version, originalName, maxBytes }) {
   if (!OS_KEYS.includes(os)) throw Object.assign(new Error('Unsupported OS'), { status: 400, code: 'BAD_OS' });
   const ext = safeExtension(originalName);
@@ -153,6 +198,23 @@ async function removeStored(storedName) {
 }
 
 /**
+ * Is the artifact's file actually on disk?
+ *
+ * The release row can name a file that is gone — a wiped upload directory, a
+ * restore from a database backup without the files, a stored name edited by
+ * hand. sendFile() answers that with a 404 already; this lets the route ask
+ * BEFORE it decides anything else about the request, such as whether to count
+ * it as a download. A broken release used to count every attempt to fetch it.
+ */
+function artifactOnDisk(artifact) {
+  try {
+    return Boolean(artifact) && fs.statSync(artifact.absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Serve a file with byte-range support.
  *
  * NDM is a download manager: its own users — and the app's updater — expect to
@@ -222,6 +284,7 @@ function sendFile(req, res, artifact) {
 
 module.exports = {
   OS_KEYS, ALLOWED_EXTENSIONS,
-  uploadDir, ensureUploadDir, storeUpload, artifactFor, removeStored, sendFile,
+  uploadDir, ensureUploadDir, storeUpload, artifactFor, artifactOnDisk, removeStored, sendFile,
+  sweepIncoming, INCOMING_PREFIX, INCOMING_MAX_AGE_MS,
   safeExtension, safeDisplayName, resolveStoredPath,
 };

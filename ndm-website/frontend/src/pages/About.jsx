@@ -3,10 +3,11 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import { SOURCE_URL } from '../components/Footer';
 
 const FACTS = [
   { label: 'Platforms', value: 'Windows & Linux', note: 'macOS is building but not yet signed' },
-  { label: 'Licence', value: 'Free core', note: 'Pro removes the 3-download cap' },
+  { label: 'License', value: 'Free core', note: 'Pro removes the 3-download cap' },
   { label: 'Engine', value: 'C++ / Qt 6', note: 'native, no Electron' },
   { label: 'Status', value: 'Public beta', note: 'shipping openly, bugs and all' },
 ];
@@ -107,7 +108,9 @@ export default function About() {
             <h2 className="text-xl font-bold text-white">Built in the open</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-400">
               A tool that reads your cookies should be one you can inspect. The source, the issue
-              tracker and every release live on GitHub — bug reports and pull requests welcome.
+              tracker and every release live{' '}
+              <a href={SOURCE_URL} className="text-brand-300 hover:underline">on GitHub</a> — bug
+              reports and pull requests welcome.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">

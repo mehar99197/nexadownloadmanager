@@ -6,11 +6,22 @@ const config = require('../config/env');
 function notFound(req, res) {
   return res.status(404).json({
     ok: false,
-    error: { code: 'NOT_FOUND', message: `Route not found: ${req.method} ${req.originalUrl}` },
+    // The URL is deliberately not echoed (AUDIT.md L-08). The content type is
+    // JSON so reflecting it was never browser-exploitable, but repeating
+    // attacker-supplied text back to them earns nothing: the caller already
+    // knows what they asked for, and the full URL is in the access log for
+    // anyone who needs it.
+    error: { code: 'NOT_FOUND', message: `Route not found: ${req.method}` },
   });
 }
 
 function errorHandler(err, req, res, next) {
+  // Headers already on the wire — an installer stream that failed part way,
+  // say. Nothing sent from here could be a well-formed answer any more, so
+  // hand it to Express, which closes the connection; trying to write a JSON
+  // body over a half-sent response would only throw a second error.
+  if (res.headersSent) return next(err);
+
   let status = err.status || 500;
   let code = err.code || 'INTERNAL_ERROR';
   let message = err.message || 'Something went wrong';
@@ -47,9 +58,13 @@ function errorHandler(err, req, res, next) {
   if (status >= 500) {
     // eslint-disable-next-line no-console
     console.error('[error]', err);
-    // A 5xx message is whatever threw — a MySQL column name, a file path, a
-    // third-party SDK's wording. Log it, but do not serve it in production.
-    if (config.isProd) { code = 'INTERNAL_ERROR'; message = 'Something went wrong'; }
+    // An UNEXPECTED 5xx message is whatever threw — a MySQL column name, a
+    // file path, a third-party SDK's wording. Log it, but do not serve it in
+    // production. `err.status` is what tells the two apart: a route that
+    // chose its own 5xx (`503 BILLING_UNAVAILABLE`, say) wrote that wording
+    // for the customer to read, and masking it turns a clear "payments are
+    // off right now" into "Something went wrong".
+    if (config.isProd && !err.status) { code = 'INTERNAL_ERROR'; message = 'Something went wrong'; }
   }
 
   const error = { code, message };

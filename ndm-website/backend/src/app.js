@@ -11,6 +11,7 @@ const { ok } = require('./utils/respond');
 const asyncHandler = require('./utils/asyncHandler');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { originGuard } = require('./middleware/originGuard');
+const { noStore } = require('./middleware/noStore');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const User = require('./models/User');
 const Release = require('./models/Release');
@@ -77,6 +78,9 @@ app.use('/api', apiLimiter);
 // Second layer under SameSite=Lax for state-changing requests — see the
 // middleware for why a MISSING Origin is deliberately allowed through.
 app.use('/api', originGuard);
+// Uncacheable by default. A route that is genuinely public overrides this with
+// its own Cache-Control — see middleware/noStore.js for why the default flipped.
+app.use('/api', noStore);
 
 app.get('/api/health', (req, res) => ok(res, { status: 'up', billing: config.stripeMode }));
 

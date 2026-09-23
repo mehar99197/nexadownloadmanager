@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const srv = require('./helpers/testServer');
+const { resetDownloadCounter } = require('../src/utils/downloadCounter');
 
 const dbUp = () => srv.available();
 
@@ -383,6 +384,12 @@ test('backend flows', async (t) => {
       // A member is never shown the owner's cancellation state: it is not
       // theirs to read, and the billing page acts on it.
       assert.equal(status.cancelAtPeriodEnd, false);
+      // Nor is the plan billed to them — the owner pays, so the member gets no
+      // "Renews", no cancel button and no portal.
+      assert.equal(status.billed, false);
+      assert.equal(me.subscription.billed, false);
+      const ownerStatus = (await owner.get('/api/subscription/status', { token: o.token })).body.data;
+      assert.equal(ownerStatus.billed, true, 'the mock checkout stands in for a Stripe subscription');
 
       // …and the entitlement the desktop app receives agrees with all of it.
       const licence = (await member.get('/api/user/license', { token: m.token })).body.data;
@@ -459,6 +466,10 @@ test('backend flows', async (t) => {
         email: 'bot@example.test', message: 'buy cheap things here please now', website: 'http://spam',
       });
       assert.equal(res.status, 400, 'a filled honeypot fails validation');
+      // ...and without saying which field did it. A 400 carrying
+      // fieldErrors.website tells the bot exactly what to leave blank next
+      // time, which is the one thing a honeypot must not do.
+      assert.doesNotMatch(res.text, /website/i, 'the trap does not name itself');
     });
 
     let threadId;
@@ -719,7 +730,12 @@ test('backend flows', async (t) => {
       const res = await api.get('/api/user/export', { token: u.token });
       assert.equal(res.status, 200, res.text);
       assert.match(res.headers.get('content-disposition'), /attachment/);
-      const doc = res.body.data;
+      // The file IS the document — no { ok, data } wrapper (AUDIT.md L-03).
+      // Somebody opening nexa-account-7.json should find their account, not
+      // this API's transport envelope around it.
+      const doc = JSON.parse(res.text);
+      assert.equal(doc.ok, undefined, 'no envelope in a downloaded file');
+      assert.ok(doc.exportedAt, 'the document starts where the document starts');
       assert.equal(doc.account.email, u.email);
       assert.equal(doc.subscriptions[0].licenseKey, key);
       assert.doesNotMatch(res.text, /password_hash|refresh_token|totp/);
@@ -804,6 +820,16 @@ test('backend flows', async (t) => {
       assert.equal(resume.status, 206);
       const tail = Buffer.from(await resume.arrayBuffer());
       assert.equal(tail.equals(body.subarray(body.length - 1000)), true);
+      // Another start from the same address inside the window is the same
+      // person retrying — a cancel-and-restart, a scanner, a second click —
+      // and is served in full but not counted again (utils/downloadCounter.js).
+      const retry = await dl({ range: 'bytes=0-65535' });
+      assert.equal(retry.status, 206);
+      assert.equal((await api.get('/api/releases/latest')).body.data.downloadCount, 1,
+        'a restart from the same address in the window is not a second download');
+      // Forget this address — what the next window looks like — and the same
+      // segmented start is a download.
+      resetDownloadCounter();
       const segment = await dl({ range: 'bytes=0-65535' });
       assert.equal(segment.status, 206, 'a real segmented start counts');
       assert.equal((await api.get('/api/releases/latest')).body.data.downloadCount, 2);

@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Code, Note, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Code, Note, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 const SITE_GROUPS = [
@@ -90,10 +90,17 @@ export default function FeatureYoutubeSites() {
         deleted or members-only are skipped with a note rather than failing the whole playlist —
         a 300-video channel should not stop at video 12.
       </P>
-      <Figure kind="Diagram">
-        URL → yt-dlp probe → format list → your choice → parallel video+audio fetch → ffmpeg mux →
-        named file in the Video or Audio category.
-      </Figure>
+      <Flow
+        caption="What happens between pasting a link and the finished file."
+        steps={[
+          { title: 'You paste a URL' },
+          { title: 'yt-dlp probes it', detail: 'title, length and formats — nothing downloaded yet' },
+          { title: 'You pick a quality' },
+          { title: 'Video and audio fetched', detail: 'two streams, in parallel' },
+          { title: 'ffmpeg merges them' },
+          { title: 'A named file', detail: 'in your Video or Audio folder' },
+        ]}
+      />
       <P>
         <strong className="text-white">Updating.</strong> Settings &rarr; Video sites &rarr;{' '}
         <strong className="text-white">Update yt-dlp</strong> pulls the latest release into the

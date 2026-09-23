@@ -6,6 +6,7 @@ import Badge from '../components/Badge.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
 import DataTable from '../components/DataTable.jsx';
+import IpAllowList from '../components/IpAllowList.jsx';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
 import { formatDateTime } from '../utils.js';
@@ -150,6 +151,10 @@ export default function Security() {
   const [disableOpen, setDisableOpen] = useState(false);
   const [disableForm, setDisableForm] = useState({ password: '', code: '' });
 
+  // Regenerate recovery codes
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenForm, setRegenForm] = useState({ password: '', code: '' });
+
   const load = useCallback(async () => {
     try {
       setState(await unwrap(api.get(`${AUTH_NS}/2fa`)));
@@ -214,6 +219,35 @@ export default function Security() {
     }
   };
 
+  /**
+   * A fresh set of recovery codes, replacing whatever is on the row.
+   *
+   * The only way to a new set used to be turning 2FA off and on again, which
+   * asks for the same proof and is strictly worse: it leaves the account on a
+   * password alone for as long as the re-enrolment takes, and it invalidates
+   * the authenticator enrolment for no reason. It is also no use at all in the
+   * case that matters most — an account with zero codes left, which is where
+   * every account that enrolled and closed the printout page ends up.
+   */
+  const regenerate = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const data = await unwrap(api.post(`${AUTH_NS}/2fa/recovery-codes`, regenForm));
+      setRegenOpen(false);
+      setRegenForm({ password: '', code: '' });
+      setRecoveryCodes(data.recoveryCodes || []);
+      setNotice('New recovery codes. Save them now — any earlier set has stopped working.');
+      await load();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to generate new recovery codes.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const copyCodes = async () => {
     if (!recoveryCodes) return;
     try {
@@ -225,6 +259,8 @@ export default function Security() {
   };
 
   const enabled = Boolean(state?.enabled);
+  const codesLeft = state?.recoveryCodesLeft ?? 0;
+  const codesLegacy = Boolean(state?.recoveryCodesLegacy);
 
   return (
     <div className="space-y-6">
@@ -263,7 +299,12 @@ export default function Security() {
           <div className="flex items-center gap-3">
             <Badge tone={enabled ? 'success' : 'warning'}>{enabled ? '2FA on' : '2FA off'}</Badge>
             {enabled ? (
-              <Button variant="secondary" onClick={() => setDisableOpen(true)} disabled={busy}>Turn off</Button>
+              <>
+                <Button variant="secondary" onClick={() => setRegenOpen(true)} disabled={busy}>
+                  {codesLeft === 0 ? 'Generate recovery codes' : 'New recovery codes'}
+                </Button>
+                <Button variant="ghost" onClick={() => setDisableOpen(true)} disabled={busy}>Turn off</Button>
+              </>
             ) : (
               <Button onClick={startSetup} disabled={busy || Boolean(setup)}>
                 {busy && !setup ? 'Preparing…' : 'Turn on'}
@@ -271,6 +312,28 @@ export default function Security() {
             )}
           </div>
         </div>
+
+        {enabled && codesLeft === 0 && !recoveryCodes && (
+          <div role="alert" data-testid="no-recovery-codes" className="mt-4 rounded-xl border border-admin-danger/40 bg-admin-danger/10 px-4 py-3 text-sm text-admin-text">
+            <p className="font-semibold">No recovery codes on this account.</p>
+            <p className="mt-1 text-admin-muted">
+              Codes are shown once, at enrolment, and spent as they are used. With none left, losing the
+              authenticator locks this panel {IS_ROOT ? 'permanently — there is no account above the creator to reset it' : 'until the creator resets it from the root console'}.
+              Generate a set now: it takes your password and one current code.
+            </p>
+          </div>
+        )}
+
+        {enabled && codesLegacy && !recoveryCodes && (
+          <div role="alert" data-testid="legacy-recovery-codes" className="mt-4 rounded-xl border border-admin-warning/40 bg-admin-warning/10 px-4 py-3 text-sm text-admin-text">
+            <p className="font-semibold">These recovery codes were hashed the old way.</p>
+            <p className="mt-1 text-admin-muted">
+              They predate the move to bcrypt and could be recovered from a database read, which is the one
+              thing a second factor is meant to survive. Generating a fresh set replaces them; the old ones
+              stop working immediately.
+            </p>
+          </div>
+        )}
 
         {setup && (
           <div className="mt-6 grid gap-6 border-t border-admin-border pt-6 md:grid-cols-[auto_1fr]">
@@ -315,7 +378,7 @@ export default function Security() {
             <p className="text-sm font-semibold text-admin-text">Recovery codes</p>
             <p className="mt-1 text-xs text-admin-muted">
               Each code signs you in once if you lose your phone. Store them somewhere safe — this is the only
-              time they are shown.
+              time they are shown, and generating another set replaces these.
             </p>
             <ul data-testid="recovery-codes" className="mt-3 grid max-w-md grid-cols-2 gap-2 font-mono text-sm text-admin-text">
               {recoveryCodes.map((c) => (
@@ -338,9 +401,56 @@ export default function Security() {
             ? ' As the creator you can also reset a staff admin’s 2FA from the Admins screen.'
             : ' With no codes left, ask the creator to reset your 2FA from the root console.'}
         </p>
+        <p className="mt-2 text-sm leading-6 text-admin-muted">
+          That path needs a code you still have, so it is worth checking the count above while the
+          authenticator is in your hand. Generating a set asks for your password and one current code —
+          which is exactly what you cannot produce once the device is gone.
+        </p>
       </div>
 
+      {!mustEnrol && IS_ROOT && <IpAllowList />}
+
       {!mustEnrol && <SecurityEvents />}
+
+      <Modal
+        open={regenOpen}
+        onClose={() => setRegenOpen(false)}
+        title={codesLeft === 0 ? 'Generate recovery codes' : 'Generate new recovery codes'}
+        footer={(
+          <>
+            <Button variant="secondary" onClick={() => setRegenOpen(false)}>Cancel</Button>
+            <Button onClick={regenerate} disabled={busy || !regenForm.password || regenForm.code.length < 6}>
+              {busy ? 'Generating…' : 'Generate'}
+            </Button>
+          </>
+        )}
+      >
+        <form onSubmit={regenerate} className="space-y-4">
+          <p className="text-sm text-admin-muted">
+            {codesLeft === 0
+              ? 'A new set of eight single-use codes.'
+              : `This replaces the ${codesLeft} code${codesLeft === 1 ? '' : 's'} still on this account — they stop working the moment the new set exists.`}
+            {' '}Same proof as turning 2FA off, because a recovery code is another way past it.
+          </p>
+          <Input
+            label="Password"
+            name="password"
+            type="password"
+            placeholder="Enter your password"
+            autoComplete="current-password"
+            value={regenForm.password}
+            onChange={(e) => setRegenForm((f) => ({ ...f, password: e.target.value }))}
+          />
+          <Input
+            label="Authenticator or recovery code"
+            name="code"
+            placeholder="123456 or a recovery code"
+            autoComplete="one-time-code"
+            value={regenForm.code}
+            onChange={(e) => setRegenForm((f) => ({ ...f, code: e.target.value }))}
+          />
+        </form>
+      </Modal>
 
       <Modal
         open={disableOpen}

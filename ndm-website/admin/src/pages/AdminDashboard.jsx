@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api, { unwrap } from '../api/client.js';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import StatCard from '../components/StatCard.jsx';
+import Skeleton, { SkeletonText } from '../components/Skeleton.jsx';
 import BarChart from '../components/BarChart.jsx';
 import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
@@ -25,6 +26,49 @@ function ActivityFeed({ items }) {
   if (!items?.length) return <p className="py-8 text-center text-sm text-admin-muted">No admin activity recorded yet.</p>;
   return <div className="divide-y divide-admin-border/70">{items.map((item) => <div key={item.id} className="flex gap-3 py-3 first:pt-0 last:pb-0"><span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-admin-cyan shadow-[0_0_10px_rgba(53,201,255,0.8)]" /><div className="min-w-0"><p className="text-sm leading-5 text-admin-text">{item.summary}</p><p className="mt-1 text-xs text-admin-faint">{item.admin_name || 'System'} · {formatDateTime(item.created_at)}</p></div></div>)}</div>;
 }
+
+/** Plan mix, activity and payments as they will land — see `first` below. */
+function PlanMixOutline() {
+  return ['free', 'pro', 'team'].map((name) => (
+    <div key={name}>
+      {/* h-5: the real row is one 20px line of text-sm. */}
+      <div className="flex h-5 items-center justify-between">
+        <Skeleton className="h-4 w-12 rounded" />
+        <Skeleton className="h-4 w-8 rounded" />
+      </div>
+      <Skeleton className="mt-2 h-2 w-full rounded-full" />
+    </div>
+  ));
+}
+
+function FeedOutline() {
+  return (
+    <div className="divide-y divide-admin-border/70">
+      {['w-3/4', 'w-2/3', 'w-4/5', 'w-1/2'].map((w) => (
+        <div key={w} className="flex gap-3 py-3 first:pt-0 last:pb-0">
+          <Skeleton className="mt-1.5 h-2 w-2 shrink-0 rounded-full" />
+          <div className="min-w-0 flex-1">
+            <Skeleton className={`h-4 rounded ${w}`} />
+            <Skeleton className="mt-2 h-3 w-40 rounded" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const PAYMENT_OUTLINE = [0, 1, 2, 3].map((i) => (
+  <tr key={`outline-${i}`} aria-hidden="true">
+    <th scope="row">
+      <Skeleton className="h-4 w-28 rounded" />
+      <Skeleton className="mt-1.5 h-3 w-40 rounded" />
+    </th>
+    <td><Skeleton className="h-4 w-10 rounded" /></td>
+    <td><Skeleton className="h-4 w-16 rounded" /></td>
+    <td><Skeleton className="h-4 w-20 rounded" /></td>
+    <td><Skeleton className="h-5 w-16 rounded-full" /></td>
+  </tr>
+));
 
 export default function AdminDashboard() {
   const { admin } = useAdminAuth();
@@ -51,6 +95,12 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => { loadDashboard(); }, [loadDashboard]);
+
+  // The first load draws every figure as its outline — it used to render the
+  // whole screen at once with "-", "checking", "No data" and "No payments
+  // yet" in it, which are claims, and then swap them for the numbers. A
+  // Refresh keeps what is on screen until the new numbers replace it.
+  const first = loading && !stats;
 
   const signupData = (stats?.newSignups || []).slice(-14).map((item) => ({ label: formatDate(item.date, { month: 'short', day: 'numeric' }), value: item.count }));
   const revenueData = (stats?.revenueSeries || []).map((item) => ({ label: item.month?.slice(5) || '-', value: Number(item.revenue) || 0 }));
@@ -86,33 +136,42 @@ export default function AdminDashboard() {
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total users" value={stats?.totalUsers ?? '-'} hint="All registered accounts" icon={<MetricIcon>◉</MetricIcon>} accent="text-admin-cyan" />
-        <StatCard label="Active subscriptions" value={stats?.activeSubscriptions ?? '-'} hint="Currently active plans" icon={<MetricIcon>◆</MetricIcon>} accent="text-accent-400" />
-        <StatCard label="Monthly recurring revenue" value={formatMoney(stats?.mrr)} hint="Active paid plans" icon={<MetricIcon>$</MetricIcon>} accent="text-admin-success" />
-        <StatCard label="Pending reviews" value={stats?.pendingReviews ?? '-'} hint="Waiting for moderation" icon={<MetricIcon>★</MetricIcon>} accent="text-admin-warning" />
+        <StatCard label="Total users" value={stats?.totalUsers ?? '-'} loading={first} hint="All registered accounts" icon={<MetricIcon>◉</MetricIcon>} accent="text-admin-cyan" />
+        <StatCard label="Active subscriptions" value={stats?.activeSubscriptions ?? '-'} loading={first} hint="Currently active plans" icon={<MetricIcon>◆</MetricIcon>} accent="text-accent-400" />
+        <StatCard label="Monthly recurring revenue" value={formatMoney(stats?.mrr)} loading={first} hint="Active paid plans" icon={<MetricIcon>$</MetricIcon>} accent="text-admin-success" />
+        <StatCard label="Pending reviews" value={stats?.pendingReviews ?? '-'} loading={first} hint="Waiting for moderation" icon={<MetricIcon>★</MetricIcon>} accent="text-admin-warning" />
       </div>
 
       <section className="admin-card flex flex-wrap items-center gap-3 !p-4">
         <span className="mr-1 text-xs font-bold uppercase tracking-[0.16em] text-admin-faint">Service health</span>
-        <HealthPill label="Database" value={health?.database || 'checking'} />
-        <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' || health?.stripe === 'disabled' ? 'warning' : 'success'} />
-        <HealthPill label="Email" value={health?.email || stats?.system?.email || 'checking'} tone={health?.email === 'mock' ? 'warning' : 'success'} />
-        <span className="ml-auto text-xs text-admin-faint">{health ? `${health.latencyMs}ms response · ${Math.floor((health.uptimeSeconds || 0) / 60)}m uptime` : 'Connecting...'}</span>
+        {first ? (
+          <>
+            {[0, 1, 2].map((i) => <Skeleton key={i} className="h-[30px] w-36 rounded-full" />)}
+            <span className="ml-auto text-xs"><SkeletonText chars={22} /></span>
+          </>
+        ) : (
+          <>
+            <HealthPill label="Database" value={health?.database || 'checking'} />
+            <HealthPill label="Stripe" value={health?.stripe || stats?.system?.stripe || 'checking'} tone={health?.stripe === 'mock' || health?.stripe === 'disabled' ? 'warning' : 'success'} />
+            <HealthPill label="Email" value={health?.email || stats?.system?.email || 'checking'} tone={health?.email === 'mock' ? 'warning' : 'success'} />
+            <span className="ml-auto text-xs text-admin-faint fade-in">{health ? `${health.latencyMs}ms response · ${Math.floor((health.uptimeSeconds || 0) / 60)}m uptime` : 'Connecting...'}</span>
+          </>
+        )}
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last 30 days.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
-        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">Revenue trend</h3><p className="mt-1 text-xs text-admin-muted">Paid revenue by month for the latest six months.</p></div><span className="rounded-full border border-admin-success/20 bg-admin-success/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-success">MRR {formatMoney(stats?.mrr)}</span></div><div className="mt-6"><BarChart data={revenueData} height={220} valueFormatter={formatMoney} barClassName="bg-gradient-to-t from-admin-success to-admin-cyan" /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last 30 days.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} loading={first} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">Revenue trend</h3><p className="mt-1 text-xs text-admin-muted">Paid revenue by month for the latest six months.</p></div><span className="rounded-full border border-admin-success/20 bg-admin-success/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-success">{first ? <SkeletonText chars={9} /> : <>MRR {formatMoney(stats?.mrr)}</>}</span></div><div className="mt-6"><BarChart data={revenueData} loading={first} skeletonBars={6} height={220} valueFormatter={formatMoney} barClassName="bg-gradient-to-t from-admin-success to-admin-cyan" /></div></section>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[0.82fr_1.18fr]">
-        <section className="admin-card"><div className="flex items-start justify-between"><div><h3 className="text-base font-bold text-admin-text">Plan mix</h3><p className="mt-1 text-xs text-admin-muted">Current subscription distribution.</p></div><Link to="/subscriptions" className="text-xs font-semibold text-admin-cyan hover:text-white">Open billing</Link></div><div className="mt-6 space-y-4">{['free', 'pro', 'team'].map((name) => { const row = plans.find((item) => item.plan === name); const count = Number(row?.count || 0); return <div key={name}><div className="flex justify-between text-sm"><span className="font-semibold capitalize text-admin-text">{name}</span><span className="text-admin-muted">{count}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-admin-surface-2"><div className={`h-full rounded-full ${name === 'free' ? 'bg-admin-faint' : name === 'pro' ? 'bg-admin-accent' : 'bg-admin-cyan'}`} style={{ width: `${Math.max(count ? 4 : 0, (count / maxPlan) * 100)}%` }} /></div></div>; })}</div></section>
-        <section className="admin-card"><div className="flex items-start justify-between"><div><h3 className="text-base font-bold text-admin-text">Admin activity</h3><p className="mt-1 text-xs text-admin-muted">A traceable history of changes made in the control room.</p></div><Link to="/users" className="text-xs font-semibold text-admin-cyan hover:text-white">Manage access</Link></div><div className="mt-5"><ActivityFeed items={stats?.recentActivity} /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between"><div><h3 className="text-base font-bold text-admin-text">Plan mix</h3><p className="mt-1 text-xs text-admin-muted">Current subscription distribution.</p></div><Link to="/subscriptions" className="text-xs font-semibold text-admin-cyan hover:text-white">Open billing</Link></div><div className="mt-6 space-y-4">{first ? <PlanMixOutline /> : ['free', 'pro', 'team'].map((name) => { const row = plans.find((item) => item.plan === name); const count = Number(row?.count || 0); return <div key={name} className="fade-in"><div className="flex justify-between text-sm"><span className="font-semibold capitalize text-admin-text">{name}</span><span className="text-admin-muted">{count}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-admin-surface-2"><div className={`h-full rounded-full ${name === 'free' ? 'bg-admin-faint' : name === 'pro' ? 'bg-admin-accent' : 'bg-admin-cyan'}`} style={{ width: `${Math.max(count ? 4 : 0, (count / maxPlan) * 100)}%` }} /></div></div>; })}</div></section>
+        <section className="admin-card"><div className="flex items-start justify-between"><div><h3 className="text-base font-bold text-admin-text">Admin activity</h3><p className="mt-1 text-xs text-admin-muted">A traceable history of changes made in the control room.</p></div><Link to="/users" className="text-xs font-semibold text-admin-cyan hover:text-white">Manage access</Link></div><div className="mt-5">{first ? <FeedOutline /> : <div className="fade-in"><ActivityFeed items={stats?.recentActivity} /></div>}</div></section>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
-        <section className="admin-card !p-0"><div className="flex items-center justify-between border-b border-admin-border px-5 py-4"><div><h3 className="text-base font-bold text-admin-text">Recent payments</h3><p className="mt-1 text-xs text-admin-muted">Latest billing activity across the platform.</p></div><Link to="/subscriptions" className="text-sm font-semibold text-admin-cyan hover:text-white">View subscriptions</Link></div><div className="overflow-x-auto"><table className="admin-table"><caption className="sr-only">Most recent payments across the platform</caption><thead><tr><th scope="col">User</th><th scope="col">Plan</th><th scope="col">Amount</th><th scope="col">Date</th><th scope="col">Status</th></tr></thead><tbody>{(stats?.recentPayments || []).length === 0 ? <tr><td colSpan="5" className="px-4 py-8 text-center text-admin-muted">No payments yet.</td></tr> : stats.recentPayments.map((payment) => <tr key={payment.id}><th scope="row"><div className="font-medium text-admin-text">{payment.userName || 'Unknown user'}</div><div className="text-xs text-admin-faint">{payment.userEmail}</div></th><td className="capitalize">{payment.plan}</td><td>{payment.currency?.toUpperCase()} {payment.amount}</td><td>{formatDate(payment.created_at)}</td><td><Badge status={payment.status} /></td></tr>)}</tbody></table></div></section>
-        <section className="admin-card"><div><h3 className="text-base font-bold text-admin-text">Moderation & publishing</h3><p className="mt-1 text-xs leading-5 text-admin-muted">Keep the public experience fresh without leaving the dashboard.</p></div><div className="mt-5 space-y-3"><Link to="/reviews" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-warning/50"><span><span className="block text-sm font-semibold text-admin-text">Review queue</span><span className="mt-1 block text-xs text-admin-muted">{stats?.pendingReviews || 0} waiting for approval</span></span><span className="text-admin-warning">-&gt;</span></Link><Link to="/contact" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Contact inbox</span><span className="mt-1 block text-xs text-admin-muted">{stats?.contact?.awaiting || 0} awaiting a reply · {stats?.contact?.unread || 0} unread</span></span><span className="text-admin-cyan">-&gt;</span></Link><Link to="/releases" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Release catalog</span><span className="mt-1 block text-xs text-admin-muted">Publish builds and update links</span></span><span className="text-admin-cyan">-&gt;</span></Link></div></section>
+        <section className="admin-card !p-0"><div className="flex items-center justify-between border-b border-admin-border px-5 py-4"><div><h3 className="text-base font-bold text-admin-text">Recent payments</h3><p className="mt-1 text-xs text-admin-muted">Latest billing activity across the platform.</p></div><Link to="/subscriptions" className="text-sm font-semibold text-admin-cyan hover:text-white">View subscriptions</Link></div><div className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-admin-accent)]" tabIndex={0} role="region" aria-busy={first || undefined} aria-label="Recent payments — scrolls sideways"><table className="admin-table"><caption className="sr-only">Most recent payments across the platform</caption><thead><tr><th scope="col">User</th><th scope="col">Plan</th><th scope="col">Amount</th><th scope="col">Date</th><th scope="col">Status</th></tr></thead><tbody>{first ? PAYMENT_OUTLINE : (stats?.recentPayments || []).length === 0 ? <tr><td colSpan="5" className="px-4 py-8 text-center text-admin-muted">No payments yet.</td></tr> : stats.recentPayments.map((payment) => <tr key={payment.id} className="row-in"><th scope="row"><div className="font-medium text-admin-text">{payment.userName || 'Unknown user'}</div><div className="text-xs text-admin-faint">{payment.userEmail}</div></th><td className="capitalize">{payment.plan}</td><td>{payment.currency?.toUpperCase()} {payment.amount}</td><td>{formatDate(payment.created_at)}</td><td><Badge status={payment.status} /></td></tr>)}</tbody></table></div></section>
+        <section className="admin-card"><div><h3 className="text-base font-bold text-admin-text">Moderation & publishing</h3><p className="mt-1 text-xs leading-5 text-admin-muted">Keep the public experience fresh without leaving the dashboard.</p></div><div className="mt-5 space-y-3"><Link to="/reviews" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-warning/50"><span><span className="block text-sm font-semibold text-admin-text">Review queue</span><span className="mt-1 block text-xs text-admin-muted">{first ? <SkeletonText chars={20} /> : `${stats?.pendingReviews || 0} waiting for approval`}</span></span><span className="text-admin-warning">-&gt;</span></Link><Link to="/contact" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Contact inbox</span><span className="mt-1 block text-xs text-admin-muted">{first ? <SkeletonText chars={28} /> : <>{stats?.contact?.awaiting || 0} awaiting a reply · {stats?.contact?.unread || 0} unread</>}</span></span><span className="text-admin-cyan">-&gt;</span></Link><Link to="/releases" className="flex items-center justify-between rounded-xl border border-admin-border bg-admin-surface-2/60 p-4 transition hover:border-admin-cyan/50"><span><span className="block text-sm font-semibold text-admin-text">Release catalog</span><span className="mt-1 block text-xs text-admin-muted">Publish builds and update links</span></span><span className="text-admin-cyan">-&gt;</span></Link></div></section>
       </div>
     </div>
   );

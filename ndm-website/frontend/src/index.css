@@ -58,9 +58,66 @@
   /* Tailwind's own rounded-full, so a pill written in CSS and a pill
      written as a utility are literally the same computed value. */
   --radius-pill: calc(infinity * 1px);
-  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-display: "Sora", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  /* The fallback faces are declared below with measured metric overrides, so
+     the swap from system text to the web font does not reflow the page. They
+     sit between the web font and the generic stack: if the web font arrives,
+     nothing below it is ever consulted. */
+  --font-sans: "Instrument Sans", "Instrument Sans Fallback", ui-sans-serif,
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Sora", "Sora Fallback", "Instrument Sans", ui-sans-serif,
+    system-ui, sans-serif;
+
+  /* Fluid display sizes.
+     Tailwind's stock scale steps at each breakpoint, so a heading written
+     text-4xl was 36px at 1280px and still 36px at 380px — where it takes four
+     lines and pushes everything under it a third of a screen down. Each step
+     below keeps its old value as the CAP and only ever gets smaller on a
+     narrow screen, so nothing on a laptop moves. Body sizes (sm/base/lg/xl)
+     are deliberately left alone: shrinking reading text to save scrolling is
+     a trade nobody asked for. */
+  --text-2xl: clamp(1.35rem, 1.15rem + 1vw, 1.5rem);
+  --text-3xl: clamp(1.6rem, 1.3rem + 1.5vw, 1.875rem);
+  --text-4xl: clamp(1.9rem, 1.4rem + 2.4vw, 2.25rem);
+  --text-5xl: clamp(2.25rem, 1.5rem + 3.6vw, 3rem);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Metric-matched fallback faces.                                      */
+/*                                                                      */
+/*  Both web fonts load with font-display:swap, so for the first stretch */
+/*  of every cold load the page is painted in Arial and then painted     */
+/*  again in Sora / Instrument Sans. Arial is 1.94% narrower than        */
+/*  Instrument Sans and 5.11% wider than Sora at the same size, with     */
+/*  different ascent and descent — so that second paint moved every line */
+/*  on the page. These two faces make the fallback occupy the web font's */
+/*  box, and the swap stops being visible as movement.                   */
+/*                                                                      */
+/*  The numbers are measured, not copied: Chrome, canvas measureText on  */
+/*  a 126-character sample at 100px, each web font against Arial, then   */
+/*  the adjustFontFallback maths — size-adjust from the width ratio, the */
+/*  overrides resolved against the already-adjusted em. Re-measure if    */
+/*  either family is ever changed.                                       */
+/* ------------------------------------------------------------------ */
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  src: local("Arial"), local("Helvetica Neue"), local("Liberation Sans");
+  size-adjust: 101.98%;
+  ascent-override: 95.12%;
+  descent-override: 24.52%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Sora Fallback";
+  /* Display type is only ever set at 600-800, so the bold face is the honest
+     comparison — and naming it stops the browser synthesising a bold that is
+     wider than either real font. */
+  font-weight: 600 800;
+  src: local("Arial Bold"), local("Arial"), local("Liberation Sans Bold");
+  size-adjust: 95.14%;
+  ascent-override: 101.95%;
+  descent-override: 30.48%;
+  line-gap-override: 0%;
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,6 +215,15 @@
 
 html {
   scroll-behavior: smooth;
+  /* The scrollbar's 10px is reserved whether or not there is anything to
+     scroll. Without it the page was 1366px wide with no scrollbar and 1356px
+     with one, and it toggled at exactly the worst moments — when the boot
+     screen lifted (html.ndm-booting sets overflow: hidden), and whenever a
+     page was briefly shorter than the window — so every centred thing on the
+     page jumped 5px sideways. Recorded frame by frame on the live site, on
+     reload and on navigation both. Overlay scrollbars (phones, macOS) have
+     no gutter, so this changes nothing there. */
+  scrollbar-gutter: stable;
   background: var(--color-surface-0);
 }
 
@@ -230,6 +296,27 @@ body::before {
   textarea {
     font: inherit;
   }
+
+  /* Two lines that fix ragged type everywhere at once.
+     "balance" evens the line lengths of a heading, so "Nexa vs the usual
+     suspects." stops breaking as three words and then one. "pretty" is the
+     cheaper pass for body copy: it only prevents the last line being a single
+     orphaned word, which is the failure that actually shows. Both are inert
+     in a browser that has neither. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd,
+  figcaption,
+  blockquote {
+    text-wrap: pretty;
+  }
 }
 
 @layer components {
@@ -240,14 +327,14 @@ body::before {
     padding-inline: 1.25rem;
   }
 
+  /* Fluid rhythm rather than one step at 768px.
+     4.5rem below md and a jump to 6.5rem above it meant 72px of air over and
+     under every section on a 390px phone — the home page has six of them, so
+     close to a screen spent on gaps alone. The clamp starts at 3.25rem on a
+     small phone and reaches the same 6.5rem it always had by about 1390px:
+     the desktop rhythm is unchanged, only the narrow end tightens. */
   .section {
-    padding-block: 4.5rem;
-  }
-
-  @media (min-width: 768px) {
-    .section {
-      padding-block: 6.5rem;
-    }
+    padding-block: clamp(3.25rem, 7.5vw, 6.5rem);
   }
 
   /* Sign-in / sign-up (AuthLayout) carry no footer, so the form section takes
@@ -265,9 +352,20 @@ body::before {
      single centred card it only pushed the form off-screen and put a
      scrollbar on a page that has nothing to scroll to. */
   .auth-main > .auth-section,
-  .auth-main > .page-enter > .auth-section {
+  .auth-main > .page-enter > .auth-section,
+  .auth-main .route-skeleton > .auth-section {
     flex: 1;
     padding-block: 2.5rem;
+  }
+
+  /* The outline of a sign-in page stands where the page will: it takes the
+     same column the card is centred in, whether it is the Suspense fallback
+     or the stand-in navigation shows while the page's code is on its way. */
+  .auth-main > .route-skeleton,
+  .auth-main > .page-enter > .route-skeleton {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
   }
 
   .brand-lockup {
@@ -275,6 +373,10 @@ body::before {
     align-items: center;
     gap: 0.78rem;
     min-width: 0;
+    /* It is a link to the home page, and on a phone it is the largest thing in
+       the header — but it measured 34px tall, under the touch minimum. The
+       height grows without moving anything: the lockup is centred in it. */
+    min-height: 44px;
   }
 
   .brand-lockup img {
@@ -311,6 +413,11 @@ body::before {
   .card {
     position: relative;
     overflow: hidden;
+    /* So the things inside a card can ask how wide THE CARD is (see the
+       container-query block near the end of this file). Safe here because no
+       card anywhere takes its width from its contents — they are all block
+       children of a grid, a flex column or a container. */
+    container-type: inline-size;
     background: linear-gradient(145deg, rgba(20, 28, 47, 0.92), rgba(9, 13, 23, 0.92));
     border: 1px solid rgba(91, 116, 171, 0.34);
     border-radius: var(--radius-4);
@@ -342,7 +449,12 @@ body::before {
     align-items: center;
     justify-content: center;
     gap: 0.55rem;
-    min-height: 2.75rem;
+    /* 44px flat, not 2.75rem. The same number at a 16px root, but the rem
+       version measured 43.x and so sat a hair under the touch minimum — and it
+       would drift further for anyone who has changed their browser's base font
+       size. A touch target is a physical measurement; it should not ride the
+       type scale. */
+    min-height: 44px;
     padding: 0.72rem 1.15rem;
     border: 1px solid transparent;
     border-radius: var(--radius-2);
@@ -563,27 +675,6 @@ body::before {
 
   .console-dots span:last-child {
     background: #36caff;
-  }
-
-  /* Sentence case, not uppercase: 17 characters of all-caps is a phrase
-     being read, not a label being scanned. Caps stay for the short ones
-     (.eyebrow, the stat labels). */
-  .console-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--color-ink-3);
-    font-size: 0.75rem;
-    letter-spacing: 0.01em;
-  }
-
-  .console-status::before {
-    width: 0.38rem;
-    height: 0.38rem;
-    content: "";
-    border-radius: var(--radius-pill);
-    background: #45dfc1;
-    box-shadow: 0 0 12px #45dfc1;
   }
 
   .console-heading {
@@ -937,7 +1028,7 @@ body::before {
    for that subtree only. */
 /* The hero console stays dark on the light theme, so every token the light
    theme inverts has to be inverted back inside it — not just the ink ramp.
-   Missing the rest left the percentages, the "Live" chip and the throughput
+   Missing the rest left the percentages, the status chip and the throughput
    line painting light-theme greys and blues on a near-black panel: 2.3-3.1:1. */
 :root[data-theme='light'] .hero-console {
   --color-ink-1: #eef2ff;
@@ -1099,7 +1190,7 @@ h2 {
 
 @media (prefers-reduced-motion: no-preference) {
   .page-enter {
-    animation: page-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: page-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
   }
 
   .rise {
@@ -1208,5 +1299,324 @@ h2 {
   @keyframes bar-sheen {
     0% { transform: translateX(-100%); }
     55%, 100% { transform: translateX(220%); }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Advanced pass — render cost, container-driven layout, scroll-driven */
+/*  reveals, and view transitions between pages.                        */
+/*                                                                      */
+/*  Everything in this block is additive and feature-gated: a browser    */
+/*  without the feature keeps exactly the behaviour it had before, and   */
+/*  nothing here is the only way any content can be reached.            */
+/* ------------------------------------------------------------------ */
+
+/* 1. Render cost -----------------------------------------------------
+   content-visibility lets the browser skip layout and paint for a subtree
+   that is nowhere near the screen. /faq lays out 55 rows on every load and
+   /compare two matrices of roughly 250 cells each, whether or not anyone
+   scrolls that far. contain-intrinsic-size supplies a stand-in height so
+   the scrollbar does not jump, and its "auto" keyword makes the browser
+   remember the real height once a row has been rendered once — so the
+   second approach is exact. Find-in-page, anchor links and focus all
+   un-skip the subtree themselves, so nothing becomes unreachable. */
+.cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3.5rem;
+}
+
+.cv-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 480px;
+}
+
+/* 2. Container-driven rows -------------------------------------------
+   .card is a query container (see the .card rule above), so things inside
+   a card can be laid out from the CARD's width instead of the window's.
+   The case this fixes: the team card sits in a sm:grid-cols-2 grid, so at
+   a 640px window the card is about 300px wide — and sm:flex-row chose that
+   exact moment to put a text field and a button side by side. A container
+   query keeps them stacked until the card itself has the room, whatever
+   the window is doing. */
+.cq-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@container (width >= 26rem) {
+  .cq-row {
+    flex-direction: row;
+    align-items: flex-end;
+  }
+}
+
+/* Same argument, the other way up: four stat cards across a 1024px screen
+   are about 210px each, and the icon tile was taking a fifth of that from
+   the number it labels. */
+@container (width < 13rem) {
+  .cq-drop-tight {
+    display: none;
+  }
+}
+
+/* 3. Scroll-driven reveals -------------------------------------------
+   The same drift-in as .reveal, driven by the scroll position itself
+   instead of by an IntersectionObserver and a class flip. Section.jsx
+   applies this class in place of .reveal wherever the browser supports it,
+   so there is no observer to construct, no callback on the main thread,
+   and the animation stays in step with a fling scroll instead of starting
+   one frame after it. The IntersectionObserver path is untouched and is
+   still what Firefox runs. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    /* A fixed distance, not a share of the section.
+       "cover 30%" is 30% of the section's height plus the window's, and most
+       pages here are ONE tall Section — /faq's is about 5000px — so the page
+       was still part-way through its reveal at the very top: its heading sat
+       a couple of pixels low, stepped into place one frame after it first
+       painted, and the whole page drifted against the scroll for its first
+       thousand pixels. Recorded frame by frame on every load and navigation.
+       "entry 220px" is the first 220px after the section's top edge comes up
+       over the bottom of the window, whatever its height. A section already
+       on screen is past that before anything is drawn, so it never moves. */
+    .reveal-native {
+      animation: ndm-reveal linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 220px;
+    }
+
+    /* Cards in a revealed section each get their own timeline, so the
+       cascade comes from where a card actually is rather than from eight
+       hard-coded nth-child delays that stop at the eighth card. */
+    .reveal-native [data-stagger] > * {
+      animation: ndm-reveal-item linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 160px;
+    }
+  }
+}
+
+/* A drift, and nothing but a drift — no fade, and no scale.
+   A scroll-driven animation does not play and finish. It HOLDS whatever value
+   its range maps the current scroll position to, for as long as the reader
+   leaves the page alone, so every property it touches becomes a function of
+   how far down the page a thing happens to be. Two of the three properties
+   this reveal started with turned out not to survive that:
+
+     opacity — a contrast ratio that depends on scroll position. axe found body
+       text on four pages sitting at 0.89 opacity and failing contrast while
+       nothing was moving and nothing would move until someone scrolled.
+
+     scale — a tap target that depends on scroll position. 0.985 of a 44px
+       button is 43.3px, and getBoundingClientRect reports the scaled box, so
+       three controls on /contact dropped under the minimum and stayed there.
+       It also leaves every glyph in the section rasterised off-pixel.
+
+   translate has neither problem: it moves a box without resizing it or
+   changing what it is drawn over. The IntersectionObserver path below can
+   still do all three, because there they are binary — the end state arrives on
+   a 700ms clock of its own and then stays. */
+@keyframes ndm-reveal {
+  from {
+    transform: translateY(22px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes ndm-reveal-item {
+  from {
+    transform: translateY(18px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* 4. Moving between pages --------------------------------------------
+   navigation.jsx swaps the page inside document.startViewTransition. Two
+   things move, and nothing else does:
+
+   The window dissolves — the browser's own cross-fade of the ROOT snapshot.
+   Only its timing is set here, and set identically on both halves, which
+   keeps the browser's plus-lighter blend: the two half-faded pages always
+   add up to one, so whatever is the same on both (the header, the footer,
+   the star field) holds perfectly still while the page between them
+   changes. (Replacing the keyframes outright drops that blend, and the
+   pages dip towards the background mid-fade.)
+
+   The arriving page settles — a 14px rise on the page wrapper, easing out
+   hard, so most of it has happened by the time the dissolve completes. It
+   is a transform, so nothing around the page reflows, and it is the page's
+   own box inside the new snapshot rather than a named element: a named
+   element is animated from its old box to its new one, and resetting the
+   scroll moves a page's box by however far down the reader was.
+
+   It was a 200ms dissolve alone, which read as the page changing "all at
+   once" — and none at all under reduced motion, which was a literal cut. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@supports (view-transition-name: none) {
+  /* The dissolve supplies the fade, so the page keyframe keeps only the
+     rise — otherwise the page fades in twice and arrives late. */
+  .page-enter {
+    animation: none;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .page-enter {
+      animation: page-settle 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    }
+  }
+}
+
+@keyframes page-settle {
+  from {
+    transform: translateY(14px);
+  }
+}
+
+/* Reduced motion keeps the dissolve and loses the movement. A cross-fade is
+   what the platforms themselves substitute for a slide when a reader asks
+   for less motion; a cut from one page to the next is not "less motion", it
+   is the jolt with the animation removed. Shorter, and nothing rises. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 200ms;
+  }
+}
+
+/* 5. Stand-ins that hold the layout ----------------------------------
+   Sized by whoever uses it (components/Skeleton.jsx); all this supplies is
+   the tone and the sweep.
+
+   The tone is a tint of the ink, laid OVER whatever is behind it, not a
+   surface colour of its own. It used to be drawn from the two surface
+   tokens, and a stand-in sits on every surface there is: on the light
+   theme --color-surface-2 is white, so on a white card the bars were white
+   on white and only the sweep showed — outlines of nothing; on the dark
+   theme the card's own gradient passes through the same colour, so they
+   faded out across the card. A translucent tint is the same step darker
+   (or lighter) than the page, a card, a pill or a table, whichever it is
+   on. */
+.skeleton {
+  --skeleton-base: rgba(150, 172, 232, 0.11);
+  --skeleton-shine: rgba(150, 172, 232, 0.22);
+  background-image: linear-gradient(
+    100deg,
+    var(--skeleton-base) 28%,
+    var(--skeleton-shine) 50%,
+    var(--skeleton-base) 72%
+  );
+  background-size: 220% 100%;
+  background-position: 180% 0;
+}
+
+/* Ink on white: the base a step darker than the page, the sweep lighter. */
+:root[data-theme='light'] .skeleton {
+  --skeleton-base: rgba(36, 50, 96, 0.09);
+  --skeleton-shine: rgba(36, 50, 96, 0.035);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: skeleton-sweep 1.5s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-sweep {
+  to {
+    background-position: -40% 0;
+  }
+}
+
+/* A stand-in for a run of text that is on its way, drawn by the text
+   itself: the placeholder words are laid out exactly as the real ones will
+   be — same font, same line box — and only painted as a bar. Where a
+   skeleton block would be a guess at a height, this is the height. */
+.skeleton-text {
+  color: transparent !important;
+  border-radius: 0.35em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  user-select: none;
+}
+
+/* Content arriving where its skeleton was. It fades up into the place the
+   skeleton held — the skeleton was built to the content's size, so this is
+   the only movement, and it is 6px. Reduced motion keeps the fade (a change
+   of opacity is not motion) and drops the rise.
+
+   Backwards, not both: an animation still filling after it ends keeps the
+   element in a stacking context of its own for as long as the page is up. */
+.fade-in {
+  animation: ndm-fade-in 240ms ease-out backwards;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fade-in {
+    animation: ndm-fade-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+}
+
+@keyframes ndm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ndm-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* 6. Waiting for a route ---------------------------------------------
+   A tap on a link whose code is not here yet keeps the old page for up to
+   150ms (navigation.jsx), then shows the new page's skeleton until the code
+   lands. This hairline is the acknowledgement for that whole stretch, from
+   the first frame: one class, and it never moves the layout. */
+.route-progress {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline: 0;
+  z-index: 60;
+  height: 2px;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+.route-progress::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inline-size: 40%;
+  background: linear-gradient(90deg, transparent, var(--color-brand-300), var(--color-accent-400), transparent);
+  animation: route-progress-sweep 950ms cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+@keyframes route-progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-progress::after {
+    inline-size: 100%;
+    animation: none;
+    opacity: 0.7;
   }
 }

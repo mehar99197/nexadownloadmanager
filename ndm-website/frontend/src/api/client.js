@@ -6,6 +6,29 @@ let refreshPromise = null;
 export const setAccessToken = (token) => { accessToken = token || null; };
 export const clearAccessToken = () => { accessToken = null; };
 
+/**
+ * The refresh cookie is gone or was refused: there is no session any more.
+ *
+ * This exists because clearing the in-memory token is only a third of the job
+ * (AUDIT.md M-10). The readable ndm_session hint still says "there may be a
+ * session here", so the NEXT page load pays for a refresh that cannot work;
+ * and AuthContext's user state still says signed in, so the header keeps
+ * rendering an account menu over a session that ended. AuthContext listens for
+ * this and clears all three in one place — the alternative is three callers
+ * remembering to do three things, which is how it drifted apart to begin with.
+ *
+ * Deliberately NOT dispatched from clearAccessToken(): that one also runs on a
+ * deliberate sign-out, which already tears down its own state.
+ */
+export const SESSION_ENDED_EVENT = 'ndm:session-ended';
+
+function sessionEnded() {
+  clearAccessToken();
+  if (typeof window !== 'undefined' && window.dispatchEvent) {
+    window.dispatchEvent(new window.CustomEvent(SESSION_ENDED_EVENT));
+  }
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   withCredentials: true,
@@ -43,7 +66,7 @@ api.interceptors.response.use(
       original.headers.Authorization = `Bearer ${token}`;
       return api(original);
     } catch (refreshError) {
-      clearAccessToken();
+      sessionEnded();
       return Promise.reject(refreshError);
     }
   }
@@ -67,7 +90,7 @@ export async function restoreSession() {
     setAccessToken(token);
     return true;
   } catch {
-    clearAccessToken();
+    sessionEnded();
     return false;
   }
 }

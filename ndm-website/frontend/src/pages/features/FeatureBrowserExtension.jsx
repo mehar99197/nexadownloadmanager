@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Bullets, Code, Note, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Bullets, Code, Note, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 export default function FeatureBrowserExtension() {
@@ -50,10 +50,18 @@ export default function FeatureBrowserExtension() {
         helper forwards the message to the running app over a local socket. Nothing leaves your
         machine at any point in that chain.
       </P>
-      <Figure kind="Diagram">
-        Page → extension service worker → native messaging → nexa-host → local socket → Nexa app →
-        download starts. With a note that our servers appear nowhere in the path.
-      </Figure>
+      <Flow
+        caption="The path a download takes from the browser to the app."
+        steps={[
+          { title: 'The web page' },
+          { title: 'Extension service worker', detail: 'URL, cookies and headers' },
+          { title: 'Native messaging', detail: 'the browser starts nexa-host' },
+          { title: 'nexa-host', detail: 'a small helper beside the app' },
+          { title: 'Local socket' },
+          { title: 'Nexa app', detail: 'the download starts' },
+        ]}
+        note="Every step happens on your own computer. Nexa's servers are not in this path."
+      />
       <P>
         Registration is automatic. Every time Nexa launches it rewrites the native-host manifests
         for the browsers it finds installed, so the bridge repairs itself after a browser update, a

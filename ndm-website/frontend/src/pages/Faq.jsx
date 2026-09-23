@@ -43,7 +43,7 @@ const SECTIONS = [
       {
         q: 'Do I need to create an account?',
         keywords: 'account signup register login required',
-        a: <>No. The Free plan works with no account at all — install it and download. An account is only needed to start a Pro trial, to buy a plan, or to have your plan follow you to another computer. If you do sign in, the app picks the plan up by itself; there is no licence key to copy.</>,
+        a: <>No. The Free plan works with no account at all — install it and download. An account is only needed to start a Pro trial, to buy a plan, or to have your plan follow you to another computer. If you do sign in, the app picks the plan up by itself; there is no license key to copy.</>,
       },
       {
         q: 'How do I update Nexa?',
@@ -201,7 +201,7 @@ const SECTIONS = [
       {
         q: 'What is seeding, and can I control it?',
         keywords: 'seeding ratio upload stop sharing',
-        a: <>Seeding is uploading the file to other people after you have finished downloading it — it is how BitTorrent works at all. Nexa keeps seeding until it reaches the seed ratio you set, then stops on its own. Set that ratio in Settings → BitTorrent: <M>1.0</M> means you have given back as much as you took; <M>0</M> stops the moment the download completes. You can also stop any row by hand.</>,
+        a: <>Seeding is uploading the file to other people after you have finished downloading it — it is how BitTorrent works at all. Out of the box Nexa does not seed: Settings → BitTorrent → Seed to ratio starts at <M>0</M>, shown as &ldquo;Don&apos;t seed&rdquo;, so a torrent stops the moment it completes. Set a ratio and Nexa keeps uploading until it reaches it, then stops on its own — <M>1.0</M> means you have given back as much as you took. You can also stop any row by hand.</>,
       },
       {
         q: 'Why is my torrent download slow?',
@@ -235,19 +235,19 @@ const SECTIONS = [
         a: <>Yes: within 14 days of any charge, email <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">support@nexadownloadmanager.com</a> and we refund it in full, no questions asked. After 14 days charges are not refundable, but we will still cancel immediately on request so you are not billed again. The details are in the <A to="/terms">terms</A>.</>,
       },
       {
-        q: 'How do I activate a licence key?',
-        keywords: 'activate licence key serial activation code',
+        q: 'How do I activate a license key?',
+        keywords: 'activate license licence key serial activation code',
         a: <>Easiest is not to: sign in to your account in Settings → Account and the plan follows you, with no key to copy. If you prefer a key, open Settings → Account → &ldquo;Use a license key instead&rdquo;, paste it and activate. The two are mutually exclusive on purpose — signing in clears a stored key, and activating a key signs you out. See <A to="/docs/license">signing in &amp; seats</A>.</>,
       },
       {
-        q: 'Can I move my licence to another computer?',
-        keywords: 'transfer move licence another computer new pc seat',
+        q: 'Can I move my license to another computer?',
+        keywords: 'transfer move license licence another computer new pc seat',
         a: <>Yes, and you do not need to ask us. A plan covers a number of machines <em>at a time</em>, not a fixed list: Pro is one, Team is five. Sign out on the old machine, or open your <A to="/dashboard">dashboard</A> and sign that device out remotely — the seat frees itself immediately and the new computer can take it. A machine that crashes frees its seat automatically when the lease lapses.</>,
       },
       {
         q: 'What happens if my payment fails?',
         keywords: 'payment failed declined card expired',
-        a: <>Nothing sudden. Stripe retries a failed payment over several days and emails you. Your plan keeps working throughout, and for a few days after, so a card that expired over a weekend does not interrupt anything. If it ultimately fails, the plan drops back to Free — the app keeps working, with the Free limits. Your licence key is never deleted, so paying again restores everything.</>,
+        a: <>Nothing sudden. Stripe retries a failed payment over several days and emails you. Your plan keeps working throughout, and for a few days after, so a card that expired over a weekend does not interrupt anything. If it ultimately fails, the plan drops back to Free — the app keeps working, with the Free limits. Your license key is never deleted, so paying again restores everything.</>,
       },
       {
         q: 'How do I update my payment method?',
@@ -318,7 +318,7 @@ const SECTIONS = [
       {
         q: 'How do I completely reset Nexa?',
         keywords: 'reset factory defaults clean wipe settings start over',
-        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your licence sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
+        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your license sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
       },
       {
         q: 'Where are Nexa’s settings and database stored?',
@@ -385,8 +385,11 @@ function Helpful({ id }) {
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Was this helpful?</span>
-      <button type="button" disabled={sending} onClick={() => cast('yes')} className="btn btn-ghost !px-3 !py-1 text-xs">Yes</button>
-      <button type="button" disabled={sending} onClick={() => cast('no')} className="btn btn-ghost !px-3 !py-1 text-xs">No</button>
+      {/* min-h-11 and a wider tap box: at 41x43 these were a pixel under the
+          44px minimum and only as wide as the word. They appear under all 55
+          answers, so it is the most-repeated target on the site. */}
+      <button type="button" disabled={sending} onClick={() => cast('yes')} className="btn btn-ghost !px-4 !py-2 min-h-11 min-w-16 text-xs">Yes</button>
+      <button type="button" disabled={sending} onClick={() => cast('no')} className="btn btn-ghost !px-4 !py-2 min-h-11 min-w-16 text-xs">No</button>
       {failed && (
         <span className="text-xs text-amber-300">That did not reach us — please try again.</span>
       )}
@@ -396,8 +399,17 @@ function Helpful({ id }) {
 
 function Item({ item, open }) {
   return (
-    <Card as="details" className="group !p-0" open={open}>
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5 text-left text-base font-bold text-white marker:hidden [&::-webkit-details-marker]:hidden">
+    // cv-row: the page lays out fifty-five of these on every load. The class
+    // lets the browser skip layout and paint for the ones nowhere near the
+    // screen and stand a remembered height in for them, so the scrollbar is
+    // honest. Find-in-page, an anchor link and focus each un-skip a row on
+    // their own — nothing here becomes unreachable.
+    <Card as="details" className="cv-row group !p-0" open={open}>
+      {/* Denser on a phone, unchanged from `sm` up. Fifty-five rows at
+          px-6 py-5 is where /faq's 8.6 screens came from; 4px off each side of
+          each row is half a screen back. py-4 still leaves the summary ~56px
+          tall, so the tap target stays over the 44px minimum. */}
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-left text-[0.95rem] font-bold text-white marker:hidden sm:gap-4 sm:px-6 sm:py-5 sm:text-base [&::-webkit-details-marker]:hidden">
         <span>{item.q}</span>
         <svg
           width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -407,7 +419,7 @@ function Item({ item, open }) {
           <path d="M6 9l6 6 6-6" />
         </svg>
       </summary>
-      <div className="border-t border-white/5 px-6 py-5 text-sm leading-7 text-slate-400">
+      <div className="border-t border-white/5 px-4 py-4 text-sm leading-7 text-slate-400 sm:px-6 sm:py-5">
         {item.a}
         <Helpful id={item.q} />
       </div>
@@ -460,6 +472,26 @@ export default function Faq() {
               ? 'Nothing matched. Try a different word, or ask us directly.'
               : `${results.length} of ${ALL.length} answers match.`}
           </p>
+        )}
+        {/* Fifty-five rows in six groups, and the only way to the last group
+            was to scroll past the first five. Plain fragment links: the
+            sections already carry these ids and scroll-mt for the header. */}
+        {!results && (
+          <nav aria-label="FAQ sections" className="mt-4 flex flex-wrap gap-2">
+            {SECTIONS.map((section) => (
+              <a
+                key={section.id}
+                href={`#${section.id}`}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-white/5 bg-surface-2 px-3 text-xs font-medium text-slate-300 transition hover:text-white"
+              >
+                {section.label}
+                <span className="text-slate-500">
+                  {section.items.length}
+                  <span className="sr-only"> questions</span>
+                </span>
+              </a>
+            ))}
+          </nav>
         )}
       </div>
 

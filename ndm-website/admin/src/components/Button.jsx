@@ -16,9 +16,20 @@ const VARIANTS = {
     'bg-transparent text-admin-muted hover:bg-admin-surface-2 hover:text-admin-text disabled:opacity-50',
 };
 
+/**
+ * Both sizes clear the 44px touch minimum, by different routes.
+ *
+ * `md` simply grows: it measured 38px and 44 costs a form nothing.
+ *
+ * `sm` keeps its 28px look and grows only its *hit area*, through a
+ * transparent pseudo-element reaching past the box. The panel uses `sm` for
+ * row actions and filter chips, and eight of those in a line at 44px tall
+ * turns a dense table into a scrolling one — density is the point of a working
+ * tool. The finger gets its target; the layout does not move.
+ */
 const SIZES = {
-  sm: 'px-3 py-1.5 text-xs',
-  md: 'px-4 py-2 text-sm',
+  sm: "relative px-3 py-1.5 text-xs after:absolute after:inset-x-0 after:-inset-y-2 after:content-['']",
+  md: 'min-h-11 px-4 py-2 text-sm',
 };
 
 import { forwardRef } from 'react';

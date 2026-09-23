@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, queryOne, insert, execute } = require('../config/db');
+const config = require('../config/env');
 
 /**
  * People invited onto a Team licence.
@@ -70,6 +71,25 @@ const TeamMember = {
         ORDER BY m.accepted_at DESC LIMIT 1`,
       [userId]
     );
+  },
+
+  /**
+   * Has this invitation aged out? (AUDIT.md M-12)
+   *
+   * Kept next to the model rather than in the routes because two of them read
+   * a token — the pre-sign-in lookup and the accept — and a rule enforced in
+   * one but not the other is the same bug with an extra step.
+   *
+   * Only meaningful for a row still in 'invited': an accepted member's
+   * invited_at is just history, and their membership does not expire.
+   */
+  isExpired(invite) {
+    if (!invite || invite.status !== 'invited') return false;
+    const invitedAt = invite.invited_at ? new Date(invite.invited_at).getTime() : NaN;
+    // A row with no usable timestamp is treated as live. Refusing it would
+    // turn a data oddity into somebody unable to join a team they paid for.
+    if (!Number.isFinite(invitedAt)) return false;
+    return Date.now() - invitedAt > config.TEAM_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000;
   },
 
   async create({ subscriptionId, email, tokenHash, invitedBy }) {

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import api, { unwrap } from '../api/client';
+import { forgetRead, lastRead, readPublic } from '../api/reads';
 import usePageMeta from '../hooks/usePageMeta';
 import { formatDate } from '../utils/formatDate';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import Skeleton, { SkeletonText, useArrival } from '../components/Skeleton';
 
 const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
@@ -68,9 +68,11 @@ function Sha256({ value }) {
   return (
     <div className="mt-4 text-left">
       <p className="text-xs font-bold uppercase tracking-[0.13em] text-slate-500">SHA-256</p>
-      <div className="mt-1.5 flex items-center gap-2">
+      {/* items-stretch: the code box grows to the button's 44px rather than
+          the button shrinking to the code's line. */}
+      <div className="mt-1.5 flex items-stretch gap-2">
         <code
-          className="surface-inset min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 font-mono text-[0.7rem] text-brand-100"
+          className="surface-inset flex min-w-0 flex-1 items-center truncate rounded-lg px-2.5 py-1.5 font-mono text-[0.7rem] text-brand-100"
           title={value}
         >
           {value}
@@ -78,7 +80,7 @@ function Sha256({ value }) {
         <button
           type="button"
           onClick={copy}
-          className="shrink-0 rounded-lg border border-[rgba(99,126,187,0.42)] px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-accent-400 hover:text-white"
+          className="min-h-11 shrink-0 rounded-lg border border-[rgba(99,126,187,0.42)] px-3.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-accent-400 hover:text-white"
           aria-label="Copy SHA-256 checksum"
         >
           {copied ? 'Copied' : 'Copy'}
@@ -95,25 +97,35 @@ export default function Download() {
       'Download Nexa Download Manager for Windows (installer) or Ubuntu/Debian (.deb), plus the browser extension for Chrome, Edge, Brave and Firefox. Free to start, SHA-256 checksums included.',
   });
 
-  const [release, setRelease] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // A revisit starts from the last answer (api/reads.js) and asks again
+  // underneath, so it draws the real cards in its first frame.
+  const [release, setRelease] = useState(() => lastRead('/releases/latest') ?? null);
+  const [loading, setLoading] = useState(() => lastRead('/releases/latest') === undefined);
   const [error, setError] = useState('');
   const [os, setOs] = useState('');
+  const arrive = useArrival(loading);
 
   useEffect(() => {
     let cancelled = false;
-    const fetch = async () => {
-      try {
-        const res = await api.get('/releases/latest');
-        if (!cancelled) setRelease(unwrap(res) || null);
-      } catch (err) {
-        // 404 = nothing published yet, which is a valid (empty) state, not an error.
-        if (!cancelled && err?.response?.status !== 404) setError('Failed to load download links.');
-      } finally {
+    readPublic('/releases/latest')
+      .then((data) => {
+        if (!cancelled) setRelease(data || null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // 404 = nothing published yet, which is a valid (empty) state, not an
+        // error — and it overrides whatever an earlier visit was told.
+        if (err?.response?.status === 404) {
+          forgetRead('/releases/latest');
+          setRelease(null);
+        } else if (lastRead('/releases/latest') === undefined) {
+          // With an earlier answer on screen, a failed refresh changes nothing.
+          setError('Failed to load download links.');
+        }
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    };
-    fetch();
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -139,7 +151,16 @@ export default function Download() {
       <div className="page-intro">
         <span className="eyebrow">
           <span className="eyebrow-dot" />
-          {hasRelease ? `Latest release / v${release.version}` : 'Version not published yet'}
+          {/* "Version not published yet" used to be what this said while the
+              release was still loading — a wrong answer for a quarter of a
+              second on every visit. */}
+          {loading ? (
+            <SkeletonText chars={22} />
+          ) : (
+            <span className={arrive}>
+              {hasRelease ? `Latest release / v${release.version}` : 'Version not published yet'}
+            </span>
+          )}
         </span>
         <h1 className="mt-5 text-white">Get the <span className="text-gradient">full-speed</span> experience.</h1>
         <p>
@@ -148,15 +169,18 @@ export default function Download() {
         </p>
       </div>
 
-      {loading ? (
-        <Spinner center />
-      ) : error ? (
+      {/* Only what the release decides waits for it — the version line, the
+          buttons and the checksums. The cards, the extension section and the
+          notes around them are the same whatever it says, so they are drawn
+          at once instead of a spinner standing in for the whole page. */}
+      {loading && <p role="status" className="sr-only">Loading the latest release…</p>}
+      {error ? (
         <div className="mt-10 text-center">
           <p className="text-red-300">{error}</p>
         </div>
       ) : (
         <>
-          {!hasRelease && (
+          {!loading && !hasRelease && (
             <div className="mx-auto mt-10 max-w-xl rounded-xl border border-brand-400/25 bg-brand-400/10 px-4 py-3 text-center text-sm text-brand-100">
               No build has been published yet. Watch the{' '}
               <Link to="/changelog" className="font-semibold underline">changelog</Link>, or{' '}
@@ -182,11 +206,19 @@ export default function Download() {
                   <div className="icon-tile mx-auto">{icon}</div>
                   <h3 className="mt-5 text-lg font-bold text-white">{label}</h3>
                   <p className="mt-2 text-xs font-medium tracking-wide text-slate-500">
-                    {hasRelease ? `Version ${release.version}` : 'Version not published yet'}
+                    {loading ? (
+                      <SkeletonText chars={13} />
+                    ) : (
+                      <span className={arrive}>
+                        {hasRelease ? `Version ${release.version}` : 'Version not published yet'}
+                      </span>
+                    )}
                   </p>
                   <p className="mt-2 text-xs text-slate-400">{format}</p>
-                  <div className="mt-5">
-                    {available ? (
+                  <div className={loading ? 'mt-5' : `mt-5 ${arrive}`.trim()} key={loading ? 'waiting' : 'ready'}>
+                    {loading ? (
+                      <Skeleton className="h-11 w-full rounded-[var(--radius-2)]" />
+                    ) : available ? (
                       <Button
                         href={href}
                         className="w-full"
@@ -202,7 +234,19 @@ export default function Download() {
                       </Button>
                     )}
                   </div>
-                  {available && <Sha256 value={sha} />}
+                  {loading ? (
+                    // The checksum block's own shape: label, then a 44px row.
+                    <div className="mt-4">
+                      <Skeleton className="h-4 w-16 rounded" />
+                      <Skeleton className="mt-1.5 h-11 w-full rounded-lg" />
+                    </div>
+                  ) : (
+                    available && sha && (
+                      <div className={arrive}>
+                        <Sha256 value={sha} />
+                      </div>
+                    )
+                  )}
                 </Card>
               );
             })}

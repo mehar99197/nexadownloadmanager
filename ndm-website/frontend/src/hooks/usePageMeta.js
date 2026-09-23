@@ -13,12 +13,39 @@ function setMeta(selector, attr, value) {
 }
 
 /**
+ * Keep a page out of search results for as long as it is mounted. The
+ * prerendered shell carries the same tag for a crawler that does not run JS
+ * (scripts/prerender.mjs); this covers arriving by client-side navigation.
+ */
+function useNoindex(noindex) {
+  useEffect(() => {
+    if (!noindex) return undefined;
+    let tag = document.head.querySelector('meta[name="robots"]');
+    const added = !tag;
+    if (added) {
+      tag = document.createElement('meta');
+      tag.setAttribute('name', 'robots');
+      document.head.appendChild(tag);
+    }
+    const previous = tag.getAttribute('content');
+    tag.setAttribute('content', 'noindex, follow');
+    return () => {
+      if (added) tag.remove();
+      else if (previous === null) tag.removeAttribute('content');
+      else tag.setAttribute('content', previous);
+    };
+  }, [noindex]);
+}
+
+/**
  * usePageMeta — sets document.title ("<Page> · Nexa Download Manager"), the
  * meta description, Open Graph / Twitter title + description, and the
  * canonical link for the current route. Call it once at the top of every page.
+ * `noindex` keeps an unfinished page out of search results.
  */
-export default function usePageMeta({ title, description } = {}) {
+export default function usePageMeta({ title, description, noindex = false } = {}) {
   const { pathname } = useLocation();
+  useNoindex(noindex);
 
   useEffect(() => {
     const fullTitle = title ? `${title} · ${SITE_NAME}` : SITE_NAME;

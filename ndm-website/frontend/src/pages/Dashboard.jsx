@@ -6,18 +6,22 @@ import { useConfirm } from '../components/ConfirmDialog';
 import api, { unwrap } from '../api/client';
 import { clearPendingTrial, hasPendingTrial, startTrial, trialDaysLeft } from '../api/trial';
 import usePageMeta from '../hooks/usePageMeta';
+import useBillingOpen from '../hooks/useBillingOpen';
 import { formatDate } from '../utils/formatDate';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import Spinner from '../components/Spinner';
+import Skeleton, { useArrival } from '../components/Skeleton';
 
 function StatCard({ label, value, icon }) {
   return (
     <Card className="card-hover !p-5">
       <div className="flex items-center gap-4">
-        <div className="icon-tile !h-11 !w-11 shrink-0">
+        {/* Four of these across a 1024px screen are ~210px each, and the tile
+            was taking a fifth of that from the number it labels. Below 13rem
+            of CARD width — not of window width — the number wins. */}
+        <div className="cq-drop-tight icon-tile !h-11 !w-11 shrink-0">
           {icon}
         </div>
         <div className="min-w-0">
@@ -29,7 +33,36 @@ function StatCard({ label, value, icon }) {
   );
 }
 
-function LicenseCard({ license, onRotated }) {
+/**
+ * The license card and the devices card as they will land. These sit side by
+ * side in one grid row, so the spinner that stood in for the first — 40% of
+ * the window tall — set the height of the row, and the second arrived from
+ * nothing a moment later.
+ */
+function CardSkeleton({ label, lines = 3, action = true }) {
+  return (
+    <Card className="!p-6" role="status" aria-label={label}>
+      <Skeleton className="h-5 w-32 rounded" />
+      {Array.from({ length: lines }, (_, i) => (
+        <Skeleton key={i} className={`h-3.5 rounded ${i === lines - 1 ? 'w-2/3' : 'w-full'} ${i ? 'mt-3' : 'mt-4'}`} />
+      ))}
+      {action && <Skeleton className="mt-5 h-11 w-full rounded-xl" />}
+    </Card>
+  );
+}
+
+/**
+ * What the date on the key means. "Expires" was printed for every plan, while
+ * Billing said "Renews" for the same date — and only a Stripe subscription
+ * renews at all; a trial or an admin-granted plan just ends.
+ */
+function expiryLabel(license, cancelling) {
+  if (license.trial) return 'Trial ends';
+  if (cancelling) return 'Ends';
+  return license.billed ? 'Renews' : 'Active until';
+}
+
+function LicenseCard({ license, onRotated, cancelling = false, className = '' }) {
   const [copied, setCopied] = useState(false);
   const [keyShown, setKeyShown] = useState(false);
   const [rotating, setRotating] = useState(false);
@@ -76,7 +109,7 @@ function LicenseCard({ license, onRotated }) {
 
   if (!license) {
     return (
-      <Card className="card-hover !p-6">
+      <Card className={`card-hover !p-6 ${className}`.trim()}>
         <h3 className="font-semibold text-white">License key</h3>
         <p className="mt-2 text-sm text-zinc-400">No active license found.</p>
       </Card>
@@ -88,10 +121,10 @@ function LicenseCard({ license, onRotated }) {
   // app: signing in inside it. A trial or upgrade then follows on its own.
   if (license.plan === 'free' && !license.trial) {
     return (
-      <Card className="card-hover !p-6" data-testid="account-signin-card">
+      <Card className={`card-hover !p-6 ${className}`.trim()} data-testid="account-signin-card">
         <h3 className="font-semibold text-white">Use your account in the app</h3>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          No licence key needed. In Nexa Download Manager open{' '}
+          No license key needed. In Nexa Download Manager open{' '}
           <span className="font-medium text-slate-200">Settings &rarr; Account &rarr; Sign in with Nexa</span>, approve the
           code that opens here, and this account&rsquo;s plan follows you &mdash; a trial or an upgrade reaches the app on
           its own.
@@ -106,7 +139,7 @@ function LicenseCard({ license, onRotated }) {
   }
 
   return (
-    <Card className="card-hover !p-6">
+    <Card className={`card-hover !p-6 ${className}`.trim()}>
       <h3 className="font-semibold text-white">License key</h3>
       <p className="mt-2 text-xs leading-5 text-slate-500">
         Signing in inside the app (Settings &rarr; Account) is all you need. This key is only for activating by
@@ -133,7 +166,7 @@ function LicenseCard({ license, onRotated }) {
         )}
         {license.expiryDate && (
           <span>
-            Expires:{' '}
+            {expiryLabel(license, cancelling)}:{' '}
             <span className="font-medium text-zinc-300">
               {formatDate(license.expiryDate) || '—'}
             </span>
@@ -141,7 +174,7 @@ function LicenseCard({ license, onRotated }) {
         )}
       </div>
       <p className="mt-3 text-xs text-slate-500">
-        Manual activation: Settings &rarr; Account &rarr; &ldquo;Use a licence key instead&rdquo;.{' '}
+        Manual activation: Settings &rarr; Account &rarr; &ldquo;Use a license key instead&rdquo;.{' '}
         <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
       </p>
       {canRotate && (
@@ -172,13 +205,14 @@ function timeAgo(iso) {
 }
 
 /**
- * Seats are concurrent: a licence covers N machines AT A TIME. This is where
+ * Seats are concurrent: a license covers N machines AT A TIME. This is where
  * a user frees one when the app on another machine is holding it.
  */
 function DevicesCard({ onChanged }) {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const arrive = useArrival(data === null);
 
   const load = async () => {
     try {
@@ -235,11 +269,11 @@ function DevicesCard({ onChanged }) {
     }
   };
 
-  if (!data) return null;
+  if (!data) return <CardSkeleton label="Loading your devices" lines={2} />;
   const { seats = 0, activeSeats = 0, seatsEnforced = seats > 0, devices = [] } = data;
 
   return (
-    <Card className="card-hover !p-6">
+    <Card className={`card-hover !p-6 ${arrive}`.trim()}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold text-white">Your devices</h3>
@@ -282,7 +316,7 @@ function DevicesCard({ onChanged }) {
                   )}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  {d.signedIn ? (d.appVersion ? `Nexa ${d.appVersion}` : 'Signed in with your account') : 'Activated with a licence key'}
+                  {d.signedIn ? (d.appVersion ? `Nexa ${d.appVersion}` : 'Signed in with your account') : 'Activated with a license key'}
                   {seatsEnforced ? (d.active ? ' · holding a seat' : ' · not holding a seat') : ''}
                   {d.lastSeenAt ? ` · last seen ${timeAgo(d.lastSeenAt)}` : ''}
                 </p>
@@ -364,8 +398,8 @@ function TeamCard({ onChanged }) {
         ? `${member.email} will no longer be able to accept.`
         // Deliberately blunt: this used to promise that their app "returns to
         // Free at its next check", which is not true. They were given the
-        // owner's real licence key and it keeps working until it is replaced.
-        : 'They stop appearing on your team, but the licence key they already have keeps working. '
+        // owner's real license key and it keeps working until it is replaced.
+        : 'They stop appearing on your team, but the license key they already have keeps working. '
           + 'To actually cut off their access, use “Replace key” on your License card afterwards.',
       confirmLabel: pending ? 'Withdraw' : 'Remove',
       danger: true,
@@ -387,7 +421,7 @@ function TeamCard({ onChanged }) {
   const leave = async () => {
     const sure = await confirm({
       title: `Leave ${team.owner.name}'s team?`,
-      message: 'The team licence key disappears from your dashboard and the app returns to your own plan.',
+      message: 'The team license key disappears from your dashboard and the app returns to your own plan.',
       confirmLabel: 'Leave team',
       danger: true,
     });
@@ -414,7 +448,7 @@ function TeamCard({ onChanged }) {
         <p className="mt-2 text-sm text-zinc-400">
           You are on <span className="font-semibold text-white">{team.owner.name}</span>&rsquo;s{' '}
           <span className="capitalize">{team.plan}</span> plan
-          {team.usable ? '. The team licence key is shown above.' : ', which is not active right now.'}
+          {team.usable ? '. The team license key is shown above.' : ', which is not active right now.'}
         </p>
         <div className="mt-4">
           <Button variant="ghost" onClick={leave} disabled={busyId === 'leave'}>
@@ -464,8 +498,12 @@ function TeamCard({ onChanged }) {
         )}
       </ul>
 
+      {/* cq-row, not sm:flex-row: this card sits in a sm:grid-cols-2 grid, so
+          at a 640px window the card is about 300px wide — and sm: chose that
+          exact moment to put the field and the button side by side. The
+          container query asks the card how much room there is instead. */}
       {team.canInvite ? (
-        <form onSubmit={invite} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <form onSubmit={invite} className="cq-row mt-4">
           <div className="flex-1">
             <Input
               label="Invite by email"
@@ -491,7 +529,7 @@ function TeamCard({ onChanged }) {
   );
 }
 
-function TrialBanner({ subscription, onStart, starting }) {
+function TrialBanner({ subscription, onStart, starting, billingOpen }) {
   if (subscription?.trial) {
     const days = trialDaysLeft(subscription.trialEndsAt);
     return (
@@ -512,7 +550,13 @@ function TrialBanner({ subscription, onStart, starting }) {
           <Link to="/billing" className="text-sm text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline">
             End trial
           </Link>
-          <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+          {/* "Upgrade" only while there is something to buy: with billing off,
+              Pricing answers it with "Paid plans coming soon". */}
+          {billingOpen ? (
+            <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+          ) : (
+            <Link to="/pricing" className="btn btn-ghost">Compare plans</Link>
+          )}
         </div>
       </div>
     );
@@ -540,8 +584,10 @@ export default function Dashboard() {
 
   const { user, refreshMe } = useAuth();
   const toast = useToast();
+  const billingOpen = useBillingOpen();
   const [license, setLicense] = useState(null);
   const [loadingLicense, setLoadingLicense] = useState(true);
+  const licenseArrives = useArrival(loadingLicense);
   const [startingTrial, setStartingTrial] = useState(false);
   const redeemed = useRef(false);
 
@@ -607,7 +653,14 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {!viaTeam && <TrialBanner subscription={subscription} onStart={handleStartTrial} starting={startingTrial} />}
+      {!viaTeam && (
+        <TrialBanner
+          subscription={subscription}
+          onStart={handleStartTrial}
+          starting={startingTrial}
+          billingOpen={billingOpen === true}
+        />
+      )}
 
       <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -662,7 +715,16 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} onRotated={loadLicense} />}
+        {loadingLicense ? (
+          <CardSkeleton label="Loading your license" />
+        ) : (
+          <LicenseCard
+            license={license}
+            onRotated={loadLicense}
+            cancelling={Boolean(subscription?.cancelAtPeriodEnd)}
+            className={licenseArrives}
+          />
+        )}
         <DevicesCard />
         <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
       </div>
@@ -672,8 +734,10 @@ export default function Dashboard() {
           <h3 className="font-semibold text-white">Quick actions</h3>
           <div className="mt-4 flex flex-wrap gap-3">
             <Link to="/download" className="btn btn-primary">Download the app</Link>
+            {/* An upgrade is only offered while one can be bought. With billing
+                off, "Upgrade to Team" led to a Team card reading "Coming soon". */}
             <Link to="/pricing" className="btn btn-ghost">
-              {subscription?.plan === 'team' ? 'Compare plans'
+              {billingOpen !== true || subscription?.plan === 'team' ? 'Compare plans'
                 : subscription?.plan === 'pro' ? 'Upgrade to Team' : 'Upgrade plan'}
             </Link>
             <Link to="/docs" className="btn btn-ghost">Docs</Link>

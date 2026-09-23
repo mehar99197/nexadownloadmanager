@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import api, { unwrap } from '../api/client';
+import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
 import Section from '../components/Section';
@@ -7,11 +7,15 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import StarRating from '../components/StarRating';
-import Spinner from '../components/Spinner';
+import { lastRead, readPublic } from '../api/reads';
+import Skeleton, { SkeletonText, useArrival } from '../components/Skeleton';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import usePageMeta from '../hooks/usePageMeta';
 
 const PAGE_SIZE = 10;
+
+/** The query a visit opens on, so a revisit can start from its last answer. */
+const FIRST_PAGE = { page: 1, limit: PAGE_SIZE };
 
 /* Reviews carry a rating and a comment and nothing else, so "what did you use
    it for" is not a stored field. Rather than invent one, these filter the text
@@ -23,6 +27,13 @@ const USE_CASES = [
   { id: 'daily', label: 'For daily use', words: ['daily', 'every day', 'everyday', 'work', 'speed', 'fast'] },
   { id: 'linux', label: 'On Linux', words: ['linux', 'ubuntu', 'debian'] },
 ];
+
+/**
+ * Below this many reviews the use-case and star filters are left out: nine
+ * buttons that can each narrow one or two reviews down to none are furniture,
+ * and they made a short list look emptier than it is.
+ */
+const MIN_REVIEWS_FOR_FILTERS = 5;
 
 const matchesUseCase = (review, useCase) => {
   if (!useCase) return true;
@@ -148,11 +159,59 @@ function ReviewForm({ onSubmitted }) {
   );
 }
 
+/**
+ * The same two-column shape the reviews land in — list on the left, rating
+ * breakdown on the right — so the arriving data replaces the stand-ins rather
+ * than pushing them out of the way.
+ */
+function ReviewsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading the reviews" className="mt-10 grid gap-8 lg:grid-cols-[1fr_280px]">
+      <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          {[0, 1].map((i) => (
+            <Card key={i} className="!p-5">
+              <Skeleton className="h-4 w-24 rounded" />
+              <Skeleton className="mt-3 h-4 w-full rounded" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded" />
+              <Skeleton className="mt-4 h-3 w-28 rounded" />
+            </Card>
+          ))}
+        </div>
+        {/* The use-case and star filters, at the widths their labels take. */}
+        <div className="flex flex-wrap gap-2">
+          {['w-20', 'w-24', 'w-28', 'w-16', 'w-24'].map((w) => (
+            <Skeleton key={w} className={`h-8 rounded-lg ${w}`} />
+          ))}
+        </div>
+        {[0, 1, 2].map((i) => (
+          <Card key={i} className="!p-6">
+            <Skeleton className="h-4 w-28 rounded" />
+            <Skeleton className="mt-3 h-4 w-full rounded" />
+            <Skeleton className="mt-2 h-4 w-11/12 rounded" />
+            <Skeleton className="mt-2 h-4 w-2/3 rounded" />
+            <Skeleton className="mt-4 h-3 w-32 rounded" />
+          </Card>
+        ))}
+      </div>
+      <Card className="h-fit !p-6">
+        <Skeleton className="h-4 w-32 rounded" />
+        <div className="mt-4 space-y-3">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-3.5 w-full rounded" />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export default function Reviews() {
   usePageMeta({ title: "Reviews", description: "What people say about Nexa Download Manager — real, moderated reviews from users." });
 
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => lastRead('/reviews', FIRST_PAGE) ?? null);
   const [loading, setLoading] = useState(true);
+  const arrive = useArrival(data === null);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState('');
@@ -164,8 +223,7 @@ export default function Reviews() {
     try {
       const params = { page: p, limit: PAGE_SIZE };
       if (ratingFilter) params.rating = ratingFilter;
-      const res = await api.get('/reviews', { params });
-      setData(unwrap(res));
+      setData(await readPublic('/reviews', params));
     } catch {
       setError('Failed to load reviews.');
     } finally {
@@ -200,12 +258,22 @@ export default function Reviews() {
     <Section>
       <div className="page-intro">
         <span className="eyebrow"><span className="eyebrow-dot" />From the queue</span>
-        <h1 className="mt-5 text-white">Loved by people who <span className="text-gradient">move fast.</span></h1>
-        <p>Real experiences from real downloaders. No inflated promises, just work that gets out of the way.</p>
+        {/* The heading claims nothing the score has to live up to: "Loved by
+            people who move fast" sat above a 3.0 from a single review. */}
+        <h1 className="mt-5 text-white">What people <span className="text-gradient">actually say.</span></h1>
+        <p>Written by people who used it, read by a person before it appears, and published even when it is critical.</p>
       </div>
 
-      {totalReviews > 0 && (
-        <div className="mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2">
+      {/* The score line sits ABOVE the list, so arriving on its own it pushed
+          everything under it down; its outline holds the line meanwhile. */}
+      {loading && !data ? (
+        <div className="mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2" aria-hidden="true">
+          <span className="text-3xl font-extrabold"><SkeletonText chars={3} /></span>
+          <Skeleton className="h-5 w-28 rounded" />
+          <span className="text-sm"><SkeletonText chars={20} /></span>
+        </div>
+      ) : totalReviews > 0 && (
+        <div className={`mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2 ${arrive}`.trim()}>
           <span className="text-3xl font-extrabold text-white">
             {Number(data.averageRating).toFixed(1)}
           </span>
@@ -217,13 +285,13 @@ export default function Reviews() {
       )}
 
       {loading && !data ? (
-        <Spinner center />
+        <ReviewsSkeleton />
       ) : error && !data ? (
         <div className="mt-10 text-center">
           <p className="text-red-300">{error}</p>
         </div>
       ) : data ? (
-        <div className="mt-10 grid gap-8 lg:grid-cols-[1fr_280px]">
+        <div className={`mt-10 grid gap-8 lg:grid-cols-[1fr_280px] ${arrive}`.trim()}>
           <div className="space-y-5">
             {featured.length > 0 && (
               <div>
@@ -245,42 +313,46 @@ export default function Reviews() {
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              {USE_CASES.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    useCase === u.id
-                      ? 'on-brand'
-                      : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
-                  }`}
-                  onClick={() => setUseCase(useCase === u.id ? '' : u.id)}
-                >
-                  {u.label}
-                </button>
-              ))}
-              {useCase && (
-                <span className="text-xs text-slate-500">matches the words people wrote</span>
-              )}
-            </div>
+            {totalReviews >= MIN_REVIEWS_FOR_FILTERS && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  {USE_CASES.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        useCase === u.id
+                          ? 'on-brand'
+                          : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
+                      }`}
+                      onClick={() => setUseCase(useCase === u.id ? '' : u.id)}
+                    >
+                      {u.label}
+                    </button>
+                  ))}
+                  {useCase && (
+                    <span className="text-xs text-slate-500">matches the words people wrote</span>
+                  )}
+                </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {[5, 4, 3, 2, 1].map((star) => (
-                <button
-                  key={star}
-                  type="button"
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    filter === String(star)
-                      ? 'on-brand'
-                      : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
-                  }`}
-                  onClick={() => handleFilter(String(star))}
-                >
-                  {star} ★
-                </button>
-              ))}
-            </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {[5, 4, 3, 2, 1].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        filter === String(star)
+                          ? 'on-brand'
+                          : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
+                      }`}
+                      onClick={() => handleFilter(String(star))}
+                    >
+                      {star} ★
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
             {visibleReviews.length === 0 ? (
               <Card className="!p-7 text-center">
