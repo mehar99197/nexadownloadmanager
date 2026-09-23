@@ -154,6 +154,47 @@ test('ending a subscription', async (t) => {
     assert.equal(Math.floor(new Date(status.body.data.expiryDate).getTime() / 1000), seconds(periodEnd));
   });
 
+  await t.test('a subscription created in Stripe\'s dashboard reaches us too', async () => {
+    // Not every paid subscription comes from our checkout: one started in the
+    // Stripe dashboard, or by any flow that never fires
+    // checkout.session.completed, only ever announces itself as
+    // customer.subscription.created. That event used to be ignored, so the
+    // customer stayed on Free until something else about the subscription
+    // happened to change.
+    const api = srv.client();
+    const user = await srv.makeUser(api, 'dashboard');
+    const [row] = await srv.query('SELECT id FROM users WHERE email = ?', [user.email]);
+    // The row has no Stripe ids yet — the match falls back to the customer,
+    // then to the email on the object.
+    await srv.query(
+      'UPDATE subscriptions SET stripe_customer_id = ? WHERE user_id = ?',
+      ['cus_dashboard', row.id]
+    );
+    const periodEnd = daysFromNow(30);
+
+    await sendEvent(api, {
+      id: 'evt_sub_dashboard_created', type: 'customer.subscription.created',
+      data: {
+        object: {
+          id: 'sub_dashboard', customer: 'cus_dashboard', status: 'active',
+          cancel_at_period_end: false,
+          current_period_end: seconds(periodEnd),
+          items: { data: [{ price: { unit_amount: 500, recurring: { interval: 'month' } } }] },
+        },
+      },
+    });
+
+    const status = await api.get('/api/subscription/status', { token: user.token });
+    assert.equal(status.body.data.plan, 'pro');
+    assert.equal(Math.floor(new Date(status.body.data.expiryDate).getTime() / 1000), seconds(periodEnd));
+    // And the desktop app sees it on its next check.
+    const key = await licenseOf(api, user.token);
+    const check = await api.post('/api/license/validate',
+      { license_key: key, device_fingerprint: DEVICE });
+    assert.equal(check.body.valid, true);
+    assert.equal(check.body.plan, 'pro');
+  });
+
   await t.test('an unrecognised price leaves the stored plan alone', async () => {
     const api = srv.client();
     const user = await srv.makeUser(api, 'oddprice');
