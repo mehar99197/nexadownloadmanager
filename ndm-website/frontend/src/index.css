@@ -215,6 +215,15 @@
 
 html {
   scroll-behavior: smooth;
+  /* The scrollbar's 10px is reserved whether or not there is anything to
+     scroll. Without it the page was 1366px wide with no scrollbar and 1356px
+     with one, and it toggled at exactly the worst moments — when the boot
+     screen lifted (html.ndm-booting sets overflow: hidden), and whenever a
+     page was briefly shorter than the window — so every centred thing on the
+     page jumped 5px sideways. Recorded frame by frame on the live site, on
+     reload and on navigation both. Overlay scrollbars (phones, macOS) have
+     no gutter, so this changes nothing there. */
+  scrollbar-gutter: stable;
   background: var(--color-surface-0);
 }
 
@@ -1371,10 +1380,20 @@ h2 {
    still what Firefox runs. */
 @media (prefers-reduced-motion: no-preference) {
   @supports (animation-timeline: view()) {
+    /* A fixed distance, not a share of the section.
+       "cover 30%" is 30% of the section's height plus the window's, and most
+       pages here are ONE tall Section — /faq's is about 5000px — so the page
+       was still part-way through its reveal at the very top: its heading sat
+       a couple of pixels low, stepped into place one frame after it first
+       painted, and the whole page drifted against the scroll for its first
+       thousand pixels. Recorded frame by frame on every load and navigation.
+       "entry 220px" is the first 220px after the section's top edge comes up
+       over the bottom of the window, whatever its height. A section already
+       on screen is past that before anything is drawn, so it never moves. */
     .reveal-native {
       animation: ndm-reveal linear both;
       animation-timeline: view();
-      animation-range: entry 0% cover 30%;
+      animation-range: entry 0% entry 220px;
     }
 
     /* Cards in a revealed section each get their own timeline, so the
@@ -1383,7 +1402,7 @@ h2 {
     .reveal-native [data-stagger] > * {
       animation: ndm-reveal-item linear both;
       animation-timeline: view();
-      animation-range: entry 0% cover 26%;
+      animation-range: entry 0% entry 160px;
     }
   }
 }
@@ -1427,31 +1446,22 @@ h2 {
 }
 
 /* 4. View transitions between pages ----------------------------------
-   App.jsx defers the routed area by one React transition, which lets
-   <ViewTransition> run the swap inside document.startViewTransition where
-   the browser has one. "ndm-page" is the name it gives the routed area, so
-   the navbar and the footer are lifted out of the transition and stay put
-   while the page itself changes. */
-::view-transition-old(ndm-page) {
-  animation: ndm-vt-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
-}
+   navigation.jsx swaps the page inside document.startViewTransition, and
+   this is the whole of the animation: the browser's own cross-fade of the
+   ROOT snapshot, made a little quicker.
 
-::view-transition-new(ndm-page) {
-  animation: ndm-vt-in 300ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-@keyframes ndm-vt-out {
-  to {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-}
-
-@keyframes ndm-vt-in {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
-  }
+   It used to be a named element ("ndm-page", from React's <ViewTransition>)
+   with its own slide and fade. A named element is animated from its old box
+   to its new box — and resetting the scroll to the top of the new page moves
+   the page's box by however far down the reader was, so the old page slid
+   hundreds of pixels while it faded. The custom keyframes had also replaced
+   the browser's plus-lighter blend, so the two half-faded pages dipped
+   towards the background in the middle. The root snapshot is the viewport
+   itself: nothing in it moves, and the default blend is kept because only
+   the duration is overridden here. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
 }
 
 @supports (view-transition-name: none) {

@@ -1,5 +1,12 @@
-import { lazy, Suspense, useEffect, useState, useTransition, ViewTransition } from 'react';
-import { Routes, Route, Outlet, useLocation } from 'react-router-dom';
+import { Suspense } from 'react';
+import {
+  Routes,
+  Route,
+  Outlet,
+  useLocation,
+  matchRoutes,
+  createRoutesFromElements,
+} from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import WarpField from './components/WarpField';
@@ -7,6 +14,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Spinner from './components/Spinner';
 import { ToastProvider } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
+import { lazyPage, useSwappedLocation, BootDone } from './navigation';
 
 import Home from './pages/Home';
 import NotFound from './pages/NotFound';
@@ -27,90 +35,70 @@ import NotFound from './pages/NotFound';
  * Safe for the prerendered shells: scripts/prerender.mjs writes per-route HTML
  * by string substitution and never imports the app, so the meta tags are
  * unaffected by how the JS is chunked.
+ *
+ * lazyPage rather than lazy: the same on-demand loading, plus a preload() that
+ * navigation uses to fetch a page's code BEFORE swapping to it — see
+ * navigation.jsx for why a plain lazy() cannot be warmed up.
  */
-const Download = lazy(() => import('./pages/Download'));
-const Pricing = lazy(() => import('./pages/Pricing'));
-const Reviews = lazy(() => import('./pages/Reviews'));
-const Login = lazy(() => import('./pages/Login'));
-const Register = lazy(() => import('./pages/Register'));
-const VerifyEmail = lazy(() => import('./pages/VerifyEmail'));
-const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
-const ResetPassword = lazy(() => import('./pages/ResetPassword'));
-const Dashboard = lazy(() => import('./pages/Dashboard'));
-const Billing = lazy(() => import('./pages/Billing'));
-const Profile = lazy(() => import('./pages/Profile'));
-const Activate = lazy(() => import('./pages/Activate'));
-const Terms = lazy(() => import('./pages/Terms'));
-const Privacy = lazy(() => import('./pages/Privacy'));
-const Faq = lazy(() => import('./pages/Faq'));
-const About = lazy(() => import('./pages/About'));
-const Changelog = lazy(() => import('./pages/Changelog'));
-const Contact = lazy(() => import('./pages/Contact'));
-const TeamJoin = lazy(() => import('./pages/TeamJoin'));
-const Compare = lazy(() => import('./pages/Compare'));
-const Benchmarks = lazy(() => import('./pages/Benchmarks'));
-const Tutorials = lazy(() => import('./pages/Tutorials'));
-const Security = lazy(() => import('./pages/Security'));
-const Features = lazy(() => import('./pages/Features'));
-const FeatureAcceleration = lazy(() => import('./pages/features/FeatureAcceleration'));
-const FeatureVideoGrabber = lazy(() => import('./pages/features/FeatureVideoGrabber'));
-const FeatureYoutubeSites = lazy(() => import('./pages/features/FeatureYoutubeSites'));
-const FeatureBittorrent = lazy(() => import('./pages/features/FeatureBittorrent'));
-const FeatureBrowserExtension = lazy(() => import('./pages/features/FeatureBrowserExtension'));
-const FeatureScheduler = lazy(() => import('./pages/features/FeatureScheduler'));
-const FeatureRemoteDashboard = lazy(() => import('./pages/features/FeatureRemoteDashboard'));
-const Docs = lazy(() => import('./pages/Docs'));
-const DocsInstall = lazy(() => import('./pages/docs/DocsInstall'));
-const DocsExtension = lazy(() => import('./pages/docs/DocsExtension'));
-const DocsYoutube = lazy(() => import('./pages/docs/DocsYoutube'));
-const DocsCourses = lazy(() => import('./pages/docs/DocsCourses'));
-const DocsTorrents = lazy(() => import('./pages/docs/DocsTorrents'));
-const DocsRemote = lazy(() => import('./pages/docs/DocsRemote'));
-const DocsLicense = lazy(() => import('./pages/docs/DocsLicense'));
+const Download = lazyPage(() => import('./pages/Download'));
+const Pricing = lazyPage(() => import('./pages/Pricing'));
+const Reviews = lazyPage(() => import('./pages/Reviews'));
+const Login = lazyPage(() => import('./pages/Login'));
+const Register = lazyPage(() => import('./pages/Register'));
+const VerifyEmail = lazyPage(() => import('./pages/VerifyEmail'));
+const ForgotPassword = lazyPage(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazyPage(() => import('./pages/ResetPassword'));
+const Dashboard = lazyPage(() => import('./pages/Dashboard'));
+const Billing = lazyPage(() => import('./pages/Billing'));
+const Profile = lazyPage(() => import('./pages/Profile'));
+const Activate = lazyPage(() => import('./pages/Activate'));
+const Terms = lazyPage(() => import('./pages/Terms'));
+const Privacy = lazyPage(() => import('./pages/Privacy'));
+const Faq = lazyPage(() => import('./pages/Faq'));
+const About = lazyPage(() => import('./pages/About'));
+const Changelog = lazyPage(() => import('./pages/Changelog'));
+const Contact = lazyPage(() => import('./pages/Contact'));
+const TeamJoin = lazyPage(() => import('./pages/TeamJoin'));
+const Compare = lazyPage(() => import('./pages/Compare'));
+const Benchmarks = lazyPage(() => import('./pages/Benchmarks'));
+const Tutorials = lazyPage(() => import('./pages/Tutorials'));
+const Security = lazyPage(() => import('./pages/Security'));
+const Features = lazyPage(() => import('./pages/Features'));
+const FeatureAcceleration = lazyPage(() => import('./pages/features/FeatureAcceleration'));
+const FeatureVideoGrabber = lazyPage(() => import('./pages/features/FeatureVideoGrabber'));
+const FeatureYoutubeSites = lazyPage(() => import('./pages/features/FeatureYoutubeSites'));
+const FeatureBittorrent = lazyPage(() => import('./pages/features/FeatureBittorrent'));
+const FeatureBrowserExtension = lazyPage(() => import('./pages/features/FeatureBrowserExtension'));
+const FeatureScheduler = lazyPage(() => import('./pages/features/FeatureScheduler'));
+const FeatureRemoteDashboard = lazyPage(() => import('./pages/features/FeatureRemoteDashboard'));
+const Docs = lazyPage(() => import('./pages/Docs'));
+const DocsInstall = lazyPage(() => import('./pages/docs/DocsInstall'));
+const DocsExtension = lazyPage(() => import('./pages/docs/DocsExtension'));
+const DocsYoutube = lazyPage(() => import('./pages/docs/DocsYoutube'));
+const DocsCourses = lazyPage(() => import('./pages/docs/DocsCourses'));
+const DocsTorrents = lazyPage(() => import('./pages/docs/DocsTorrents'));
+const DocsRemote = lazyPage(() => import('./pages/docs/DocsRemote'));
+const DocsLicense = lazyPage(() => import('./pages/docs/DocsLicense'));
 
 /**
- * The routed area, held one React transition behind the URL.
+ * The routed page.
  *
- * startTransition buys two separate things here. React keeps the page that is
- * already on screen while the next route's chunk downloads, instead of tearing
- * it down for the Suspense spinner — which is what made the first visit to
- * every lazy page flash. And it is the signal <ViewTransition> needs in order
- * to run the swap inside document.startViewTransition, so a browser that has
- * view transitions cross-fades the two pages as one animation instead of
- * animating the new one in over a blank. Firefox, which has neither, falls
- * through to the .page-enter keyframes exactly as before.
- *
- * Everything inside <Routes location={shown}> — including useLocation() in the
- * navbar and in usePageMeta — is handed the deferred location by React
- * Router's own context, so the page, its title and the highlighted nav link
- * always change together rather than the link jumping ahead of the page.
+ * The key is INSIDE the Suspense boundary, and that placement is the fix.
+ * Keyed outside it, every navigation mounted a brand-new boundary — and a new
+ * boundary always shows its fallback — so the old page was torn down for a
+ * spinner on every first visit to a route, the scroll clamped to the top of a
+ * suddenly short page, and the scrollbar vanished and came back. Keyed in
+ * here, the boundary persists; the key still remounts the page itself, so
+ * each one starts from fresh state and the .page-enter keyframes replay on a
+ * browser without view transitions.
  */
-function useDeferredRoute() {
-  const live = useLocation();
-  const [shown, setShown] = useState(live);
-  const [pending, startRouteTransition] = useTransition();
-
-  useEffect(() => {
-    if (shown.key === live.key) return;
-    startRouteTransition(() => setShown(live));
-  }, [live, shown]);
-
-  return [shown, pending];
-}
-
-/**
- * The routed page: named, so the view transition animates this and leaves the
- * navbar and footer alone; keyed, so the keyframe fallback still replays on a
- * browser that has no view transitions.
- */
-function PageFade({ children }) {
+function RoutedPage() {
   const location = useLocation();
   return (
-    <ViewTransition name="ndm-page">
-      <div key={location.pathname} className="page-enter">
-        {children}
-      </div>
-    </ViewTransition>
+    <div key={location.pathname} className="page-enter">
+      <Outlet />
+      <BootDone />
+    </div>
   );
 }
 
@@ -121,14 +109,13 @@ function Layout() {
       <WarpField mode="ambient" />
       <Navbar />
       <main className="flex-1">
-        <PageFade>
-          {/* Inside the shell, not around the whole router: the navbar and
-              footer must stay on screen while a route's chunk arrives, or every
-              navigation would blank the page. */}
-          <Suspense fallback={<Spinner center />}>
-            <Outlet />
-          </Suspense>
-        </PageFade>
+        {/* Inside the shell, not around the whole router: the navbar and
+            footer stay on screen whatever the page is doing. The fallback is
+            only ever seen on the first page of a visit, under the boot
+            screen — every later page is fetched before it is swapped in. */}
+        <Suspense fallback={<Spinner center />}>
+          <RoutedPage />
+        </Suspense>
       </main>
       <Footer />
     </>
@@ -148,32 +135,22 @@ function AuthLayout() {
       <WarpField mode="ambient" />
       <Navbar />
       <main className="auth-main">
-        <PageFade>
-          {/* Inside the shell, not around the whole router: the navbar and
-              footer must stay on screen while a route's chunk arrives, or every
-              navigation would blank the page. */}
-          <Suspense fallback={<Spinner center />}>
-            <Outlet />
-          </Suspense>
-        </PageFade>
+        <Suspense fallback={<Spinner center />}>
+          <RoutedPage />
+        </Suspense>
       </main>
     </>
   );
 }
 
-export default function App() {
-  const [shown, routePending] = useDeferredRoute();
-
-  return (
-    <ToastProvider>
-      <ConfirmProvider>
-      {/* Deferring the swap means a tap on a link whose chunk is not cached
-          leaves the old page up for as long as the download takes — correct,
-          and otherwise completely silent. A hairline at the top of the window
-          is the acknowledgement; it is decoration over a state the page
-          content already conveys, so it stays out of the accessibility tree. */}
-      {routePending && <div className="route-progress" aria-hidden="true" />}
-      <Routes location={shown}>
+/**
+ * The route table, as a value rather than inline in <Routes>, so the same
+ * definition can be both rendered and looked up: preloadFor() below matches a
+ * pathname against it to find the page whose code has to arrive first.
+ * Declaring the routes twice would let the two lists drift.
+ */
+const ROUTES = (
+  <>
         <Route element={<Layout />}>
           {/* Public */}
           <Route path="/" element={<Home />} />
@@ -258,7 +235,42 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
         </Route>
-      </Routes>
+  </>
+);
+
+const ROUTE_OBJECTS = createRoutesFromElements(ROUTES);
+
+/**
+ * The code a pathname needs before it can be shown, or null if it is already
+ * here. Looks through wrappers such as <ProtectedRoute> to the page inside.
+ * Module-level, so it is one stable function for useSwappedLocation's effect.
+ */
+function preloadFor(pathname) {
+  const pending = [];
+  for (const match of matchRoutes(ROUTE_OBJECTS, pathname) || []) {
+    let el = match.route.element;
+    while (el && el.type && !el.type.preload && el.props && el.props.children && !Array.isArray(el.props.children)) {
+      el = el.props.children;
+    }
+    const Page = el && el.type;
+    if (Page && Page.preload && !Page.isLoaded()) pending.push(Page.preload());
+  }
+  return pending.length ? Promise.all(pending) : null;
+}
+
+export default function App() {
+  const [shown, routePending] = useSwappedLocation(preloadFor);
+
+  return (
+    <ToastProvider>
+      <ConfirmProvider>
+        {/* While the next page's code downloads, the page being left stays
+            exactly where it is — correct, and otherwise completely silent. A
+            hairline at the top of the window is the acknowledgement; it is
+            decoration over a state the content already conveys, so it stays
+            out of the accessibility tree. */}
+        {routePending && <div className="route-progress" aria-hidden="true" />}
+        <Routes location={shown}>{ROUTES}</Routes>
       </ConfirmProvider>
     </ToastProvider>
   );

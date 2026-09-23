@@ -448,12 +448,16 @@ export default function Compare() {
           role="region"
           aria-label="Pricing comparison table — scrolls sideways"
         >
+          {/* Four columns of short text fit a phone; the padding is what did
+              not. px-2 below sm: at px-3 the table needed 350px and, with the
+              scrollbar gutter now reserved in a narrow desktop window, got 338.
+              Phones use overlay scrollbars and have 348 either way. */}
           <table className="w-full text-left text-sm sm:min-w-[720px]">
             <caption className="sr-only">Free tier, paid price and trial for each download manager</caption>
             <thead>
               <tr className="surface-inset !border-x-0 !border-t-0 border-b border-white/10">
                 {['Product', 'Free tier', 'Paid', 'Trial'].map((h) => (
-                  <th key={h} scope="col" className="px-3 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 sm:px-5">{h}</th>
+                  <th key={h} scope="col" className="px-2 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 sm:px-5">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -462,9 +466,9 @@ export default function Compare() {
                 const isUs = row[0] === 'Nexa';
                 return (
                   <tr key={row[0]} className={`border-b border-white/5 last:border-0 ${isUs ? 'bg-brand-500/[0.04]' : ''}`}>
-                    <th scope="row" className={`px-3 py-3.5 font-semibold sm:px-5 ${isUs ? 'text-brand-300' : 'text-slate-200'}`}>{row[0]}</th>
+                    <th scope="row" className={`px-2 py-3.5 font-semibold sm:px-5 ${isUs ? 'text-brand-300' : 'text-slate-200'}`}>{row[0]}</th>
                     {row.slice(1).map((cell, i) => (
-                      <td key={i} className="px-3 py-3.5 text-slate-400 sm:px-5">{cell}</td>
+                      <td key={i} className="px-2 py-3.5 text-slate-400 sm:px-5">{cell}</td>
                     ))}
                   </tr>
                 );
