@@ -140,18 +140,20 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
 | Low | 12 | 0 | 12 |
-| Test debt | 8 | 3 | 5 |
+| Test debt | 8 | 2 | 6 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **46** | **5** | **41** |
+| **Total** | **46** | **4** | **42** |
 
 **Every defect found by reading the code is fixed.** The six left are of two
 kinds, and neither is a bug sitting in a code path:
 
 - **O-01, O-02** — hPanel cron entries, which have to be added in
   Hostinger's control panel by the account owner and cannot be done over SSH.
-- **L-11, T-06, T-07, T-08** — found by the verification pass on 2026-09-23
-  (see *Verification pass* below). L-11 is an edge-config oddity that fails
-  closed; the three T-* are missing tests, not broken behaviour.
+- **T-06, T-07** — found by the verification pass on 2026-09-23 (see
+  *Verification pass* below). Both are missing tests, not broken behaviour:
+  the control panels have no automated tests at all, and two thirds of the
+  site’s pages are not named by one. L-11 and T-08, found in the same pass,
+  are now fixed.
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -1620,7 +1622,7 @@ lower priority; `Contact` is the exception, because it posts.
 
 ## T-08 — thirteen backend routes are named by no test
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** 132 routes extracted from `src/routes/*.js` and matched against every file under `test/`; 119 matched, 13 did not
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/untestedRoutes.integration.test.js` — 8 tests over all thirteen, and mutation-checked (below)
 
 Each of the thirteen was then read by hand, and **all thirteen are correctly
 guarded** — so this is missing coverage, not a live hole:
@@ -1632,10 +1634,28 @@ guarded** — so this is missing coverage, not a live hole:
 | `POST /subscription/checkout`, `/coupon`, `/portal` | `requireAuth` + zod; all three answer 503 while billing is disabled |
 | `GET /releases/history` | public on purpose, and projects a fixed field list with no download URLs |
 
-Worth recording rather than waving away: `/users/export` and
+The two exports are the reason this got its own suite: `/users/export` and
 `/subscriptions/export` are precisely the shape H-01 was about — a bulk read
-of the users table — and the only reason they are safe is that they happen to
-call `safeUser`. Nothing would fail if someone changed that line.
+of the users table.
+
+**A correction to the first reading of them.** This entry originally said
+they were safe "only because they happen to call `safeUser`". That is wrong,
+and the way it was caught is worth recording: after writing the regression
+test, `safeUser` was deleted from the route to watch the test fail — and it
+passed. `User.listAll` selects an explicit column list of its own, so the
+export is defended twice and either layer alone is enough.
+
+The test was then mutated properly: with **both** `safeUser` removed and
+`listAll` widened to `SELECT *`, it fails on `password_hash must not be
+exported`. That is the right shape for this guard — it asserts the outcome
+in the HTTP body rather than the presence of one line, so it stays true
+however the route is refactored, and it does not fire on a change that is
+actually still safe.
+
+Two other findings came out of writing it, both small and both now pinned:
+a rejected bulk-moderation request leaves every row untouched, and the
+changelog feed carries no download URL (which is what keeps H-06’s counter
+honest).
 
 ---
 
