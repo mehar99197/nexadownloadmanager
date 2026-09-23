@@ -801,14 +801,25 @@ token_hash, status invited|active, invited_by, invited_at, accepted_at)`,
 UNIQUE (subscription_id, email), cascades with the subscription and the
 member's account. Roster cap = `subscriptions.seats` including the owner.
 
+`invited_at` is load-bearing: an invitation is acceptable for
+`TEAM_INVITE_TTL_DAYS` (default 14) and then answers `410 INVITE_EXPIRED` at
+both readers — `GET /invites/:token` and `POST /join`. The rule is
+`TeamMember.isExpired`, on the model rather than in the routes, because two
+routes read a token and a rule enforced in one of them is not a rule. An
+**expired invite does not occupy a seat**: it is excluded from `used` and
+`canInvite`, and `members[].expired` marks it, so a dead invitation cannot
+quietly shrink a five-seat team. The row survives — `resend` rotates the
+token and resets `invited_at`, which revives it. An **accepted** membership
+never expires; `invited_at` is only history once `status = 'active'`.
+
 | Route | Auth | Notes |
 |---|---|---|
-| `GET /invites/:token` | none (`apiLimiter`) | `{ ownerName, email, plan }` for the join page, 404 `INVITE_NOT_FOUND` |
+| `GET /invites/:token` | none (`apiLimiter`) | `{ ownerName, email, plan }` for the join page, 404 `INVITE_NOT_FOUND`, **410 `INVITE_EXPIRED`** past `TEAM_INVITE_TTL_DAYS` (14) counted from `invited_at`. Said plainly rather than folded into NOT_FOUND: holding the token is already proof of having been invited, so there is no oracle to protect, and "ask for another" is actionable |
 | `GET /` | user | `{ role:'owner', seats, used, canInvite, usable, members[] }` · `{ role:'member', owner, licenseKey, plan, status, usable }` · `{ role:'none' }` |
 | `POST /invites` `{email}` | owner, `teamInviteLimiter` 20/h | 403 `NOT_TEAM_OWNER`, 400 `TEAM_INACTIVE`/`SELF_INVITE`/`TEAM_FULL`, 409 `ALREADY_INVITED`; sends `sendTeamInviteEmail` (link `/team/join?token=`, 32 random bytes base64url, only the SHA-256 stored). The **subject is fixed** — the inviter's display name is attacker-chosen text going out from our domain to an address they pick, so it appears only in the escaped body, beside their email address |
-| `POST /invites/:id/resend` | owner | rotates the token |
+| `POST /invites/:id/resend` | owner | rotates the token **and resets `invited_at`**, so it is the remedy for an expired invitation as well as a lost one |
 | `DELETE /members/:id` | owner | removes an invite or a member. Returns `{removed:true, keyStillValid:true, rotateHint}`: the roster edit revokes **nothing**, because the member holds the owner's real licence key and no activation row records who created it. `POST /api/user/license/rotate` is the actual remedy |
-| `POST /join` `{token}` | user | the signed-in email MUST equal the invited one (403 `EMAIL_MISMATCH`); 409 `ALREADY_ON_TEAM` |
+| `POST /join` `{token}` | user | 410 `INVITE_EXPIRED` past the TTL; the signed-in email MUST equal the invited one (403 `EMAIL_MISMATCH`); 409 `ALREADY_ON_TEAM` |
 | `POST /leave` | member | |
 
 `GET /api/user/me` gains `team: { role:'member', ownerName, plan } | null`;
@@ -1104,6 +1115,14 @@ is the single source of truth, read by `/api/ads` on every request.
 
 - No `STRIPE_SECRET_KEY` ⇒ `config.stripeMode` is `'mock'` on a local deployment (`utils/stripe.js` exports the mock) and `'disabled'` on production or any public `FRONTEND_URL` (checkout, portal and webhook answer `503 BILLING_UNAVAILABLE`; `GET /api/health` reports `billing`). `config.isStripeMock` / `config.isBillingDisabled` are the booleans.
 - No `SMTP_HOST` ⇒ `config.isEmailMock = true`; `utils/email.js` logs emails to the console.
+- **A relay reached over the network is reached over TLS.** `requireTLS: true`
+  plus `tls.minVersion 'TLSv1.2'`, so port 587 must negotiate STARTTLS rather
+  than merely offer it, and a stripped capability in the greeting is a refusal
+  to send instead of a silent plaintext session carrying `SMTP_PASS`, reset
+  tokens and licence keys. Port 465 keeps implicit TLS and takes the same
+  floor. **Exception:** a relay on loopback (`localhost`, `::1`, `[::1]`,
+  `127.x.x.x`) is exempt, so a local MailHog/Mailpit needs no certificate;
+  the match is exact, because a prefix check would exempt `127.evil.com`.
 - `EMAIL_VERIFICATION_REQUIRED=false` lets users log in without verifying (dev default).
 - `PUBLIC_API_URL` (optional) is the public origin fronting `/api`; defaults to `FRONTEND_URL`
   and must be HTTPS in production. Only used to build absolute URLs in the update feed.

@@ -134,11 +134,11 @@ Against this base, after the port:
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
 | High | 8 | 0 | 8 |
-| Medium | 15 | 3 | 12 |
+| Medium | 15 | 1 | 14 |
 | Low | 10 | 7 | 3 |
 | Test debt | 5 | 0 | 5 |
 | Operational | 3 | 1 | 2 |
-| **Total** | **41** | **11** | **30** |
+| **Total** | **41** | **9** | **32** |
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -147,7 +147,7 @@ Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 |---|---|
 | `main` @ `867341e`, untouched | **502 pass / 0 fail / 0 skipped** on a fresh database; **4 fail** on the second run (the `faq_votes` leak) |
 | After the port | **532 pass / 0 fail / 0 skipped**, repeatable |
-| Today | **backend 560**, **frontend 61**, 0 fail / 0 skipped, repeatable, and green on CI |
+| Today | **backend 570**, **frontend 61**, 0 fail / 0 skipped, repeatable, and green on CI |
 
 Every integration suite runs — nothing skips — which is the whole point of
 O-03. The count is the tripwire `.github/workflows/website.yml` enforces on
@@ -933,7 +933,7 @@ cannot quietly drift from it.
 
 ## M-11 — SMTP does not require TLS
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/emailTransport.test.js` — 5 cases, each in its own process (the transport is memoised and the config reads the environment once): port 587 gets `requireTLS` and a TLS 1.2 floor, 465 keeps implicit TLS and takes it as well, loopback is exempt, a host that merely starts with 127 is not, and mock mode builds no transport at all
 
 **Where:** `backend/src/utils/email.js:24`
 
@@ -945,9 +945,29 @@ That is the only transport security setting. On the default port 587 nodemailer
 will use STARTTLS *if offered* and otherwise continue in plaintext, sending
 `SMTP_USER` and `SMTP_PASS` in the clear. `requireTLS: true` is missing.
 
+Worse than "might not encrypt": it **downgrades silently**. An attacker on the
+path who strips the STARTTLS capability out of the server's greeting gets the
+same plaintext session, and nothing logs a complaint. What crosses it is the
+relay password, every verification link, every password-reset token and every
+licence key.
+
+**Fixed** with `requireTLS: true` and `tls: { minVersion: 'TLSv1.2' }`. TLS 1.0
+and 1.1 are withdrawn; without a floor, node offers whatever the relay asks
+for, which makes the downgrade the relay's decision to make. Failing to deliver
+mail is a worse outcome than delivering it, and a much better one than handing
+the credentials to whoever is listening.
+
+**One exception: a relay on loopback**, where there is no network to be on. A
+developer running MailHog or Mailpit on `127.0.0.1:1025` should not have to
+terminate TLS to read a test message. The check is deliberately exact —
+`localhost`, `::1`, `[::1]` and `127.x.x.x` — because an earlier draft used
+`/^127./`, which would have exempted `127.evil.com` and `1270.example.com`.
+Both are now cases in the suite. Anything else, including a relay on the LAN,
+has a network hop and has to encrypt it.
+
 ## M-12 — Team invitations never expire
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/teamInviteExpiry.integration.test.js` — 5 cases: a fresh invite is accepted, an aged one is refused at both readers with `410 INVITE_EXPIRED`, resending revives it, an accepted membership is untouched by age, and a dead invite stops holding a seat
 
 **Where:** `backend/src/routes/team.js`, `backend/src/models/TeamMember.js`
 
@@ -956,7 +976,31 @@ forever until the owner deletes the row or resends (which rotates the token). A
 year-old forwarded invitation still joins the team.
 
 The address check on accept is sound — only the invited address may accept — so
-this is a staleness problem rather than a takeover.
+this is a staleness problem rather than a takeover. It still matters, because
+the invited address is exactly what somebody reading an abandoned mailbox
+already has.
+
+**Fixed** with `TEAM_INVITE_TTL_DAYS` (default 14 — long enough for somebody
+on holiday, short enough that a forgotten mailbox is not a standing key to
+someone else's subscription). The rule lives on the model as
+`TeamMember.isExpired` rather than in the routes, because **two** routes read
+a token — the pre-sign-in lookup and the accept — and a rule enforced in one
+but not the other is the same bug with an extra step.
+
+An expired invitation answers `410 INVITE_EXPIRED` and says so, rather than
+being folded into `INVITE_NOT_FOUND`. There is no oracle to protect here:
+holding the token is already proof of having been invited, and *"expired, ask
+for another"* is actionable where *"no longer valid"* leaves somebody guessing.
+
+**The half that is easy to miss:** `used` counted every row, so an expired
+invite would have held a seat for ever. That is the unwanted side of adding
+expiry — a five-seat team quietly becoming a four-seat one, with nothing on the
+roster explaining why. Expired invites no longer count toward `used` or
+`canInvite`, the row stays so the owner can resend it (which revives it, since
+`rotateToken` resets `invited_at`), and `memberView` now carries `expired` so
+a dead invite reads as dead. The suite pins the opposite case too: an
+**accepted** membership must not expire, because getting that wrong would cut
+off paying members after a fortnight — far worse than the bug being fixed.
 
 ## M-14 — The creator cannot recover from a lost authenticator
 
@@ -1510,8 +1554,8 @@ Already fixed on `main`, nothing to port: **H-05**, **M-01**, **M-02**,
 - [x] M-14 — `npm run reset-2fa`, the last resort when the panel cannot help
 - [x] M-15 — Security page: the zero-codes and legacy warnings, and a regenerate action
 - [x] M-06 — CIDR + IPv6 matching, and the allow-list moved into the creator panel
-- [ ] M-11 — `requireTLS: true` on SMTP
-- [ ] M-12 — expiry on team invitations
+- [x] M-11 — SMTP must negotiate TLS, with a 1.2 floor; loopback relays exempt
+- [x] M-12 — invitations expire after `TEAM_INVITE_TTL_DAYS`, and stop holding a seat
 - [ ] M-08 — publish `billingMode`; make Pricing honest about it
 - [x] M-09 / M-10 — both UIs notice when the session has actually ended
 - [ ] L-05 — sweep orphaned `.incoming-*` files
@@ -1641,6 +1685,7 @@ Checked live, against production:
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
 | 2026-09-23 | **M-15 fixed, prompted by the creator asking how to get recovery codes back.** They had enrolled, been shown the set once and closed the page; the answer from the panel was that they could not. `totp_recovery` was `[]` with `ADMIN_2FA_REQUIRED` on — one lost phone from a permanently locked panel, and no account above the creator to reset it. The endpoint had shipped with H-02; only the UI was missing. Security.jsx now carries a regenerate action, a red warning when the count is zero (worded differently for the creator than for a staff admin), the legacy-hash warning the finding was originally about, and honest lost-device copy. Two tests added for the case the existing three stepped over: regenerating from an EMPTY set on the authenticator alone, and a wrong password still refused there. 41 findings, 26 fixed, 15 open. |
+| 2026-09-23 | **M-11 and M-12.** SMTP now requires STARTTLS with a TLS 1.2 floor — it was not merely "might not encrypt" but a silent downgrade, since stripping the capability from the greeting sent the relay password, every reset token and every licence key in the clear with nothing logged. A relay on loopback is exempt, checked exactly, because an earlier draft of that check would have exempted `127.evil.com`. Team invitations expire after `TEAM_INVITE_TTL_DAYS` (14), enforced on the model because two routes read a token and a rule in one of them is the same bug with an extra step. Adding expiry had an unwanted half worth naming: an expired invite would have held a seat for ever, quietly turning a five-seat team into a four-seat one, so it no longer counts toward `used` and the roster shows it as dead. 41 findings, 32 fixed, 9 open. |
 | 2026-09-23 | **Phase 5 half done.** M-15 (recovery codes had no way back), M-14 (`npm run reset-2fa`, after the creator was locked out for real), M-06 (CIDR + IPv6 matching, and the allow-list moved into the creator panel behind a lock-out guard), M-09 and M-10 (both UIs kept rendering signed-in over a dead session; one event each, one place that decides what signed-out means). Two of those were found by the owner hitting them rather than by reading code, which is the honest way to say why they were rated Medium and should have been higher. Backend 560 / frontend 61, 0 fail, 0 skipped. 41 findings, 30 fixed, 11 open. |
 | 2026-09-23 | **O-03 closed — a green CI run.** Run `35775527617`: backend 3 m 21 s on MariaDB 11.8, `tests 533 / pass 533 / fail 0 / skipped 0` with the guard reading those counts back, `found 0 vulnerabilities` from the production audit, frontend 24 s, admin 17 s. Four attempts: two refused before any job started (private repository, billed minutes), then two that ran and each found a real defect — T-03, then T-04 and T-05. The finding that said the integration tests never actually run is now a workflow that runs them on every push, and it paid for itself three times before it first went green. 41 findings, 25 fixed, 16 open. Phase 5 has 16 left, two of them owner-only. |
 | 2026-09-23 | **The second CI run got past the hang and found two more.** With T-03 fixed the backend job ran for real — 4 m 25 s — and failed cleanly rather than hanging, which was the point of the timeouts. It failed on seven tests in two files, and neither was a flake. **T-04**: a single missing `});` in `test/googleAuth.test.js` had quietly nested five tests inside another one, so Node 22 cancelled them without running them — wrong issuer, expired token, unverified email, `alg=none`, key rotation and caching, no-client-ID, malformed credential. They pass on Node 24, which is why this machine never noticed; CI pins Node 22 because production runs it. **T-05**: the HIBP slow-path fake returned a promise that could only settle on `AbortSignal.timeout()`, whose timer is unref’d and does not hold the event loop open, so the runner could resolve out from under it. Both fixed and verified; a sweep confirms no other test file nests a column-0 `test(`. 41 findings, 24 fixed. |
