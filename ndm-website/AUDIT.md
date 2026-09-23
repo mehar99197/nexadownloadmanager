@@ -1923,15 +1923,64 @@ has ever run `daily-maintenance.sh`. The script works; no cron calls it. The
 same is true of `run-api.sh`, which is why the API is currently up only because
 it was started by hand — a reboot ends it.
 
-### What this pass did not cover
+### The adversarial pass — added 2026-09-23
 
-Worth stating so the green numbers above are not read as more than they are.
-No penetration test and no fuzzing. No load or concurrency testing. The panels
-were exercised through the API and through the middleware directly, never
-through a browser session, because that needs the owner’s password. Playwright
-(`npm run test:e2e`) was not run. And a passing suite says the code does what
-its tests say — T-06 and T-07 are the measure of how much of the two UIs never
-makes that claim at all.
+The first version of this section said no penetration test and no fuzzing had
+been done. That gap is now closed by `test/abuse.integration.test.js` (9
+tests), which throws hostile input at the real app rather than reading the
+code that handles it. Everything before it asked *is this route guarded?*;
+these ask *what happens when someone tries*, which is the question that finds
+the space between what a validator is believed to reject and what it does.
+
+| Class | Result |
+|---|---|
+| **SQL injection** into every `limit` / `page` / `q` — eight payloads, two parameters | refused (400) or coerced harmless (200). Never a 5xx, never a leaked hash, table intact |
+| **Mass assignment** — `role`, `email_verified`, `banned`, `id` posted to register and to profile update | ignored; the row comes back `role='user'`, unverified |
+| **Prototype pollution** — `__proto__` and `constructor.prototype` in two bodies | `Object.prototype` unchanged |
+| **JWT forgery** — `alg: 'none'`, wrong signature, edited claims with the original signature, junk, empty | 401 on all five; the genuine token still 200 |
+| **IDOR** — one customer’s bearer against another’s id on three routes | 401/403/404, and the other account’s address never appears in the body |
+| **Type confusion / oversize** — arrays and objects where strings belong, a 100 kB name | 400 or 413, never a 500. A validator should refuse, not throw |
+| **Error-body leakage** — four public routes × four junk bodies | no `SELECT`, `sqlMessage`, `ER_`, stack frame or `node_modules` path anywhere |
+
+**The injection guard was mutation-checked**, because a security test that
+passes for the wrong reason is worse than none. Breaking the model’s
+`Number()` coercion alone did **not** fail it — the route’s zod schema was
+still refusing the payload. Breaking **both** produced
+`answered 500: ER_PARSE_ERROR … near 'DROP TA`. So the guard fires on a real
+leak, and the finding underneath it is a good one: `LIMIT` and `OFFSET` are
+string-interpolated into a dozen queries (MySQL will not take them as
+placeholders) and they are defended twice over.
+
+### Load and concurrency — measured 2026-09-23
+
+Not committed as a test: a throughput assertion on a shared laptop is a coin
+flip. What it looked for was the three things that only appear under
+concurrency — pool exhaustion, unhandled rejections, and 5xx under
+contention.
+
+| Endpoint | req/s | p50 | p95 | Codes |
+|---|---|---|---|---|
+| `/health` (no database) | 1124 | 38 ms | 56 ms | all 200 |
+| `/releases/feed` (one query) | 1000 | 38 ms | 62 ms | all 200 |
+| `/stats` (aggregates) | 1190 | 28 ms | 48 ms | all 200 |
+| `/user/me` (authenticated, 50 concurrent) | 889 | 49 ms | 61 ms | all 200 |
+| `/user/me` at **150 concurrent** | 1030 | 121 ms | 143 ms | all 200 |
+
+No 5xx, no thrown request, no unhandled rejection. Tripling the concurrency
+roughly tripled p50 while throughput held — which is queueing behaving
+normally, not a pool running out. On a box this size that is the answer
+wanted; it says nothing about the shared host, where the real limit is
+CloudLinux’s per-account cap rather than this code.
+
+### What this pass still does not cover
+
+Worth stating so the green numbers are not read as more than they are. The
+panels were exercised through the API, through the middleware directly, and
+now through their own component tests — but never through a real browser
+session signed in as the creator, because that needs the owner’s password.
+No load testing against production, deliberately. No third-party penetration
+test: the adversarial suite above is my own reading of what to try, and it
+shares its blind spots with the code review that preceded it.
 
 # Fix plan
 
