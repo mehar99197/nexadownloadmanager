@@ -140,20 +140,18 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
 | Low | 12 | 0 | 12 |
-| Test debt | 9 | 1 | 8 |
+| Test debt | 9 | 0 | 9 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **47** | **3** | **44** |
+| **Total** | **47** | **2** | **45** |
 
-**Every defect found by reading the code is fixed.** The six left are of two
-kinds, and neither is a bug sitting in a code path:
+**Everything that can be fixed in this repository is fixed.** The two that
+remain are not code:
 
 - **O-01, O-02** — hPanel cron entries, which have to be added in
   Hostinger's control panel by the account owner and cannot be done over SSH.
-- **T-06, T-07** — found by the verification pass on 2026-09-23 (see
-  *Verification pass* below). Both are missing tests, not broken behaviour:
-  the control panels have no automated tests at all, and two thirds of the
-  site’s pages are not named by one. L-11 and T-08, found in the same pass,
-  are now fixed.
+- Nothing else. The verification pass of 2026-09-23 added five findings
+  (L-11, L-12, T-06, T-07, T-08) and a sixth from running the e2e suite for
+  the first time (T-09); all six are fixed.
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -1620,7 +1618,7 @@ reason. And the panel build hash is unchanged by all of this
 
 ## T-07 — two thirds of the site’s pages have no test naming them
 
-**Status:** PARTLY FIXED &nbsp;|&nbsp; **Verified by:** `src/test/authPages.test.jsx` (9) and `loginTeamJoin.test.jsx` (6) — five of the seven authentication pages; the suite is 61 → 76
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `authPages.test.jsx` (9), `loginTeamJoin.test.jsx` (6), `profileContact.test.jsx` (6) — every page that spends a token, a credential or is irreversible; the suite is 61 → 82
 
 The 61 frontend tests are real and they cover the right things first: the
 account, billing, team, activation and session-ended flows. But the pages with
@@ -1661,10 +1659,32 @@ code, and all worth knowing before the next one is written:
 | **A form can shadow its own field** | the 2FA form is labelled *"Enter your verification code"*, so a loose `/verification code/i` matched both the form and the input |
 | **The wrong button still passes** | *"Back to sign in"* sits beside *"Verify and sign in"* and matches any loose pattern — clicking it abandons the challenge instead of spending it |
 
-**Still open: two of the seven** (`Profile`, `Security`) and the eleven mostly
-static pages (About, Benchmarks, Changelog, Contact, Docs, Features, NotFound,
-Privacy, Reviews, Terms, Tutorials). `Contact` is the one of those eleven that
-matters, because it posts.
+**Then the last two, plus Contact.** `Profile` carries account deletion — the
+one irreversible action on this site — so the tests hold down that the page
+button only opens a dialog rather than deleting, that the password and the
+typed `DELETE` go together, that the session is ended afterwards (the
+difference between *gone* and *looks gone*), and that a refusal leaves the
+account alone. `Contact` holds down the honeypot: the trap stays out of the
+tab order and the accessibility tree, an ordinary message posts with it
+empty, and the refusal does not name the field — L-02 again, from the page’s
+side this time.
+
+**A correction.** `Security` was listed above as an authentication page. It is
+not: it is a static page of privacy claims with no form and no API call. It
+was put on that list because its name reads like one, which is the kind of
+mistake that only surfaces when you sit down to test the thing.
+
+Two more traps, both in the tests:
+
+| | |
+|---|---|
+| **A prefilled form concatenates** | Contact fills name and email from the session, so typing without clearing sent `customer@example.testperson@example.test` |
+| **jsdom cannot see a CSS class** | the honeypot is hidden by Tailwind’s `.hidden` and this suite runs `css: false`, so `toBeVisible()` would have been testing the absence of a stylesheet. Asserted on `tabindex`, `autocomplete` and `aria-hidden` instead |
+
+**Left uncovered on purpose:** the eleven static pages (About, Benchmarks,
+Changelog, Docs, Features, NotFound, Privacy, Reviews, Security, Terms,
+Tutorials). None of them posts, and the Playwright suite already walks ten of
+them for a title, an error boundary and a non-empty body.
 
 ---
 
