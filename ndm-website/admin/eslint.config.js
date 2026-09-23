@@ -78,6 +78,8 @@ export default [
         ...browserGlobals,
         ...testGlobals,
         getComputedStyle: 'readonly',
+        performance: 'readonly',
+        requestAnimationFrame: 'readonly',
         innerWidth: 'readonly',
         innerHeight: 'readonly',
         process: 'readonly',

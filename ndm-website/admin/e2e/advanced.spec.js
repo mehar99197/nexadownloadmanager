@@ -83,6 +83,54 @@ test('a screen change runs a view transition, and names nothing twice', async ({
   expect(vtErrors, `view transition errors:\n${vtErrors.join('\n')}`).toEqual([]);
 });
 
+test('moving between screens from a scrolled list does not jolt, and Back returns to it', async ({ page }) => {
+  // Short enough that twelve rows scroll.
+  await page.setViewportSize({ width: 1280, height: 520 });
+  await stubApi(page);
+  await page.goto('users', { waitUntil: 'load' });
+  await expect(page.getByText('customer12@example.test')).toBeVisible({ timeout: 15_000 });
+  await page.evaluate(() => window.scrollTo({ top: 300, behavior: 'instant' }));
+  await page.waitForTimeout(200);
+
+  const record = () =>
+    page.evaluate(() => {
+      const frames = [];
+      window.__frames = frames;
+      const t0 = performance.now();
+      const tick = () => {
+        const h = document.querySelector('main h1, main h2');
+        frames.push({ scrollY: Math.round(window.scrollY), heading: h ? h.textContent.trim() : null });
+        if (performance.now() - t0 < 1500) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+
+  // Activated the way a keyboard would, without Playwright scrolling the page
+  // up to reach it first — the sidebar is not sticky, so a real pointer has to
+  // scroll too, but that is the reader's scroll, not the app's.
+  await record();
+  await page.evaluate(() =>
+    [...document.querySelectorAll('a.nav-link')].find((a) => a.textContent.trim().endsWith('Dashboard')).click()
+  );
+  await page.waitForTimeout(1600);
+  const away = await page.evaluate(() => window.__frames);
+
+  // Recorded before the fix: the URL changed, the USERS list leapt from its
+  // scroll position to the top, and the next screen arrived ~300ms later.
+  const leaving = away.filter((f) => f.heading === 'Users');
+  expect(leaving.every((f) => f.scrollY === 300), 'the list moved before it was replaced').toBe(true);
+  expect(away[away.length - 1].heading).not.toBe('Users');
+  expect(away[away.length - 1].scrollY, 'the next screen should open at its top').toBe(0);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/users$/);
+  await page.waitForTimeout(600);
+  expect(
+    await page.evaluate(() => Math.round(window.scrollY)),
+    'Back should return to where the list was'
+  ).toBe(300);
+});
+
 test('the table holds its height once it knows how many rows to expect', async ({ page }) => {
   await stubApi(page, { delayUsers: 1200 });
   await page.goto('users', { waitUntil: 'commit' });

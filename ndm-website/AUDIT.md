@@ -2234,6 +2234,110 @@ what pointed the specs at production. They are kept because a local run cannot
 see the CSP, the `.htaccess` rewrites or the real API, and those are exactly
 where a deploy goes wrong.
 
+# Jolts on reload and between pages — 2026-09-23
+
+Reported after the advanced pass went live: "it jerks on reload and when
+moving from one page to another, and the loader no longer appears when the
+site opens". Both reports were right, and the second one was caused by that
+pass.
+
+### Measured before anything was changed
+
+A recorder sampled the live page once per animation frame — layout width,
+scroll position, the page heading's position, the boot screen's opacity, and
+whether the Suspense spinner was on screen — with **real scrollbars**:
+Playwright's headless Chrome passes `--hide-scrollbars`, which would have
+hidden exactly the sideways shift being looked for.
+
+One click from `/pricing` scrolled to 700px, to `/download` (not yet visited):
+
+```
+   17ms /pricing   width=1356 scrollY=700   the old page
+   67ms /download  width=1356 scrollY=700   URL changed, old page still up
+  449ms /download  width=1366 scrollY=0     BLANK — spinner, scroll clamped, scrollbar gone
+  799ms /download  width=1356 scrollY=0     the new page, scrollbar back
+```
+
+Four jolts for one click. A warm reload lifted the boot screen at 370ms onto
+a blank page whose content arrived at 635ms, and the scrollbar then appeared
+and moved everything centred 5px sideways.
+
+### Six causes
+
+1. **The page wrapper was keyed outside the Suspense boundary.** Every
+   navigation therefore mounted a brand-new boundary, and a new boundary
+   always shows its fallback — `startTransition` cannot prevent that. The
+   "keep the old page until the new one is ready" the advanced pass described
+   was never happening. **This was the blank frame.**
+2. **The scrollbar toggled.** Nothing reserved its 10px, so a briefly short
+   page, and the boot screen's `overflow: hidden`, changed the page width.
+3. **Nothing managed the scroll.** A new page opened wherever the last one had
+   been, or wherever a short page clamped it. Back never returned the reader to
+   their place, and `scrollRestoration: auto` restored Back's position onto the
+   page being *left*, a frame before the swap.
+4. **A named view transition slides when the scroll changes.** React's
+   `<ViewTransition>` always names the element, and a named element is animated
+   from its old box to its new one — so resetting the scroll made the old page
+   slide hundreds of pixels while it faded. The custom keyframes had also
+   dropped the browser's plus-lighter blend, so mid-fade the page dipped.
+5. **The reveal moved content after it was painted.** The class arrived in an
+   effect, one frame after the first paint; and its range, `cover 30%`, is a
+   share of the section's height — most pages are one ~5000px Section, so the
+   heading sat a couple of pixels low and stepped into place.
+6. **The boot screen was lifted onto the shell, not the page**, from
+   `main.jsx` two frames after `render()`. On a lazy route the page arrives a
+   round trip later. And the advanced pass had held the screen back for 160ms,
+   so a warm load never showed it — which is what the owner saw, and why it was
+   reverted at their request.
+
+### What changed
+
+| | |
+|---|---|
+| Suspense | persists; the key moved **inside** it (`RoutedPage`) |
+| Page code | `lazyPage()` = `lazy()` plus a `preload()`. Navigation fetches the next page's code first, while the old page stays put with a hairline at the top, then swaps in **one synchronous commit** — page, title, active link and scroll together |
+| Transition | the browser's own **root** cross-fade, 200ms, only the duration overridden. The root snapshot is the viewport, which does not move |
+| Scroll | `scrollRestoration: manual`; a new page opens at the top, Back and a reload return to the saved position (per history entry, `sessionStorage`) |
+| Scrollbar | `scrollbar-gutter: stable` on `html`. Overlay scrollbars — phones, macOS — have no gutter, so nothing changes there |
+| Reveal | the native class is in the first render; the range is a fixed `entry 220px`; the observer path only hides sections that start below the fold |
+| Boot screen | the original script **byte-for-byte**, so its CSP hash is the one already live. Lifted by `<BootDone>`, which sits beside the page inside its Suspense boundary; `ErrorBoundary` lifts it too, so an error page is not stuck behind it |
+| Panel | the same swap (no preload: every screen is eager); `DataTable` keeps what it learned about its rows at module level, so a screen returned to comes back at the same height |
+
+One measurement had to be corrected along the way. With the gutter reserved,
+`document.documentElement.clientWidth` still reports the full viewport while
+`overflow` is hidden, although the header and body stay at 1356px throughout —
+so the recorder measures the header's box instead.
+
+The gutter did cost one real thing: in a narrow desktop window `/compare`'s
+pricing table had 338px instead of 348 and ran 12px over its box. Its cells
+now use `px-2` below `sm`.
+
+### After, same recorder
+
+```
+reload /faq at 900:  boot screen 1.00 from the first frame; page at 325ms and
+                     scroll back at 900 at 341ms, both under it; fades from
+                     740ms onto a finished page. Width and heading never move.
+/faq (900) → /docs:  old page holds at 900 until the swap; one frame: /docs at 0
+Back → /faq:         one frame: /faq at exactly 900
+panel Users → Dash:  the list holds at 500 until the swap (was: leapt to the
+                     top, next screen ~300ms later). Back returns to 500.
+```
+
+### Held by tests
+
+`frontend/e2e/steady.spec.js` (4) samples every frame, with real scrollbars:
+the boot screen is fully up from the start, holds its 700ms, and lifts only
+onto a page; no width change, no blank frame, no spinner and no movement after
+the page appears, on desktop and through the phone menu; Back and reload
+return to the same place. `admin/e2e/advanced.spec.js` gained the panel
+equivalent.
+
+**Each was run against the old code on the live site first, and each failed
+for the fault it names** — the boot screen not up from the start, the width
+changing, the heading moving, a blank frame on the phone, the panel's next
+screen opening mid-page. Then all passed on the new build.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth
