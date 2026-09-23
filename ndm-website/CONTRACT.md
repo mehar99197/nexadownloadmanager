@@ -54,8 +54,28 @@ This endpoint is consumed by the NDM **C++ app**, so it returns a LITERAL shape,
 { "valid": true, "plan": "pro", "token": "<15m Ed25519 jwt, sub:'user:7', acct:7>", "trial": false,
   "account": { "id": 7, "email": "owner@example.com", "name": "Owner" } }
 // invalid
-{ "valid": false, "reason": "expired", "trial": false }   // reason in not_found | expired | cancelled | device_mismatch | seat_limit | signed_out | invalid
+{ "valid": false, "reason": "expired", "trial": false }   // reason in not_found | expired | cancelled | banned | device_mismatch | seat_limit | signed_out | invalid
 ```
+
+**A ban reaches the app.** `users.banned` is read with the key on every
+`/validate` and `/heartbeat` (`Subscription.findByLicenseKeyForValidation`),
+before status, expiry or trial state: a banned owner answers
+`reason:"banned"`, which the client treats like any other terminal reason —
+it drops the stored key and falls back to Free. Without it, banning locked the
+website only and the desktop app went on collecting a fresh Pro token every
+day. A banned account's `/release` still works on purpose: handing a seat back
+is housekeeping, and a seat left pinned is one a colleague cannot take.
+
+A **Team** licence is one key shared by the roster, and `/api/user/license`
+hands a member the owner's key, so the banned person is usually not the row
+that lookup reads. The request carries no user identity — a key and a device
+fingerprint — so there is no device to single out. The shared secret is
+withdrawn instead: the first validate or heartbeat after the ban drops the
+banned members from `team_members`, rotates `license_key` and revokes every
+seat (`Subscription.revokeBannedMembers`, one transaction). That request
+answers `not_found`, because the key it sent no longer names anything;
+everyone still entitled re-copies the new key from their dashboard, and the
+banned member cannot, because the ban is what stops them signing in.
 
 **The request carries exactly one credential**: `license_key` (manual activation)
 or `device_token` (a machine signed in to an account — see `routes/device.js`).
