@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+
 /**
  * DataTable — generic table.
  *
@@ -11,6 +13,7 @@
  *  - onRowClick?: (row) => void
  *  - caption: string           what this table lists, for screen readers
  *  - rowHeader: boolean        first column is the row's label (default true)
+ *  - loadingRows: number       stand-ins to draw while loading (see below)
  *
  * The caption and the scopes are not decoration. Without them every table in
  * the panel is read as a flat run of cells with nothing naming the row or the
@@ -25,9 +28,37 @@ export default function DataTable({
   onRowClick,
   caption,
   rowHeader = true,
+  loadingRows,
 }) {
   const keyFor = (row, i) =>
     rowKey ? rowKey(row, i) : (row?.id ?? row?._id ?? i);
+
+  // How many stand-in rows to draw while the next set is on its way.
+  //
+  // A page size is a caller's business and every screen here picks its own
+  // (Users is 12, others 20), so guessing one number for all of them would
+  // trade one layout shift for a different one. A table that has already
+  // shown rows does not have to guess: it knows exactly how many are coming
+  // back, so a refetch — a filter, a page change, Refresh — holds its height
+  // to the pixel. Only the very first load has a number to pick, and eight is
+  // a screenful.
+  const lastCount = useRef(0);
+  if (!loading && rows.length) lastCount.current = rows.length;
+  const standIns = loadingRows || lastCount.current || 8;
+
+  // And how TALL those rows are. Matching the count alone was not enough:
+  // twelve stand-ins of one line each against twelve real rows of a name over
+  // an email is still 336px of movement, which is most of the shift the
+  // stand-ins were added to remove. Every table here has a different row —
+  // one line, two lines, a badge, a thumbnail — so this is measured off the
+  // real thing rather than guessed per screen.
+  const bodyRef = useRef(null);
+  const lastRowHeight = useRef(0);
+  useEffect(() => {
+    if (loading || !rows.length) return;
+    const tr = bodyRef.current && bodyRef.current.querySelector('tr');
+    if (tr) lastRowHeight.current = Math.round(tr.getBoundingClientRect().height);
+  }, [loading, rows.length]);
 
   return (
     // Focusable, because it scrolls. Every table in the panel is wider than a
@@ -38,6 +69,7 @@ export default function DataTable({
       className="overflow-x-auto rounded-xl border border-admin-border bg-admin-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-admin-accent)]"
       tabIndex={0}
       role="region"
+      aria-busy={loading || undefined}
       aria-label={caption ? `${caption} — scrolls sideways` : 'Table — scrolls sideways'}
     >
       <table className="admin-table">
@@ -51,16 +83,28 @@ export default function DataTable({
             ))}
           </tr>
         </thead>
-        <tbody>
+        <tbody ref={bodyRef}>
           {loading ? (
-            <tr>
-              <td
-                colSpan={columns.length}
-                className="px-4 py-8 text-center text-admin-muted"
+            /* Rows the shape of the rows that are coming, rather than one
+               centred word. The word collapsed the table to a single line, so
+               the moment the data landed the page grew by twenty rows and
+               every control under it jumped. The region above carries
+               aria-busy; these are decoration and stay out of the tree. */
+            Array.from({ length: standIns }, (_, r) => (
+              <tr
+                key={`loading-${r}`}
+                aria-hidden="true"
+                style={lastRowHeight.current ? { height: lastRowHeight.current } : undefined}
               >
-                Loading…
-              </td>
-            </tr>
+                {columns.map((col, c) => (
+                  <td key={col.key} className={col.className}>
+                    <span
+                      className={`skeleton block h-4 rounded ${c === 0 ? 'w-40' : 'w-20'}`}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))
           ) : rows.length === 0 ? (
             <tr>
               <td
