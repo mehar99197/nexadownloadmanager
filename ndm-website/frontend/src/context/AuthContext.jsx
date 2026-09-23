@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import api, { unwrap, setAccessToken, clearAccessToken, restoreSession } from '../api/client';
+import api, {
+  unwrap, setAccessToken, clearAccessToken, restoreSession, SESSION_ENDED_EVENT,
+} from '../api/client';
 
 const AuthContext = createContext(null);
 
@@ -39,6 +41,19 @@ export function AuthProvider({ children }) {
     const me = data?.user ? { ...data.user, subscription: data.subscription } : data;
     setUser(me);
     return me;
+  }, []);
+
+  // A refresh failed mid-session, so the session is over (AUDIT.md M-10).
+  // Registered before the mount effect below so the two cannot race, and it is
+  // the single place that decides what "signed out" means — the client only
+  // reports the fact.
+  useEffect(() => {
+    const onEnded = () => {
+      clearSessionHint();
+      setUser(null);
+    };
+    window.addEventListener(SESSION_ENDED_EVENT, onEnded);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded);
   }, []);
 
   // The httpOnly refresh cookie rehydrates the in-memory access token on mount.

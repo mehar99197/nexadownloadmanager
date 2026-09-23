@@ -10,6 +10,9 @@ const NONCE = 'test-nonce.1700000000000.abcdefghijklmnopqrstuv';
 vi.mock('../api/client', () => ({
   default: { get: vi.fn(async () => ({ data: { ok: true, data: { nonce: NONCE } } })) },
   unwrap: (res) => res.data.data,
+  // AuthProvider subscribes to this; vitest throws on an export the mock
+  // does not define. The real value is asserted in sessionEnded.test.jsx.
+  SESSION_ENDED_EVENT: 'ndm:session-ended',
 }));
 
 // CLIENT_ID is read once at module evaluation, so each case stubs the env and

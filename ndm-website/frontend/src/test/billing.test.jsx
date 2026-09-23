@@ -21,6 +21,9 @@ vi.mock('../api/client', () => {
   return {
     default: api,
     unwrap: (res) => res?.data?.data,
+    // AuthProvider subscribes to this; vitest throws on an export the mock
+    // does not define. The real value is asserted in sessionEnded.test.jsx.
+    SESSION_ENDED_EVENT: 'ndm:session-ended',
     setAccessToken: vi.fn(),
     clearAccessToken: vi.fn(),
     restoreSession: vi.fn(async () => false),

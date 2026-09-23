@@ -57,6 +57,28 @@ export async function refreshAdminToken() {
  */
 export const TWO_FACTOR_REQUIRED_EVENT = 'ndm:two-factor-required';
 
+/**
+ * The panel session is over: a refresh was refused, or a 401 arrived on a
+ * request that cannot be retried.
+ *
+ * Clearing adminAccessToken is only half the job (AUDIT.md M-09). That
+ * variable lives in this module; ProtectedAdminRoute gates on
+ * AdminAuthContext's React state, and nothing connected the two — so the panel
+ * shell stayed up, the navigation kept rendering, and every data fetch failed
+ * underneath it. AdminAuthContext listens for this and clears its state.
+ *
+ * Deliberately NOT dispatched from clearAdminAccessToken(): that also runs on
+ * a deliberate sign-out, which tears its own state down.
+ */
+export const SESSION_ENDED_EVENT = 'ndm:session-ended';
+
+function sessionEnded() {
+  clearAdminAccessToken();
+  if (typeof window !== 'undefined' && window.dispatchEvent) {
+    window.dispatchEvent(new window.CustomEvent(SESSION_ENDED_EVENT));
+  }
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -75,13 +97,13 @@ api.interceptors.response.use(
       url.includes(`${AUTH_NS}/refresh`) ||
       url.includes(`${AUTH_NS}/logout`)
     ) {
-      if (error?.response?.status === 401) clearAdminAccessToken();
+      if (error?.response?.status === 401) sessionEnded();
       return Promise.reject(error);
     }
     original._retry = true;
     const token = await refreshAdminToken();
     if (!token) {
-      clearAdminAccessToken();
+      sessionEnded();
       return Promise.reject(error);
     }
     original.headers = original.headers || {};
