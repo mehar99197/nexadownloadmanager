@@ -1596,8 +1596,18 @@ re-covered, and so a regression here is visible as a change.
 
 # Fix plan
 
+**The original plan had six phases, and this one has five.** That is worth
+saying plainly, because a reader who saw the first plan will count and come up
+short. Phase 6 was *UX and polish* — M-08, M-09, M-10, M-15, L-10 and the
+L-0* block. At the rebase most of it had either already been done on `main` or
+had collapsed into a change sitting beside a Phase 5 item, so splitting them
+would have meant two deploys for one afternoon of work. It was folded into
+Phase 5 rather than dropped: every one of its findings is in the list below or
+in the ported block above, and none of them is still open.
+
 Phases 1–4 were done on `windows-fixes-v3` and are recorded in the change log
-below. Phase 4.5 re-based that work onto `main`; Phase 5 is what is left.
+below. Phase 4.5 re-based that work onto `main`. Phase 5 is what was left,
+and it now carries what used to be Phase 6.
 
 ## Done — Phases 1–4, ported to this base (Phase 4.5)
 
@@ -1605,7 +1615,7 @@ Every one verified against MariaDB 11.8.9 before the next was started, one
 commit per finding. Where `main` had solved something independently its version
 was kept and the port skipped, which is recorded under each finding.
 
-- [x] H-01 / L-04 — one allow-listed projection of a users row; the details view gated like every write &nbsp;`4b64690`
+- [x] H-01 / L-04 / L-10 — one allow-listed projection of a users row; the details view gated like every write &nbsp;`4b64690`. L-10 came with it: `publicUser` supplies the `createdAt` the profile page was already reading, so "Member since" stopped being blank without a second change
 - [x] H-02 / M-03 — bcrypt recovery codes, legacy retirement, `/2fa/recovery-codes`, conditional spends &nbsp;`4839060`
 - [x] H-06 / L-07 — the counter wired on both download paths &nbsp;`14c8d1d`
 - [x] H-07 — an installer must be the release's version &nbsp;`03afe5d`
