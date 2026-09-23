@@ -1620,7 +1620,7 @@ reason. And the panel build hash is unchanged by all of this
 
 ## T-07 — two thirds of the site’s pages have no test naming them
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** counted — 27 pages, 8 test files, **18 pages** not named by any of them
+**Status:** PARTLY FIXED &nbsp;|&nbsp; **Verified by:** `src/test/authPages.test.jsx` (9) and `loginTeamJoin.test.jsx` (6) — five of the seven authentication pages; the suite is 61 → 76
 
 The 61 frontend tests are real and they cover the right things first: the
 account, billing, team, activation and session-ended flows. But the pages with
@@ -1637,9 +1637,34 @@ the *contract* is tested — but nothing checks that the page calls it correctly
 handles its failures, or does not leave a token in a URL it then navigates
 away from.
 
-The remaining eleven (About, Benchmarks, Changelog, Contact, Docs, Features,
-NotFound, Privacy, Reviews, Terms, Tutorials) are mostly static and are a much
-lower priority; `Contact` is the exception, because it posts.
+**Done: five of the seven.** `ForgotPassword`, `ResetPassword`, `VerifyEmail`,
+`Login` and `TeamJoin` — the ones that spend a token or a credential. The
+tests are about the two risks rather than the rendering:
+
+- **A single-use token from a URL.** Each page must refuse to post a missing
+  token rather than calling the endpoint with an empty string, must send the
+  token it was given, and must not claim success when the server refuses. The
+  reset page also has to refuse a mismatched confirmation *before* posting —
+  not to save a round trip, but because the token is single-use and spending
+  it on a typo locks the user out of their own reset link.
+- **A recovery form that must not become an account oracle.** "No such user"
+  and "sent" have to be indistinguishable, which is a property of the page,
+  not only of the API: a page that branched on the response would undo what
+  `/auth/forgot-password` does to stay quiet.
+
+Three things surfaced from writing them, all in the tests rather than the
+code, and all worth knowing before the next one is written:
+
+| | |
+|---|---|
+| **Two names for one condition** | the API answers `requiresTwoFactor` and `AuthContext` translates it to `twoFactor` three lines later. The page is right; the first mock was not |
+| **A form can shadow its own field** | the 2FA form is labelled *"Enter your verification code"*, so a loose `/verification code/i` matched both the form and the input |
+| **The wrong button still passes** | *"Back to sign in"* sits beside *"Verify and sign in"* and matches any loose pattern — clicking it abandons the challenge instead of spending it |
+
+**Still open: two of the seven** (`Profile`, `Security`) and the eleven mostly
+static pages (About, Benchmarks, Changelog, Contact, Docs, Features, NotFound,
+Privacy, Reviews, Terms, Tutorials). `Contact` is the one of those eleven that
+matters, because it posts.
 
 ---
 
