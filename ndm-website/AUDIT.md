@@ -84,11 +84,11 @@ Against this base, after the port:
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
 | High | 8 | 0 | 8 |
-| Medium | 15 | 8 | 7 |
+| Medium | 15 | 7 | 8 |
 | Low | 10 | 7 | 3 |
 | Test debt | 5 | 0 | 5 |
 | Operational | 3 | 1 | 2 |
-| **Total** | **41** | **16** | **25** |
+| **Total** | **41** | **15** | **26** |
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -97,6 +97,7 @@ Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 |---|---|
 | `main` @ `867341e`, untouched | **502 pass / 0 fail / 0 skipped** on a fresh database; **4 fail** on the second run (the `faq_votes` leak) |
 | After the port | **532 pass / 0 fail / 0 skipped**, repeatable |
+| Today, after T-03/T-04/T-05 and M-15 | **535 pass / 0 fail / 0 skipped**, repeatable, and green on CI |
 
 Every integration suite runs — nothing skips — which is the whole point of
 O-03. The count is the tripwire `.github/workflows/website.yml` enforces on
@@ -865,7 +866,7 @@ says loudly what it did. Do this **before** relying on the legacy retirement.
 
 ## M-15 — The panel does not surface any of the new recovery-code migration state
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/totp.test.js` — two new cases covering an account with an EMPTY set (regenerating on the authenticator alone; a wrong password still refused), alongside the three that were already there; admin panel lints and builds
 
 **Where:** `admin/src/pages/Security.jsx`
 
@@ -877,9 +878,34 @@ the regenerate endpoint. The server-side migration path therefore exists with no
 way to drive it from the UI, and an account whose legacy codes were just retired
 sees only "0 recovery codes left" with no explanation and no button.
 
-**Fix:** a warning row when `recoveryCodesLegacy` is true, a "Generate new
-recovery codes" action posting password + code to `/2fa/recovery-codes`, and the
-same one-time display the enable flow already has.
+**Found the hard way.** The creator of this deployment asked how to get
+recovery codes back, having enrolled, been shown them once and closed the page.
+The answer at the time was: you cannot, from the panel. The row said
+`totp_recovery = []` while `ADMIN_2FA_REQUIRED` was on — one lost phone from a
+permanently locked panel, with no account above the creator to reset it.
+
+**Fixed** in `Security.jsx`:
+
+- A **Generate recovery codes** action next to the count, posting password +
+  code to the endpoint that H-02 shipped, and reusing the one-time display the
+  enrolment flow already has.
+- A **red warning when the count is zero**, which is the state nothing named
+  before. It says what is actually at stake, and it says it differently for the
+  creator (nobody can reset it) than for a staff admin (the creator can).
+- A **warning when `recoveryCodesLegacy` is true** — the finding's original
+  subject — explaining that pre-bcrypt codes are recoverable from a database
+  read, which is the one thing a second factor should survive.
+- The *Lost your authenticator?* card no longer only offers advice that
+  presumes a code you may not have. It now says plainly that the codes and the
+  regenerate action both need something you can only produce while the device
+  is still in your hand.
+
+The two new tests are the case that matters and the one the existing coverage
+stepped over: every earlier test starts from a populated set, so nothing proved
+an account could get its *first* replacement set. Turning 2FA off and on again
+was the only route before, and it is strictly worse — it drops the account to a
+password alone for the length of the re-enrolment and discards a working
+authenticator enrolment for no reason.
 
 ## M-13 — Five routes read `:id` from the URL with no schema validation
 
@@ -1238,9 +1264,9 @@ the runner alive afterwards by leaving a connection pool open. It is fixed,
 the cause was reproduced locally before it was, and all three jobs now carry
 a `timeout-minutes` so the next one costs minutes rather than hours.
 
-O-03 stays **IN PROGRESS** until a run is green end to end. The suite itself
-is green wherever it can be run: **533 pass / 0 fail / 0 skipped** locally
-against MariaDB 11.8.9, repeatable, and now also under CI's own environment.
+O-03 closed on run `35775527617`. The suite is green wherever it is run:
+**535 pass / 0 fail / 0 skipped** locally against MariaDB 11.8.9, repeatable,
+under CI's own environment, and on CI itself.
 
 `npm test` reports **95 pass / 5 skipped** and exits green. All five skips are
 the integration suites — `api`, `smoke`, `rateLimit`, `downloadCounter`,
@@ -1337,7 +1363,7 @@ Already fixed on `main`, nothing to port: **H-05**, **M-01**, **M-02**,
       actually executed found a real defect on the way: T-03, then T-04 and T-05
 - [ ] M-14 — a way for the creator to recover from a lost authenticator
       **(do this before trusting H-02's legacy retirement)**
-- [ ] M-15 — Security page: surface `recoveryCodesLegacy` + a regenerate action
+- [x] M-15 — Security page: the zero-codes and legacy warnings, and a regenerate action
 - [ ] M-06 — CIDR + IPv6 in `ipAllowed`
 - [ ] M-11 — `requireTLS: true` on SMTP
 - [ ] M-12 — expiry on team invitations
@@ -1469,6 +1495,7 @@ Checked live, against production:
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
+| 2026-09-23 | **M-15 fixed, prompted by the creator asking how to get recovery codes back.** They had enrolled, been shown the set once and closed the page; the answer from the panel was that they could not. `totp_recovery` was `[]` with `ADMIN_2FA_REQUIRED` on — one lost phone from a permanently locked panel, and no account above the creator to reset it. The endpoint had shipped with H-02; only the UI was missing. Security.jsx now carries a regenerate action, a red warning when the count is zero (worded differently for the creator than for a staff admin), the legacy-hash warning the finding was originally about, and honest lost-device copy. Two tests added for the case the existing three stepped over: regenerating from an EMPTY set on the authenticator alone, and a wrong password still refused there. 41 findings, 26 fixed, 15 open. |
 | 2026-09-23 | **O-03 closed — a green CI run.** Run `35775527617`: backend 3 m 21 s on MariaDB 11.8, `tests 533 / pass 533 / fail 0 / skipped 0` with the guard reading those counts back, `found 0 vulnerabilities` from the production audit, frontend 24 s, admin 17 s. Four attempts: two refused before any job started (private repository, billed minutes), then two that ran and each found a real defect — T-03, then T-04 and T-05. The finding that said the integration tests never actually run is now a workflow that runs them on every push, and it paid for itself three times before it first went green. 41 findings, 25 fixed, 16 open. Phase 5 has 16 left, two of them owner-only. |
 | 2026-09-23 | **The second CI run got past the hang and found two more.** With T-03 fixed the backend job ran for real — 4 m 25 s — and failed cleanly rather than hanging, which was the point of the timeouts. It failed on seven tests in two files, and neither was a flake. **T-04**: a single missing `});` in `test/googleAuth.test.js` had quietly nested five tests inside another one, so Node 22 cancelled them without running them — wrong issuer, expired token, unverified email, `alg=none`, key rotation and caching, no-client-ID, malformed credential. They pass on Node 24, which is why this machine never noticed; CI pins Node 22 because production runs it. **T-05**: the HIBP slow-path fake returned a promise that could only settle on `AbortSignal.timeout()`, whose timer is unref’d and does not hold the event loop open, so the runner could resolve out from under it. Both fixed and verified; a sweep confirms no other test file nests a column-0 `test(`. 41 findings, 24 fixed. |
 | 2026-09-22 | **CI ran for the first time, and found something.** The repository was made public, so the jobs were allowed to start (run `35747534001`). Frontend and admin green in 25 s and 14 s; the backend job printed `ok 65` and then hung — it would have burned GitHub's six-hour ceiling on a billed runner. Cause reproduced locally before fixing: `durableLimiter.test.js` documents itself as testing the in-memory fallback but never ensures one, so CI's job-level `MYSQL_*` sent it down the MySQL path instead, and the pool it opened kept the process alive while `node --test` waited for it. Opened and fixed as **T-03** — an `after()` that ends the pool, a `before()` that truncates `rate_limits` so the table-backed store starts from a clean budget, and an honest docblock. All three jobs given `timeout-minutes`. 39 findings, 22 fixed. |
