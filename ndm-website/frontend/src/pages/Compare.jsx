@@ -270,7 +270,17 @@ export default function Compare() {
       </div>
 
       <Card className="mt-6 overflow-hidden !p-0">
-        <div className="overflow-x-auto">
+        {/* Focusable on purpose. This box scrolls sideways on anything
+            narrower than the table, and a scroll box only a pointer can reach
+            puts the right-hand columns out of a keyboard's reach entirely
+            (axe: scrollable-region-focusable). tabIndex makes the arrow keys
+            work; the role and label stop it being an unnamed tab stop. */}
+        <div
+          className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-300)]"
+          tabIndex={0}
+          role="region"
+          aria-label="Feature comparison table — scrolls sideways"
+        >
           <table className={`w-full text-left text-sm ${showAll ? 'min-w-[1180px]' : 'min-w-[720px]'}`}>
             {/* Without a caption and scoped headers a screen reader reads this
                 matrix as a run of loose cells: "Yes", "Yes", "—" with nothing
@@ -342,7 +352,12 @@ export default function Compare() {
         Price, plainly
       </h2>
       <Card className="mt-6 overflow-hidden !p-0">
-        <div className="overflow-x-auto">
+        <div
+          className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-300)]"
+          tabIndex={0}
+          role="region"
+          aria-label="Pricing comparison table — scrolls sideways"
+        >
           <table className="w-full min-w-[720px] text-left text-sm">
             <caption className="sr-only">Free tier, paid price and trial for each download manager</caption>
             <thead>

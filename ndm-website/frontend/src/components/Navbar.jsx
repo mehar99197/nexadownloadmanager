@@ -100,7 +100,9 @@ export default function Navbar() {
         {/* Mobile toggle */}
         <button
           type="button"
-          className="icon-btn h-10 w-10 rounded-xl md:hidden"
+          /* 44x44, not 40: at phone width this is the only navigation control
+             on the page, so it is the one target that must never be missed. */
+          className="icon-btn h-11 w-11 rounded-xl md:hidden"
           aria-label="Toggle menu"
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}

@@ -275,6 +275,10 @@ body::before {
     align-items: center;
     gap: 0.78rem;
     min-width: 0;
+    /* It is a link to the home page, and on a phone it is the largest thing in
+       the header — but it measured 34px tall, under the touch minimum. The
+       height grows without moving anything: the lockup is centred in it. */
+    min-height: 44px;
   }
 
   .brand-lockup img {
@@ -342,7 +346,12 @@ body::before {
     align-items: center;
     justify-content: center;
     gap: 0.55rem;
-    min-height: 2.75rem;
+    /* 44px flat, not 2.75rem. The same number at a 16px root, but the rem
+       version measured 43.x and so sat a hair under the touch minimum — and it
+       would drift further for anyone who has changed their browser's base font
+       size. A touch target is a physical measurement; it should not ride the
+       type scale. */
+    min-height: 44px;
     padding: 0.72rem 1.15rem;
     border: 1px solid transparent;
     border-radius: var(--radius-2);

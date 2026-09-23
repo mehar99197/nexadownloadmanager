@@ -56,7 +56,7 @@ export default function Features() {
           <p className="mt-2 text-sm leading-6 text-slate-400">
             The docs are task-shaped: install it, wire up the browser, download a course, fix a 403.
           </p>
-          <Link to="/docs" className="mt-4 inline-block text-sm font-semibold text-brand-300">
+          <Link to="/docs" className="mt-4 inline-flex items-center py-3 -my-3 text-sm font-semibold text-brand-300">
             Read the docs &rarr;
           </Link>
         </Card>
@@ -66,7 +66,7 @@ export default function Features() {
             Measured throughput at 1, 4, 8 and 16 connections against two real hosts, with the
             method, the raw spread, and what we could not measure.
           </p>
-          <Link to="/benchmarks" className="mt-4 inline-block text-sm font-semibold text-brand-300">
+          <Link to="/benchmarks" className="mt-4 inline-flex items-center py-3 -my-3 text-sm font-semibold text-brand-300">
             See benchmarks &rarr;
           </Link>
         </Card>
@@ -75,7 +75,7 @@ export default function Features() {
           <p className="mt-2 text-sm leading-6 text-slate-400">
             A side-by-side against IDM, FDM, JDownloader and four more — including where they win.
           </p>
-          <Link to="/compare" className="mt-4 inline-block text-sm font-semibold text-brand-300">
+          <Link to="/compare" className="mt-4 inline-flex items-center py-3 -my-3 text-sm font-semibold text-brand-300">
             Compare &rarr;
           </Link>
         </Card>

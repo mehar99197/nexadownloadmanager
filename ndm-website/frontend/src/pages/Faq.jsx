@@ -385,8 +385,11 @@ function Helpful({ id }) {
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <span className="text-xs text-slate-500">Was this helpful?</span>
-      <button type="button" disabled={sending} onClick={() => cast('yes')} className="btn btn-ghost !px-3 !py-1 text-xs">Yes</button>
-      <button type="button" disabled={sending} onClick={() => cast('no')} className="btn btn-ghost !px-3 !py-1 text-xs">No</button>
+      {/* min-h-11 and a wider tap box: at 41x43 these were a pixel under the
+          44px minimum and only as wide as the word. They appear under all 55
+          answers, so it is the most-repeated target on the site. */}
+      <button type="button" disabled={sending} onClick={() => cast('yes')} className="btn btn-ghost !px-4 !py-2 min-h-11 min-w-16 text-xs">Yes</button>
+      <button type="button" disabled={sending} onClick={() => cast('no')} className="btn btn-ghost !px-4 !py-2 min-h-11 min-w-16 text-xs">No</button>
       {failed && (
         <span className="text-xs text-amber-300">That did not reach us — please try again.</span>
       )}
@@ -397,7 +400,11 @@ function Helpful({ id }) {
 function Item({ item, open }) {
   return (
     <Card as="details" className="group !p-0" open={open}>
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5 text-left text-base font-bold text-white marker:hidden [&::-webkit-details-marker]:hidden">
+      {/* Denser on a phone, unchanged from `sm` up. Fifty-five rows at
+          px-6 py-5 is where /faq's 8.6 screens came from; 4px off each side of
+          each row is half a screen back. py-4 still leaves the summary ~56px
+          tall, so the tap target stays over the 44px minimum. */}
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-left text-[0.95rem] font-bold text-white marker:hidden sm:gap-4 sm:px-6 sm:py-5 sm:text-base [&::-webkit-details-marker]:hidden">
         <span>{item.q}</span>
         <svg
           width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -407,7 +414,7 @@ function Item({ item, open }) {
           <path d="M6 9l6 6 6-6" />
         </svg>
       </summary>
-      <div className="border-t border-white/5 px-6 py-5 text-sm leading-7 text-slate-400">
+      <div className="border-t border-white/5 px-4 py-4 text-sm leading-7 text-slate-400 sm:px-6 sm:py-5">
         {item.a}
         <Helpful id={item.q} />
       </div>
