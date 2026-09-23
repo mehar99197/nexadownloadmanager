@@ -11,10 +11,25 @@
  * all. A dependency bump could quietly change the Store contract or reject the
  * key generator, and the first sign of it would be production.
  *
- * With no database reachable the store falls back to counting in memory, which
- * is a documented path and the one under test here: the limiter must still
- * count, still return 429 at the ceiling, and still keep two accounts' budgets
- * apart.
+ * The claim is about the limiter, not about where it keeps its counts, so this
+ * runs against whichever store the environment gives it: the MySQL one when a
+ * database is reachable (CI, and any machine running test/tools/testdb.sh),
+ * and the in-memory fallback when it is not. Either way the limiter must count,
+ * return 429 at the ceiling, and keep two accounts' budgets apart.
+ *
+ * Which of the two it got is not a detail the file can shrug at. It said for a
+ * while that it tested the in-memory path — and on a developer machine with no
+ * MYSQL_* in the environment that was true, so it read as correct for as long
+ * as nobody ran it anywhere else. CI sets MYSQL_* for the whole job, so the
+ * first run there silently exercised the other store instead. That is the same
+ * shape as O-03: a test whose real subject depends on the environment tells you
+ * less than it looks, and it tells you least on the machine you trust most.
+ *
+ * Taking the database path also opens a connection pool, and a pool with an
+ * idle connection in it keeps the process alive. `node --test` waits for each
+ * file's process to exit before it starts the next, so leaving the pool open
+ * does not fail anything — it stops the run dead, after these tests have
+ * printed `ok`. Hence the after() hook: it is load-bearing, not tidiness.
  */
 
 const test = require('node:test');
@@ -24,6 +39,32 @@ const http = require('node:http');
 delete process.env.RATE_LIMIT_DISABLED;   // exercise the real limiters
 const express = require('express');
 const { loginLimiter, twoFactorLimiter, loginKey } = require('../src/middleware/rateLimiter');
+const { getPool, query } = require('../src/config/db');
+
+// The in-memory fallback is a fresh Map in every process, but the MySQL store
+// is a table, and a budget spent by the last run is still spent. Without this
+// the suite passes once against a given database and then reports 429 where it
+// asked for 200 — which looks like the limiter miscounting rather than like
+// the test bringing its own leftovers.
+test.before(async () => {
+  try {
+    await query('TRUNCATE TABLE rate_limits');
+  } catch {
+    /* no database, or no table: the memory store needs no reset */
+  }
+});
+
+// The store creates the pool on its first hit, so this has to run whether or
+// not a database turned out to be there. getPool() on a run that never touched
+// one just builds an idle pool and closes it again, which costs nothing:
+// mysql2 does not dial until a query.
+test.after(async () => {
+  try {
+    await (await getPool()).end();
+  } catch {
+    /* already closed, or never opened */
+  }
+});
 
 function serve() {
   const app = express();

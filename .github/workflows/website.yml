@@ -33,6 +33,14 @@ jobs:
   backend:
     name: Backend — unit + integration on MariaDB 11.8
     runs-on: ubuntu-latest
+    # The suite is three minutes. A `node --test` run that stops producing
+    # output is not failing — it is waiting for a test file's process to exit,
+    # and a file that leaves a connection pool open never will. Without a limit
+    # that waits out GitHub's six-hour ceiling and bills every minute of it,
+    # which is what the first run on this branch did. Twelve minutes is four
+    # times the real cost: slow enough never to fire on a busy runner, short
+    # enough that the next hang costs minutes.
+    timeout-minutes: 12
     services:
       mariadb:
         image: mariadb:11.8
@@ -112,6 +120,7 @@ jobs:
   frontend:
     name: Frontend — lint, unit tests, build
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # 25 s in practice; see the backend job for why there is a limit at all
     defaults:
       run:
         working-directory: ndm-website/frontend
@@ -131,6 +140,7 @@ jobs:
   admin:
     name: Admin panel — lint, build
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # 14 s in practice; same reason
     defaults:
       run:
         working-directory: ndm-website/admin
