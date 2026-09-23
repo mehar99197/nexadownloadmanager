@@ -134,11 +134,11 @@ Against this base, after the port:
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
 | High | 8 | 0 | 8 |
-| Medium | 15 | 7 | 8 |
+| Medium | 15 | 3 | 12 |
 | Low | 10 | 7 | 3 |
 | Test debt | 5 | 0 | 5 |
 | Operational | 3 | 1 | 2 |
-| **Total** | **41** | **15** | **26** |
+| **Total** | **41** | **11** | **30** |
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -147,7 +147,7 @@ Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 |---|---|
 | `main` @ `867341e`, untouched | **502 pass / 0 fail / 0 skipped** on a fresh database; **4 fail** on the second run (the `faq_votes` leak) |
 | After the port | **532 pass / 0 fail / 0 skipped**, repeatable |
-| Today, after T-03/T-04/T-05 and M-15 | **535 pass / 0 fail / 0 skipped**, repeatable, and green on CI |
+| Today | **backend 560**, **frontend 61**, 0 fail / 0 skipped, repeatable, and green on CI |
 
 Every integration suite runs — nothing skips — which is the whole point of
 O-03. The count is the tripwire `.github/workflows/website.yml` enforces on
@@ -744,7 +744,7 @@ throws, producing a 500 instead of a 401.
 
 ## M-06 — The admin IP allow-list is exact-match only, with no CIDR or IPv6
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/ipMatch.test.js` (10 tests, the matcher alone) and `test/adminIpRules.integration.test.js` (7, through the real gate: an address only the database allows signs in, a CIDR range covers an address nobody listed, and the list refuses to lock its own editor out)
 
 **Where:** `backend/src/middleware/adminAuth.js:8` (`ipAllowed`)
 
@@ -764,7 +764,51 @@ falls back to the same list. The only recovery is editing `.env` over SSH and
 restarting the API. A CIDR entry such as `103.157.248.0/24` would not help
 either, because it would never match anything.
 
-**Fix:** support CIDR ranges and IPv6 in `ipAllowed()`.
+**Fixed**, and then taken further, because the owner hit the operational half
+of this for real: locked out of the panel by 2FA on one day and asking for the
+IP limit removed the next, both because the list could only ever hold one
+address that expires.
+
+**The matcher** is now `utils/ipMatch.js`: exact addresses, CIDR ranges and
+`*`, over IPv4 and IPv6, compared on the **bytes** rather than the text. That
+last part is the reason it is a module and not a one-liner — a string prefix
+comparison calls 203.0.113.7 a match for 203.0.113.70, and IPv6 cannot be
+compared textually at all, since `::1`, `0:0:0:0:0:0:0:1` and `0::1` are
+one address written three ways. IPv4-mapped IPv6 (`::ffff:203.0.113.7`, which
+is what Node reports on a dual-stack socket) is compared as the IPv4 it
+carries, so one entry covers a client however it connects. Leading zeros are
+refused rather than read: `0177.0.0.1` is 127.0.0.1 to some resolvers, and an
+entry that means different things in different places is worse than one that
+is rejected.
+
+**The list moved into the database** (`admin_ip_rules`), editable from the
+creator panel — *Security → Who can reach the panels*. Add an address or a
+range, label it, turn entries on and off, remove them. No SSH, no restart.
+
+Three things make that safe to have at all:
+
+- **The .env half is still read, and cannot be edited from the panel.** The
+  effective list is the union of `ADMIN_ALLOWED_IPS` and the enabled rows, so
+  the `.env` entry is a break-glass that no mistake made in the screen can
+  take away. This is the one table whose rows decide who may edit the table.
+- **Every write is refused if it would lock the caller out.** Disabling or
+  removing the last entry that admits your own address answers
+  `409 WOULD_LOCK_YOU_OUT` and names the address the server sees you at. A
+  list you can edit into refusing you is not a feature, it is a trap.
+- **Creator panel only.** A staff admin who could edit this could shut the
+  creator out of their own deployment. `ROOT_ALLOWED_IPS`, when set, stays
+  `.env`-only and is *not* widened by the panel's rows for the same reason.
+
+The screen shows the whole gate rather than only its own half: the `.env`
+entries read-only, the address the server actually sees you at (not always what
+you think, behind a proxy), and a warning when something is `*` — because a
+carefully built list under an open gate is decoration, and saying so beats
+letting somebody build one.
+
+Entries are validated on the way in by the same function the gate matches
+with, so the panel cannot accept a value that would then never match
+anything — which is how a typo becomes "I added my address and it still says
+403".
 
 ## M-07 — Duplicate subscriptions are possible and stale licence keys never die
 
@@ -825,7 +869,7 @@ buy button that cannot work.
 
 ## M-09 — The admin panel keeps rendering as signed-in after its session dies
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** panel lints and builds; the shared contract is asserted against the real module in `frontend/src/test/sessionEnded.test.jsx` (the panel has no test harness — CI lints and builds it only)
 
 **Where:** `admin/src/context/AdminAuthContext.jsx`, `admin/src/api/client.js`
 
@@ -845,9 +889,24 @@ login screen.
 Related: because `admin` can be the placeholder object, `isRoot` computes as
 `false` and the creator-only navigation disappears for the real creator.
 
+**Fixed.** The interceptor now reports the fact once, as
+`SESSION_ENDED_EVENT`, and `AdminAuthContext` listens and clears both
+`token` and `admin` — clearing the React token is what actually bounces the
+panel to `/login`, because that is what `isAuthenticated` reads. The idiom
+was already in this file for `TWO_FACTOR_REQUIRED`; this is the second user
+of it. It is deliberately **not** dispatched from `clearAdminAccessToken()`,
+which also runs on a real sign-out that tears its own state down and would
+race it.
+
+`loadMe()`'s catch no longer invents a profile. Setting
+`{ authenticated: true }` said the opposite of what had just happened, and
+the placeholder is what made `isRoot` false for the real creator. By the time
+that catch runs a 401 is already an event; anything else is a blip, where
+leaving the last known profile alone is the honest answer.
+
 ## M-10 — A failed site refresh leaves a stale "signed in" marker
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `frontend/src/test/sessionEnded.test.jsx` (3 tests: the event is named once and shared, a listener on it clears the hint that outlives the tab, and a deliberate sign-out does not go through it) — frontend 61 pass / 0 fail
 
 **Where:** `frontend/src/api/client.js`
 
@@ -856,6 +915,21 @@ the readable `ndm_session` hint cookie or reset `AuthContext` state. `logout()`
 clears the hint; the interceptor does not. The UI can therefore show a
 signed-in header with no usable token, and the next page load still believes
 there may be a session.
+
+**Fixed** the same way as M-09, and the same shape of bug: the client reports
+the session is over, `AuthContext` is the one place that decides what that
+means, and it clears the hint and the user together. Three things had to go
+and only one was going — which is exactly what happens when three callers each
+have to remember three steps.
+
+The listener is registered before the mount effect so the two cannot race, and
+`init()`'s own catch stays as it was: it already handled the page-load case
+correctly, and the bug was only ever the mid-session one.
+
+Six tests mock `../api/client` and needed the new export; vitest throws on an
+export a mock does not define, which is how all six announced themselves at
+once. The real value is asserted against the real module, so the doubles
+cannot quietly drift from it.
 
 ## M-11 — SMTP does not require TLS
 
@@ -886,7 +960,7 @@ this is a staleness problem rather than a takeover.
 
 ## M-14 — The creator cannot recover from a lost authenticator
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** run against a seeded account in the exact state — 2FA on, secret stored, zero recovery codes: `--dry-run` wrote nothing, the real run cleared all three columns, bumped `token_version`, left `password_hash` untouched and wrote the audit row, the second run reported nothing to clear, and an unknown address and an unknown flag were both refused. Then run on production for the creator who was actually locked out.
 
 **Where:** `backend/src/routes/root.js:260` (`/admins/:id/reset-2fa`), `backend/src/routes/twoFactor.js` (`/2fa/disable`), `backend/src/scripts/createRoot.js`
 
@@ -909,10 +983,32 @@ whose only recovery codes are legacy ones now has them retired on their next
 authenticator sign-in, and is one lost phone away from the lockout unless they
 notice the audit row and generate a new set (which needs M-15).
 
-**Fix:** either let `createRoot.js` clear `totp_*` for the configured
-`ROOT_ADMIN_EMAIL` (a shell on the box is already full control, so this grants
-nothing new), or add a `npm run reset-root-2fa` script that does only that and
-says loudly what it did. Do this **before** relying on the legacy retirement.
+**This stopped being hypothetical.** The creator of this deployment lost their
+authenticator with no recovery codes left — the exact case above — and found
+there was no way back through the product at all. The panel was unreachable
+until it was fixed from a shell.
+
+**Fixed** with `npm run reset-2fa -- <email>` (`src/scripts/reset2fa.js`),
+the second of the two options. It is deliberately outside the product, and
+that is the right trust boundary rather than a weaker one: anyone who can run
+it can already read the database and the JWT secrets, so it grants no
+authority they did not have. What it adds is that the recovery is one
+documented command instead of hand-written SQL against a live table, and that
+it leaves an audit row saying it happened.
+
+It clears the same three columns `POST /api/root/admins/:id/reset-2fa`
+clears, so the two paths cannot drift into leaving different residue behind,
+and revokes sessions for the same reason that route does. It does **not** touch
+the password: somebody who has lost their phone still has to know it.
+
+`--dry-run` reports and writes nothing; a confirmation prompt guards the real
+run; `--yes` is *required* rather than assumed when there is no tty, because
+this is a security control being switched off. Re-running is a no-op.
+
+**M-15 is the other half of this** and landed first: the reason the account had
+zero codes was that the panel had no way to generate a set after enrolment.
+With both in place the shell script is the last resort it should be, rather
+than the only route.
 
 ## M-15 — The panel does not surface any of the new recovery-code migration state
 
@@ -1411,14 +1507,13 @@ Already fixed on `main`, nothing to port: **H-05**, **M-01**, **M-02**,
 
 - [x] O-03c — a green CI run on this branch &nbsp;`35775527617`. Every run that
       actually executed found a real defect on the way: T-03, then T-04 and T-05
-- [ ] M-14 — a way for the creator to recover from a lost authenticator
-      **(do this before trusting H-02's legacy retirement)**
+- [x] M-14 — `npm run reset-2fa`, the last resort when the panel cannot help
 - [x] M-15 — Security page: the zero-codes and legacy warnings, and a regenerate action
-- [ ] M-06 — CIDR + IPv6 in `ipAllowed`
+- [x] M-06 — CIDR + IPv6 matching, and the allow-list moved into the creator panel
 - [ ] M-11 — `requireTLS: true` on SMTP
 - [ ] M-12 — expiry on team invitations
 - [ ] M-08 — publish `billingMode`; make Pricing honest about it
-- [ ] M-09 / M-10 — the two panel/session UI gaps
+- [x] M-09 / M-10 — both UIs notice when the session has actually ended
 - [ ] L-05 — sweep orphaned `.incoming-*` files
 - [ ] L-01, L-02, L-03, L-08, L-09 — re-read on this base first; `main` has
       rewritten some of the code these were found in (`/verify-email` has no
@@ -1546,6 +1641,7 @@ Checked live, against production:
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
 | 2026-09-23 | **M-15 fixed, prompted by the creator asking how to get recovery codes back.** They had enrolled, been shown the set once and closed the page; the answer from the panel was that they could not. `totp_recovery` was `[]` with `ADMIN_2FA_REQUIRED` on — one lost phone from a permanently locked panel, and no account above the creator to reset it. The endpoint had shipped with H-02; only the UI was missing. Security.jsx now carries a regenerate action, a red warning when the count is zero (worded differently for the creator than for a staff admin), the legacy-hash warning the finding was originally about, and honest lost-device copy. Two tests added for the case the existing three stepped over: regenerating from an EMPTY set on the authenticator alone, and a wrong password still refused there. 41 findings, 26 fixed, 15 open. |
+| 2026-09-23 | **Phase 5 half done.** M-15 (recovery codes had no way back), M-14 (`npm run reset-2fa`, after the creator was locked out for real), M-06 (CIDR + IPv6 matching, and the allow-list moved into the creator panel behind a lock-out guard), M-09 and M-10 (both UIs kept rendering signed-in over a dead session; one event each, one place that decides what signed-out means). Two of those were found by the owner hitting them rather than by reading code, which is the honest way to say why they were rated Medium and should have been higher. Backend 560 / frontend 61, 0 fail, 0 skipped. 41 findings, 30 fixed, 11 open. |
 | 2026-09-23 | **O-03 closed — a green CI run.** Run `35775527617`: backend 3 m 21 s on MariaDB 11.8, `tests 533 / pass 533 / fail 0 / skipped 0` with the guard reading those counts back, `found 0 vulnerabilities` from the production audit, frontend 24 s, admin 17 s. Four attempts: two refused before any job started (private repository, billed minutes), then two that ran and each found a real defect — T-03, then T-04 and T-05. The finding that said the integration tests never actually run is now a workflow that runs them on every push, and it paid for itself three times before it first went green. 41 findings, 25 fixed, 16 open. Phase 5 has 16 left, two of them owner-only. |
 | 2026-09-23 | **The second CI run got past the hang and found two more.** With T-03 fixed the backend job ran for real — 4 m 25 s — and failed cleanly rather than hanging, which was the point of the timeouts. It failed on seven tests in two files, and neither was a flake. **T-04**: a single missing `});` in `test/googleAuth.test.js` had quietly nested five tests inside another one, so Node 22 cancelled them without running them — wrong issuer, expired token, unverified email, `alg=none`, key rotation and caching, no-client-ID, malformed credential. They pass on Node 24, which is why this machine never noticed; CI pins Node 22 because production runs it. **T-05**: the HIBP slow-path fake returned a promise that could only settle on `AbortSignal.timeout()`, whose timer is unref’d and does not hold the event loop open, so the runner could resolve out from under it. Both fixed and verified; a sweep confirms no other test file nests a column-0 `test(`. 41 findings, 24 fixed. |
 | 2026-09-22 | **CI ran for the first time, and found something.** The repository was made public, so the jobs were allowed to start (run `35747534001`). Frontend and admin green in 25 s and 14 s; the backend job printed `ok 65` and then hung — it would have burned GitHub's six-hour ceiling on a billed runner. Cause reproduced locally before fixing: `durableLimiter.test.js` documents itself as testing the in-memory fallback but never ensures one, so CI's job-level `MYSQL_*` sent it down the MySQL path instead, and the pool it opened kept the process alive while `node --test` waited for it. Opened and fixed as **T-03** — an `after()` that ends the pool, a `before()` that truncates `rate_limits` so the table-backed store starts from a clean budget, and an honest docblock. All three jobs given `timeout-minutes`. 39 findings, 22 fixed. |
