@@ -86,9 +86,9 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 8 | 7 |
 | Low | 10 | 7 | 3 |
-| Test debt | 2 | 0 | 2 |
+| Test debt | 3 | 0 | 3 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **38** | **17** | **21** |
+| **Total** | **39** | **17** | **22** |
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -1047,6 +1047,61 @@ the fifth waits that; a successful sign-in clears the counter.
 
 ---
 
+## T-03 — `durableLimiter.test.js` tested whichever store the machine happened to give it, and hung the runner when that was MySQL
+
+**Status:** FIXED &nbsp;|&nbsp; **Found by:** the first CI run that was allowed to start &nbsp;|&nbsp; **Verified by:** the file run twice in a row with `MYSQL_*` set and twice without, and the whole suite under CI's environment
+
+The first run of `website.yml` that GitHub actually started did not fail and
+did not pass. It printed `ok 64` and `ok 65` at 15:29:07 and then nothing at
+all, and would have sat there until GitHub's six-hour ceiling — billing every
+minute — if it had not been cancelled. The orphan list at cancellation shows
+why nothing more was coming: one `node`, no child. The runner was waiting for
+a test file's process to exit, and that process was never going to.
+
+`test/durableLimiter.test.js` says in its own docblock that it exercises the
+store's **in-memory fallback** — "with no database reachable … the one under
+test here". It never arranged for that to be true. It was true on a developer
+machine, where nothing puts `MYSQL_*` in the shell, so the store's first query
+failed and it counted in memory. CI sets `MYSQL_*` for the whole job, so the
+store reached the database instead and `config/db.js` built a pool. Nothing
+closed it, an idle pooled connection is an open handle, and `node --test` runs
+files one at a time and waits for each to exit.
+
+So the file had two defects at once, and they hid each other:
+
+- **It tested the wrong thing, silently.** Its subject was decided by ambient
+  environment, so the machine it was written on and the machine that matters
+  ran different code under the same green tick. That is O-03's own shape —
+  coverage that reads as coverage and is not — which is what makes it worth a
+  finding rather than a quiet fix.
+- **It stopped the run.** Not failed it. A failure is information; this
+  produced none, and cost six hours of a billed runner to produce it.
+
+**Reproduced before fixing**, which is the only reason the cause is not a
+guess: the two files run together with no `MYSQL_*` exit 0, and with
+`MYSQL_*` pointing at a live database both tests pass and then the file hangs
+— killed at 90 s, exit 124, exactly CI's shape.
+
+**Fixed** with an `after()` hook that ends the pool (the load-bearing part;
+`getPool()` on a run that never touched a database just builds an idle pool and
+closes it, because mysql2 does not dial until a query) and a `before()` hook
+that truncates `rate_limits`. The second is needed because the MySQL store is a
+table and a budget spent by the previous run is still spent — without it the
+suite passes once against a given database and then reports 429 where it asked
+for 200, which reads as the limiter miscounting rather than as the test
+bringing its own leftovers. The docblock now says the limiter is the subject
+and the store is whichever one the environment supplies, which is a claim that
+is true on both.
+
+**And the reason it cost six hours rather than twelve minutes:** no job in
+`website.yml` had a `timeout-minutes`. All three now do. A hang is worth
+finding; it is not worth GitHub's default ceiling to find it.
+
+`--test-timeout` was tried first and rejected: it does not catch this (the
+process still hung) and it marked passing tests as failures on the way.
+
+---
+
 # OPERATIONAL
 
 These are deployment gaps, not code defects. They were found during the server
@@ -1104,7 +1159,25 @@ without fighting.
 
 **On this base (`audit-on-main`):** O-03a and O-03b came across in `d086ec9` (`test/tools/testdb.sh`, now with a resumable download, a data-only `wipe` and a `purge`). O-03c is code-complete on this base too: `website.yml` runs the suite against `mariadb:11.8` on every branch that touches `ndm-website/`, and `build.yml`'s quality job loses the duplicated website steps — including the second full `npm test` it ran only to grep the log. It stays **IN PROGRESS** until a run is green on this branch. Running the suite twice here is also what found the `faq_votes` / `license_token_rejections` leak in `srv.reset()`.
 
-**The branch was pushed on 2026-09-22 and the workflow fired — run `35745664153`. It is still the billing refusal, verbatim on all three jobs: _"The job was not started because recent account payments have failed or your spending limit needs to be increased."_** The repository reports `visibility: PRIVATE`, so Actions minutes are still billed; making it public was the cheaper of the two fixes and has not taken effect. Nothing about the workflow or the suite is implicated — no job started, so no step ran. The suite itself is green where it can be run: **533 pass / 0 fail / 0 skipped** locally against MariaDB 11.8.9, twice in a row. O-03 cannot close until the account lets a runner start.
+**Pushed 2026-09-22.** The first run (`35745664153`) was the billing refusal
+again, verbatim on all three jobs: *"The job was not started because recent
+account payments have failed or your spending limit needs to be increased."*
+No job started, so no step ran. The repository was then made public, and the
+next run (`35747534001`) **started** — which is the first time any of this
+workflow has executed anywhere.
+
+It was worth the wait: the frontend and admin jobs went green in 25 s and
+14 s, and the backend job **hung**. Not failed — hung, silently, and would
+have run out GitHub's six-hour ceiling on a billed runner. That is **T-03**,
+and it is exactly the kind of thing O-03 exists to catch: a test file that
+tested one store on a developer machine and a different one on CI, and kept
+the runner alive afterwards by leaving a connection pool open. It is fixed,
+the cause was reproduced locally before it was, and all three jobs now carry
+a `timeout-minutes` so the next one costs minutes rather than hours.
+
+O-03 stays **IN PROGRESS** until a run is green end to end. The suite itself
+is green wherever it can be run: **533 pass / 0 fail / 0 skipped** locally
+against MariaDB 11.8.9, repeatable, and now also under CI's own environment.
 
 `npm test` reports **95 pass / 5 skipped** and exits green. All five skips are
 the integration suites — `api`, `smoke`, `rateLimit`, `downloadCounter`,
@@ -1333,5 +1406,6 @@ Checked live, against production:
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
+| 2026-09-22 | **CI ran for the first time, and found something.** The repository was made public, so the jobs were allowed to start (run `35747534001`). Frontend and admin green in 25 s and 14 s; the backend job printed `ok 65` and then hung — it would have burned GitHub's six-hour ceiling on a billed runner. Cause reproduced locally before fixing: `durableLimiter.test.js` documents itself as testing the in-memory fallback but never ensures one, so CI's job-level `MYSQL_*` sent it down the MySQL path instead, and the pool it opened kept the process alive while `node --test` waited for it. Opened and fixed as **T-03** — an `after()` that ends the pool, a `before()` that truncates `rate_limits` so the table-backed store starts from a clean budget, and an honest docblock. All three jobs given `timeout-minutes`. 39 findings, 22 fixed. |
 | 2026-09-22 | **`audit-on-main` pushed and deployed to production.** 15 commits pushed; the `website` workflow fired and was refused by GitHub Actions billing again (run `35745664153`, all three jobs, no step run) — the repository still reports `PRIVATE`, so O-03 stays IN PROGRESS. The deploy itself went clean after a verified full backup: schema initialized, and H-06, M-04, M-05, M-07 and both SPA bundles verified against the live site (see *The deploy*). One deploy-script bug on the way: the `baseURL` assertion added last time matched only a double-quoted literal, and Vite 8 minifies it to a backtick template, so a correct bundle failed the check. Found the creator has **no recovery codes** (`totp_recovery` = `[]`) while `ADMIN_2FA_REQUIRED` is on — see M-14. |
 | 2026-09-22 | **Deploy prerequisites cleared.** Rebased onto `origin/main` @ `5de449b` (the tip had moved nine commits; none of them touch anything this port changes) — 533/533. Checked the twelve settings `main` reads that the live `.env` has never had to satisfy: all defaulted, none can fail the boot, and three change behaviour (`ADMIN_2FA_REQUIRED` on, which the creator and every staff admin must act on at the deploy; `PASSWORD_BREACH_CHECK` on and degrading open; `LICENSE_AUTO_SUSPEND` on with thresholds no customer reaches). Checked the migration by running it: `test/tools/migrate-check.js` builds a production-shaped database, migrates it and diffs against a fresh one. It runs clean; two TIMESTAMP columns were retyped to DATETIME as a result and two harmless leftovers are documented. |
