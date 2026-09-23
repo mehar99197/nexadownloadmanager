@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import usePageMeta from '../hooks/usePageMeta';
+import useMediaQuery from '../hooks/useMediaQuery';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
@@ -226,6 +227,83 @@ function Cell({ value }) {
   return <span className="text-slate-300">{value}</span>;
 }
 
+/**
+ * The matrix on a phone.
+ *
+ * The wide table is eight products by thirty-four rows. Squeezed into 390px it
+ * was 9.2 screens tall and had to scroll sideways on top of that, which is two
+ * gestures to read one cell — the single worst thing on the site to use with a
+ * thumb. Nobody compares eight products at once anyway: they compare the one
+ * they use with the one they are considering.
+ *
+ * So the phone gets that question instead. Pick a rival, and every group folds
+ * away except the one being read. Same data, same table semantics, same cells
+ * — a third of a screen instead of nine, and no sideways scroll at all.
+ */
+function MobileMatrix({ rival, onRival }) {
+  const them = PRODUCTS[rival];
+
+  return (
+    <div className="mt-8">
+      <label htmlFor="cmp-rival" className="block text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
+        Compare Nexa with
+      </label>
+      <select
+        id="cmp-rival"
+        value={rival}
+        onChange={(e) => onRival(Number(e.target.value))}
+        className="input-field mt-2 min-h-11 w-full"
+      >
+        {PRODUCTS.map((p, i) => (i === 0 ? null : <option key={p.name} value={i}>{p.name}</option>))}
+      </select>
+
+      {GROUPS.map((group, gi) => (
+        // Open the first one so the page does not read as a list of closed
+        // boxes, and cv-row so the four that are shut cost nothing to lay out.
+        <Card as="details" key={group.title} open={gi === 0} className="cv-row group mt-3 !p-0">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 text-left text-sm font-bold text-white marker:hidden [&::-webkit-details-marker]:hidden">
+            <span>{group.title}</span>
+            <span className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-500">{group.rows.length}</span>
+              <svg
+                width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                className="shrink-0 text-brand-300 transition-transform group-open:rotate-180"
+              >
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </span>
+          </summary>
+          <table className="w-full border-t border-white/5 text-left text-sm">
+            <caption className="sr-only">
+              {group.title} — Nexa Download Manager compared with {them.name}
+            </caption>
+            <thead>
+              <tr className="border-b border-white/5">
+                <th scope="col" className="px-4 py-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Feature</th>
+                <th scope="col" className="px-2 py-2 text-xs font-bold uppercase tracking-[0.12em] text-brand-300">Nexa</th>
+                <th scope="col" className="px-2 py-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-400">{them.name}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.rows.map((row) => (
+                <tr key={row.label} className="border-b border-white/5 align-top last:border-0">
+                  <th scope="row" className="px-4 py-3 font-normal">
+                    <span className="font-semibold text-slate-200">{row.label}</span>
+                    {row.note && <p className="mt-1 text-xs leading-5 text-slate-500">{row.note}</p>}
+                  </th>
+                  <td className="bg-brand-500/[0.04] px-2 py-3"><Cell value={row.values[0]} /></td>
+                  <td className="px-2 py-3"><Cell value={row.values[rival]} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 export default function Compare() {
   usePageMeta({
     title: 'Compare',
@@ -238,6 +316,12 @@ export default function Compare() {
   // horizontal scroll on everybody.
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? PRODUCTS.map((_, i) => i) : [0, 1, 2, 3];
+
+  // A different tree on a phone, not a restyled one — see MobileMatrix above
+  // and hooks/useMediaQuery.js for why this is not a CSS breakpoint. 768px is
+  // Tailwind's md, the width at which the wide table first has room.
+  const narrow = useMediaQuery('(max-width: 767px)');
+  const [rival, setRival] = useState(1); // IDM: the one people arrive comparing
 
   return (
     <Section>
@@ -255,6 +339,10 @@ export default function Compare() {
         here and <Link to="/contact?topic=bug" className="font-semibold underline">tell us</Link> when you hit one.
       </div>
 
+      {narrow ? (
+        <MobileMatrix rival={rival} onRival={setRival} />
+      ) : (
+        <>
       <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
         <button
           type="button"
@@ -269,7 +357,7 @@ export default function Compare() {
         </span>
       </div>
 
-      <Card className="mt-6 overflow-hidden !p-0">
+      <Card className="cv-block mt-6 overflow-hidden !p-0">
         {/* Focusable on purpose. This box scrolls sideways on anything
             narrower than the table, and a scroll box only a pointer can reach
             puts the right-hand columns out of a keyboard's reach entirely
@@ -341,6 +429,8 @@ export default function Compare() {
           </table>
         </div>
       </Card>
+        </>
+      )}
 
       <p className="mx-auto mt-5 max-w-3xl text-center text-xs leading-6 text-slate-500">
         Based on publicly documented features as of {new Date().getFullYear()}. &ldquo;Partial&rdquo; means the
@@ -351,19 +441,19 @@ export default function Compare() {
       <h2 className="mt-16 text-center text-2xl font-extrabold tracking-tight text-white">
         Price, plainly
       </h2>
-      <Card className="mt-6 overflow-hidden !p-0">
+      <Card className="cv-block mt-6 overflow-hidden !p-0">
         <div
           className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-300)]"
           tabIndex={0}
           role="region"
           aria-label="Pricing comparison table — scrolls sideways"
         >
-          <table className="w-full min-w-[720px] text-left text-sm">
+          <table className="w-full text-left text-sm sm:min-w-[720px]">
             <caption className="sr-only">Free tier, paid price and trial for each download manager</caption>
             <thead>
               <tr className="surface-inset !border-x-0 !border-t-0 border-b border-white/10">
                 {['Product', 'Free tier', 'Paid', 'Trial'].map((h) => (
-                  <th key={h} scope="col" className="px-5 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{h}</th>
+                  <th key={h} scope="col" className="px-3 py-4 text-xs font-bold uppercase tracking-[0.14em] text-slate-500 sm:px-5">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -372,9 +462,9 @@ export default function Compare() {
                 const isUs = row[0] === 'Nexa';
                 return (
                   <tr key={row[0]} className={`border-b border-white/5 last:border-0 ${isUs ? 'bg-brand-500/[0.04]' : ''}`}>
-                    <th scope="row" className={`px-5 py-3.5 font-semibold ${isUs ? 'text-brand-300' : 'text-slate-200'}`}>{row[0]}</th>
+                    <th scope="row" className={`px-3 py-3.5 font-semibold sm:px-5 ${isUs ? 'text-brand-300' : 'text-slate-200'}`}>{row[0]}</th>
                     {row.slice(1).map((cell, i) => (
-                      <td key={i} className="px-5 py-3.5 text-slate-400">{cell}</td>
+                      <td key={i} className="px-3 py-3.5 text-slate-400 sm:px-5">{cell}</td>
                     ))}
                   </tr>
                 );
@@ -397,12 +487,9 @@ export default function Compare() {
         think you should pick something else.
       </p>
       <div className="mt-8 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-        {BEST_FOR.map((b) => (
-          <Card key={b.name} className={b.mine ? 'border-brand-400/30' : ''}>
-            <h3 className={`text-base font-bold ${b.mine ? 'text-brand-300' : 'text-white'}`}>
-              Choose {b.name} if&hellip;
-            </h3>
-            <ul className="mt-3 space-y-2">
+        {BEST_FOR.map((b, i) => {
+          const points = (
+            <ul className="space-y-2">
               {b.points.map((p) => (
                 <li key={p} className="flex gap-2 text-sm leading-6 text-slate-400">
                   <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" />
@@ -410,8 +497,42 @@ export default function Compare() {
                 </li>
               ))}
             </ul>
-          </Card>
-        ))}
+          );
+
+          // Six recommendations of four or five lines each is another two and
+          // a half screens on a phone, and the heading is the whole question:
+          // a reader wants the one that matches them, not all six. Folded on a
+          // phone, laid out in full wherever there is room for it.
+          return narrow ? (
+            <Card
+              as="details"
+              key={b.name}
+              open={i === 0}
+              className={`cv-row group !p-0 ${b.mine ? 'border-brand-400/30' : ''}`}
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 marker:hidden [&::-webkit-details-marker]:hidden">
+                <h3 className={`text-base font-bold ${b.mine ? 'text-brand-300' : 'text-white'}`}>
+                  Choose {b.name} if&hellip;
+                </h3>
+                <svg
+                  width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                  className="shrink-0 text-brand-300 transition-transform group-open:rotate-180"
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </summary>
+              <div className="border-t border-white/5 px-5 py-4">{points}</div>
+            </Card>
+          ) : (
+            <Card key={b.name} className={b.mine ? 'border-brand-400/30' : ''}>
+              <h3 className={`text-base font-bold ${b.mine ? 'text-brand-300' : 'text-white'}`}>
+                Choose {b.name} if&hellip;
+              </h3>
+              <div className="mt-3">{points}</div>
+            </Card>
+          );
+        })}
       </div>
 
       <div className="surface-panel mx-auto mt-12 max-w-3xl rounded-[var(--radius-3)] px-6 py-6">
