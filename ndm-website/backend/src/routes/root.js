@@ -18,6 +18,7 @@ const Release = require('../models/Release');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const { passwordMatches } = require('../utils/passwordCheck');
 const security = require('../utils/securityEvents');
 
 const validate = require('../middleware/validate');
@@ -72,16 +73,15 @@ router.post(
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
     // isRootUser (not `role === 'root'`) so a row whose email no longer matches
-    // ROOT_ADMIN_EMAIL cannot sign in here.
-    // A password-less (Google-created) row cannot sign in here: bcrypt.compare
-    // against null throws, which would answer 500 rather than rejecting.
-    if (!isRootUser(user) || !user.password_hash) {
-      await security.record('root.login.failed', { req, email, severity: 'critical' });
-      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
-    }
-    const match = await bcrypt.compare(password, user.password_hash);
+    // ROOT_ADMIN_EMAIL cannot sign in here. The comparison runs either way and
+    // costs the same, so this form cannot be timed to find the creator's
+    // address (AUDIT.md M-05); a password-less (Google-created) row takes the
+    // dummy branch instead of throwing from inside bcrypt.
+    const eligible = Boolean(isRootUser(user));
+    const match = await passwordMatches(password, eligible ? user.password_hash : null);
     if (!match) {
-      await security.record('root.login.failed', { req, user, severity: 'critical' });
+      await security.record('root.login.failed',
+        user ? { req, user, severity: 'critical' } : { req, email, severity: 'critical' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);

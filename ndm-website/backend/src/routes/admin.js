@@ -15,6 +15,7 @@ const FaqVote = require('../models/FaqVote');
 const config = require('../config/env');
 const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
+const { passwordMatches } = require('../utils/passwordCheck');
 const { clearLock } = require('../utils/loginLockout');
 const security = require('../utils/securityEvents');
 const { getPool } = require('../config/db');
@@ -122,16 +123,17 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const user = await User.findByEmail(email);
-    // A Google-created account has NO password hash. bcrypt.compare against
-    // null throws, so an account promoted to admin that way answered 500 to
-    // every sign-in attempt instead of a plain rejection.
-    if (!user || user.role !== 'admin' || !user.password_hash) {
-      await security.record('admin.login.failed', { req, email, severity: 'warning' });
-      return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
-    }
-    const match = await bcrypt.compare(password, user.password_hash);
+    // The compare happens for every address, before anything is decided on the
+    // row — a customer's address, an unknown one, a Google-created admin with
+    // no password hash at all. Returning early on "not an admin" made this
+    // form a stopwatch test for which address the panel belongs to (AUDIT.md
+    // M-05), and bcrypt.compare against a null hash threw, so a promoted
+    // Google account answered 500 to every attempt instead of rejecting.
+    const eligible = Boolean(user && user.role === 'admin');
+    const match = await passwordMatches(password, eligible ? user.password_hash : null);
     if (!match) {
-      await security.record('admin.login.failed', { req, user, severity: 'warning' });
+      await security.record('admin.login.failed',
+        user ? { req, user, severity: 'warning' } : { req, email, severity: 'warning' });
       return fail(res, 'INVALID_CREDENTIALS', 'Invalid email or password', 401);
     }
     if (user.banned) return fail(res, 'FORBIDDEN', 'Account is banned', 403);

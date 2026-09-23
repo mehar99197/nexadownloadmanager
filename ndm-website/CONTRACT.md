@@ -506,7 +506,7 @@ checksum computed at upload time.
 ### `routes/admin.js` → `/api/admin`
 | Method | Path | Middleware |
 |--------|------|-----------|
-| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }` *(ADDED, open)* |
+| POST | `/login` | `adminLoginLimiter`, `ipWhitelist`, `validate(adminLoginSchema)` — **open** (no token); verify admin user (not banned), `signAdminToken`, set `ndm_admin_refresh` cookie (§3) → `{ token, admin:{ id, name, email, role } }`. The password compare runs for **every** address through `utils/passwordCheck.js` — a customer's, an unknown one, an admin with no `password_hash` — so the clock does not answer "is this address the administrator?" any more than the body does *(ADDED, open)* |
 | POST | `/refresh` | `adminLoginLimiter`, `ipWhitelist` — **open**; reads `ndm_admin_refresh`, verifies hash + `role==='admin'` + not banned, rotates cookie → `{ token }`. `401 NO_REFRESH_TOKEN` / `401 INVALID_REFRESH_TOKEN` / `403 FORBIDDEN` (banned; hash nulled) *(ADDED)* |
 | POST | `/logout` | `ipWhitelist` — **open**; clears `ndm_admin_refresh` + nulls `adminRefreshTokenHash` → `{ loggedOut: true }` *(ADDED)* |
 | GET | `/me` | `requireAdmin` → `{ id, name, email, role, twoFactorEnabled, twoFactorRequired }` (`id` is a string, as in `/login`). `twoFactorRequired` mirrors `ADMIN_2FA_REQUIRED`; when it is on and `twoFactorEnabled` is off, every other panel route answers `403 TWO_FACTOR_REQUIRED` (`{ setupPath:'/2fa/setup' }`) and the SPA parks the account on the Security screen *(CHANGED)* |
@@ -663,7 +663,7 @@ but use `rootIpWhitelist`, the `ndm_root_refresh` cookie and `signRootToken`.
 
 | Method | Path | Middleware |
 |--------|------|-----------|
-| POST | `/login` | `adminLoginLimiter`, `rootIpWhitelist`, `validate(rootLoginSchema)` — **open**; requires `isRootUser` (role **and** `ROOT_ADMIN_EMAIL`) → `{ token, admin }` |
+| POST | `/login` | `adminLoginLimiter`, `rootIpWhitelist`, `validate(rootLoginSchema)` — **open**; requires `isRootUser` (role **and** `ROOT_ADMIN_EMAIL`) → `{ token, admin }`. Same timing rule as the staff panel (`utils/passwordCheck.js`): the address this form belongs to is the creator's, so the comparison happens before eligibility is decided and a row with no password takes the dummy branch rather than throwing |
 | POST | `/refresh` | `adminLoginLimiter`, `rootIpWhitelist` — **open**; reads `ndm_root_refresh`, re-checks `isRootUser`, rotates → `{ token }` |
 | POST | `/logout` | `rootIpWhitelist` — **open**; clears cookie + nulls `rootRefreshTokenHash` |
 | GET | `/me` | `requireRoot` → `{ id, name, email, role }` |
