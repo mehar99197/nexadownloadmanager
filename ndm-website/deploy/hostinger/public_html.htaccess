@@ -113,8 +113,12 @@ DirectoryIndex index.html index.php
     # the current build's and the one it replaced, and drop the older one on
     # the deploy after this.
     #
-    #   Igk0HU…  current — the adaptive boot screen (160ms hold-back)
-    #   gTJlH1…  previous — the flat 700ms floor
+    #   gTJlH1…  current — the boot screen shown on every full load with its
+    #            700ms floor. Restored byte-for-byte at the owner's request,
+    #            so this is the same hash it always had.
+    #   Igk0HU…  previous — the adaptive version that held the screen back
+    #            for 160ms and so never showed it on a warm load. Drop it on
+    #            the deploy after this one.
     #
     # The four third parties are the ones the site actually loads:
     #   accounts.google.com    Google Identity Services ("Continue with Google")
