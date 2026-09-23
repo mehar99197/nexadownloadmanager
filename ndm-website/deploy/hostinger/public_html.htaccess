@@ -104,6 +104,18 @@ DirectoryIndex index.html index.php
     # silently drops the script: no boot screen, and a flash of the wrong
     # theme on every load — which is exactly what happened before it was added.
     #
+    # TWO hashes, not one. This header goes up in Phase 4a and the new
+    # index.html in Phase 5, and a cache in front of the origin can keep
+    # serving the previous document for a while after that — so for a window
+    # on either side of a deploy, the document a browser holds and the policy
+    # it is judged against come from different builds. Naming the previous
+    # build's hash as well means neither is ever refused. Carry at most two:
+    # the current build's and the one it replaced, and drop the older one on
+    # the deploy after this.
+    #
+    #   Igk0HU…  current — the adaptive boot screen (160ms hold-back)
+    #   gTJlH1…  previous — the flat 700ms floor
+    #
     # The four third parties are the ones the site actually loads:
     #   accounts.google.com    Google Identity Services ("Continue with Google")
     #   challenges.cloudflare.com  Turnstile widget
@@ -117,7 +129,7 @@ DirectoryIndex index.html index.php
     #
     # After changing this, reload the site, /admin and /root and check the
     # browser console for "Refused to load" — a CSP mistake is invisible to curl.
-    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'sha256-gTJlH1j1zBW3bJNmeY8MITvgoMNk1ceLegLxLb0A19A=' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; frame-src 'self' https://accounts.google.com https://challenges.cloudflare.com; worker-src 'self' blob:; manifest-src 'self'; upgrade-insecure-requests"
+    Header always set Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'sha256-Igk0HUnXq8zcO22dGtR/O6DkWC2i1VrerwSf/3sBuHA=' 'sha256-gTJlH1j1zBW3bJNmeY8MITvgoMNk1ceLegLxLb0A19A=' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://accounts.google.com https://challenges.cloudflare.com https://plausible.io; frame-src 'self' https://accounts.google.com https://challenges.cloudflare.com; worker-src 'self' blob:; manifest-src 'self'; upgrade-insecure-requests"
 
     # nginx parity: the /admin and /root mounts are never indexed. NDM_NOINDEX
     # is set by the rewrite rules below; after an internal rewrite the engine
