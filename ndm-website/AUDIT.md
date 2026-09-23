@@ -1705,6 +1705,36 @@ limit). `user_sessions.realm` stays as an unread column with a default. Run
 against itself the tool reports no drift at all, so the migration is
 idempotent.
 
+### Phase 5 deployed — 2026-09-23
+
+Backed up first to `nexa-data/pre-phase5-20260923-032918/` (verified dump plus
+tarballs of `nexa-api/` and `public_html/`). CI was green on all three jobs
+before it went — backend 3 m 7 s on MariaDB 11.8 — and the API came back on the
+pinned Node 22 with `[db] schema initialized`.
+
+**One thing was checked before deploying rather than after**, because it could
+have stopped mail entirely: M-11 makes `requireTLS` a refusal to send, so the
+production relay was probed from the server first. `smtp.gmail.com:587`
+advertises STARTTLS in its EHLO response, so the new setting costs nothing
+here. A relay that did not would have needed the finding rethought, not the
+deploy rolled back at 3am.
+
+Verified against the live site:
+
+| | |
+|---|---|
+| **M-06** | `admin_ip_rules` created; `matchesEntry('103.157.248.0/24', …)` matches the owner's address and refuses the neighbouring block |
+| **M-08** | `/api/subscription/plans` publishes `"billing":"disabled"` |
+| **M-12** | `TEAM_INVITE_TTL_DAYS = 14` |
+| **L-01** | `/api/auth/verify-email` answers 400 — route intact behind its new limiter |
+| **L-02** | the honeypot's 400 now reads `fieldErrors: {}`; the trap does not name itself |
+| **L-08** | `GET /api/nope%3Cscript%3E` → *"Route not found: GET"*, nothing reflected |
+| **panel** | the served admin bundle carries *Who can reach the panels* |
+
+The boot warning still names `ADMIN_ALLOWED_IPS=*` and no longer names
+`ADMIN_2FA_REQUIRED`, which is correct: 2FA was put back on 2026-09-22 and the
+IP gate is still deliberately open. See *Temporary loosenings*.
+
 ### The deploy — done 2026-09-22
 
 Backed up first, to `nexa-data/pre-audit-on-main-20260922-151545/`: the
