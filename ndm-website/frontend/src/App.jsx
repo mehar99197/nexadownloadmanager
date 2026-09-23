@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useState, useTransition, ViewTransition } from 'react';
 import { Routes, Route, Outlet, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
@@ -68,13 +68,49 @@ const DocsTorrents = lazy(() => import('./pages/docs/DocsTorrents'));
 const DocsRemote = lazy(() => import('./pages/docs/DocsRemote'));
 const DocsLicense = lazy(() => import('./pages/docs/DocsLicense'));
 
-/** Remounts on every route change so each page plays its drift-in. */
+/**
+ * The routed area, held one React transition behind the URL.
+ *
+ * startTransition buys two separate things here. React keeps the page that is
+ * already on screen while the next route's chunk downloads, instead of tearing
+ * it down for the Suspense spinner — which is what made the first visit to
+ * every lazy page flash. And it is the signal <ViewTransition> needs in order
+ * to run the swap inside document.startViewTransition, so a browser that has
+ * view transitions cross-fades the two pages as one animation instead of
+ * animating the new one in over a blank. Firefox, which has neither, falls
+ * through to the .page-enter keyframes exactly as before.
+ *
+ * Everything inside <Routes location={shown}> — including useLocation() in the
+ * navbar and in usePageMeta — is handed the deferred location by React
+ * Router's own context, so the page, its title and the highlighted nav link
+ * always change together rather than the link jumping ahead of the page.
+ */
+function useDeferredRoute() {
+  const live = useLocation();
+  const [shown, setShown] = useState(live);
+  const [pending, startRouteTransition] = useTransition();
+
+  useEffect(() => {
+    if (shown.key === live.key) return;
+    startRouteTransition(() => setShown(live));
+  }, [live, shown]);
+
+  return [shown, pending];
+}
+
+/**
+ * The routed page: named, so the view transition animates this and leaves the
+ * navbar and footer alone; keyed, so the keyframe fallback still replays on a
+ * browser that has no view transitions.
+ */
 function PageFade({ children }) {
   const location = useLocation();
   return (
-    <div key={location.pathname} className="page-enter">
-      {children}
-    </div>
+    <ViewTransition name="ndm-page">
+      <div key={location.pathname} className="page-enter">
+        {children}
+      </div>
+    </ViewTransition>
   );
 }
 
@@ -126,10 +162,18 @@ function AuthLayout() {
 }
 
 export default function App() {
+  const [shown, routePending] = useDeferredRoute();
+
   return (
     <ToastProvider>
       <ConfirmProvider>
-      <Routes>
+      {/* Deferring the swap means a tap on a link whose chunk is not cached
+          leaves the old page up for as long as the download takes — correct,
+          and otherwise completely silent. A hairline at the top of the window
+          is the acknowledgement; it is decoration over a state the page
+          content already conveys, so it stays out of the accessibility tree. */}
+      {routePending && <div className="route-progress" aria-hidden="true" />}
+      <Routes location={shown}>
         <Route element={<Layout />}>
           {/* Public */}
           <Route path="/" element={<Home />} />

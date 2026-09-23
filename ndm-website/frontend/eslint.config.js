@@ -20,6 +20,7 @@ const browserGlobals = {
   confirm: 'readonly',
   alert: 'readonly',
   crypto: 'readonly',
+  CSS: 'readonly',
   requestAnimationFrame: 'readonly',
   cancelAnimationFrame: 'readonly',
   performance: 'readonly',

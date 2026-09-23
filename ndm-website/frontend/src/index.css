@@ -1360,3 +1360,155 @@ h2 {
     display: none;
   }
 }
+
+/* 3. Scroll-driven reveals -------------------------------------------
+   The same drift-in as .reveal, driven by the scroll position itself
+   instead of by an IntersectionObserver and a class flip. Section.jsx
+   applies this class in place of .reveal wherever the browser supports it,
+   so there is no observer to construct, no callback on the main thread,
+   and the animation stays in step with a fling scroll instead of starting
+   one frame after it. The IntersectionObserver path is untouched and is
+   still what Firefox runs. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .reveal-native {
+      animation: ndm-reveal linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 30%;
+    }
+
+    /* Cards in a revealed section each get their own timeline, so the
+       cascade comes from where a card actually is rather than from eight
+       hard-coded nth-child delays that stop at the eighth card. */
+    .reveal-native [data-stagger] > * {
+      animation: ndm-reveal-item linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 26%;
+    }
+  }
+}
+
+/* A drift, and nothing but a drift — no fade, and no scale.
+   A scroll-driven animation does not play and finish. It HOLDS whatever value
+   its range maps the current scroll position to, for as long as the reader
+   leaves the page alone, so every property it touches becomes a function of
+   how far down the page a thing happens to be. Two of the three properties
+   this reveal started with turned out not to survive that:
+
+     opacity — a contrast ratio that depends on scroll position. axe found body
+       text on four pages sitting at 0.89 opacity and failing contrast while
+       nothing was moving and nothing would move until someone scrolled.
+
+     scale — a tap target that depends on scroll position. 0.985 of a 44px
+       button is 43.3px, and getBoundingClientRect reports the scaled box, so
+       three controls on /contact dropped under the minimum and stayed there.
+       It also leaves every glyph in the section rasterised off-pixel.
+
+   translate has neither problem: it moves a box without resizing it or
+   changing what it is drawn over. The IntersectionObserver path below can
+   still do all three, because there they are binary — the end state arrives on
+   a 700ms clock of its own and then stays. */
+@keyframes ndm-reveal {
+  from {
+    transform: translateY(22px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes ndm-reveal-item {
+  from {
+    transform: translateY(18px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* 4. View transitions between pages ----------------------------------
+   App.jsx defers the routed area by one React transition, which lets
+   <ViewTransition> run the swap inside document.startViewTransition where
+   the browser has one. "ndm-page" is the name it gives the routed area, so
+   the navbar and the footer are lifted out of the transition and stay put
+   while the page itself changes. */
+::view-transition-old(ndm-page) {
+  animation: ndm-vt-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+::view-transition-new(ndm-page) {
+  animation: ndm-vt-in 300ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes ndm-vt-out {
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes ndm-vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+@supports (view-transition-name: none) {
+  /* Otherwise the keyframe fallback and the view transition both play and
+     the page drifts in twice. */
+  .page-enter {
+    animation: none;
+  }
+}
+
+/* A view transition is motion like any other. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* 6. Waiting for a route ---------------------------------------------
+   Deferring the swap means a tap on a link whose chunk is not cached shows
+   the OLD page for as long as the download takes — correct, and silent.
+   This is the acknowledgement: a hairline at the top of the window, which
+   costs one class and never moves the layout. */
+.route-progress {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline: 0;
+  z-index: 60;
+  height: 2px;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+.route-progress::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inline-size: 40%;
+  background: linear-gradient(90deg, transparent, var(--color-brand-300), var(--color-accent-400), transparent);
+  animation: route-progress-sweep 950ms cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+@keyframes route-progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-progress::after {
+    inline-size: 100%;
+    animation: none;
+    opacity: 0.7;
+  }
+}
