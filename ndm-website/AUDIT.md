@@ -1104,6 +1104,8 @@ without fighting.
 
 **On this base (`audit-on-main`):** O-03a and O-03b came across in `d086ec9` (`test/tools/testdb.sh`, now with a resumable download, a data-only `wipe` and a `purge`). O-03c is code-complete on this base too: `website.yml` runs the suite against `mariadb:11.8` on every branch that touches `ndm-website/`, and `build.yml`'s quality job loses the duplicated website steps — including the second full `npm test` it ran only to grep the log. It stays **IN PROGRESS** until a run is green on this branch. Running the suite twice here is also what found the `faq_votes` / `license_token_rejections` leak in `srv.reset()`.
 
+**The branch was pushed on 2026-09-22 and the workflow fired — run `35745664153`. It is still the billing refusal, verbatim on all three jobs: _"The job was not started because recent account payments have failed or your spending limit needs to be increased."_** The repository reports `visibility: PRIVATE`, so Actions minutes are still billed; making it public was the cheaper of the two fixes and has not taken effect. Nothing about the workflow or the suite is implicated — no job started, so no step ran. The suite itself is green where it can be run: **533 pass / 0 fail / 0 skipped** locally against MariaDB 11.8.9, twice in a row. O-03 cannot close until the account lets a runner start.
+
 `npm test` reports **95 pass / 5 skipped** and exits green. All five skips are
 the integration suites — `api`, `smoke`, `rateLimit`, `downloadCounter`,
 `releaseVersionInvariant` — which `t.skip()` themselves when no MySQL is
@@ -1262,18 +1264,57 @@ limit). `user_sessions.realm` stays as an unread column with a default. Run
 against itself the tool reports no drift at all, so the migration is
 idempotent.
 
-### The deploy
+### The deploy — done 2026-09-22
 
-1. Back up, and verify the dump (`backup.sh`, then `gunzip -t`).
-2. Deploy; watch `[db] schema initialized` and the health endpoint.
-3. **Every admin and the creator signs in again** — `token_version` differs
-   and the panel gates now enforce it (H-08) — **and enrols 2FA in the same
-   session**, or the panel will refuse everything else.
-4. Re-check what the last deploy checked: auth/refresh, the download counter
-   at the origin, and both SPA bundles' API base.
-5. Watch for `[password] breach check skipped` in the log. One or two is
-   nothing; a steady stream means the host cannot reach HIBP and the check is
-   buying latency for nothing.
+Backed up first, to `nexa-data/pre-audit-on-main-20260922-151545/`: the
+verified dump plus tarballs of `nexa-api/` and `public_html/`, which is a
+rollback and not just a database one. Then
+`deploy/build-and-upload.sh`, and the keepalive brought the API up on the
+pinned Node 22 at 15:22:01Z:
+
+```
+[run-api] 2026-09-22T15:22:01Z starting API with …alt-nodejs22…/node (v22.22.0)
+[db] schema initialized
+[server] NDM backend listening on 127.0.0.1:3001 (NODE_ENV=production, public deployment, production checks ON)
+```
+
+Checked live, against production:
+
+- **The migration landed as `migrate-check.js` predicted.** All eleven new
+  tables exist (`security_events`, `device_codes`, `device_tokens`,
+  `rate_limits`, `stripe_webhook_events`, `used_id_tokens`, `audit_logs`,
+  `faq_votes`, `ad_event_nonces`, `license_email_deliveries`,
+  `license_token_rejections`); `user_sessions` has `family` and
+  `prev_token_hash`; `created_at`/`last_used_at` are now `datetime`, so the
+  drift fix ran on the real database; `realm` is still there, unread, as
+  documented.
+- **M-07 is enforced by the database**: `uq_subscriptions_user (user_id)`.
+- **H-06 at the origin, bypassing the CDN**: count 683 before, `HEAD` → 200,
+  count 683; `Range: bytes=0-0` → 206, count 683. Neither counts.
+- **M-05 is real in production**: signing in as an address that does not
+  exist took **1.09 s** — a full bcrypt, not the early return that used to
+  answer in under 2 ms.
+- `POST /auth/refresh` with no cookie → `401 NO_REFRESH_TOKEN`; a protected
+  route with no bearer → `401 UNAUTHORIZED`. No 500s on either.
+- Both SPA bundles are the ones just built (`index-BcXmwx86.js`,
+  `index-BC7zJvrk.js`) and both carry `/api` — the admin through its
+  `BASE_URL` const, which is why a `baseURL:"…"` grep finds nothing there.
+- `exposeStackTraces = false` (M-04), and **zero** `breach check skipped`
+  lines, so HIBP is reachable from this host.
+
+**Two things the deploy turned up about the creator's account:**
+
+1. `ADMIN_2FA_REQUIRED` is now `true`, as expected — and it locks nobody out,
+   because the one `root` account already has an authenticator enrolled and
+   there are **no staff admins**. The `TOTP_ENCRYPTION_KEY` did not change, so
+   that enrolment still decrypts. The creator does have to **sign in again**
+   (H-08: `token_version` moved).
+2. `totp_recovery` is `[]` — **the creator has no recovery codes at all.** Not
+   legacy ones; none. With `ADMIN_2FA_REQUIRED` on and no second route in,
+   losing that authenticator locks the panel permanently. `POST
+   /api/root/2fa/recovery-codes` is live (it answers 401, not 404), so the fix
+   is one signed-in call — but until M-14 lands there is no path back if the
+   authenticator is lost first.
 
 ---
 
@@ -1292,4 +1333,5 @@ idempotent.
 | 2026-09-20 | **Phase 3 code done** — O-03c: `website.yml` runs the backend suite against MariaDB 11.8 on every branch, with the skip guard reading the summary counts. First run refused by GitHub Actions billing on the account (owner action); the finding stays IN PROGRESS until a run is green. |
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
+| 2026-09-22 | **`audit-on-main` pushed and deployed to production.** 15 commits pushed; the `website` workflow fired and was refused by GitHub Actions billing again (run `35745664153`, all three jobs, no step run) — the repository still reports `PRIVATE`, so O-03 stays IN PROGRESS. The deploy itself went clean after a verified full backup: schema initialized, and H-06, M-04, M-05, M-07 and both SPA bundles verified against the live site (see *The deploy*). One deploy-script bug on the way: the `baseURL` assertion added last time matched only a double-quoted literal, and Vite 8 minifies it to a backtick template, so a correct bundle failed the check. Found the creator has **no recovery codes** (`totp_recovery` = `[]`) while `ADMIN_2FA_REQUIRED` is on — see M-14. |
 | 2026-09-22 | **Deploy prerequisites cleared.** Rebased onto `origin/main` @ `5de449b` (the tip had moved nine commits; none of them touch anything this port changes) — 533/533. Checked the twelve settings `main` reads that the live `.env` has never had to satisfy: all defaulted, none can fail the boot, and three change behaviour (`ADMIN_2FA_REQUIRED` on, which the creator and every staff admin must act on at the deploy; `PASSWORD_BREACH_CHECK` on and degrading open; `LICENSE_AUTO_SUSPEND` on with thresholds no customer reaches). Checked the migration by running it: `test/tools/migrate-check.js` builds a production-shaped database, migrates it and diffs against a fresh one. It runs clean; two TIMESTAMP columns were retyped to DATETIME as a result and two harmless leftovers are documented. |
