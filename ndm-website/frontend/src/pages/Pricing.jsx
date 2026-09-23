@@ -8,7 +8,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import Skeleton from '../components/Skeleton';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
@@ -141,6 +141,40 @@ function PlanCard({ plan, billingCycle, user, onCheckout, onTrial, busy, billing
   );
 }
 
+/**
+ * What the page is about to become: the billing toggle, then three plan cards
+ * in the same grid at roughly the height they land at. The spinner this
+ * replaces was one line tall and centred, so the plans arriving pushed the
+ * page down by about 600px and threw away the reader's place.
+ */
+function PricingSkeleton() {
+  return (
+    <div role="status" aria-label="Loading the plans">
+      <div className="mt-8 flex justify-center">
+        <Skeleton className="h-12 w-60 rounded-xl" />
+      </div>
+      <div className="mx-auto mt-6 flex max-w-md gap-2">
+        <Skeleton className="h-11 flex-1 rounded-[var(--radius-2)]" />
+        <Skeleton className="h-11 w-24 rounded-[var(--radius-2)]" />
+      </div>
+      <div className="mt-12 grid gap-6 md:grid-cols-3">
+        {[0, 1, 2].map((i) => (
+          <Card key={i} className="flex flex-col !p-7">
+            <Skeleton className="h-6 w-24 rounded" />
+            <Skeleton className="mt-4 h-10 w-36 rounded-lg" />
+            <div className="mt-7 flex-1 space-y-3">
+              {[0, 1, 2, 3, 4, 5].map((j) => (
+                <Skeleton key={j} className={`h-4 rounded ${j % 3 === 2 ? 'w-3/5' : 'w-full'}`} />
+              ))}
+            </div>
+            <Skeleton className="mt-7 h-11 w-full rounded-[var(--radius-2)]" />
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Pricing() {
   usePageMeta({
     title: 'Pricing',
@@ -269,7 +303,7 @@ export default function Pricing() {
       </div>
 
       {loading ? (
-        <Spinner center />
+        <PricingSkeleton />
       ) : error && !plans ? (
         <div className="mt-10 text-center">
           <p className="text-red-300">{error}</p>

@@ -7,7 +7,7 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import StarRating from '../components/StarRating';
-import Spinner from '../components/Spinner';
+import Skeleton from '../components/Skeleton';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import usePageMeta from '../hooks/usePageMeta';
 
@@ -148,6 +148,53 @@ function ReviewForm({ onSubmitted }) {
   );
 }
 
+/**
+ * The same two-column shape the reviews land in — list on the left, rating
+ * breakdown on the right — so the arriving data replaces the stand-ins rather
+ * than pushing them out of the way.
+ */
+function ReviewsSkeleton() {
+  return (
+    <div role="status" aria-label="Loading the reviews" className="mt-10 grid gap-8 lg:grid-cols-[1fr_280px]">
+      <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          {[0, 1].map((i) => (
+            <Card key={i} className="!p-5">
+              <Skeleton className="h-4 w-24 rounded" />
+              <Skeleton className="mt-3 h-4 w-full rounded" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded" />
+              <Skeleton className="mt-4 h-3 w-28 rounded" />
+            </Card>
+          ))}
+        </div>
+        {/* The use-case and star filters, at the widths their labels take. */}
+        <div className="flex flex-wrap gap-2">
+          {['w-20', 'w-24', 'w-28', 'w-16', 'w-24'].map((w) => (
+            <Skeleton key={w} className={`h-8 rounded-lg ${w}`} />
+          ))}
+        </div>
+        {[0, 1, 2].map((i) => (
+          <Card key={i} className="!p-6">
+            <Skeleton className="h-4 w-28 rounded" />
+            <Skeleton className="mt-3 h-4 w-full rounded" />
+            <Skeleton className="mt-2 h-4 w-11/12 rounded" />
+            <Skeleton className="mt-2 h-4 w-2/3 rounded" />
+            <Skeleton className="mt-4 h-3 w-32 rounded" />
+          </Card>
+        ))}
+      </div>
+      <Card className="h-fit !p-6">
+        <Skeleton className="h-4 w-32 rounded" />
+        <div className="mt-4 space-y-3">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className="h-3.5 w-full rounded" />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export default function Reviews() {
   usePageMeta({ title: "Reviews", description: "What people say about Nexa Download Manager — real, moderated reviews from users." });
 
@@ -217,7 +264,7 @@ export default function Reviews() {
       )}
 
       {loading && !data ? (
-        <Spinner center />
+        <ReviewsSkeleton />
       ) : error && !data ? (
         <div className="mt-10 text-center">
           <p className="text-red-300">{error}</p>
