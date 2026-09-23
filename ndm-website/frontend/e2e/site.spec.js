@@ -56,6 +56,13 @@ test('home renders and shows only real statistics', async ({ page }) => {
 });
 
 test('the primary navigation reaches every public page', async ({ page }) => {
+  // Ten full page loads in one test, where every other test in this file does
+  // one or two. Alone it finishes in about 12 s; under fullyParallel, sharing a
+  // machine with the rest of the suite, it has gone past the 30 s default and
+  // failed on time rather than on anything about the site — the run after that
+  // passed it in 18.5 s, unchanged, which is what flaky looks like. slow()
+  // triples the budget for this test only, rather than loosening it for all.
+  test.slow();
   await stubApi(page);
   const routes = [
     ['/download', /Download/],

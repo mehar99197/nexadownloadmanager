@@ -118,9 +118,11 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   frontend:
-    name: Frontend — lint, unit tests, build
+    name: Frontend — lint, unit tests, e2e, build
     runs-on: ubuntu-latest
-    timeout-minutes: 10   # 25 s in practice; see the backend job for why there is a limit at all
+    # Raised from 10 when the e2e run was added: it builds the site, serves it
+    # and drives a real Chrome through it, which is about a minute on its own.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ndm-website/frontend
@@ -134,6 +136,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      # The e2e suite existed and nothing ran it, so it had drifted into being
+      # decorative — a flaky 30 s timeout in it went unnoticed until the
+      # verification pass (T-09). playwright.config.js uses `channel: 'chrome'`
+      # rather than a bundled browser, so the real thing has to be installed.
+      - run: npx playwright install --with-deps chrome
+      - run: npm run test:e2e
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
 

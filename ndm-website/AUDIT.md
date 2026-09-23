@@ -140,9 +140,9 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
 | Low | 12 | 0 | 12 |
-| Test debt | 8 | 1 | 7 |
+| Test debt | 9 | 1 | 8 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **46** | **3** | **43** |
+| **Total** | **47** | **3** | **44** |
 
 **Every defect found by reading the code is fixed.** The six left are of two
 kinds, and neither is a bug sitting in a code path:
@@ -1704,6 +1704,39 @@ Two other findings came out of writing it, both small and both now pinned:
 a rejected bulk-moderation request leaves every row untouched, and the
 changelog feed carries no download URL (which is what keeps H-06’s counter
 honest).
+
+---
+
+## T-09 — the e2e suite existed and nothing ran it, so it had gone flaky unnoticed
+
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `npm run test:e2e` — 18/18, and the frontend CI job now runs it
+
+Playwright was configured, two spec files existed, and `npm run test:e2e` was in
+ `package.json`. CI ran `lint, test, build, audit` and never called it. Run for
+the first time during the verification pass, it came back **17 passed, 1
+failed**.
+
+The failure was *"the primary navigation reaches every public page"*, at the
+30-second default. It was not a broken route: the page snapshot in the
+failure showed the navigation rendered, and running that test alone finished
+it in **11.9 s**. It does ten full page loads where every other test in the
+file does one or two, and under `fullyParallel` it competes with them for one
+machine.
+
+Then the next full run passed it in 18.5 s with nothing changed, which is the
+definition of the problem: a test that fails on the clock rather than on the
+product, intermittently, is worse than no test — it teaches everyone to
+re-run the suite instead of reading it.
+
+**Fixed** with `test.slow()` on that one test, which triples its budget and
+leaves every other test on the strict default. Loosening the global timeout
+would have hidden the next real hang.
+
+**And CI now runs the suite**, which is the part that actually matters. A
+test nobody runs stops being a test; this one had quietly become decorative,
+and a flake had been sitting in it for however long. `playwright.config.js`
+uses `channel: 'chrome'` rather than a bundled browser, so the job installs
+the real Chrome first.
 
 ---
 
