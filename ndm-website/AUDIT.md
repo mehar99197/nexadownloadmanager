@@ -134,11 +134,15 @@ Against this base, after the port:
 | Severity | Count | Open | Fixed |
 |---|---|---|---|
 | High | 8 | 0 | 8 |
-| Medium | 15 | 1 | 14 |
-| Low | 10 | 7 | 3 |
+| Medium | 15 | 0 | 15 |
+| Low | 10 | 0 | 10 |
 | Test debt | 5 | 0 | 5 |
-| Operational | 3 | 1 | 2 |
-| **Total** | **41** | **9** | **32** |
+| Operational | 3 | 2 | 1 |
+| **Total** | **41** | **2** | **39** |
+
+**Everything that can be fixed in this repository is fixed.** The two that
+remain are O-01 and O-02: hPanel cron entries, which have to be added in
+Hostinger's control panel by the account owner and cannot be done over SSH.
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -719,7 +723,7 @@ oracle that `/auth/register` was rewritten to close.
 
 ## M-05 — Panel login is a timing oracle for the admin address
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/passwordCheck.test.js`, and measured on the live deployment after the port: a sign-in for an address that does not exist took **1.09 s**, where the early return used to answer in under 2 ms
 
 **On this base (`audit-on-main`):** **FIXED** in `bb6193e`. `main` had already closed the 500 half (a `!user.password_hash` guard) but still returned before comparing anything for a non-admin address. `utils/passwordCheck.js` now holds the one comparison all three realms use: a real cost-12 compare against the account's hash or against a dummy nobody knows. `test/passwordCheck.test.js` pins the property — the no-hash branch must be orders of magnitude slower than an early return and within the same order as a genuine compare — rather than a percentage that would flake on a shared runner.
 
@@ -850,7 +854,7 @@ so a staff admin can alter the creator's subscription.
 
 ## M-08 — The live site advertises plans that cannot be bought
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** —
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `frontend/src/test/pages.test.jsx` — *"says so on the paid buttons and drops the Stripe promise"* and *"keeps the normal buttons when billing is live"*
 
 **Where:** `frontend/src/pages/Pricing.jsx`, `backend/src/routes/subscription.js`
 
@@ -866,6 +870,25 @@ The frontend has no way to do better: neither `GET /api/subscription/plans` nor
 **Fix:** expose `billingMode` on a public endpoint and have Pricing render an
 honest state — waiting-list, "contact us", or the trial CTA alone — instead of a
 buy button that cannot work.
+
+**On this base (`audit-on-main`): already fixed, nothing to port.** The finding
+was written against the deployed lineage, where it was true. `main` had solved
+it independently and the audit only reached it after the rebase:
+
+- `GET /api/subscription/plans` is public — no `requireAuth` — and answers
+  `{ ...PLANS, billing: config.stripeMode }`.
+- `Pricing.jsx` reads that into `billingOpen = plans.billing !== 'disabled'`
+  and `resolveCta` returns *"Paid plans coming soon"* / *"Coming soon"* as a
+  plain state label rather than a button that answers 503 on click. The
+  "payments handled by Stripe" line goes with it.
+- Both directions are already covered by tests, including the one that matters
+  for not over-correcting: with billing live, the normal buttons come back.
+
+Verified by reading the code and the tests on this base rather than assumed
+from the rebase — the same mistake in the other direction (marking something
+fixed because the branch moved) is what the *Reconciliation* section exists to
+avoid. Seven other findings resolved this way are listed there; this is the
+eighth.
 
 ## M-09 — The admin panel keeps rendering as signed-in after its session dies
 
@@ -1124,30 +1147,62 @@ called `Number(req.params.id)` directly, so `NaN` reached the model layer:
 
 ## L-01 — `/auth/verify-email` puts its rate limiter before `validate()`
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** the route now reads
+`'/verify-email', authLimiter, validate(verifyEmailSchema)`, matching every
+other limited route in the file; `rateLimit.integration` still passes
 
 `backend/src/routes/auth.js`. Every other auth route mounts the limiter *after*
 `validate()` and says why in a comment: "a request that fails its schema costs
 no auth quota". `/verify-email` is the exception, so malformed bodies burn the
 verify-email budget.
 
+**On this base (`audit-on-main`): the same hole, worse.** `main` rewrote this
+route and `/verify-email` ended up with **no limiter at all** — the order the
+finding describes does not exist here, because there is nothing to order. Every
+other limited route in the file puts its limiter first, so the fix is
+`authLimiter` in that position rather than the one the original text argues
+for.
+
+Not about brute force: the token is an unguessable JWT. It is that an
+unauthenticated endpoint doing signature verification and a database write
+should not be free to call.
+
 ## L-02 — The contact-form honeypot does not behave as documented
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `flows.integration` → "the honeypot swallows bots quietly" — still a 400, and `assert.doesNotMatch(res.text, /website/i)`; `schemas.test.js` unchanged and passing
 
-`backend/src/schemas/contact.schema.js`. The comment promises "a bot that fills
+`backend/src/schemas/contact.schema.js`. The comment promised "a bot that fills
 every field gets a polite 200 and nothing is sent". In practice
 `website: z.string().max(0)` makes a filled honeypot a `400 VALIDATION_ERROR`
 whose `details.fieldErrors.website` names the trap — which tells the bot exactly
 what caught it and how to avoid it next time.
 
+**Half of this had already been fixed on `main`, in the other direction:** the
+comment was rewritten to describe what the code does, so the documentation no
+longer lies. What was left is the part that actually matters — the 400 naming
+the field.
+
+**Fixed** by moving the emptiness rule from the field to an object-level
+`.refine()` with a message that says nothing about which rule failed. Same
+refusal, same status code, same schema output; the error now lands in
+`formErrors` instead of `fieldErrors.website`. Deliberately *not* changed to
+the polite 200 the old comment described: that is a contract change the client
+would have to be taught about, for no more benefit than this.
+
 ## L-03 — The account export is wrapped in the API envelope
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `flows.integration` → "the export is a complete, secret-free document", which now parses `res.text` and asserts `doc.ok === undefined`
 
 `backend/src/routes/user.js` (`GET /export`). The file downloads as
 `nexa-account-<id>.json` but contains `{"ok":true,"data":{…}}` rather than the
 export document itself.
+
+**Fixed:** the response is sent bare, with `res.type('application/json')` and
+`JSON.stringify(document, null, 2)` — pretty-printed, because this one is read
+by a person rather than by our client. Every other route here keeps the
+envelope; this is the only response that leaves as a file somebody stores, and
+a file is the document, not the document inside a transport wrapper that means
+nothing outside this API.
 
 ## L-04 — `GET /api/user/me` returns `totp_secret` and `totp_recovery`
 
@@ -1164,16 +1219,33 @@ cause as H-01: a deny-list where an allow-list belongs, and fixed by the same
 
 ## L-05 — Interrupted uploads leave orphaned temp files
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/sweepIncoming.test.js` — 5 cases: an abandoned file goes, an upload still in flight stays, real installers are untouched however old, the cut-off is a boundary on both sides, and a missing upload directory is not an error
 
 `backend/src/utils/releaseFiles.js`. `storeUpload` writes `.incoming-<uuid>` and
 renames on success. A process death mid-upload leaves a partial file —
 potentially hundreds of MB — in `RELEASE_UPLOAD_DIR` forever. There is no
 sweeper.
 
+**Fixed** with `sweepIncoming()`, wired into the housekeeping pass that already
+runs in-process every six hours (`utils/housekeeping.js` — the shared host has
+no reliable cron for the backend). It is the only step there that touches the
+filesystem rather than a table, which is the point: on shared hosting the disk
+quota is what runs out first, and a partial installer is up to
+`MAX_RELEASE_UPLOAD_MB` of it.
+
+**Age is the entire safety mechanism**, so the cases that matter are the ones
+where sweeping would be wrong. An upload in flight has a very recent mtime, so
+the twelve-hour cut-off cannot reach it — hours rather than minutes because the
+file is somebody's half-finished release and a slow connection pushing 200 MB
+is normal rather than stuck. Only the `.incoming-` prefix marks a file as
+abandoned, so a year-old installer sitting in the same directory is left alone:
+that is a release, not litter. A missing upload directory returns 0 rather than
+an error, because a deployment that has never had an upload should not report a
+failure every six hours and teach everyone to ignore the log.
+
 ## L-06 — `strongPassword` only enforces a minimum length
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/passwordPolicy.test.js` — fixed on `main` independently, nothing to port
 
 **On this base (`audit-on-main`):** **FIXED on `main` independently** — `utils/passwordPolicy.js` rejects common passwords, values containing the address, and (with `PASSWORD_BREACH_CHECK`) anything in Have I Been Pwned's k-anonymity range API. Nothing to port.
 
@@ -1189,16 +1261,20 @@ The same rule governs admin and root passwords set from the panels.
 
 ## L-08 — `notFound` reflects the raw request URL
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** the message is now `Route not found: <METHOD>` with nothing from the request in it
 
 `backend/src/middleware/errorHandler.js`. Confirmed live:
 `GET /api/nope%3Cscript%3E` → `"Route not found: GET /api/nope%3Cscript%3E"`.
 The content type is `application/json`, so this is not browser-exploitable; it is
 input reflection worth removing rather than a vulnerability.
 
+**Fixed** by dropping the URL from the message entirely. The caller already
+knows what they asked for, and the full URL is in the access log for anyone who
+needs it — so echoing attacker-supplied text back earned nothing at all.
+
 ## L-10 — "Member since" is always blank on the profile page
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/userView.test.js` → "the camelCase timestamps are ISO strings, or null when the column is empty" — `publicUser` supplies the `createdAt` the page was already reading
 
 **On this base (`audit-on-main`):** fixed by the H-01 port: `main`'s profile page already read `user.createdAt`, and `publicUser` is what now supplies it.
 
@@ -1216,11 +1292,17 @@ in one place. Do not add another `a || b`.
 
 ## L-09 — Email subjects interpolate unescaped user input
 
-**Status:** OPEN
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `headerSafe()` strips CR, LF and tabs, collapses runs of whitespace and truncates; `sendContactMessage` puts both `topic` and `name` through it
 
 `backend/src/utils/email.js` (`sendContactMessage`). `topic` and `name` go
 straight into the `Subject`. Nodemailer encodes headers, so this is not
 injectable today; the input is simply not newline-stripped at the edge.
+
+**Fixed** with `headerSafe()`. The point is not that today's encoder lets
+something through — it does not — but that header safety was one dependency's
+implementation detail away from being our problem, and the next thing to build
+a header out of this text might not encode at all. It also trims and truncates,
+because a subject is one line and sixty characters of topic is already generous.
 
 ---
 
@@ -1556,13 +1638,21 @@ Already fixed on `main`, nothing to port: **H-05**, **M-01**, **M-02**,
 - [x] M-06 — CIDR + IPv6 matching, and the allow-list moved into the creator panel
 - [x] M-11 — SMTP must negotiate TLS, with a 1.2 floor; loopback relays exempt
 - [x] M-12 — invitations expire after `TEAM_INVITE_TTL_DAYS`, and stop holding a seat
-- [ ] M-08 — publish `billingMode`; make Pricing honest about it
+- [x] M-08 — already done on `main`: `/subscription/plans` publishes `billing` and Pricing renders "coming soon" rather than a button that answers 503
 - [x] M-09 / M-10 — both UIs notice when the session has actually ended
-- [ ] L-05 — sweep orphaned `.incoming-*` files
-- [ ] L-01, L-02, L-03, L-08, L-09 — re-read on this base first; `main` has
-      rewritten some of the code these were found in (`/verify-email` has no
-      limiter at all here, rather than one in the wrong order)
+- [x] L-05 — orphaned `.incoming-*` files swept by the housekeeping pass that already runs
+- [x] L-01, L-02, L-03, L-08, L-09 — re-read on this base and all five fixed.
+      The re-read earned its place: `/verify-email` had **no limiter at all**
+      here rather than one in the wrong order, and half of L-02 had already been
+      fixed on `main` — by correcting the comment to match the code, which left
+      the half that mattered untouched
 - [ ] O-01, O-02 — the two hPanel cron entries **(owner action — cannot be done over SSH)**
+
+**Phase 5 is done.** Everything that can be changed in this repository has
+been. O-01 and O-02 are the only findings left and neither is a code change:
+they are cron entries in Hostinger's control panel, which has no SSH or API
+route in. The scripts they would run — `daily-maintenance.sh` and
+`run-api.sh` — are deployed and working; nothing is scheduling them.
 
 ## Deploying this base
 
@@ -1685,6 +1775,7 @@ Checked live, against production:
 | 2026-09-20 | **Phase 4 done** — H-08 (all three realms' sessions in one table, every bearer bound to its row, 15-min TTL), H-06, H-07, H-04, M-01, M-04, M-07, M-13, L-07, T-01, T-02. Found on the way: `invoice.payment_failed` threw on every real event. **288 / 288, 0 skipped** — first green run. 18 fixed, 20 open; every High closed. |
 | 2026-09-22 | **Phase 4.5 — re-based onto `main`.** The audit ran on the lineage production uses; `main` was 63 commits ahead with none of it live. `main` became the base and the audit's fixes were ported onto it, one finding per commit, each verified against MariaDB 11.8.9. Seven findings turned out to be fixed on `main` already (H-05, M-01, M-02, M-13, L-06, most of H-04, the customer half of H-08) and were left alone; two the audit had called FIXED were only half-fixed here (the panel gates never checked the token generation; `customer.subscription.created` was ignored) and are now closed with tests that fail without them. M-05 was fixed while in the same files. One new defect found by running the suite twice: `srv.reset()` never truncated `faq_votes` or `license_token_rejections`, so those suites passed only on a virgin database — invisible for as long as the integration tests were skipping themselves. **532 / 532, 0 skipped, repeatable.** 21 fixed, 17 open. |
 | 2026-09-23 | **M-15 fixed, prompted by the creator asking how to get recovery codes back.** They had enrolled, been shown the set once and closed the page; the answer from the panel was that they could not. `totp_recovery` was `[]` with `ADMIN_2FA_REQUIRED` on — one lost phone from a permanently locked panel, and no account above the creator to reset it. The endpoint had shipped with H-02; only the UI was missing. Security.jsx now carries a regenerate action, a red warning when the count is zero (worded differently for the creator than for a staff admin), the legacy-hash warning the finding was originally about, and honest lost-device copy. Two tests added for the case the existing three stepped over: regenerating from an EMPTY set on the authenticator alone, and a wrong password still refused there. 41 findings, 26 fixed, 15 open. |
+| 2026-09-23 | **Phase 5 finished.** M-08 turned out to be already done on `main` (checked, not assumed). L-05 got a sweeper in the housekeeping pass that already runs. The five deferred Low findings were re-read on this base first, which earned its place twice: `/verify-email` had **no limiter at all** here rather than one in the wrong order, and half of L-02 had been fixed on `main` by correcting the comment to match the code — leaving the half that mattered, a 400 naming the honeypot field. Also corrected three Status lines that still said OPEN while their own bodies said FIXED, and an Operational row that had its open and fixed counts the wrong way round. **41 findings, 39 fixed, 2 open** — and both of those are hPanel cron entries only the owner can add. Backend 575 / frontend 61, 0 fail, 0 skipped. |
 | 2026-09-23 | **M-11 and M-12.** SMTP now requires STARTTLS with a TLS 1.2 floor — it was not merely "might not encrypt" but a silent downgrade, since stripping the capability from the greeting sent the relay password, every reset token and every licence key in the clear with nothing logged. A relay on loopback is exempt, checked exactly, because an earlier draft of that check would have exempted `127.evil.com`. Team invitations expire after `TEAM_INVITE_TTL_DAYS` (14), enforced on the model because two routes read a token and a rule in one of them is the same bug with an extra step. Adding expiry had an unwanted half worth naming: an expired invite would have held a seat for ever, quietly turning a five-seat team into a four-seat one, so it no longer counts toward `used` and the roster shows it as dead. 41 findings, 32 fixed, 9 open. |
 | 2026-09-23 | **Phase 5 half done.** M-15 (recovery codes had no way back), M-14 (`npm run reset-2fa`, after the creator was locked out for real), M-06 (CIDR + IPv6 matching, and the allow-list moved into the creator panel behind a lock-out guard), M-09 and M-10 (both UIs kept rendering signed-in over a dead session; one event each, one place that decides what signed-out means). Two of those were found by the owner hitting them rather than by reading code, which is the honest way to say why they were rated Medium and should have been higher. Backend 560 / frontend 61, 0 fail, 0 skipped. 41 findings, 30 fixed, 11 open. |
 | 2026-09-23 | **O-03 closed — a green CI run.** Run `35775527617`: backend 3 m 21 s on MariaDB 11.8, `tests 533 / pass 533 / fail 0 / skipped 0` with the guard reading those counts back, `found 0 vulnerabilities` from the production audit, frontend 24 s, admin 17 s. Four attempts: two refused before any job started (private repository, billed minutes), then two that ran and each found a real defect — T-03, then T-04 and T-05. The finding that said the integration tests never actually run is now a workflow that runs them on every push, and it paid for itself three times before it first went green. 41 findings, 25 fixed, 16 open. Phase 5 has 16 left, two of them owner-only. |
