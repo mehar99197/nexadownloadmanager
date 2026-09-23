@@ -14,23 +14,43 @@ evidence for each one is recorded so nothing has to be re-derived later.
 
 ---
 
-## ⚠ Temporary loosening — PUT THIS BACK
+## ⚠ Temporary loosenings — PUT THESE BACK
 
-**One guard** on the control panels is still **deliberately off** on the live
-deployment, at the owner's request. It is not a finding and not a mistake; it
-is a decision with an expiry date that nothing else will enforce. The other
-was put back the day after it went off.
+**Both guards** on the control panels are **deliberately off** on the live
+deployment, at the owner's request. Neither is a finding and neither is a
+mistake; they are a decision with an expiry date that nothing else will
+enforce. This is the one part of this file meant to be read by someone who
+reads nothing else.
 
-| Setting | Live value | What it should be | State |
+| Setting | Live value | What it should be | Off since |
 |---|---|---|---|
-| `ADMIN_ALLOWED_IPS` | `*` | the operator's address or ISP range | **still open** |
-| `ADMIN_2FA_REQUIRED` | `true` | `true` | put back 2026-09-22 |
+| `ADMIN_ALLOWED_IPS` | `*` | the operator's address or ISP range | 2026-09-21 |
+| `ADMIN_2FA_REQUIRED` | `false` | unset (defaults to on) | 2026-09-23 |
 
-**What the open one costs.** The staff and creator panels accept a sign-in
-from any address on the internet, so the only thing standing between a leaked
-panel password and customer emails, licence keys and subscription records is
-the second factor. 2FA being back on is what keeps this survivable rather
-than serious — do not turn that off again while the gate is open.
+**Why 2FA went off twice.** It was turned off on 2026-09-21, put back on
+2026-09-22, and turned off again on 2026-09-23. That is not indecision. The
+2026-09-22 recovery (M-14) cleared the creator's enrolment to get them back
+into a panel they were locked out of, and `requireTwoFactorEnrolled` then did
+exactly what it is built to do: locked every screen but Security until they
+enrolled again. On a deployment being worked on daily that wall is in the way
+every session, so the requirement came off rather than the gate being weakened
+in code — a config line that can be deleted is a much better place for this
+than a permanent hole in `adminAuth.js` that every other deployment inherits.
+
+**What this costs while both are off.** The staff and creator panels accept a
+sign-in from any address on the internet, and a never-enrolled account is not
+made to add a second factor. Together that means **a leaked panel password is
+enough, on its own, from anywhere** — and that panel reads customer emails,
+licence keys and subscription records. The API prints this on every boot.
+
+**The cheapest way to make this much less serious** is not to put 2FA back —
+it is to close the IP gate, which costs nothing day to day. `/root` →
+**Security** → *Who can reach the panels*, add the ISP range, disable the `*`
+row. An attacker would then need the password **and** to be inside that range.
+The panel refuses any change that would lock out the address making it
+(`WOULD_LOCK_YOU_OUT`), so this cannot go wrong the way the old `.env` edit
+could — and `.env` stays the break-glass route, since the effective list is
+the union of it and the enabled panel rows.
 
 **Why `*` and not an empty list.** `config/env.js` refuses to start a hardened
 deployment on an empty `ADMIN_ALLOWED_IPS`, and that refusal is worth keeping:
@@ -39,23 +59,12 @@ to write, so it can be allowed and then **warned about on every single boot** �
 which is a reminder that reaches whoever restarts the process, months from now,
 instead of one that lives in a file nobody opens.
 
-**Putting it back** no longer needs a file edit or a restart. Sign in at
-`/root` → **Security** → *Who can reach the panels*, add the range, and
-disable the `*` row. The panel refuses any change that would lock out the
-address making it (`WOULD_LOCK_YOU_OUT`), so this cannot go wrong the way the
-old `.env` edit could. `.env` still works and stays the break-glass route:
-the effective list is the union of it and the enabled panel rows.
-
-**Both things that made this annoying enough to turn off are fixed**, which is
-why there is nothing left to wait for:
-
-- **M-06** — `ipAllowed` matched addresses exactly, so a consumer connection
-  that rotates its IP locked the panel out completely. It now matches CIDR and
-  IPv6, so the list can hold a real ISP range instead of one address that
-  expires — and it is editable from the panel.
-- **M-14** — a creator who loses their authenticator now has a way back in:
-  `npm run reset-2fa`, which was used on this deployment on 2026-09-22 for
-  exactly that.
+**Putting 2FA back** — delete the `ADMIN_2FA_REQUIRED=false` line from
+`nexa-api/.env` and restart the API; it defaults to on for a hardened
+deployment. Nothing needs redeploying. It is safe to do now in a way it was
+not before: recovery codes can be regenerated from the Security page (M-15),
+and `npm run reset-2fa` is the way back if the authenticator is lost (M-14).
+Both of those are why this is a reversible decision rather than a trap.
 
 ## How to use this file
 
