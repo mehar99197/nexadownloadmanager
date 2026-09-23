@@ -2002,6 +2002,82 @@ No load testing against production, deliberately. No third-party penetration
 test: the adversarial suite above is my own reading of what to try, and it
 shares its blind spots with the code review that preceded it.
 
+# UI/UX pass — 2026-09-23
+
+Asked for as "improve the design, find the UI bugs, check mobile properly,
+and cut the scrolling". Measured before anything was changed, which mattered
+more here than anywhere else in this audit — **my first two measurements were
+both wrong, and acting on either would have made the site worse.**
+
+### The two false alarms, because they are the lesson
+
+A hand-rolled contrast check reported **46 failures**, including white text at
+1:1 on the primary call to action. Every one was an artefact:
+
+- It resolved a background by walking up for the nearest
+  `background-color`, so white on a purple **gradient** button read as white
+  on white.
+- It treated `rgba(108, 92, 231, 0.12)` as opaque. Composited against the
+  page, "Register" is **6.9:1**, not the 1.78:1 it reported.
+- It ran 300 ms after load — inside the 700 ms `#ndm-boot` overlay — and read
+  half-applied styles as defects.
+
+Switched to **axe-core**, which composites alpha and refuses to guess at a
+gradient. Real total, before any change: **one** violation.
+
+### What was actually wrong
+
+| | |
+|---|---|
+| `/compare` | two tables scrolling sideways that no keyboard could reach, so the right-hand columns were pointer-only |
+| Show-password button | 18×18, beside a field people are already mistyping into |
+| Menu toggle / brand link / `.btn` | 40px, 34px, and 43.x — the last because `min-height` was `2.75rem`, and rem drifts with the reader’s base font size. A touch target is a physical measurement |
+| Footer links | 18px tall — under even WCAG 2.2 AA’s 24px (2.5.8) |
+| The panel | three keyboard-unreachable tables; every field and `<select>` at 42–43px; `Button size="md"` at 38px; the menu toggle 36×42; review checkboxes **16×16** |
+
+### The scrolling, which is what was complained about
+
+The footer is identical on every page and measured **1084px at 390px** — 1.28
+screens of it, sitting under a `/pricing` page only 1581px tall. Four link
+lists stacked in one column did it. Two columns from the narrowest screen up,
+and the FAQ’s 55 rows made denser on a phone only:
+
+| Page | Before | After |
+|---|---|---|
+| `/pricing` | 1.87 screens | **1.39** |
+| `/download` | 1.91 | **1.42** |
+| `/contact` | 3.46 | **2.97** |
+| `/` | 5.70 | **5.22** |
+| `/faq` | 8.60 | **7.20** |
+| `/compare` | 9.67 | **9.19** |
+
+### Two bars, not one
+
+**44×44 is WCAG Level AAA** (2.5.5) and Apple’s HIG. **Level AA is 24×24**
+(2.5.8, added in WCAG 2.2). Conflating them is how a navigation list ends up
+a mile long to fix something that was never broken — so the tests hold 24px
+for anything hittable and 44px for a *control*, and the footer’s links went to
+34px rather than 44.
+
+In the panel, `Button size="sm"` keeps its 28px look and grows only its **hit
+area**, through a transparent pseudo-element. Eight row actions at 44px tall
+turns a dense table into a scrolling one, and density is the point of a
+working tool.
+
+That forced the test to measure the right thing. A box check called both the
+sm chips and the label-wrapped checkboxes failures while both are genuinely
+tappable. It now probes with `elementFromPoint` at the edges of the required
+box, accepting a hit on the element, a descendant, or a label that controls
+it — and scrolls each control into view first, because `elementFromPoint`
+answers `null` outside the viewport.
+
+### Held by tests, in CI
+
+`frontend/e2e/a11y.spec.js` (3) and `admin/e2e/a11y.spec.js` (4): axe in both
+colour schemes, both tap bars, and no sideways scroll. Both jobs run them.
+Final: **0 axe violations** across 13 site pages and 9 panel screens, in dark
+and light.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth
