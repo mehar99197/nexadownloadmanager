@@ -2338,6 +2338,28 @@ for the fault it names** — the boot screen not up from the start, the width
 changing, the heading moving, a blank frame on the phone, the panel's next
 screen opening mid-page. Then all passed on the new build.
 
+### Verified on the live site, frame by frame
+
+Deployed (frontend and panel; the backend is untouched), then the same
+recorder against production:
+
+```
+reload /faq at 900:   loader ON from the first frame (10ms); page and scroll
+                      back at 900 by 335ms, under it; fading from 769ms, gone
+                      at 1052ms. Width 1356 and the heading still throughout.
+/faq (900) -> /docs:  URL at 75ms, old page holding at 900; /docs at 0 in one
+                      frame at 310ms. No spinner, no blank, width unchanged.
+Back -> /faq:         /faq at exactly 900 in one frame (31ms).
+```
+
+Site specs against production 18/18 (steady, advanced, a11y, responsive);
+panel 7/7. A cold first load, read from the page's own clock: loader at
+~0.35s, page ready at 0.75s, loader lifted at ~1.35s. (Node-side timers
+reported 5-6s for the same load; the other four seconds are a freshly
+launched headless browser starting up before the navigation begins, which no
+reader ever sees. Recorded because it looked like a regression until the
+page's clock was read.)
+
 ### Found while verifying on the live site: thirteen controls the harness never saw
 
 Running the specs against production after this deploy failed the tap-target
