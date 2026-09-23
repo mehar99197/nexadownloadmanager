@@ -1,0 +1,147 @@
+name: website
+
+# The website's own CI. It is separate from build.yml — which builds the
+# desktop app on three platforms and only runs for main — so that every push
+# to ANY branch that touches ndm-website/ gets the backend suite run against
+# a real database, the way test/README.md describes running it locally.
+#
+# The service is MariaDB 11.8, production's engine and major.minor (Hostinger
+# runs 11.8.9), not MySQL: the models carry comments about LIMIT interpolation
+# and other places the two dialects differ, and a suite that passes on the
+# wrong engine proves less than it looks. Node is 22, the CloudLinux alt-node
+# the API actually runs under (deploy/hostinger/run-api.sh).
+
+on:
+  push:
+    paths:
+      - 'ndm-website/**'
+      - '.github/workflows/website.yml'
+  pull_request:
+    paths:
+      - 'ndm-website/**'
+      - '.github/workflows/website.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — unit + integration on MariaDB 11.8
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: ci_root_password_1234
+          MARIADB_DATABASE: ndm_test
+          MARIADB_USER: ndm
+          MARIADB_PASSWORD: test_password_at_least_16_chars
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    defaults:
+      run:
+        working-directory: ndm-website/backend
+    env:
+      # What test/helpers/testServer.js reads. Same credentials as
+      # test/tools/testdb.sh provisions locally, so the two are interchangeable.
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ndm
+      MYSQL_PASS: test_password_at_least_16_chars
+      MYSQL_DB: ndm_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ndm-website/backend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Syntax check every source and test file
+        run: find src test -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test.log
+
+      - name: Prove the integration suites ran
+        shell: bash
+        run: |
+          # The integration suites skip themselves when no database is
+          # reachable, which would make a broken service look like a pass.
+          # node --test prints a summary of "<marker> tests N / pass N / fail N /
+          # skipped N" (the marker is "#" in TAP output, "ℹ" in the spec
+          # reporter); read the numbers rather than trust the exit code alone.
+          summary() { grep -E "(^#|^ℹ) $1 [0-9]+" test.log | tail -1 | grep -oE "[0-9]+$"; }
+          tests=$(summary tests); skipped=$(summary skipped); fail=$(summary fail)
+          echo "tests=$tests fail=$fail skipped=$skipped"
+          # A tripwire for "the suite did not run", not a coverage target:
+          # the suite is 506 tests today, so anything near this floor means the
+          # runner collected almost nothing. Raise it when it drifts far above.
+          if [ -z "$tests" ] || [ "$tests" -lt 450 ]; then
+            echo "::error::only ${tests:-0} tests ran — the suite did not execute as expected"
+            exit 1
+          fi
+          if [ "${skipped:-1}" != "0" ]; then
+            echo "::error::$skipped test(s) skipped — the MariaDB service is not reachable, so the integration suites did not run"
+            exit 1
+          fi
+          if [ "${fail:-1}" != "0" ]; then
+            echo "::error::$fail test(s) failed"
+            exit 1
+          fi
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend:
+    name: Frontend — lint, unit tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ndm-website/frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ndm-website/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+  admin:
+    name: Admin panel — lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ndm-website/admin
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ndm-website/admin/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high

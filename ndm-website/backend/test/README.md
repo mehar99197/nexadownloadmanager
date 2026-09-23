@@ -43,8 +43,41 @@ MYSQL_HOST=127.0.0.1 MYSQL_PORT=3306 MYSQL_USER=root MYSQL_PASS=secret \
 MYSQL_DB=ndm_test npm test
 ```
 
+### Windows, with nothing installed
+
+Production runs **MariaDB 11.8**, and `test/tools/testdb.sh` stands up that
+exact version from the portable zip — no installer, no administrator rights —
+under `backend/.testdb/` (gitignored), on `127.0.0.1:3399` with the credentials
+above already provisioned:
+
+```bash
+bash test/tools/testdb.sh up      # first run downloads ~95 MB, then unpacks, inits, starts
+npm test                          # 0 skipped
+bash test/tools/testdb.sh down    # stop; the data directory is kept for next time
+bash test/tools/testdb.sh wipe    # stop and empty the database (the download is kept)
+bash test/tools/testdb.sh purge   # stop and delete everything under .testdb
+```
+
+The suite must report **0 skipped**. A skip means no database was reachable,
+and a green run with skips has not tested the HTTP or SQL layer at all.
+
+Run it **twice** after touching anything that writes rows. The suites share one
+database and `srv.reset()` truncates it between them, so a table missing from
+that list passes on a fresh database and fails on the second run — which is how
+`faq_votes` and `license_token_rejections` were found.
+
 `test/helpers/testServer.js` fills in every other env var (test secrets, a
 loopback admin allowlist) and truncates all tables between suites.
+
+### In CI
+
+`.github/workflows/website.yml` runs this suite on **every push to any branch**
+that touches `ndm-website/`, against a `mariadb:11.8` service (production's
+engine and version) on Node 22 (production's runtime). It reads the summary
+line and fails the job unless the whole suite ran with **0 skipped** — so a
+database service that quietly stops answering cannot turn into a green tick.
+The frontend and admin panel are linted, tested and built in two parallel
+jobs alongside it.
 
 ## Notes
 

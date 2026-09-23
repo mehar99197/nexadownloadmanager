@@ -3,3 +3,7 @@ node_modules
 *.log
 dist
 mongo-data
+
+# The portable MariaDB the integration tests run against (test/tools/testdb.sh):
+# a ~95 MB download, the unpacked server and its data directory.
+.testdb/

@@ -6,6 +6,10 @@ ndm-website/frontend/index.html text eol=lf
 
 # Shell scripts and the files rsync ships verbatim to the Hostinger box must
 # stay LF: bash chokes on a CR in a command line, and the .htaccess/.user.ini
-# are read by LiteSpeed/lsphp as-is.
+# are read by LiteSpeed/lsphp as-is. Not theory — a Windows clone with
+# core.autocrlf=true wrote backup.sh as CRLF, build-and-upload.sh rsynced it
+# verbatim, and the CR on its `set -o pipefail` line meant no nightly backup
+# was ever written.
 *.sh text eol=lf
 ndm-website/deploy/hostinger/* text eol=lf
+*.bash text eol=lf
