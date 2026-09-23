@@ -10,7 +10,57 @@ evidence for each one is recorded so nothing has to be re-derived later.
 - **Branch:** `audit-on-main`, branched from `main` @ `867341e`
 - **Scope:** `ndm-website/backend`, `ndm-website/frontend`, `ndm-website/admin`
 - **Live target:** https://nexadownloadmanager.com (NODE_ENV=production, billing `disabled`)
-- **Deployed:** Phases 1–4 of the *original* branch went live 2026-09-20 14:26 UTC. This base has **not** been deployed yet.
+- **Deployed:** this base went live 2026-09-22 15:22 UTC (see *The deploy*). Phases 1–4 of the *original* branch had gone live 2026-09-20 14:26 UTC.
+
+---
+
+## ⚠ Temporary loosenings — PUT THESE BACK
+
+Two guards on the control panels are **deliberately off** on the live
+deployment, at the owner's request, because the panel is being worked on daily
+and both were getting in the way. Neither is a finding and neither is a
+mistake; they are a decision with an expiry date that nothing else will
+enforce.
+
+| Setting | Live value | What it should be |
+|---|---|---|
+| `ADMIN_2FA_REQUIRED` | `false` | unset (defaults to on) |
+| `ADMIN_ALLOWED_IPS` | `*` | the operator's address |
+
+**What this costs while it is off.** The staff and creator panels accept a
+sign-in from any address on the internet, and a never-enrolled account is not
+made to add a second factor. Both together mean **a leaked panel password is
+enough, from anywhere** — and that panel reads customer emails, licence keys
+and subscription records. An account that has *already* enrolled, which is the
+case for this deployment's creator, is still asked for its code; turning the
+requirement off does not disable a second factor that already exists.
+
+**Why `*` and not an empty list.** `config/env.js` refuses to start a hardened
+deployment on an empty `ADMIN_ALLOWED_IPS`, and that refusal is worth keeping:
+an unset variable is nearly always an oversight. `*` is a sentence somebody had
+to write, so it can be allowed and then **warned about on every single boot** —
+which is a reminder that reaches whoever restarts the process, months from now,
+instead of one that lives in a file nobody opens.
+
+**Putting them back** — on the server, in `nexa-api/.env`:
+
+```
+ADMIN_ALLOWED_IPS=<the operator's current address>
+# and delete the ADMIN_2FA_REQUIRED=false line
+```
+
+then restart the API. Nothing needs redeploying; both are read at boot.
+
+**Before that, two things should land**, because they are what made these
+annoying enough to turn off:
+
+- **M-06** — `ipAllowed` matches addresses exactly, so a consumer connection
+  that rotates its IP locks the panel out completely. CIDR support turns the
+  allow-list back into something that can hold a real ISP range instead of one
+  address that expires.
+- **M-14** — a creator who loses their authenticator has no way back in. With
+  2FA required and no recovery route, that is the other reason this felt risky
+  to leave on.
 
 ## How to use this file
 
