@@ -271,7 +271,7 @@ if (isHardened) {
   if (!config.PUBLIC_API_URL.startsWith('https://'))
     problems.push('PUBLIC_API_URL must use HTTPS');
   if (!config.ADMIN_ALLOWED_IPS.length)
-    problems.push('ADMIN_ALLOWED_IPS must explicitly restrict admin access (empty = the control panels are reachable from any address)');
+    problems.push('ADMIN_ALLOWED_IPS must explicitly restrict admin access (empty = the control panels are reachable from any address; write ADMIN_ALLOWED_IPS=* if that is genuinely what you want)');
   if (!config.TRUST_PROXY)
     problems.push('TRUST_PROXY must describe the reverse proxy (TRUST_PROXY=1 behind one proxy); without it every client is 127.0.0.1 to the rate limiters and the admin IP allowlist');
   if (config.SMTP_USER && !config.SMTP_PASS)
@@ -315,6 +315,32 @@ if (isHardened && !config.isEmailMock) {
   } catch {
     /* a FRONTEND_URL this malformed is already reported by the checks above */
   }
+}
+
+/**
+ * Two deliberate loosenings, said out loud on every boot.
+ *
+ * Unset is refused above, because an unset variable is nearly always an
+ * oversight. `*` is not: it is a sentence someone had to sit down and write.
+ * That makes it the right way to turn the gate off — and the wrong thing to
+ * leave running quietly, which is what this warning is for. A temporary
+ * loosening nobody is reminded about is a permanent one.
+ */
+if (isHardened && (config.ADMIN_ALLOWED_IPS.includes('*') || !config.ADMIN_2FA_REQUIRED)) {
+  const open = config.ADMIN_ALLOWED_IPS.includes('*');
+  const lines = ['[config] The control panels are running with a guard turned off:'];
+  if (open)
+    lines.push('[config]   ADMIN_ALLOWED_IPS=*  — a sign-in is accepted from ANY address.');
+  if (!config.ADMIN_2FA_REQUIRED)
+    lines.push('[config]   ADMIN_2FA_REQUIRED=false — an enrolled account is still asked for its');
+  if (!config.ADMIN_2FA_REQUIRED)
+    lines.push('[config]                              code, but a new one is never made to enrol.');
+  if (open && !config.ADMIN_2FA_REQUIRED)
+    lines.push('[config]   Together: a leaked panel password is enough, from anywhere.');
+  lines.push('[config] Fine while someone is working on this deployment. Put both back before it is');
+  lines.push('[config] left unattended — see ndm-website/AUDIT.md, "Temporary loosenings".');
+  // eslint-disable-next-line no-console
+  console.warn(lines.join('\n'));
 }
 
 if (problems.length) {

@@ -7,6 +7,11 @@ const User = require('../models/User');
 
 function ipAllowed(list, req) {
   if (!list || list.length === 0) return true;
+  // The deliberate opt-out. config/env.js refuses to start on an EMPTY list,
+  // because an unset variable is nearly always an oversight rather than a
+  // decision — so '*' is how an operator says they meant it, and env.js warns
+  // about it on every boot for as long as it is there.
+  if (list.includes('*')) return true;
   const ip = req.ip;
   const normalized = ip && ip.startsWith('::ffff:') ? ip.slice(7) : ip;
   return list.includes(ip) || list.includes(normalized);

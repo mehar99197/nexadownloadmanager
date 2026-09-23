@@ -1003,7 +1003,7 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
   (`router.get('/stats', requireAdmin, handler)` — Express flattens arrays).
 - `requireRoot` — **array** `[rootIpWhitelist, verifyRootToken]`; accepts only the root
   token family. A staff token fails signature verification here (401), never 403.
-- `ipWhitelist` — IP gate only (use standalone on `/admin/login`). Empty `ADMIN_ALLOWED_IPS` is development-only; production startup rejects it.
+- `ipWhitelist` — IP gate only (use standalone on `/admin/login`). Empty `ADMIN_ALLOWED_IPS` is development-only; production startup rejects it, because an unset variable is nearly always an oversight. `ADMIN_ALLOWED_IPS=*` is the **deliberate** opt-out: it boots, it lets every address through, and `config/env.js` warns about it on every boot for as long as it is set (as it does for `ADMIN_2FA_REQUIRED=false`). Matching is exact — no CIDR yet, see AUDIT.md M-06 — so a rotating consumer IP locks the panel out.
 - `rootIpWhitelist` — IP gate for `/api/root`. Falls back to `ADMIN_ALLOWED_IPS` when
   `ROOT_ALLOWED_IPS` is empty, so the creator console is never *less* restricted.
 - `isRootUser(user)` — the creator predicate: `role === 'root'` **and** the email matches
