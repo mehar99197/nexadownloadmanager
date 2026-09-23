@@ -68,9 +68,11 @@ function Sha256({ value }) {
   return (
     <div className="mt-4 text-left">
       <p className="text-xs font-bold uppercase tracking-[0.13em] text-slate-500">SHA-256</p>
-      <div className="mt-1.5 flex items-center gap-2">
+      {/* items-stretch: the code box grows to the button's 44px rather than
+          the button shrinking to the code's line. */}
+      <div className="mt-1.5 flex items-stretch gap-2">
         <code
-          className="surface-inset min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 font-mono text-[0.7rem] text-brand-100"
+          className="surface-inset flex min-w-0 flex-1 items-center truncate rounded-lg px-2.5 py-1.5 font-mono text-[0.7rem] text-brand-100"
           title={value}
         >
           {value}
@@ -78,7 +80,7 @@ function Sha256({ value }) {
         <button
           type="button"
           onClick={copy}
-          className="shrink-0 rounded-lg border border-[rgba(99,126,187,0.42)] px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-accent-400 hover:text-white"
+          className="min-h-11 shrink-0 rounded-lg border border-[rgba(99,126,187,0.42)] px-3.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-accent-400 hover:text-white"
           aria-label="Copy SHA-256 checksum"
         >
           {copied ? 'Copied' : 'Copy'}

@@ -297,7 +297,7 @@ export default function Reviews() {
                 <button
                   key={u.id}
                   type="button"
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                     useCase === u.id
                       ? 'on-brand'
                       : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
@@ -317,7 +317,7 @@ export default function Reviews() {
                 <button
                   key={star}
                   type="button"
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                     filter === String(star)
                       ? 'on-brand'
                       : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'

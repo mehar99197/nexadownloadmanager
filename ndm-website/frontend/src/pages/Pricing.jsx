@@ -316,7 +316,7 @@ export default function Pricing() {
                 <button
                   key={c}
                   type="button"
-                  className={`rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
+                  className={`min-h-11 rounded-lg px-5 py-2 text-sm font-medium transition capitalize ${
                     billingCycle === c
                       ? 'on-brand shadow-[0_8px_18px_-10px_rgba(150,92,244,0.9)]'
                       : 'text-slate-400 hover:text-white'
