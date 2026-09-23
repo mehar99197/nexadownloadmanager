@@ -140,9 +140,9 @@ Against this base, after the port:
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
 | Low | 12 | 0 | 12 |
-| Test debt | 8 | 2 | 6 |
+| Test debt | 8 | 1 | 7 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **46** | **4** | **42** |
+| **Total** | **46** | **3** | **43** |
 
 **Every defect found by reading the code is fixed.** The six left are of two
 kinds, and neither is a bug sitting in a code path:
@@ -1573,7 +1573,7 @@ request"* rather than dissolving into a runner message about the event loop.
 
 ## T-06 — the admin and creator panels have no automated tests at all
 
-**Status:** OPEN &nbsp;|&nbsp; **Verified by:** counted — 11 pages, 13 components, **0** test files; CI runs `lint`, `build`, `npm audit` and nothing else
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `admin/src/test/guards.test.jsx` (9) and `ipAllowList.test.jsx` (7) — 16 tests, and CI now runs them
 
 This is the largest single gap in the project and it is on the most sensitive
 surface there is. The panels read customer emails, licence keys, subscription
@@ -1590,8 +1590,31 @@ the IP editor refuses to lock you out before the server does. Every one of
 those was verified by hand while it was built, which is exactly the kind of
 verification that does not survive the next change.
 
-**Fix:** vitest + Testing Library, as the frontend already uses. Start with
-the four behaviours above rather than with page snapshots.
+**Fixed** by standing up vitest + Testing Library in `admin/`, mirroring the
+frontend’s config rather than inventing a second set of habits, and writing
+the behaviours above rather than page snapshots. A snapshot of a panel screen
+asserts its markup, which is the part that is *supposed* to change.
+
+What is now held still:
+
+| | |
+|---|---|
+| **Who is let in** | no session → `/login`; a refresh cookie → the dashboard; and no sign-in flash while the refresh is still in flight, which would send a valid session to `/login` for a frame |
+| **The enrolment gate** | un-enrolled → parked on Security whatever it asked for; enrolled → through; and the gate **opens** once `refreshAdmin()` re-reads the profile |
+| **Session end** | the 401 interceptor’s event bounces the panel to sign-in (H-08, M-09) |
+| **2FA switched on mid-session** | the `two-factor-required` event turns the gate on under a live session — which is exactly what happened here on 2026-09-22 |
+| **M-09 itself** | a failed `/me` does not fabricate an authenticated profile |
+| **The IP screen (M-06)** | the open-to-everyone warning fires on `*` and stays quiet otherwise; `.env` entries are shown with no control to remove them; `WOULD_LOCK_YOU_OUT` reaches the operator as words rather than a silent no-op; the list is re-read after a change instead of optimistically patched |
+
+Two details worth keeping. The enrolment test navigates rather than
+re-renders: a redirect leaves the router on `/security` and nothing carries you
+back, so "the gate opened" can only be shown by *leaving* — the first version
+of that test asserted a URL change that never happens and failed for the wrong
+reason. And the panel build hash is unchanged by all of this
+(`index-BgHnUnlA.js`), so nothing here reaches the shipped bundle.
+
+**CI now runs them.** The admin job was `lint, build, audit`; it is now
+`lint, test, build, audit`. Tests nothing runs are worth very little.
 
 ---
 

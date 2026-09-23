@@ -20,6 +20,24 @@ const browserGlobals = {
   confirm: 'readonly',
   alert: 'readonly',
   crypto: 'readonly',
+  Event: 'readonly',
+  CustomEvent: 'readonly',
+};
+
+// Test files run in the Vitest runner rather than the browser, so they get the
+// runner's globals on top of the browser ones. Mirrors frontend/eslint.config.js
+// rather than excluding the tests from linting, which would let a typo in a
+// mock sit there unnoticed.
+const testGlobals = {
+  describe: 'readonly',
+  it: 'readonly',
+  test: 'readonly',
+  expect: 'readonly',
+  beforeEach: 'readonly',
+  afterEach: 'readonly',
+  beforeAll: 'readonly',
+  afterAll: 'readonly',
+  vi: 'readonly',
 };
 
 export default [
@@ -46,5 +64,9 @@ export default [
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },
+  },
+  {
+    files: ['src/**/*.test.{js,jsx}', 'src/test/**/*.{js,jsx}', 'vitest.config.js'],
+    languageOptions: { globals: { ...browserGlobals, ...testGlobals } },
   },
 ];

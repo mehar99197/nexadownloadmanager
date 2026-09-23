@@ -138,7 +138,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   admin:
-    name: Admin panel — lint, build
+    name: Admin panel — lint, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 10   # 14 s in practice; same reason
     defaults:
@@ -153,5 +153,8 @@ jobs:
           cache-dependency-path: ndm-website/admin/package-lock.json
       - run: npm ci
       - run: npm run lint
+      # Added with T-06. Before this the most sensitive surface in the project
+      # was checked for syntax and nothing else.
+      - run: npm test
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
