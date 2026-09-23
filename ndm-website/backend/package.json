@@ -10,6 +10,7 @@
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "create-admin": "node src/scripts/createAdmin.js",
     "create-root": "node src/scripts/createRoot.js",
+    "reset-2fa": "node src/scripts/reset2fa.js",
     "trial-reminders": "node src/scripts/sendTrialReminders.js",
     "license:keygen": "node src/scripts/generateLicenseKeypair.js",
     "migrate": "node src/scripts/migrate.js",
