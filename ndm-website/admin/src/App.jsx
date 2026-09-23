@@ -1,5 +1,4 @@
-import { useEffect, useState, useTransition } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import AdminLayout from './components/AdminLayout.jsx';
 import ProtectedAdminRoute from './components/ProtectedAdminRoute.jsx';
 import AdminLogin from './pages/AdminLogin.jsx';
@@ -17,6 +16,7 @@ import Admins from './pages/root/Admins.jsx';
 import RootAudit from './pages/root/RootAudit.jsx';
 import DangerZone from './pages/root/DangerZone.jsx';
 import { IS_ROOT } from './realm.js';
+import { useSwappedLocation } from './navigation.js';
 
 /**
  * App routes for the mounted realm.
@@ -27,34 +27,9 @@ import { IS_ROOT } from './realm.js';
  * simply do not exist in the staff bundle's route table, and their APIs reject
  * a staff token regardless — this is convenience, not the security boundary.
  */
-/**
- * The routed screen, held one React transition behind the URL.
- *
- * Every screen here is imported eagerly, so this is not about waiting for a
- * chunk — it is the signal <ViewTransition> (AdminLayout) needs in order to
- * run the swap inside document.startViewTransition. Without a transition
- * React commits the change synchronously and the browser has nothing to
- * animate between.
- *
- * Everything inside <Routes location={shown}> is handed the deferred location
- * by React Router's own context, so the highlighted nav link and the screen
- * change together.
- */
-function useDeferredRoute() {
-  const live = useLocation();
-  const [shown, setShown] = useState(live);
-  const [, startRouteTransition] = useTransition();
-
-  useEffect(() => {
-    if (shown.key === live.key) return;
-    startRouteTransition(() => setShown(live));
-  }, [live, shown]);
-
-  return shown;
-}
-
 export default function App() {
-  const shown = useDeferredRoute();
+  // See navigation.js: the screen and the scroll change in one commit.
+  const shown = useSwappedLocation();
 
   return (
     <Routes location={shown}>

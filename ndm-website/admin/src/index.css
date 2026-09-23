@@ -250,30 +250,16 @@ body::before {
 }
 
 /* Moving between screens.
-   App.jsx defers the route by one React transition so <ViewTransition> can
-   run the swap inside document.startViewTransition. "admin-page" names only
-   the routed area, so the sidebar and the topbar are lifted out of the
-   transition and stay exactly where they are while the screen changes —
-   which is what makes it read as one panel rather than a page reload. */
-::view-transition-old(admin-page) {
-  animation: admin-vt-out 120ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-
-::view-transition-new(admin-page) {
-  animation: admin-vt-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-@keyframes admin-vt-out {
-  to {
-    opacity: 0;
-  }
-}
-
-@keyframes admin-vt-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
+   navigation.js swaps the screen inside document.startViewTransition, and
+   this is the whole of the animation: the browser's own cross-fade of the
+   window, a little quicker. The sidebar and topbar are identical on both
+   sides of it, so they appear to hold still while the screen dissolves.
+   Only the duration is overridden, which keeps the browser's plus-lighter
+   blend — replacing the animation outright dropped it, and the two
+   half-faded screens dipped towards the background in the middle. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 160ms;
 }
 
 /* A view transition is motion like any other. */

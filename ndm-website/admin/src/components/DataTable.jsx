@@ -1,6 +1,18 @@
 import { useEffect, useRef } from 'react';
 
 /**
+ * What each table has learned about its own rows, kept at module level so it
+ * outlives the table. Leaving a screen unmounts its table; without this,
+ * coming back to it — Back, or the nav — drew eight one-line stand-ins
+ * instead of the twelve two-line rows it had just shown, the page came back
+ * several hundred pixels shorter than it left, and Back could not return to
+ * where the reader had been (recorded: 500px left, 24px restored, because 24
+ * was as far as the short page could scroll). Keyed by caption, which every
+ * table in the panel carries and which names what it lists.
+ */
+const learned = new Map();
+
+/**
  * DataTable — generic table.
  *
  * Props:
@@ -42,9 +54,10 @@ export default function DataTable({
   // back, so a refetch — a filter, a page change, Refresh — holds its height
   // to the pixel. Only the very first load has a number to pick, and eight is
   // a screenful.
+  const memo = learned.get(caption || '') || {};
   const lastCount = useRef(0);
   if (!loading && rows.length) lastCount.current = rows.length;
-  const standIns = loadingRows || lastCount.current || 8;
+  const standIns = loadingRows || lastCount.current || memo.count || 8;
 
   // And how TALL those rows are. Matching the count alone was not enough:
   // twelve stand-ins of one line each against twelve real rows of a name over
@@ -58,7 +71,9 @@ export default function DataTable({
     if (loading || !rows.length) return;
     const tr = bodyRef.current && bodyRef.current.querySelector('tr');
     if (tr) lastRowHeight.current = Math.round(tr.getBoundingClientRect().height);
-  }, [loading, rows.length]);
+    learned.set(caption || '', { count: rows.length, height: lastRowHeight.current });
+  }, [loading, rows.length, caption]);
+  const standInHeight = lastRowHeight.current || memo.height || 0;
 
   return (
     // Focusable, because it scrolls. Every table in the panel is wider than a
@@ -94,7 +109,7 @@ export default function DataTable({
               <tr
                 key={`loading-${r}`}
                 aria-hidden="true"
-                style={lastRowHeight.current ? { height: lastRowHeight.current } : undefined}
+                style={standInHeight ? { height: standInHeight } : undefined}
               >
                 {columns.map((col, c) => (
                   <td key={col.key} className={col.className}>

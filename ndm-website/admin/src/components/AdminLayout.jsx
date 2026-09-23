@@ -1,4 +1,4 @@
-import { useState, ViewTransition } from 'react';
+import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import Button from './Button.jsx';
@@ -101,16 +101,15 @@ export default function AdminLayout() {
           <div className="flex items-center gap-4 text-xs text-admin-faint">{IS_ROOT && <span className="rounded-full border border-admin-warning/40 bg-admin-warning/10 px-2.5 py-1 font-bold uppercase tracking-wider text-admin-warning">Creator</span>}<span className="hidden text-admin-muted sm:inline">{admin?.name || 'Administrator'}</span><span className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-admin-success shadow-[0_0_10px_rgba(69,223,193,0.9)]" />Live system</span></div>
         </header>
 
-        {/* Named for the view transition, so the sidebar and the topbar are
-            lifted out of it and hold still while the screen changes. Keyed, so
-            a browser without view transitions still starts each screen at the
-            top of its own tree rather than reusing the last one's. */}
+        {/* Keyed, so each screen starts from a fresh tree rather than reusing
+            the last one's state. The transition between screens is the
+            browser's root cross-fade, started in navigation.js — nothing in
+            here is named, because a named element slides when the scroll
+            position changes under it. */}
         <main className="flex-1 overflow-y-auto p-6">
-          <ViewTransition name="admin-page">
-            <div key={location.pathname}>
-              <Outlet />
-            </div>
-          </ViewTransition>
+          <div key={location.pathname}>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>
