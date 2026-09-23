@@ -36,7 +36,8 @@ const sharingThresholds = {
 };
 const { generateLicenseKey, planSeats, planExpiry, expiryForPlanChange } = require('../utils/license');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
-const { storeUpload, removeStored, artifactFor } = require('../utils/releaseFiles');
+const { storeUpload, removeStored, artifactFor, resolveStoredPath } = require('../utils/releaseFiles');
+const { artifactVersionFromFile, versionsMatch } = require('../utils/artifactVersion');
 const { ctr } = require('../utils/ads');
 
 // Admin SPA session: opaque token in an httpOnly cookie scoped to /api/admin;
@@ -800,6 +801,24 @@ router.put(
       throw err;
     }
 
+    // The installer says which version it is — the PE resource of an .exe,
+    // the control file of a .deb — and that has to be the release it is being
+    // attached to. /download once advertised 0.3.0 while serving the 0.2.0
+    // .deb with a perfectly matching checksum: the hash proves the bytes are
+    // the ones uploaded, not that they are the right ones. A definite mismatch
+    // is refused before the row is touched; a build whose version cannot be
+    // read is accepted with a warning that also goes into the audit row, so
+    // the operator sees which of the two happened.
+    const declared = await artifactVersionFromFile(resolveStoredPath(stored.file), os);
+    if (declared.version && !versionsMatch(declared.version, release.version)) {
+      await removeStored(stored.file);
+      return fail(res, 'VERSION_MISMATCH',
+        `This installer says it is version ${declared.version}, but the release is ${release.version}. Upload the ${release.version} build, or attach this file to the ${declared.version} release.`,
+        409, { artifactVersion: declared.version, releaseVersion: release.version });
+    }
+    const versionWarning = declared.version ? null
+      : `Could not read a version from the ${os} installer (${declared.reason}); it was not checked against release ${release.version}.`;
+
     // Replacing an artifact: remove the previous file only after the new one is
     // safely on disk, so a failed upload never leaves the release with nothing.
     const previous = os === 'windows' ? release.windows_file : release.linux_file;
@@ -816,9 +835,13 @@ router.put(
     if (previous && previous !== stored.file) await removeStored(previous);
 
     await audit(req, 'release.artifact_uploaded', 'release', id,
-      `Uploaded ${os} installer for v${release.version} (${stored.filename})`,
-      { os, size: stored.size, sha256: stored.sha256 });
-    return ok(res, { ...stored, release: await Release.findById(id) });
+      `Uploaded ${os} installer for v${release.version} (${stored.filename})`
+        + (versionWarning ? ' — version unchecked' : ''),
+      { os, size: stored.size, sha256: stored.sha256, artifactVersion: declared.version, versionWarning });
+    return ok(res, {
+      ...stored, artifactVersion: declared.version, versionWarning,
+      release: await Release.findById(id),
+    });
   })
 );
 
