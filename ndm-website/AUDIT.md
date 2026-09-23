@@ -139,14 +139,19 @@ Against this base, after the port:
 |---|---|---|---|
 | High | 8 | 0 | 8 |
 | Medium | 15 | 0 | 15 |
-| Low | 10 | 0 | 10 |
-| Test debt | 5 | 0 | 5 |
+| Low | 12 | 1 | 11 |
+| Test debt | 8 | 3 | 5 |
 | Operational | 3 | 2 | 1 |
-| **Total** | **41** | **2** | **39** |
+| **Total** | **46** | **6** | **40** |
 
-**Everything that can be fixed in this repository is fixed.** The two that
-remain are O-01 and O-02: hPanel cron entries, which have to be added in
-Hostinger's control panel by the account owner and cannot be done over SSH.
+**Every defect found by reading the code is fixed.** The six left are of two
+kinds, and neither is a bug sitting in a code path:
+
+- **O-01, O-02** — hPanel cron entries, which have to be added in
+  Hostinger's control panel by the account owner and cannot be done over SSH.
+- **L-11, T-06, T-07, T-08** — found by the verification pass on 2026-09-23
+  (see *Verification pass* below). L-11 is an edge-config oddity that fails
+  closed; the three T-* are missing tests, not broken behaviour.
 
 Test baseline on this base (MariaDB 11.8.9 — production's engine — on
 `127.0.0.1:3399`):
@@ -1310,6 +1315,77 @@ because a subject is one line and sixty characters of topic is already generous.
 
 ---
 
+## L-11 — the edge drops `Access-Control-Allow-Origin` but keeps `Allow-Credentials`
+
+**Status:** OPEN &nbsp;|&nbsp; **Verified by:** probed live, both sides of the proxy
+
+Express answers correctly. Asked from the server itself, bypassing everything
+in front of it:
+
+```
+Access-Control-Allow-Origin: https://nexadownloadmanager.com
+Vary: Origin
+Access-Control-Allow-Credentials: true
+```
+
+The same request to the public URL comes back with only:
+
+```
+Vary: Accept-Encoding
+Access-Control-Allow-Credentials: true
+```
+
+`Access-Control-Allow-Origin` and `Vary: Origin` are gone. It is not
+`api-proxy.php`: its response filter strips hop-by-hop headers only, and
+neither of these is in that list — which is also why `Allow-Credentials`
+survives. That leaves the host stack (LiteSpeed / `hcdn`) rewriting `Vary`
+for compression and dropping the origin headers with it.
+
+**This fails closed, which is why it is Low.** Without `Allow-Origin` a
+browser refuses to hand the response to a cross-origin caller no matter what
+`Allow-Credentials` says, so nothing is exposed. The site itself is unaffected
+because it is same-origin, and the desktop app is not a browser.
+
+It is still worth recording. `Allow-Credentials: true` with no `Allow-Origin`
+is a header pair that means nothing, and it reads to anyone who looks as if
+CORS were configured permissively when the opposite is true. The day something
+legitimately needs cross-origin access — a panel on a subdomain, a status
+page — it will fail with no clue pointing at the host stack rather than the
+code. **Fix:** re-assert both headers in `public_html/.htaccess`, where the
+edge cannot drop them, or accept it and note it beside the `cors()` call so
+the next person does not debug Express.
+
+---
+
+## L-12 — responses carrying personal data had no `Cache-Control` at all
+
+**Status:** FIXED &nbsp;|&nbsp; **Verified by:** `test/cacheControl.integration.test.js` (4 tests), and probed live before and after
+
+The whole backend set `Cache-Control` on exactly one route: the release feed,
+which opts in to `public, max-age=300` deliberately. Everything else —
+`/user/me`, `/subscription/status`, the licence key, the team roster, every
+admin screen — went out with no cache directive at all. Helmet has not set
+one since v4, so nothing was filling the gap.
+
+**No header is not "do not cache."** RFC 9111 lets a shared cache store a
+response with no freshness information and serve it again on its own
+heuristics. And the CDN in front of this deployment does cache: `Age: 70`
+comes back on the feed.
+
+Probed before fixing, it turned out the CDN caches *only* the route that opts
+in — repeated hits on `/subscription/plans` and `/ads` never grew an `Age`.
+So nothing was leaking. But that is one vendor’s configuration on one
+afternoon, not a property of this code, and the thing being protected is a
+body with somebody’s email address and licence key in it.
+
+**Fixed** by inverting the default: `middleware/noStore.js` sets
+`no-store, private` for everything under `/api`, and a route that is genuinely
+public overrides it with its own header. The feed’s opt-in is pinned by a test
+precisely because a middleware that silently swallowed it would cost real
+bandwidth and nothing would fail.
+
+---
+
 # TEST DEBT
 
 Tests that assert a contract the code has since — deliberately — moved away
@@ -1467,6 +1543,76 @@ request"* rather than dissolving into a runner message about the event loop.
 
 ---
 
+## T-06 — the admin and creator panels have no automated tests at all
+
+**Status:** OPEN &nbsp;|&nbsp; **Verified by:** counted — 11 pages, 13 components, **0** test files; CI runs `lint`, `build`, `npm audit` and nothing else
+
+This is the largest single gap in the project and it is on the most sensitive
+surface there is. The panels read customer emails, licence keys, subscription
+records and the audit log; they can ban an account, edit a subscription, and
+now change who may reach the panels at all. Not one line of that is covered by
+a test.
+
+What the backend suite covers is the **API** those screens call — which is the
+half that matters for data exposure, and it is well covered (575 tests before
+this pass). What nothing covers is the panel’s own logic: that
+`ProtectedAdminRoute` actually redirects, that `mustEnrol` clears after
+enrolling, that a 401 ends the session rather than leaving a dead screen, that
+the IP editor refuses to lock you out before the server does. Every one of
+those was verified by hand while it was built, which is exactly the kind of
+verification that does not survive the next change.
+
+**Fix:** vitest + Testing Library, as the frontend already uses. Start with
+the four behaviours above rather than with page snapshots.
+
+---
+
+## T-07 — two thirds of the site’s pages have no test naming them
+
+**Status:** OPEN &nbsp;|&nbsp; **Verified by:** counted — 27 pages, 8 test files, **18 pages** not named by any of them
+
+The 61 frontend tests are real and they cover the right things first: the
+account, billing, team, activation and session-ended flows. But the pages with
+no coverage include the ones where a mistake is worst:
+
+```
+Login  ForgotPassword  ResetPassword  VerifyEmail  TeamJoin  Profile  Security
+```
+
+Every one of those is an authentication path. `ResetPassword` and `VerifyEmail`
+consume single-use tokens; `TeamJoin` accepts an invitation; `Login` is the
+front door. The backend half of each is covered by an integration suite — so
+the *contract* is tested — but nothing checks that the page calls it correctly,
+handles its failures, or does not leave a token in a URL it then navigates
+away from.
+
+The remaining eleven (About, Benchmarks, Changelog, Contact, Docs, Features,
+NotFound, Privacy, Reviews, Terms, Tutorials) are mostly static and are a much
+lower priority; `Contact` is the exception, because it posts.
+
+---
+
+## T-08 — thirteen backend routes are named by no test
+
+**Status:** OPEN &nbsp;|&nbsp; **Verified by:** 132 routes extracted from `src/routes/*.js` and matched against every file under `test/`; 119 matched, 13 did not
+
+Each of the thirteen was then read by hand, and **all thirteen are correctly
+guarded** — so this is missing coverage, not a live hole:
+
+| Route | Guard it actually has |
+|---|---|
+| `GET /admin/activity`, `/users/export`, `/subscriptions/export`, `/security/token-rejections`, `/faq/votes`, `/contact/stats`, `PUT /admin/reviews/bulk` | all below `router.use(requireAdmin)`, all zod-validated; both exports project through `safeUser` (the H-01 allow-list) |
+| `POST /ai/rename`, `/ai/command` | `aiLimiter` + a signed licence token whose plan includes AI + zod |
+| `POST /subscription/checkout`, `/coupon`, `/portal` | `requireAuth` + zod; all three answer 503 while billing is disabled |
+| `GET /releases/history` | public on purpose, and projects a fixed field list with no download URLs |
+
+Worth recording rather than waving away: `/users/export` and
+`/subscriptions/export` are precisely the shape H-01 was about — a bulk read
+of the users table — and the only reason they are safe is that they happen to
+call `safeUser`. Nothing would fail if someone changed that line.
+
+---
+
 # OPERATIONAL
 
 These are deployment gaps, not code defects. They were found during the server
@@ -1602,6 +1748,63 @@ re-covered, and so a regression here is visible as a change.
 | MariaDB compatibility | The full backend suite (181 tests) runs on MariaDB 11.8.9, production's exact version, with no dialect failures — the `LIMIT`-interpolation comments in the models are honoured. |
 
 ---
+
+# Verification pass — 2026-09-23
+
+The owner asked a fair question: is it *actually* all fixed? A tally is not an
+answer to that, so everything below was re-run or re-probed from scratch rather
+than quoted from earlier in this file. It found two new defects (L-11, L-12)
+and three coverage gaps (T-06, T-07, T-08), and it turned O-01 from a
+prediction into an observation.
+
+### Re-run here
+
+| | Result |
+|---|---|
+| Backend suite, MariaDB 11.8.9 | **580 / 580**, 0 failed, 0 skipped (575 before L-12’s four) |
+| Frontend suite | **61 / 61**, 8 files |
+| Admin panel | lint clean; build reproduces `index-BgHnUnlA.js` — the exact asset the live site serves, so the deployed panel is built from this source |
+| `npm audit --omit=dev` × 3 | **0 vulnerabilities** in backend, frontend and admin |
+| Secrets in the repository | none. No `.env` tracked; the only matches for key-shaped strings are variable *names* and `sk_test_not_a_real_key` in a Stripe version test |
+
+### Probed against the live site
+
+| Check | Result |
+|---|---|
+| Security headers | CSP with `frame-ancestors ‘none’`, HSTS 1 year + subdomains, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`. No `X-Powered-By` |
+| `/.env`, `/nexa-api/.env`, `/.git/config`, `/.git/HEAD` | 403. `/package.json` 404 |
+| Admin, root and user endpoints without a token | 401 every time, with no detail beyond "authentication required" |
+| `POST /subscription/mock-complete` | refused at the edge (403) — and dead anyway: `isStripeMock` is **false** on production, checked in-process on the server |
+| Rate limiting, live | five wrong passwords → 401, then `429` from the sixth on |
+| CORS from a forged origin | no `Access-Control-Allow-Origin` — refused. See L-11 for the part that is wrong about *how* |
+| CDN caching | only the release feed is cached (`Age` present); `/plans` and `/ads` never grew one. See L-12 |
+
+### The database, on production
+
+Connections pinned to `+00:00`; 23 tables, every one InnoDB. No duplicate
+subscription for any user (the `uq_subscriptions_user` added under M-07 is
+holding), no orphaned subscription, session or team row, and no expired session
+still stored. `audit_logs` (111) and `security_events` (56) are being written,
+so the trail that H-08 and M-05 depend on exists.
+
+### O-01, no longer a prediction
+
+`nexa-data/` holds three directories. All three are **pre-deploy** backups taken
+by hand — `pre-audit-deploy-20260902`, `pre-audit-on-main-20260922`,
+`pre-phase5-20260923`. There is no dated nightly among them, because nothing
+has ever run `daily-maintenance.sh`. The script works; no cron calls it. The
+same is true of `run-api.sh`, which is why the API is currently up only because
+it was started by hand — a reboot ends it.
+
+### What this pass did not cover
+
+Worth stating so the green numbers above are not read as more than they are.
+No penetration test and no fuzzing. No load or concurrency testing. The panels
+were exercised through the API and through the middleware directly, never
+through a browser session, because that needs the owner’s password. Playwright
+(`npm run test:e2e`) was not run. And a passing suite says the code does what
+its tests say — T-06 and T-07 are the measure of how much of the two UIs never
+makes that claim at all.
 
 # Fix plan
 
