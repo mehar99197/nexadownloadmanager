@@ -58,9 +58,66 @@
   /* Tailwind's own rounded-full, so a pill written in CSS and a pill
      written as a utility are literally the same computed value. */
   --radius-pill: calc(infinity * 1px);
-  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-display: "Sora", "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  /* The fallback faces are declared below with measured metric overrides, so
+     the swap from system text to the web font does not reflow the page. They
+     sit between the web font and the generic stack: if the web font arrives,
+     nothing below it is ever consulted. */
+  --font-sans: "Instrument Sans", "Instrument Sans Fallback", ui-sans-serif,
+    system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Sora", "Sora Fallback", "Instrument Sans", ui-sans-serif,
+    system-ui, sans-serif;
+
+  /* Fluid display sizes.
+     Tailwind's stock scale steps at each breakpoint, so a heading written
+     text-4xl was 36px at 1280px and still 36px at 380px — where it takes four
+     lines and pushes everything under it a third of a screen down. Each step
+     below keeps its old value as the CAP and only ever gets smaller on a
+     narrow screen, so nothing on a laptop moves. Body sizes (sm/base/lg/xl)
+     are deliberately left alone: shrinking reading text to save scrolling is
+     a trade nobody asked for. */
+  --text-2xl: clamp(1.35rem, 1.15rem + 1vw, 1.5rem);
+  --text-3xl: clamp(1.6rem, 1.3rem + 1.5vw, 1.875rem);
+  --text-4xl: clamp(1.9rem, 1.4rem + 2.4vw, 2.25rem);
+  --text-5xl: clamp(2.25rem, 1.5rem + 3.6vw, 3rem);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Metric-matched fallback faces.                                      */
+/*                                                                      */
+/*  Both web fonts load with font-display:swap, so for the first stretch */
+/*  of every cold load the page is painted in Arial and then painted     */
+/*  again in Sora / Instrument Sans. Arial is 1.94% narrower than        */
+/*  Instrument Sans and 5.11% wider than Sora at the same size, with     */
+/*  different ascent and descent — so that second paint moved every line */
+/*  on the page. These two faces make the fallback occupy the web font's */
+/*  box, and the swap stops being visible as movement.                   */
+/*                                                                      */
+/*  The numbers are measured, not copied: Chrome, canvas measureText on  */
+/*  a 126-character sample at 100px, each web font against Arial, then   */
+/*  the adjustFontFallback maths — size-adjust from the width ratio, the */
+/*  overrides resolved against the already-adjusted em. Re-measure if    */
+/*  either family is ever changed.                                       */
+/* ------------------------------------------------------------------ */
+@font-face {
+  font-family: "Instrument Sans Fallback";
+  src: local("Arial"), local("Helvetica Neue"), local("Liberation Sans");
+  size-adjust: 101.98%;
+  ascent-override: 95.12%;
+  descent-override: 24.52%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: "Sora Fallback";
+  /* Display type is only ever set at 600-800, so the bold face is the honest
+     comparison — and naming it stops the browser synthesising a bold that is
+     wider than either real font. */
+  font-weight: 600 800;
+  src: local("Arial Bold"), local("Arial"), local("Liberation Sans Bold");
+  size-adjust: 95.14%;
+  ascent-override: 101.95%;
+  descent-override: 30.48%;
+  line-gap-override: 0%;
 }
 
 /* ------------------------------------------------------------------ */
@@ -230,6 +287,27 @@ body::before {
   textarea {
     font: inherit;
   }
+
+  /* Two lines that fix ragged type everywhere at once.
+     "balance" evens the line lengths of a heading, so "Nexa vs the usual
+     suspects." stops breaking as three words and then one. "pretty" is the
+     cheaper pass for body copy: it only prevents the last line being a single
+     orphaned word, which is the failure that actually shows. Both are inert
+     in a browser that has neither. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd,
+  figcaption,
+  blockquote {
+    text-wrap: pretty;
+  }
 }
 
 @layer components {
@@ -240,14 +318,14 @@ body::before {
     padding-inline: 1.25rem;
   }
 
+  /* Fluid rhythm rather than one step at 768px.
+     4.5rem below md and a jump to 6.5rem above it meant 72px of air over and
+     under every section on a 390px phone — the home page has six of them, so
+     close to a screen spent on gaps alone. The clamp starts at 3.25rem on a
+     small phone and reaches the same 6.5rem it always had by about 1390px:
+     the desktop rhythm is unchanged, only the narrow end tightens. */
   .section {
-    padding-block: 4.5rem;
-  }
-
-  @media (min-width: 768px) {
-    .section {
-      padding-block: 6.5rem;
-    }
+    padding-block: clamp(3.25rem, 7.5vw, 6.5rem);
   }
 
   /* Sign-in / sign-up (AuthLayout) carry no footer, so the form section takes
