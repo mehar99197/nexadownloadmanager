@@ -2182,6 +2182,58 @@ covers a failure that is invisible unless it is measured:
 Totals after this pass: backend 599, frontend 82 unit + **26** e2e, admin 16
 unit + **6** e2e.
 
+### Deployed and verified on the live site — 2026-09-23
+
+`DEPLOY_HTACCESS=1 SKIP_BACKEND=1 ./deploy/build-and-upload.sh`. The backend is
+untouched by this pass, and its phase also restarts the API, so skipping it
+avoided a restart nothing needed.
+
+**The deploy refused the first attempt, twice over, and both refusals were
+right.**
+
+The CSP guard first. The inline block in `index.html` changed with the
+adaptive boot screen, so its SHA-256 changed with it, and Phase 1 will not
+ship a document whose inline script the `.htaccess` does not name. Without
+that guard the browser would simply drop the script — no boot screen, and a
+flash of the wrong theme on every load — while `curl -sI` still saw a healthy
+200. The header now carries two hashes, the current build's and the one it
+replaces, because it goes up in Phase 4a and the new `index.html` in Phase 5:
+for a window on either side of a deploy, the document a browser holds and the
+policy it is judged against come from different builds.
+
+Then Phase 4a itself failed: `the source and destination cannot both be
+remote`. Every other phase goes through `"${SYNC[@]}"` and `local_path()`,
+which exist because from Git Bash MSYS rewrites `/c/Users/…` to `C:/Users/…`
+and the Cygwin rsync reads `C` as a hostname. The `.htaccess` and `.user.ini`
+uploads were left as a plain `rsync` — nothing had ever run that phase from
+Windows, because `DEPLOY_HTACCESS` is off by default. It failed safe, after
+the server-side backup and before writing anything (the live `.htaccess` was
+still byte-identical to the previous build afterwards, md5
+`e1650718bc94bfc8e49cf39d4bd9f0f0`), and it would have failed on exactly the
+deploy that most needed to work: the one shipping a CSP change. Fixed.
+
+`zip` is not installed on this machine and Chocolatey cannot install it
+without administrator rights, so the extension packagers ran against a 7-Zip
+shim. Verified rather than assumed: the archives it produced were unpacked
+against the ones already live and every file matched — 14 files each,
+identical SHA-256s, in both `nexa-chrome.zip` and `nexa-firefox.zip`.
+
+**Verified against the deployed bytes, not the build:**
+
+| | |
+|---|---|
+| `.htaccess` | live md5 `a865ba9680df937d476fdc7ca4eb20b3` = the repo copy |
+| CSP | the live header carries both hashes |
+| the live page's inline script | hashes to `sha256-Igk0HU…`, which is in that header — and it **ran**: `documentElement.style.colorScheme` is stamped, which only the inline script does |
+| boot overlay | cold **536 ms**, warm **152 / 144 / 186 ms**, peak opacity **0.000** — never visible on a warm load |
+| site e2e | **14/14** against `https://nexadownloadmanager.com` — axe in both colour schemes across 13 pages, both tap bars, all five advanced specs, no sideways scroll at five widths |
+| panel e2e | **6/6** against `https://nexadownloadmanager.com/admin/` — the API stubbed, so nothing signed in or read a real record |
+
+`frontend/playwright.live.config.js` and `admin/playwright.live.config.js` are
+what pointed the specs at production. They are kept because a local run cannot
+see the CSP, the `.htaccess` rewrites or the real API, and those are exactly
+where a deploy goes wrong.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth

@@ -72,7 +72,7 @@ export default [
   {
     // Playwright specs run in Node but evaluate code inside the page, so they
     // legitimately name both sets of globals in one file.
-    files: ['e2e/**/*.{js,jsx}', 'playwright.config.js'],
+    files: ['e2e/**/*.{js,jsx}', 'playwright.config.js', 'playwright.live.config.js'],
     languageOptions: {
       globals: {
         ...browserGlobals,
