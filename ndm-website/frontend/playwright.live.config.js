@@ -12,7 +12,7 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['advanced.spec.js', 'a11y.spec.js', 'responsive.spec.js'],
+  testMatch: ['advanced.spec.js', 'a11y.spec.js', 'responsive.spec.js', 'steady.spec.js'],
   timeout: 120_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,

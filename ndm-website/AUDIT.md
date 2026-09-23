@@ -2338,6 +2338,38 @@ for the fault it names** — the boot screen not up from the start, the width
 changing, the heading moving, a blank frame on the phone, the panel's next
 screen opening mid-page. Then all passed on the new build.
 
+### Found while verifying on the live site: thirteen controls the harness never saw
+
+Running the specs against production after this deploy failed the tap-target
+test on thirteen controls, every one drawn from data:
+
+| Page | Control | Was |
+|---|---|---|
+| `/download` | the checksum's Copy button | 52×30 |
+| `/pricing` | the Monthly / Yearly toggle | 36 tall |
+| `/reviews` | four use-case filters, five star filters | 30 tall; "1 ★" also 43 wide |
+| `/register` | Google's "Sign up with Google" | 40 tall |
+
+**This corrects the UI/UX pass**, which recorded every tap target at its bar.
+It was measured with no backend behind the harness, so the plans, the reviews
+and the release never arrived and none of these controls was ever on the page.
+The earlier live run passed only because the adaptive boot screen let go at
+~150ms and the probe ran before the API had answered; with the boot screen
+restored to its 700ms, the data is there when the probe runs.
+
+Twelve are ours and are now 44px: `min-h-11` on the toggle and both filter
+rows (plus `min-w-11` on the filters), and the Copy button at 44 with the code
+box stretched to match it. The thirteenth is Google's own button, and 40px —
+`size: 'large'` — is the largest it offers. The probe now holds a control
+inside `[data-testid="google-button"]` to WCAG 2.2 AA (24px), which it clears;
+44px remains the bar for every control this site builds.
+
+The systemic fix is the harness: `e2e/a11y.spec.js` now serves the four public
+reads the pages draw controls from, out of `e2e/fixtures/` — plans, release
+and stats as the live API returns them, reviews synthetic, so no real person's
+name sits in the repository. Run against the old live controls it named
+exactly the twelve; against this build, 30/30.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth

@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "data": {
+    "reviews": [
+      {
+        "id": 101,
+        "userName": "Test Reader One",
+        "rating": 5,
+        "comment": "The queue takes a YouTube playlist, a torrent and a plain HTTP file side by side and none of them get in each other's way. Resume after a dropped connection has worked every time so far.",
+        "createdAt": "2026-09-20T10:00:00.000Z"
+      },
+      {
+        "id": 102,
+        "userName": "Test Reader Two",
+        "rating": 4,
+        "comment": "Runs well on Linux. The browser extension picked up the stream on the first try; I would like more control over folder rules.",
+        "createdAt": "2026-09-18T10:00:00.000Z"
+      },
+      {
+        "id": 103,
+        "userName": "Test Reader Three",
+        "rating": 3,
+        "comment": "Good for daily use, still beta in places.",
+        "createdAt": "2026-09-16T10:00:00.000Z"
+      }
+    ],
+    "page": 1,
+    "limit": 10,
+    "totalCount": 3,
+    "averageRating": 4,
+    "ratingBreakdown": { "1": 0, "2": 0, "3": 1, "4": 1, "5": 1 }
+  }
+}

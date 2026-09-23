@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { readFileSync } from 'node:fs';
 
 /**
  * Accessibility and touch ergonomics, at phone width, in both colour schemes.
@@ -20,7 +21,34 @@ import AxeBuilder from '@axe-core/playwright';
  *     the nearest `background-color` reads white-on-a-purple-gradient as
  *     white-on-white, and treats `rgba(…, 0.12)` as opaque — that is where
  *     "Register at 1.78:1" came from, when the composited answer is 6.9:1.
+ *  3. **Give the pages their data.** With no backend behind this harness the
+ *     plans, reviews and release never arrived, so every control those draw —
+ *     the Monthly/Yearly toggle, nine review filters, the checksum's Copy
+ *     button — was never on the page to be measured. Thirteen controls under
+ *     the bar went unseen here, and were found only when the same spec was
+ *     pointed at the live site. The four public reads are now served from
+ *     e2e/fixtures/: plans, release and stats as the live API returns them,
+ *     reviews synthetic so no real person's name sits in the repository.
  */
+
+const fixture = (name) => readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8');
+const FIXTURES = [
+  [/\/api\/subscription\/plans(\?|$)/, fixture('plans')],
+  [/\/api\/reviews(\?|$)/, fixture('reviews')],
+  [/\/api\/releases\/latest(\?|$)/, fixture('release')],
+  [/\/api\/stats(\?|$)/, fixture('stats')],
+];
+
+/** Serve the public reads the pages render controls from; everything else goes to the network. */
+async function withData(page) {
+  await page.route('**/api/**', (route) => {
+    const url = route.request().url();
+    const hit = route.request().method() === 'GET' && FIXTURES.find(([re]) => re.test(url));
+    return hit
+      ? route.fulfill({ status: 200, contentType: 'application/json', body: hit[1] })
+      : route.continue();
+  });
+}
 
 const PAGES = [
   '/', '/download', '/pricing', '/features', '/compare', '/faq', '/docs',
@@ -41,6 +69,7 @@ async function settle(page) {
 
 for (const scheme of ['dark', 'light']) {
   test(`no accessibility violations — ${scheme} @390`, async ({ page }) => {
+    await withData(page);
     test.setTimeout(300_000);
     await page.emulateMedia({ colorScheme: scheme });
     await page.setViewportSize(PHONE);
@@ -99,7 +128,12 @@ const PROBE = `
     }
     const label = (el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 30);
     const isControl = el.tagName !== 'A' || el.classList.contains('btn');
-    const min = isControl ? 44 : 24;
+    // Google renders "Continue with Google" itself, and size:'large' — 40px —
+    // is the largest it offers. 44px is this site's own bar for controls it
+    // builds; a third-party widget is held to WCAG 2.2 AA (24px), which it
+    // clears with room. Named by container, not waved through by tag.
+    const thirdParty = !!el.closest('[data-testid="google-button"]');
+    const min = isControl && !thirdParty ? 44 : 24;
     if (r.width < min || r.height < min) {
       out.push(Math.round(r.width) + 'x' + Math.round(r.height) + ' (needs ' + min + ') <' + el.tagName.toLowerCase() + '> "' + label + '"');
     }
@@ -108,6 +142,7 @@ const PROBE = `
 `;
 
 test('tap targets meet WCAG 2.2 AA, and controls meet the 44px bar @390', async ({ page }) => {
+  await withData(page);
   test.setTimeout(300_000);
   await page.setViewportSize(PHONE);
 
