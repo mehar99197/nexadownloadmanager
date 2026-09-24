@@ -19,6 +19,27 @@ function errorMessage(err, fallback) {
   return err?.response?.data?.error?.message || err?.message || fallback;
 }
 
+/** The edit dialog's fields as they stand for `user` before any change. */
+function editForm(user) {
+  return {
+    banned: Boolean(user.banned),
+    emailVerified: Boolean(user.email_verified),
+    plan: user.plan || 'free',
+  };
+}
+
+/**
+ * Only the fields the admin actually changed. Posting every field made the
+ * server treat an untouched plan as a plan change, which reset a Team
+ * licence's custom seats and ended a running trial.
+ */
+function changedUserFields(user, form) {
+  const initial = editForm(user);
+  return Object.fromEntries(Object.keys(initial)
+    .filter((key) => form[key] !== initial[key])
+    .map((key) => [key, form[key]]));
+}
+
 /** The account-history modal as it will land: four facts, then the lists. */
 function DetailsOutline() {
   return (
@@ -87,11 +108,7 @@ export default function Users() {
 
   const openEditor = (user) => {
     setEditing(user);
-    setForm({
-      banned: Boolean(user.banned),
-      emailVerified: Boolean(user.email_verified),
-      plan: user.plan || 'free',
-    });
+    setForm(editForm(user));
   };
 
   const openDetails = async (user) => {
@@ -110,7 +127,9 @@ export default function Users() {
     setSaving(true);
     setError('');
     try {
-      await unwrap(api.put(`/admin/users/${editing.id}`, form));
+      const changes = changedUserFields(editing, form);
+      // Nothing changed is nothing to send (the API refuses an empty edit).
+      if (Object.keys(changes).length) await unwrap(api.put(`/admin/users/${editing.id}`, changes));
       setEditing(null);
       await loadUsers();
     } catch (err) {

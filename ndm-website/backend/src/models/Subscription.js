@@ -395,7 +395,7 @@ const Subscription = {
       `SELECT s.id, s.license_key, s.plan, s.status, s.seats,
               s.sharing_level, s.sharing_devices, s.sharing_reason, s.sharing_checked_at,
               s.sharing_suspended_at, s.sharing_exempt,
-              u.email
+              u.email, u.role AS userRole
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
         WHERE s.sharing_level <> 'ok' OR s.sharing_suspended_at IS NOT NULL
@@ -593,7 +593,7 @@ const Subscription = {
     const limitNumber = Math.min(200, Math.max(1, Number(limit) || 20));
     const offset = (pageNumber - 1) * limitNumber;
     const rows = await query(
-      `SELECT s.*, u.email AS userEmail, u.name AS userName
+      `SELECT s.*, u.email AS userEmail, u.name AS userName, u.role AS userRole
        FROM subscriptions s
        JOIN users u ON u.id = s.user_id
        ${w}

@@ -108,6 +108,26 @@ function blockedStaffTarget(req, res, user, verb = 'modify') {
   return true;
 }
 
+// The same line, for a subscription reached through its id rather than its
+// owner. The owner is loaded so the refusal is the account's: a staff admin
+// freeing the creator's seats knocks the creator's machines off their plan.
+async function blockedStaffSubscription(req, res, subscription) {
+  if (req.isRoot) return false;
+  return blockedStaffTarget(req, res, await User.findById(subscription.user_id));
+}
+
+// Lists stop at the same line the details view does. The subscription list,
+// its export and the users list each embed whole subscription rows, so a staff
+// admin who could not open the creator's details could still read the
+// creator's licence key and Stripe ids off the table — or out of the CSV.
+const PANEL_ACCOUNT_SECRETS = ['license_key', 'stripe_customer_id', 'stripe_subscription_id'];
+function redactForStaff(req, subscription, ownerRole) {
+  if (!subscription || req.isRoot || ownerRole === 'user') return subscription;
+  const redacted = { ...subscription };
+  for (const column of PANEL_ACCOUNT_SECRETS) if (column in redacted) redacted[column] = null;
+  return redacted;
+}
+
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
     adminUserId: req.admin && req.admin.id,
@@ -297,6 +317,10 @@ router.post(
       return fail(res, 'RESERVED_ADDRESS',
         'That address is reserved for the creator account and cannot be used for a customer.', 400);
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
+    // The same policy the reset route below applies: a password that would be
+    // refused on reset — breached, or carrying the address — is refused here.
+    const problem = await passwordProblem(password, { email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     const user = await User.create({
       name,
       email,
@@ -359,7 +383,7 @@ router.get(
 
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
+      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: redactForStaff(req, sub, u.role) };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -400,7 +424,13 @@ router.put(
 
     if (plan !== undefined) {
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;
-      if (currentSubscription) {
+      // Re-sending the plan the account already has is not a plan change. The
+      // edit dialog used to post every field on every save, so ticking "Email
+      // verified" reset a Team licence's custom seats to the plan default and
+      // ended a running trial. Only a different plan touches the subscription.
+      if (currentSubscription && currentSubscription.plan === plan) {
+        // Same plan: seats, trial and expiry stay exactly as they are.
+      } else if (currentSubscription) {
         // An explicit admin plan change ends any running trial so lazy trial
         // expiry cannot silently undo it later, and moves the expiry date with
         // the plan (see expiryForPlanChange — free's is ~100 years out, so
@@ -534,7 +564,10 @@ router.get(
   asyncHandler(async (req, res) => {
     const { page, limit, status, plan, q } = req.query;
     const { subscriptions, totalCount } = await Subscription.list({ page, limit, status, plan, q });
-    return ok(res, { subscriptions, page, limit, totalCount });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      page, limit, totalCount,
+    });
   })
 );
 
@@ -570,6 +603,9 @@ router.get(
 router.post(
   '/subscriptions/:id/sharing/clear', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
     if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.clear', 'subscription', req.params.id,
@@ -582,6 +618,9 @@ router.post(
 router.post(
   '/subscriptions/:id/sharing/resume', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
     if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.resume', 'subscription', req.params.id,
@@ -601,7 +640,10 @@ router.get(
   '/subscriptions/flagged', validate(limitQuerySchema),
   asyncHandler(async (req, res) => {
     const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
-    return ok(res, { subscriptions, thresholds: sharingThresholds });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      thresholds: sharingThresholds,
+    });
   })
 );
 
@@ -611,7 +653,7 @@ router.get(
     const { subscriptions } = await Subscription.list({
       page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
     });
-    return ok(res, subscriptions);
+    return ok(res, subscriptions.map((s) => redactForStaff(req, s, s.userRole)));
   })
 );
 
@@ -665,15 +707,23 @@ router.put(
 
     const { plan, status, seats, expiryDate } = req.body;
     const updates = {};
-    if (plan !== undefined) updates.plan = plan;
+    // A plan is only "changed" when it differs from the stored one. The edit
+    // dialog used to send plan, status and seats on every save, so correcting
+    // just a trial's expiry ended the trial, and Pro -> Team kept Pro's 1 seat
+    // because `seats` was never absent.
+    const planChanged = plan !== undefined && plan !== subscription.plan;
     if (status !== undefined) updates.status = status;
     if (seats !== undefined) updates.seats = seats;
-    if (plan !== undefined && seats === undefined) updates.seats = planSeats(plan);
-    // See PUT /users/:id — an explicit plan change ends a running trial.
-    if (plan !== undefined) updates.trialEndsAt = null;
-    // An explicit expiry always wins over the one a plan change implies — that
-    // is the point of being able to set it.
-    if (plan !== undefined) {
+    if (planChanged) {
+      updates.plan = plan;
+      // Seats that merely echo the stored count were not chosen for the new
+      // plan — give the new plan its own default. A different number is an
+      // explicit choice and stands.
+      if (seats === undefined || seats === Number(subscription.seats)) updates.seats = planSeats(plan);
+      // See PUT /users/:id — an explicit plan change ends a running trial.
+      updates.trialEndsAt = null;
+      // An explicit expiry always wins over the one a plan change implies —
+      // that is the point of being able to set it.
       const implied = expiryForPlanChange(subscription.plan, plan, subscription.expiry_date);
       if (implied !== undefined) updates.expiryDate = implied;
     }
@@ -691,6 +741,7 @@ router.post(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     // Drop every live seat lease. The activation rows stay, so the devices are
     // still listed and can re-take a seat — this frees the seats, it does not
     // blacklist the machines.
@@ -753,7 +804,7 @@ router.post(
     // One row per version (uq_releases_version). Say so instead of a 500.
     if (await Release.findByVersion(version))
       return fail(res, 'VERSION_EXISTS', `Release v${version} already exists — edit it instead`, 409);
-    if (isLatest) await Release.unsetLatest();
+    // Demoting the old latest happens inside create()'s transaction.
     const release = await Release.create({
       version, windowsUrl, linuxUrl, changelog, isLatest, windowsSha256, linuxSha256,
     });
@@ -765,13 +816,17 @@ router.post(
 router.put(
   '/releases/:id', validate(updateReleaseSchema),
   asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
     const { isLatest, ...rest } = req.body;
+    // Existence first: a stale "set latest" on a release deleted in another tab
+    // used to demote the current latest and then 404, leaving the desktop
+    // update feed with no latest release at all.
+    if (!(await Release.findById(id))) return fail(res, 'NOT_FOUND', 'Release not found', 404);
     if (rest.version !== undefined) {
       const clash = await Release.findByVersion(rest.version);
-      if (clash && clash.id !== Number(req.params.id))
+      if (clash && clash.id !== id)
         return fail(res, 'VERSION_EXISTS', `Release v${rest.version} already exists`, 409);
     }
-    if (isLatest === true) await Release.unsetLatestExcept(Number(req.params.id));
     const updates = {};
     if (rest.version !== undefined) updates.version = rest.version;
     if (rest.windowsUrl !== undefined) updates.windowsUrl = rest.windowsUrl;
@@ -780,8 +835,17 @@ router.put(
     if (rest.linuxSha256 !== undefined) updates.linuxSha256 = rest.linuxSha256;
     if (rest.changelog !== undefined) updates.changelog = rest.changelog;
     if (isLatest !== undefined) updates.isLatest = isLatest;
-    await Release.update(Number(req.params.id), updates);
-    const release = await Release.findById(Number(req.params.id));
+    // One transaction: demoting the old latest and promoting this one either
+    // both land or neither does. The same reasoning as DELETE refusing the
+    // latest: un-ticking it would leave the update feed with nothing to serve.
+    const outcome = await Release.updateKeepingOneLatest(id, updates);
+    if (outcome === 'not_found') return fail(res, 'NOT_FOUND', 'Release not found', 404);
+    if (outcome === 'is_latest') {
+      return fail(res, 'LATEST_RELEASE',
+        'This is the latest release. Set another release as latest instead of un-ticking this one — otherwise the desktop update feed has nothing to offer.',
+        409);
+    }
+    const release = await Release.findById(id);
     if (!release) return fail(res, 'NOT_FOUND', 'Release not found', 404);
     await audit(req, 'release.updated', 'release', release.id, `Updated release v${release.version}`, req.body);
     return ok(res, release);
