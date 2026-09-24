@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <QDateTime>
+#include <QElapsedTimer>
 
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -122,6 +123,16 @@ public:
     // Blocking is deliberate but bounded — see the implementation.
     void releaseSeat();
 
+    // Count one completed download and, on every kReverifyEveryDownloads-th,
+    // have the server confirm this install's plan again, quietly: an early
+    // heartbeat, which re-resolves the subscription and seat and answers with
+    // a token carrying the CURRENT plan's entitlements. The count lives in
+    // settings rather than the downloads table, so neither a restart nor
+    // "clear completed" resets it. See the implementation for why it is a beat
+    // and not /validate, and when a check is skipped.
+    void noteCompletedDownload();
+    static constexpr int kReverifyEveryDownloads = 10;
+
     static QString deviceFingerprint();
     // Short human label for this machine, shown in the account's device list.
     static QString deviceName();
@@ -139,6 +150,12 @@ signals:
     // machine — a different thing to tell the user, so a different signal.
     void seatRevoked();
     // Entitlements changed — gates that cache them should re-read.
+    //
+    // Emitted BEFORE the plan is updated, from the middle of a validation. A
+    // handler that needs verifiedFeatures() must read it from a queued
+    // connection: read synchronously, a rejection's gap (in-memory plan still
+    // paid, token already dropped) looks exactly like tampering, and the guard
+    // then folds this install to Free for the rest of the session.
     void featuresChanged(const Entitlements &features);
 
     // The sign-in code is ready: show `userCode` and open `verificationUrl`.
@@ -228,6 +245,7 @@ private:
     QTimer *m_recheck = nullptr;      // re-derives entitlements from the token
     QTimer *m_heartbeat = nullptr;    // keeps this machine's seat lease alive
     QNetworkReply *m_heartbeatReply = nullptr;
+    QElapsedTimer m_lastBeat;         // when the last heartbeat was sent
     Entitlements m_features;          // Free by default — see the struct comment
     int m_activeSeats = 0;
 

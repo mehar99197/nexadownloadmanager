@@ -619,6 +619,23 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_account_signin_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
+    # Every 10th completed download re-checks the plan (docs/issues.md, Issue 3),
+    # against a real socket: which request goes out, when it is skipped, and
+    # what a same-plan / downgraded / rejected / failed answer does.
+    add_executable(nexa_reverify_test
+        tests/ReverifyTest.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_reverify_test PRIVATE src)
+    target_compile_definitions(nexa_reverify_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
+    target_link_libraries(nexa_reverify_test PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+
     # The licence guard, compiled BOTH ways from the same source, each asserting
     # the same results. No Qt: the guard depends only on the standard library.
     #   nexa_guard_test      — the plain, debuggable path (what dev/test builds use)
@@ -655,6 +672,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME license_token COMMAND nexa_license_token_test)
     add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
     add_test(NAME account_signin COMMAND nexa_account_signin_test)
+    add_test(NAME reverify COMMAND nexa_reverify_test)
     add_test(NAME guard COMMAND nexa_guard_test)
     add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()

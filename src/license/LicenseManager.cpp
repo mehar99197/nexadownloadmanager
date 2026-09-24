@@ -43,6 +43,9 @@ constexpr auto kAccountEmail   = "license/accountEmail";
 // account", and a token minted for a different one would pass. Not a secret
 // and not a grant: editing it can only make this install refuse tokens.
 constexpr auto kAccountId      = "license/accountId";
+// Completed downloads, ever, on this install: the cadence for reverify() (see
+// noteCompletedDownload). Not a grant — editing it only moves the next check.
+constexpr auto kCompletedDownloads = "license/completedDownloads";
 // How often a waiting sign-in asks whether it has been approved yet. The
 // server sends its own interval; this is only the fallback.
 constexpr int  kSignInPollMs   = 5000;
@@ -118,6 +121,21 @@ bool endpointAllowed(const QUrl &endpoint)
 #endif
     return endpoint.isValid()
         && (endpoint.scheme() == QLatin1String("https") || insecureDevelopment);
+}
+
+// The shortest gap between a download-triggered check and the last heartbeat
+// sent (see noteCompletedDownload). A developer build lets a test shorten it,
+// the same way it lets the endpoints move.
+int minReverifySpacingMs()
+{
+    constexpr int kMinReverifySpacingMs = 60 * 1000;
+#ifdef NEXA_DEV_BUILD
+    bool ok = false;
+    const int spacing = qEnvironmentVariableIntValue("NEXA_REVERIFY_SPACING_MS", &ok);
+    if (ok && spacing >= 0)
+        return spacing;
+#endif
+    return kMinReverifySpacingMs;
 }
 
 // The account sign-in endpoints (/api/device/code, /token, /signout) are a
@@ -322,6 +340,38 @@ void LicenseManager::activate(const QString &licenseKey)
     if (!m_accountToken.isEmpty())
         signOut();
     validate(key, true);
+}
+
+// The product rule: "verify whether NDM is on Pro when downloading, and
+// re-verify after every 10 downloads". This ties a server check to actual use
+// on top of the clock-driven ones.
+//
+// The check is an early heartbeat, not /validate. /validate allows 10 calls an
+// hour per address (a whole office behind one NAT shares that), so a busy
+// queue would exhaust it and a genuine activation would then be refused. A
+// beat does the same authorisation work — it re-resolves the subscription and
+// seat, answers with a token carrying the CURRENT plan's entitlements, and its
+// handler acts on every rejection — on the general limiter, and it is what the
+// app already sends every five minutes.
+//
+// Skipped when:
+//   - no seat is held (the beat timer runs exactly while one is). There is no
+//     paid plan to re-verify then, and a beat without a seat is answered
+//     "seat_limit", which would tell a Free user all their seats are in use;
+//   - a beat went out less than minReverifySpacingMs() ago, or is still in
+//     flight. The check this download asks for has just been made (a beat
+//     that failed is retried by the next one), and a crawl finishing hundreds
+//     of files stays at one request a minute instead of one every ten files.
+void LicenseManager::noteCompletedDownload()
+{
+    QSettings settings;
+    const qint64 count = settings.value(QLatin1String(kCompletedDownloads), 0).toLongLong() + 1;
+    settings.setValue(QLatin1String(kCompletedDownloads), count);
+    if (count % kReverifyEveryDownloads != 0 || !m_heartbeat->isActive())
+        return;
+    if (m_lastBeat.isValid() && m_lastBeat.elapsed() < minReverifySpacingMs())
+        return;
+    sendHeartbeat();
 }
 
 void LicenseManager::validate(const QString &licenseKey, bool userInitiated)
@@ -682,6 +732,7 @@ void LicenseManager::sendHeartbeat()
         payload.insert(QStringLiteral("device_token"), m_accountToken);
     const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
+    m_lastBeat.start();
     m_heartbeatReply = m_network->post(request, body);
     connect(m_heartbeatReply, &QNetworkReply::finished, this, [this]() {
         QNetworkReply *reply = m_heartbeatReply;
@@ -985,6 +1036,7 @@ void LicenseManager::recheckEntitlements()
 
     const bool sameFeatures =
         derived.maxConcurrentDownloads == m_features.maxConcurrentDownloads
+        && derived.maxConnectionsPerFile == m_features.maxConnectionsPerFile
         && derived.themes == m_features.themes
         && derived.freeThemes == m_features.freeThemes
         && derived.authSiteDownloads == m_features.authSiteDownloads
@@ -1054,6 +1106,12 @@ void LicenseManager::adoptRefreshedToken(const QString &token)
         if (!m_accountToken.isEmpty() && !m_accountEmail.isEmpty())
             message = QStringLiteral("Signed in as %1 · %2").arg(m_accountEmail, message);
         setPlan(claims.plan, message);
+    } else {
+        // Same plan, possibly different limits: a server tightening the queue
+        // cap or dropping auth-site downloads keeps the plan name. Re-derive
+        // from the token just adopted rather than waiting up to a minute for
+        // the next recheck; it emits only when something actually differs.
+        recheckEntitlements();
     }
 }
 

@@ -3,7 +3,8 @@
 **Date:** 2026-09-02
 **Reported by:** product owner
 **Scope:** four reported problems, audited against the source tree at `34a0b8a`
-**Status of this document:** issues 1 and 2 are **fixed**; issues 3 and 4 are written up and open.
+**Status of this document:** issues 1, 2 and 3 are **fixed**; issue 4 is written up and open, with
+its progress recorded under *Suggested order of work*.
 
 Every citation below was read out of the tree, not recalled. Line numbers are from `34a0b8a`,
 i.e. *before* the fixes for issues 1 and 2 — they locate the original defect, so re-check them
@@ -17,7 +18,7 @@ after any refactor.
 |---|-------|----------|---------|
 | 1 | App stops responding when a segmented download starts | **Critical** | ✅ **Fixed** — N blocking DNS lookups on the GUI thread, one per segment; now one per host |
 | 2 | Admin "Free seats" does not take Pro away from a running client | **Critical** | ✅ **Fixed** — the heartbeat was re-acquiring the seat it had just been denied |
-| 3 | No Pro re-verification per download (asked: every 10 downloads) | **High** | Confirmed missing — and there is no counter to hook it to |
+| 3 | No Pro re-verification per download (asked: every 10 downloads) | **High** | ✅ **Fixed** — every 10th completed download sends an early heartbeat, and a same-plan limit change now reaches the engine |
 | 4 | Licensing is trivially bypassable | **Critical** | Confirmed — six working bypasses, the cheapest takes ~10 seconds |
 
 Issues 2 and 4 turned out materially worse than reported. Issue 4 contains a bypass that needs no
@@ -499,9 +500,12 @@ Client:
 
 5. ~~Handle every heartbeat reason.~~ ✅ done.
 6. ~~On `seat_revoked`, drop to Free and clear the offline cache.~~ ✅ done.
-7. Re-apply entitlements when the heartbeat reports a plan change; connect the orphaned
-   `featuresChanged` signal so a downgrade actually reverts themes and in-flight paid work.
-   **Still open** — see Issue 3, which needs the same wiring.
+7. ~~Re-apply entitlements when the heartbeat reports a plan change; connect the orphaned
+   `featuresChanged` signal so a downgrade actually reverts themes and in-flight paid work.~~
+   ✅ done 2026-09-24 with Issue 3. The heartbeat re-derives entitlements on a plan change and on a
+   same-plan limit change. `featuresChanged` reaches `DownloadEngine` through a queued connection,
+   next to the theme and Settings handlers. A transfer already running keeps its shape until its
+   next start, as `applyLicensePlan` intends.
 8. ~~De-duplicate the seat dialog.~~ ✅ done — both branches now stop the heartbeat.
 
 ### Acceptance criteria
@@ -520,7 +524,8 @@ Client:
 ## Issue 3 — Downloads never re-verify the Pro plan
 
 **Severity:** High
-**Status:** ❗ Confirmed missing — and there is nothing to hook it to
+**Status:** ✅ Fixed 2026-09-24. See *Fix applied* at the end of this section. The rest of the
+section is the original write-up, kept as the record of what was wrong.
 
 ### Requirement
 
@@ -588,6 +593,49 @@ the plan name has not changed.
 - A network failure during re-verification does **not** downgrade a paid user (offline grace still
   applies), and a definitive rejection **does**.
 - A `features`-only change with an unchanged plan name reaches `applyLicensePlan`.
+
+### Fix applied
+
+Two things changed since this was written, and both shaped the fix:
+
+- **The heartbeat now re-verifies.** `/heartbeat` re-resolves the subscription and seat and answers
+  with a fresh token carrying the *current* plan's entitlements, and the client acts on every
+  rejection reason. So a heartbeat is a complete re-verification.
+- **`/validate` is rate-limited to 10 calls an hour per IP.** An office behind one NAT shares that
+  budget. Spending it on every 10th download would exhaust it, and then a genuine activation would
+  be refused.
+
+What was done:
+
+1. **Counter.** `LicenseManager::noteCompletedDownload()` counts completed downloads in
+   `license/completedDownloads`. That is a settings key, not the downloads table, so neither a
+   restart nor "clear completed" resets it, and `clearCache()` leaves it alone. The counter lives in
+   `LicenseManager` rather than `DownloadEngine` so it can be tested against a fake server without
+   an engine. The engine only reports each `taskFinished`, which every download type emits right
+   after it reaches `Completed`.
+2. **The check.** Every 10th download sends an **early heartbeat**, which is quiet: no activation
+   UI. It is skipped in two cases:
+   - no seat is held. A seatless beat is answered `seat_limit`, which would tell a Free user that
+     all their seats are in use;
+   - a beat went out less than a minute ago, or is in flight. The check has just been made then (a
+     failed one is retried by the next beat), and a crawl finishing hundreds of files stays at one
+     request a minute.
+3. **Outcomes.** A failed beat changes nothing, so offline grace applies. A rejection drops to Free
+   at once, and a Free token downgrades.
+4. **Features-only changes reach the engine.**
+   - `adoptRefreshedToken` re-derives the entitlements when the plan name is unchanged, instead of
+     applying a token only on a plan change.
+   - `recheckEntitlements` now compares `maxConnectionsPerFile` as well. It was the one limit left
+     out of the comparison.
+   - `DownloadEngine` connects `featuresChanged` to `applyLicensePlan`. The connection is *queued*,
+     because `featuresChanged` fires mid-validation before `setPlan`. A synchronous
+     `verifiedFeatures()` read in that gap (plan still paid, token already dropped) is exactly the
+     guard's tamper signature, and would fold a customer who renews later in the same session to
+     Free until a restart.
+
+`tests/ReverifyTest.cpp` (`nexa_reverify_test`) drives the real `LicenseManager` against a fake
+server. It checks every criterion above, plus the two skips and the queued-versus-synchronous
+difference.
 
 ---
 
@@ -988,8 +1036,8 @@ document a `device_mismatch` reason that the backend no longer emits — it was 
    the 10-second theme one.
 4. **Issue 4, Tier 2** — asymmetric token verification. The largest single piece of work here, and
    the one that makes the rest durable.
-5. **Issue 3** — needs the `featuresChanged` wiring listed as Issue 2's remaining client item, so
-   it is cheaper once that lands.
+5. ~~**Issue 3**~~ — ✅ done 2026-09-24: an early heartbeat on every 10th completed download,
+   and `featuresChanged` wired to the engine (queued). See *Fix applied* under Issue 3.
 6. **Issue 2's remaining items** — per-device admin routes and the devices list in the admin UI —
    then Tier 3 hardening.
 7. ~~**Fix `tools/extract-translations.py`**~~ — ✅ done 2026-09-12: adjacent literals are joined,
