@@ -55,11 +55,15 @@ export const FEATURE_NAV = [
 /**
  * A placeholder for artwork that has not been produced yet.
  *
- * Deliberately loud rather than an empty grey box: a silent placeholder is one
- * that ships. This one names what still has to be drawn, and `npm run build`
- * leaves it alone, so the only way it disappears is somebody replacing it.
+ * Loud in development and absent from a production build. It used to render
+ * on the live site as well, on the theory that a silent placeholder is one
+ * that ships — and the feature pages shipped with amber "SCREENSHOT NEEDED"
+ * boxes in front of every visitor. The reminder now sits where the people who
+ * can act on it look: on the page while working, and in the list that
+ * `npm run build` prints (scripts/report-placeholders.mjs).
  */
 export function Figure({ kind = 'Screenshot', children, caption }) {
+  if (import.meta.env.PROD) return null;
   return (
     <figure className="mt-5">
       <div className="flex min-h-[132px] flex-col items-center justify-center rounded-[var(--radius-3)] border border-dashed border-amber-400/30 bg-amber-400/[0.06] px-6 py-8 text-center">
@@ -69,6 +73,43 @@ export function Figure({ kind = 'Screenshot', children, caption }) {
         <p className="mt-3 max-w-md text-sm leading-6 text-slate-400">{children}</p>
       </div>
       {caption && <figcaption className="mt-2 text-xs text-slate-500">{caption}</figcaption>}
+    </figure>
+  );
+}
+
+/**
+ * A path from one end to the other — how a request travels, how a file is put
+ * together. An ordered list rather than a picture: it reads to a screen reader
+ * as the sequence it is, takes the theme with it, and becomes a column on a
+ * phone instead of shrinking into an unreadable strip.
+ *
+ * `steps` is [{ title, detail? }]. `note` belongs to the picture — usually what
+ * is NOT in the path, which for most of these is the point.
+ */
+export function Flow({ caption, steps, note }) {
+  return (
+    <figure className="mt-5">
+      <ol className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-3">
+        {steps.map((step, i) => (
+          <li key={step.title} className="flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+            <div className="surface-inset w-full rounded-xl px-3.5 py-2.5 sm:w-auto">
+              <p className="text-sm font-semibold text-white">{step.title}</p>
+              {step.detail && <p className="mt-0.5 text-xs leading-5 text-slate-400">{step.detail}</p>}
+            </div>
+            {i < steps.length - 1 && (
+              <svg
+                width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                className="ml-5 shrink-0 rotate-90 text-brand-300 sm:ml-0 sm:rotate-0"
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            )}
+          </li>
+        ))}
+      </ol>
+      {note && <p className="mt-3 text-xs leading-5 text-slate-300">{note}</p>}
+      <figcaption className="mt-2 text-xs text-slate-500">{caption}</figcaption>
     </figure>
   );
 }

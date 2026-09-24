@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Code, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Code, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 export default function FeatureBittorrent() {
@@ -58,10 +58,18 @@ export default function FeatureBittorrent() {
         trustworthy in a way an HTTP download is not — the integrity check is built into the
         protocol rather than optional.
       </P>
-      <Figure kind="Diagram">
-        Magnet → DHT peer discovery → metadata → piece requests across peers → per-piece SHA-1
-        verification → file on disk → seeding until the ratio target.
-      </Figure>
+      <Flow
+        caption="From a magnet link to a finished torrent."
+        steps={[
+          { title: 'Magnet link', detail: 'an info-hash, no file list' },
+          { title: 'Peers found', detail: 'through the DHT and trackers' },
+          { title: 'Metadata arrives', detail: 'real names and sizes' },
+          { title: 'Pieces from many peers', detail: 'rarest first' },
+          { title: 'Every piece checked', detail: 'against its hash in the torrent' },
+          { title: 'Files on disk' },
+          { title: 'Seeding, if you ask', detail: 'until your ratio target' },
+        ]}
+      />
       <P>
         Seeding is where a torrent client differs most from a download manager, and where Nexa is
         explicit rather than clever. When a torrent completes it keeps uploading until it reaches

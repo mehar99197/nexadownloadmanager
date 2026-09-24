@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Code, Note, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Code, Note, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 export default function FeatureVideoGrabber() {
@@ -61,10 +61,17 @@ export default function FeatureVideoGrabber() {
         session that requested the manifest, and a bare <Code>curl</Code> of the same URL is
         rejected.
       </P>
-      <Figure kind="Diagram">
-        Page → extension detects manifest → native-messaging bridge → app fetches N segments in
-        parallel → ffmpeg mux → one MP4 on disk.
-      </Figure>
+      <Flow
+        caption="How a stream on a web page becomes one file."
+        steps={[
+          { title: 'The page plays a video', detail: 'the player requests its manifest' },
+          { title: 'The extension spots it', detail: '.m3u8 or .mpd, and draws the button' },
+          { title: 'The local bridge', detail: 'URL, quality, cookies and headers' },
+          { title: 'Nexa fetches the segments', detail: '16 at a time by default' },
+          { title: 'ffmpeg joins them', detail: 'streams copied, not re-encoded' },
+          { title: 'One MP4 on disk' },
+        ]}
+      />
       <P>
         In the app, segment fetching runs with its own concurrency setting (16 by default, separate
         from the per-file connection count, because a stream is many small requests rather than one

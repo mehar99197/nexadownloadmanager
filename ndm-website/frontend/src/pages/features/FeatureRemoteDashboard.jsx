@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import usePageMeta from '../../hooks/usePageMeta';
 import FeatureShell, {
-  H2, P, Steps, Code, Pre, Note, Figure, SpecTable, Tips, Troubles, Related,
+  H2, P, Steps, Code, Pre, Note, Figure, Flow, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
 export default function FeatureRemoteDashboard() {
@@ -69,10 +69,16 @@ export default function FeatureRemoteDashboard() {
         better arrangement is to leave Nexa on loopback and let the proxy terminate TLS and handle
         access.
       </P>
-      <Figure kind="Diagram">
-        Phone → home Wi-Fi → HTTPS + token → Nexa&apos;s embedded server on the desktop → the same
-        engine the desktop UI drives. With our servers absent from the diagram.
-      </Figure>
+      <Flow
+        caption="Phone to desktop, on your own network."
+        steps={[
+          { title: 'Your phone', detail: 'any browser' },
+          { title: 'Your home Wi-Fi', detail: 'HTTPS, with the access token' },
+          { title: 'Nexa’s built-in server', detail: 'running on your desktop' },
+          { title: 'The same download engine', detail: 'the desktop window drives' },
+        ]}
+        note="No Nexa server, relay or account is involved: the phone talks to your own computer."
+      />
 
       <H2 id="supported">What you can do from it</H2>
       <SpecTable

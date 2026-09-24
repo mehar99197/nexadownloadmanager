@@ -4,6 +4,84 @@ import FeatureShell, {
   H2, P, Steps, Code, Note, Figure, SpecTable, Tips, Troubles, Related,
 } from './FeatureShell';
 
+/*
+ * The picture "How it works" describes. Positions are illustrative, not
+ * measured: four connections start together, connection 4 is on a slow path,
+ * and 1, 2 and 3 each finish their own range and take the back half of the
+ * biggest range still in flight — by then, always what 4 has left. All four
+ * end together, where 4 alone would have run on. Numbers are percentages of
+ * the time axis.
+ */
+const LANES = [
+  { label: 'Connection 1', bars: [{ from: 0, to: 40, kind: 'own' }, { from: 40, to: 61, kind: 'taken' }] },
+  { label: 'Connection 2', bars: [{ from: 0, to: 47, kind: 'own' }, { from: 47, to: 61, kind: 'taken' }] },
+  { label: 'Connection 3', bars: [{ from: 0, to: 55, kind: 'own' }, { from: 55, to: 61, kind: 'taken' }] },
+  { label: 'Connection 4', bars: [{ from: 0, to: 61, kind: 'own' }, { from: 61, to: 100, kind: 'avoided' }] },
+];
+
+const BAR = {
+  own: 'bg-brand-500/75',
+  taken: 'bg-accent-500/80',
+  avoided: 'border border-dashed border-slate-500',
+};
+
+const LEGEND = [
+  ['own', 'Its own range'],
+  ['taken', 'The tail of connection 4, taken over'],
+  ['avoided', 'How long connection 4 would have run alone'],
+];
+
+function SegmentTimeline() {
+  return (
+    <figure className="mt-5">
+      <div
+        role="img"
+        aria-label="Illustration: connections 1, 2 and 3 finish their own ranges early while connection 4, on a slow path, is still going. As each one finishes it takes the back half of what connection 4 has left, so all four finish together, well before connection 4 would have finished on its own."
+        className="surface-inset rounded-xl p-4"
+      >
+        <div className="space-y-2.5">
+          {LANES.map((lane) => (
+            <div key={lane.label} className="grid grid-cols-[6.5rem_1fr] items-center gap-3">
+              <span className="text-xs text-slate-400">{lane.label}</span>
+              <div className="relative h-5">
+                {lane.bars.map((b) => (
+                  <span
+                    key={b.from}
+                    className={`absolute inset-y-0 rounded ${BAR[b.kind]}`}
+                    style={{ left: `${b.from}%`, width: `${b.to - b.from}%` }}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-[6.5rem_1fr] gap-3">
+          <span />
+          <div className="relative h-5 border-t border-[var(--color-surface-border)] text-xs text-slate-500">
+            <span className="absolute left-0 top-1">start</span>
+            <span className="absolute top-1 -translate-x-1/2" style={{ left: '61%' }}>all done</span>
+            {/* On a phone the bars are ~140px wide and this ran into "all done";
+                start → all done already says which way time goes. */}
+            <span className="absolute right-0 top-1 hidden sm:inline">time &rarr;</span>
+          </div>
+        </div>
+      </div>
+      <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-400">
+        {LEGEND.map(([kind, label]) => (
+          <li key={kind} className="flex items-center gap-2">
+            <span aria-hidden="true" className={`inline-block h-3 w-5 rounded-sm ${BAR[kind]}`} />
+            {label}
+          </li>
+        ))}
+      </ul>
+      <figcaption className="mt-2 text-xs text-slate-500">
+        Illustrative timings: a steal lets every connection finish together instead of three
+        sitting idle while one crawls.
+      </figcaption>
+    </figure>
+  );
+}
+
 export default function FeatureAcceleration() {
   usePageMeta({
     title: 'Segmented download acceleration',
@@ -58,10 +136,7 @@ export default function FeatureAcceleration() {
         going, unaware, and simply stops earlier than it planned. This repeats until the remaining
         work is too small to be worth splitting.
       </P>
-      <Figure kind="Diagram">
-        A timeline showing four segments, one of them slow, with the tail of the slow segment being
-        claimed twice by workers that finished early.
-      </Figure>
+      <SegmentTimeline />
       <P>
         Two details keep this honest. The whole engine runs on a single thread — Qt&apos;s event
         loop — so there are no worker threads and no locks around the segment table; a steal is an
