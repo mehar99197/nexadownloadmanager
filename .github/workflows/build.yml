@@ -434,8 +434,12 @@ jobs:
           mapfile -t ELFS < <(find "${PKG_ABS}/usr/lib/nexa" -type f -print0 \
             | xargs -0 file | grep -E ':[[:space:]]+ELF ' | cut -d: -f1)
           [ "${#ELFS[@]}" -gt 0 ] || { echo "ERROR: no ELF files under ${PKG_ABS}/usr/lib/nexa"; exit 1; }
-          SHLIBS="$(cd "${SHLIB_WS}" && dpkg-shlibdeps -O --ignore-missing-info \
-            -l"${PKG_ABS}/usr/lib/nexa" "${ELFS[@]}" | sed -n 's/^shlibs:Depends=//p')"
+          # Captured on its own so a dpkg-shlibdeps failure is reported as one,
+          # not later as a missing floor (this step runs without pipefail).
+          SHLIB_OUT="$(cd "${SHLIB_WS}" && dpkg-shlibdeps -O --ignore-missing-info \
+            -l"${PKG_ABS}/usr/lib/nexa" "${ELFS[@]}")" \
+            || { echo "ERROR: dpkg-shlibdeps failed; see its messages above"; exit 1; }
+          SHLIBS="$(printf '%s\n' "${SHLIB_OUT}" | sed -n 's/^shlibs:Depends=//p')"
           echo "dpkg-shlibdeps: ${SHLIBS}"
           floor() {   # the "pkg (>= ver)" entry for $1 from SHLIBS, else the bare name
             local hit
@@ -1148,6 +1152,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container: ubuntu:22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
     defaults:
       run:
         shell: bash
