@@ -2467,6 +2467,40 @@ and the plan-mix rows were each 4px short of the real ones, which would have
 stepped the lower half of the dashboard by 4–12px as the numbers landed. Both
 were fixed, and the test now holds them.
 
+### Verified on the live site
+
+Deployed with `DEPLOY_HTACCESS=1 SKIP_BACKEND=1` after CI went green on all
+three jobs (run `35859043005`). The live bundles are the ones that were built
+(site `index-DnkwO0AZ.js`, panel `index-DkhN4MXC.js`), the policy now names
+only the boot script's hash, and `/api/health` answers `up`.
+
+Against production: the site's specs **21/21** and the panel's **9/9**,
+including every new check — which had failed against the same URLs before
+the deploy.
+
+Recorded on the live site over its real network, once per frame:
+
+```
+/faq at 900 -> /pricing,   dissolve starts at 144ms: the code landed inside
+code not fetched yet       the 150ms grace, so no outline was needed.
+                           /pricing at scroll 0 with 30 plan outlines at
+                           187ms; the plans replace them at 404ms.
+/pricing -> /download,     dissolve at 5ms; the page with 9 release outlines
+code already prefetched    at 63ms; the release itself at 213ms.
+Back to /pricing           the page WITH its plans at 36ms: no outlines,
+                           from the tab's memory.
+
+All three: one width (1356), no blank frame, no spinner; the heading
+settles 14px (235.8 -> 221.8) and never moves more than 3px in a frame.
+```
+
+One thing the recording ran into that is not the site's: after a day of
+automated runs, Hostinger's CDN answered a headless browser's first request
+with a 403 "Checking your browser before accessing" page, and let it through
+a few seconds later. That is the CDN's bot protection answering automated
+traffic, not anything this change touches — but a future automated check
+that fails on its very first request may be meeting it.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth
