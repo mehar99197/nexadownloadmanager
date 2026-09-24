@@ -86,13 +86,13 @@ export default function FeatureAcceleration() {
   usePageMeta({
     title: 'Segmented download acceleration',
     description:
-      'How Nexa splits a file across up to 32 connections, steals the tail of the slowest segment as others finish, and resumes exactly where it stopped after a crash or a reboot.',
+      'How Nexa splits a file across up to 32 connections on Pro (16 on Free), hands half of the biggest range left to each connection that finishes early, and resumes where it stopped after a crash or a reboot.',
   });
 
   return (
     <FeatureShell
       title="Segmented acceleration"
-      tagline="One file, up to thirty-two connections, and none of them left idle while another finishes."
+      tagline="One file, up to thirty-two connections on Pro (sixteen on Free), and a connection that finishes early takes over half of the biggest range left."
       hero={
         <Figure kind="Screenshot">
           The download details window mid-transfer, showing the per-connection segment bars and the
@@ -108,10 +108,11 @@ export default function FeatureAcceleration() {
         shaped, or simply limited by round-trip latency.
       </P>
       <P>
-        Nexa asks for the same file in pieces. It sends a <Code>HEAD</Code> request (falling back to
-        a ranged <Code>GET</Code> when the server dislikes HEAD), learns the file&apos;s size and
-        whether the server honours HTTP range requests, and then opens several connections that each
-        fetch a different byte range. Those ranges are written straight into their correct offsets in
+        Nexa asks for the same file in pieces. It first asks for a single byte with a ranged{' '}
+        <Code>GET</Code> (Google Drive links get a <Code>HEAD</Code> instead). The answer carries the
+        file&apos;s size, and only a <Code>206 Partial Content</Code> answer counts as proof that the
+        server honors HTTP range requests. Then Nexa opens several connections that each fetch a
+        different byte range. Those ranges are written straight into their correct offsets in
         one destination file, so there is no merge step at the end and no temporary copy that doubles
         your disk use.
       </P>
@@ -138,21 +139,22 @@ export default function FeatureAcceleration() {
       </P>
       <SegmentTimeline />
       <P>
-        Two details keep this honest. The whole engine runs on a single thread — Qt&apos;s event
-        loop — so there are no worker threads and no locks around the segment table; a steal is an
-        ordinary function call between two network callbacks, not a race to be reasoned about. And
-        the destination file is created sparse on Windows before it is sized, because NTFS otherwise
-        zero-fills from its valid-data-length up to the first write past it, inside that write. A
-        32-way download writes near the end of the file almost immediately, so without the sparse
-        flag a 2&nbsp;GB file froze the window for seconds at the start of every transfer.
+        Two details keep this honest. The segment table lives on a single thread — Qt&apos;s event
+        loop — so there are no locks around it; a steal is an ordinary function call between two
+        network callbacks, not a race to be reasoned about. And the destination file is sized before
+        the transfer starts, on a worker thread, because on some disks that one call blocks for
+        seconds; the download&apos;s status reads &ldquo;allocating &hellip; on disk&rdquo; until it
+        is done. On Windows the file is marked sparse before it is sized, because NTFS otherwise
+        zero-fills from its valid-data-length up to the first write past it, inside that write — and
+        a 32-way download writes near the end of the file almost immediately.
       </P>
       <P>
         Progress is persisted to a local SQLite database roughly every two seconds — per segment,
         not per file. A crash or a power cut costs you the last couple of seconds of each
         connection, not the download. On resume Nexa re-validates the file with the{' '}
         <Code>ETag</Code> and <Code>Last-Modified</Code> it recorded; if the server&apos;s copy has
-        changed underneath you, it says so and restarts rather than stitching two different files
-        together.
+        changed underneath you, it quietly throws the partial file away and starts again from the
+        first byte rather than stitching two different files together.
       </P>
 
       <H2 id="supported">What it works with</H2>
@@ -161,10 +163,10 @@ export default function FeatureAcceleration() {
         head={['', 'Support']}
         rows={[
           ['HTTP / HTTPS', 'Yes — the main path, including HTTP/2 servers'],
-          ['Range requests', <>Required for splitting. Nexa detects <Code>Accept-Ranges</Code> and falls back to a single connection when the server refuses.</>],
-          ['Unknown file size', <>Handled: a chunked response with no <Code>Content-Length</Code> downloads on one connection and is re-segmented if the size becomes known.</>],
+          ['Range requests', <>Required for splitting. Nexa splits only when its one-byte ranged request comes back <Code>206 Partial Content</Code>; any other answer gets a single connection.</>],
+          ['Unknown file size', <>Handled: a chunked response with no <Code>Content-Length</Code> downloads on one connection, and stays on one even if the size turns up mid-transfer.</>],
           ['Connections per file', 'Chosen from the file size — 1 below 1 MB, 8 to 10 MB, 16 to 100 MB, 32 above. Capped at 16 on Free, 32 on Pro.'],
-          ['Concurrent files', 'Free: 3 at a time. Pro and Team: unlimited.'],
+          ['Concurrent files', 'Free: 3 direct downloads at once. Pro and Team: up to 32, set in Settings → Downloads (4 by default). Video-site, stream, MEGA and torrent jobs are not counted and start right away.'],
           ['Speed limits', 'Global and per-download caps, applied with a shared token bucket'],
           ['Resume after restart', 'Yes — segment offsets live in the local database'],
           ['Integrity check', <>Optional SHA-256, pasted when the download is added and verified on completion</>],
@@ -172,34 +174,37 @@ export default function FeatureAcceleration() {
       />
       <Note>
         Some servers cap concurrent connections per client and will refuse or throttle the extra
-        ones. Nexa backs off to what the server allows instead of hammering it; raising the
-        connection count past that point does nothing.
+        ones. Nexa does not scale back to what such a server allows, and the connection count is not
+        a setting: a connection that keeps failing is retried five times, then the download stops
+        with an error. Resuming keeps every byte already saved, though it opens as many connections
+        as before.
       </Note>
 
       <H2 id="use">Using it</H2>
       <Steps
         items={[
-          <>Add a download — paste a URL with <Code>Ctrl+V</Code>, use the <strong className="text-white">+</strong> button, or click <strong className="text-white">Download with Nexa</strong> in your browser.</>,
+          <>Add a download: press <Code>Ctrl+N</Code> or click <strong className="text-white">+ New download</strong> (a link you have copied is filled in for you), drop a link on the window, or click <strong className="text-white">Download with Nexa</strong> in your browser.</>,
           <>Nexa probes the URL, shows the real filename and size, and tells you whether the server supports resuming.</>,
-          <>Open the row to watch the segments. Each bar is one connection; the numbers underneath are that connection&apos;s throughput.</>,
+          <>Double-click the row to open its details window, then expand <strong className="text-white">Connection details</strong>. The strip shows each connection&apos;s slice of the file, and the table under it shows how much each one has downloaded.</>,
           <>You do not have to tune anything: Nexa picks the count from the file&apos;s size — one connection below 1&nbsp;MB, eight up to 10&nbsp;MB, sixteen up to 100&nbsp;MB, and thirty-two beyond that, up to the ceiling your plan allows (16 on Free, 32 on Pro). Past about eight the server is usually the limit anyway.</>,
           <>Right-click a running download for <strong className="text-white">Limit speed…</strong> if you need to leave bandwidth for something else.</>,
         ]}
       />
       <Figure kind="Screenshot">
-        Settings → Downloads with the connections-per-file and speed-limit fields highlighted.
+        Settings → Downloads with the Max simultaneous downloads and Global speed limit fields
+        highlighted.
       </Figure>
 
       <H2 id="tips">Tips</H2>
       <Tips
         items={[
           'More connections is not automatically faster. Past about eight, most servers are the bottleneck and the extra sockets just add overhead.',
-          'If a host rate-limits you or starts returning errors, lower the connection count for that download rather than globally — the setting is per-download in the right-click menu.',
-          'Set a global speed cap during work hours and remove it at night; the scheduler can do both for you automatically.',
+          'The connection count is automatic, and there is no setting to lower it for one host. If a host refuses the extra connections, the download can stop with an error; resuming it keeps every byte already saved.',
+          'Set a global speed cap during work hours and remove it at night. That part is manual: the scheduler only starts downloads.',
           <>Paste the publisher&apos;s SHA-256 into the new-download dialog. Nexa verifies the finished file and reports a mismatch as an error instead of leaving you a bad copy.</>,
           'On a slow or metered connection, pause rather than cancel. A paused download keeps every byte it has and resumes from there, even after a reboot.',
           'Downloads land in a category folder by default (Video/, Audio/, …). Turn that off, or change where each category points, in Settings → Categories.',
-          <>If a download is slower than the same file in a browser, it is almost always a server that dislikes ranges. The details window says <Code>ranges: no</Code> when that is the case.</>,
+          <>If a download is slower than the same file in a browser, it is almost always a server that dislikes ranges. The details window says <Code>Resume capability: No</Code> when that is the case.</>,
         ]}
       />
 
@@ -210,11 +215,11 @@ export default function FeatureAcceleration() {
             symptom: 'The download runs on one connection instead of sixteen',
             fix: (
               <>
-                The server did not advertise <Code>Accept-Ranges: bytes</Code>, or it answered the
-                ranged request with a full <Code>200</Code> body. Nexa will not fake a split it
-                cannot verify, because writing two overlapping streams into one file corrupts it
-                silently. Nothing to fix on your side — the download still resumes if the server
-                later allows it.
+                The server answered Nexa&apos;s one-byte ranged request with a full <Code>200</Code>{' '}
+                instead of <Code>206 Partial Content</Code>, so it never proved it can serve ranges.
+                Nexa will not fake a split it cannot verify, because writing two overlapping streams
+                into one file corrupts it silently. Nothing to fix on your side — the download still
+                resumes if the server later allows it.
               </>
             ),
           },
@@ -224,30 +229,32 @@ export default function FeatureAcceleration() {
               <>
                 Usually one segment whose connection died without an error — the server stopped
                 sending but never closed. Pause and resume the row: Nexa re-opens only the
-                outstanding ranges, so you lose nothing. If it repeats on the same host, drop that
-                download to 4 connections.
+                outstanding ranges, so you lose nothing. If it keeps happening on the same host,
+                pausing and resuming is the remedy: the connection count is automatic, and there is
+                no setting to lower it.
               </>
             ),
           },
           {
-            symptom: '“The file on the server changed” on resume',
+            symptom: 'A resumed download starts again from 0%',
             fix: (
               <>
                 The <Code>ETag</Code> or <Code>Last-Modified</Code> no longer matches what was
                 recorded when the download started, so the remaining bytes would belong to a
-                different file. Restart the download to get a clean copy. This is most common with
-                CDN links that are regenerated per session.
+                different file. Nexa throws the partial file away and downloads the new one from
+                the start, without a message. This is most common with CDN links that are
+                regenerated per session.
               </>
             ),
           },
           {
-            symptom: 'Windows freezes for a few seconds when a big download starts',
+            symptom: 'A big download waits on “allocating … on disk” before it starts',
             fix: (
               <>
-                The destination is on a FAT32 or exFAT volume, where the operating system zero-fills
-                the file inside the resize call and sparse files are not available. The row shows
-                &ldquo;allocating&hellip; on disk&rdquo; while that happens. Downloading to an NTFS
-                volume avoids it.
+                The destination is on a FAT32 or exFAT volume, where the operating system writes
+                zeros across the whole file when it is sized, and sparse files are not available.
+                Nexa does that on a worker thread, so the window stays responsive, but the transfer
+                waits until it is done. Downloading to an NTFS volume avoids the wait.
               </>
             ),
           },
@@ -255,8 +262,10 @@ export default function FeatureAcceleration() {
             symptom: 'Only 3 downloads run at once',
             fix: (
               <>
-                That is the Free plan&apos;s concurrency cap; the rest are queued, not failing. Pro
-                removes it. Note this is files at a time, not connections — each of those three
+                That is the Free plan&apos;s limit on direct downloads; the rest are queued, not
+                failing. Video-site, stream, MEGA and torrent jobs do not count toward it. Pro lets
+                you raise it as high as 32 in Settings → Downloads → Max simultaneous downloads (the
+                default is 4). Note this is files at a time, not connections — each of those three
                 still uses up to 16 connections on Free, or 32 on Pro. See <Link to="/pricing" className="text-brand-300 hover:underline">pricing</Link>.
               </>
             ),
@@ -269,10 +278,12 @@ export default function FeatureAcceleration() {
         We would rather show numbers than adjectives. The{' '}
         <Link to="/benchmarks" className="text-brand-300 hover:underline">benchmarks page</Link>{' '}
         documents the method, the hardware and the conditions so you can reproduce it. Measured
-        answer, from two real hosts: sixteen connections beat one by 3.1&times; on a Cloudflare-fronted
-        file, and eight beat one by 2.7&times; on an origin server where sixteen was actually slower
-        than eight. On a fast server that already saturates your line, expect no gain at all — and
-        the page says which figures we could not measure, including IDM.
+        answer, from two real hosts, using a plain range-request client rather than Nexa itself:
+        sixteen connections beat one by 3.1&times; on a Cloudflare-fronted file, and eight beat one
+        by 2.7&times; on an origin server where sixteen was actually slower than eight. Nexa end to
+        end came in below that client on the same host, and the page shows by how much. On a fast
+        server that already saturates your line, expect no gain at all — and the page says which
+        figures we could not measure, including IDM.
       </P>
 
       <H2 id="related">Related features</H2>

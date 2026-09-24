@@ -185,7 +185,7 @@ export default function Pricing() {
   usePageMeta({
     title: 'Pricing',
     description:
-      'Nexa Download Manager is free forever for up to 3 concurrent downloads. Pro is $5/month or $45/year and every account gets a 7-day Pro trial with no card required.',
+      'Nexa Download Manager is free forever, with 3 direct downloads at once. Pro is $5/month or $45/year and every account gets a 7-day Pro trial with no card required.',
   });
 
   const { user, isAuthenticated, refreshMe } = useAuth();

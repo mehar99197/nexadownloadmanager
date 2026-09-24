@@ -104,7 +104,7 @@ export default function Changelog() {
       <div className="page-intro">
         <span className="eyebrow"><span className="eyebrow-dot" />Release notes</span>
         <h1 className="mt-5 text-white">What <span className="text-gradient">changed.</span></h1>
-        <p>Every published build of the desktop app, newest first. Checksums and installers are on the download page.</p>
+        <p>Every published build of the desktop app, newest first. The latest build&apos;s installer and its SHA-256 checksum are on the download page.</p>
       </div>
 
       <div className="mx-auto mt-12 max-w-3xl space-y-6">

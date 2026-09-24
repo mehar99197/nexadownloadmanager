@@ -5,8 +5,8 @@ import Card from '../../components/Card';
 export const DOCS_NAV = [
   { to: '/docs/install', label: 'Install', blurb: 'Windows installer, Ubuntu/Debian .deb and what gets bundled.' },
   { to: '/docs/extension', label: 'Browser extension', blurb: 'Chrome, Edge, Brave and Firefox setup plus the native host bridge.' },
-  { to: '/docs/youtube', label: 'YouTube & 1000+ sites', blurb: 'Quality picker, playlists and fixing HTTP 403 errors.' },
-  { to: '/docs/courses', label: 'Courses', blurb: 'Udemy and Coursera courses you are enrolled in.' },
+  { to: '/docs/youtube', label: 'YouTube & video sites', blurb: 'Picking a quality from the on-video button, playlists and fixing HTTP 403 errors.' },
+  { to: '/docs/courses', label: 'Courses', blurb: 'Udemy and Coursera lectures you are enrolled in, one at a time. Needs Pro or Team.' },
   { to: '/docs/torrents', label: 'Torrents', blurb: 'Magnet links, .torrent files, seed ratio and limits.' },
   { to: '/docs/remote', label: 'Remote dashboard', blurb: 'Control the queue from your phone.' },
   { to: '/docs/license', label: 'Signing in & seats', blurb: 'Signing in to the app, seats, manual keys and offline behaviour.' },
