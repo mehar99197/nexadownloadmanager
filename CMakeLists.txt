@@ -788,7 +788,11 @@ if(WIN32)
         "ExecWait '\"$INSTDIR\\bin\\nexa.exe\" --unregister-shell'")
 else()
     # -----------------------------------------------------------------------
-    # Linux: Debian .deb.
+    # Linux: Debian .deb for a LOCAL build (`cpack -G DEB`). This package links
+    # the distribution's Qt and libtorrent, so it depends on them. The .deb that
+    # is released is a different package: .github/workflows/build.yml bundles
+    # Qt, libtorrent, ffmpeg and yt-dlp under /usr/lib/nexa and writes its own
+    # control file. Nothing here changes what users download.
     # -----------------------------------------------------------------------
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
@@ -807,8 +811,7 @@ libqt6sql6-sqlite (>= 6.4.0), \
  libtorrent-rasterbar2.0t64 (>= 2.0) | libtorrent-rasterbar2.0, \
  ffmpeg, \
  yt-dlp, \
- python3-secretstorage, \
- aria2")
+ python3-secretstorage")
     # Maintainer scripts to refresh the desktop/icon caches.
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/postinst;\

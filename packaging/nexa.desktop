@@ -9,6 +9,6 @@ TryExec=nexa
 Icon=nexa
 Terminal=false
 Categories=Network;FileTransfer;Qt;
-Keywords=download;torrent;video;hls;ytdlp;aria2;
+Keywords=download;torrent;video;hls;ytdlp;
 StartupNotify=true
 StartupWMClass=nexa
