@@ -197,7 +197,7 @@ const releaseArtifactParamsSchema = {
 };
 
 // Deleting an account is irreversible and cascades through subscriptions,
-// payments, reviews and licence activations. The body must repeat the target's
+// reviews and licence activations (payments are kept, detached). The body must repeat the target's
 // exact address, so the destructive call cannot be made by clicking the wrong
 // row — the same guard the creator's Danger Zone uses.
 const deleteUserSchema = {

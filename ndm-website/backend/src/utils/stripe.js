@@ -102,7 +102,7 @@ if (config.isBillingDisabled) {
   impl = {
     mock: false,
     disabled: false,
-    async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode }) {
+    async createCheckoutSession({ plan, billingCycle, user, successUrl, cancelUrl, couponCode, customerId }) {
       const catalog = PLANS[plan];
       // A bad code must not silently become "no discount": the route validates
       // it first and reports INVALID_COUPON, so by here it either resolves or
@@ -116,7 +116,10 @@ if (config.isBillingDisabled) {
         (billingCycle === 'yearly' ? catalog.yearly : catalog.monthly) * 100;
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription',
-        customer_email: user.email,
+        // An existing Stripe Customer is reused; `customer_email` alone makes
+        // Stripe create a new Customer on every checkout. Stripe refuses a
+        // session that names both, so it is one or the other.
+        ...(customerId ? { customer: customerId } : { customer_email: user.email }),
         line_items: [
           {
             price_data: {
