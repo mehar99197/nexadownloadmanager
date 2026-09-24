@@ -9,7 +9,7 @@
 
 namespace nexa {
 
-// Resolve a bundled external tool (yt-dlp, ffmpeg, aria2c) to an absolute path.
+// Resolve a bundled external tool (yt-dlp, ffmpeg) to an absolute path.
 //
 // Why this exists: Nexa ships these binaries NEXT TO its own executable. The
 // Windows NSIS installer drops yt-dlp.exe / ffmpeg.exe into $INSTDIR alongside
@@ -43,8 +43,8 @@ inline bool toolCanRun(const QString &path)
     if (it != cache.constEnd())
         return *it;
 
-    // ffmpeg/ffprobe take -version, yt-dlp/aria2c take --version; a loader
-    // failure exits 127 for either, so one success is enough.
+    // ffmpeg/ffprobe take -version, yt-dlp takes --version; a loader failure
+    // exits 127 for either, so one success is enough.
     bool ok = false;
     for (const QString &flag : {QStringLiteral("-version"), QStringLiteral("--version")}) {
         QProcess p;

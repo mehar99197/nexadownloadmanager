@@ -8,9 +8,11 @@ namespace nexa {
 
 class DownloadEngine;
 
-// "Site logins" — register a Netscape cookies.txt for an auth-gated site (Udemy,
-// Coursera, Vimeo, …) so yt-dlp can download courses you're enrolled in. Modal;
-// validates the file eagerly via AuthenticationManager and reports the result.
+// "Site logins" — lend yt-dlp your browser's login for an auth-gated site (Udemy,
+// Coursera, Vimeo, …) so it can download courses you're enrolled in. "Use browser
+// login" registers a --cookies-from-browser credential for the site (for a
+// Chromium browser, the profile most recently logged into it), so yt-dlp reads
+// the live session on every run. Modal; shows AuthenticationManager's verdict.
 class SiteLoginsDialog : public QDialog {
     Q_OBJECT
 public:

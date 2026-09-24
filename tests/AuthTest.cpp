@@ -280,6 +280,66 @@ int main(int argc, char **argv)
               .contains("authentication required"),
           "extractor-stage 403 is still an authentication failure");
 
+    // ---- Every fix a message names is one the user can perform ------------
+    // yt-dlp ships inside Nexa and changes only with a Nexa update, so a stale
+    // one is fixed from Help → Check for updates…, never by "updating yt-dlp".
+    const QString staleYtDlp = authReasonFromYtDlpLine(
+        QStringLiteral("ERROR: unable to download video data: HTTP Error 403: Forbidden"));
+    CHECK(!staleYtDlp.contains("Update yt-dlp"),
+          "media-stage 403 does not ask the user to update yt-dlp by hand");
+    CHECK(staleYtDlp.contains(QStringLiteral("Help → Check for updates…")),
+          "media-stage 403 points at Help → Check for updates…");
+
+    // YouTube's bot check, as yt-dlp prints it. Nexa sends YouTube no cookie at
+    // all (see the exclusion safeguard above), so re-exporting one cannot help.
+    const QUrl youtube(QStringLiteral("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+    const QString botCheck = authReasonFromYtDlpLine(QStringLiteral(
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you’re not a bot. Use "
+        "--cookies-from-browser or --cookies for the authentication."));
+    CHECK(botCheck.contains("YouTube"), "bot check is reported as YouTube's");
+    CHECK(!botCheck.contains("cookie", Qt::CaseInsensitive),
+          "bot check does not mention cookies, which YouTube never gets");
+    CHECK(botCheck.contains("later") && botCheck.contains("another network"),
+          "bot check says to retry later or from another network");
+    CHECK(botCheck.contains(QStringLiteral("Help → Check for updates…")),
+          "bot check points at Help → Check for updates…");
+
+    // YtDlpGrabber cuts a reason at 160 characters before showing it; the
+    // control a message points at is its last words, so it must fit.
+    CHECK(staleYtDlp.length() <= 160 && botCheck.length() <= 160,
+          "both reasons fit the grabber's 160-character cut");
+
+    // The "start it from the page" hint is true only where the extension's
+    // login is used: a login site whose job carried no credential. Never on
+    // YouTube, whose login Nexa never sends.
+    const QUrl udemy(QStringLiteral("https://www.udemy.com/course/x/learn/lecture/1"));
+    const QString loginWhy = QStringLiteral("login required — provide cookies or a token");
+    CHECK(withCredentialHint(loginWhy, {}, udemy).contains("use the Nexa button on the page"),
+          "login site, no credential on the job: hint to start it from the page");
+    CHECK(withCredentialHint(loginWhy, {QStringLiteral("--cookies"), QStringLiteral("c.txt")}, udemy)
+              == loginWhy,
+          "login site whose job already carried a credential: no hint");
+    CHECK(withCredentialHint(loginWhy, {}, youtube) == loginWhy,
+          "YouTube: no hint, its login is never sent");
+    CHECK(withCredentialHint(QStringLiteral("authentication required (HTTP 403)"), {},
+                             QUrl(QStringLiteral("https://youtu.be/dQw4w9WgXcQ")))
+              == QStringLiteral("authentication required (HTTP 403)"),
+          "youtu.be: no hint either");
+    CHECK(withCredentialHint(botCheck, {}, youtube) == botCheck,
+          "bot check reaches the user without a login hint");
+    CHECK(withCredentialHint(staleYtDlp, {}, udemy) == staleYtDlp,
+          "a reason that is not a login failure gets no hint");
+
+    // The YouTube test behind both the credential exclusion and the hint:
+    // the host itself or a dot-boundary subdomain, nothing that merely ends alike.
+    CHECK(isYouTubeHost("youtube.com") && isYouTubeHost("www.youtube.com")
+              && isYouTubeHost("music.youtube.com") && isYouTubeHost("youtu.be")
+              && isYouTubeHost("WWW.YouTube.COM"),
+          "YouTube hosts are recognised, case-insensitively");
+    CHECK(!isYouTubeHost("notyoutube.com") && !isYouTubeHost("youtube.com.example.net")
+              && !isYouTubeHost("www.udemy.com") && !isYouTubeHost(QString()),
+          "look-alike and unrelated hosts are not YouTube");
+
     std::printf("\nAUTH TESTS: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

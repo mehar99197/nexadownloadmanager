@@ -1,4 +1,5 @@
 #include "auth/AuthenticationManager.h"
+#include "auth/AuthUtils.h"
 
 #include <QNetworkRequest>
 #include <QDateTime>
@@ -34,15 +35,12 @@ bool AuthenticationManager::hostMatchesDomain(const QString &host, const QString
 }
 
 // YouTube hosts are owned exclusively by yt-dlp's extractor; never inject auth
-// for them even if a youtube.com credential were registered by mistake. Mirrors
-// the existing safeguard in YtDlpGrabber.
+// for them even if a youtube.com credential were registered by mistake. The host
+// test lives in AuthUtils (isYouTubeHost) because the grabber's error messages
+// read it too: "no login is sent there" and "never ask for one" share one list.
 bool AuthenticationManager::isExcludedHost(const QString &host)
 {
-    const QString h = host.toLower();
-    return h == QStringLiteral("youtube.com") ||
-           h.endsWith(QStringLiteral(".youtube.com")) ||
-           h == QStringLiteral("youtu.be") ||
-           h.endsWith(QStringLiteral(".youtu.be"));
+    return isYouTubeHost(host);
 }
 
 // The private 0700 directory where materialised cookie/bearer files live.
