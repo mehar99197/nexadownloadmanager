@@ -1128,8 +1128,9 @@ void MainWindow::promptAddUrlInto(const QString &toFolder)
           preset.startsWith(QStringLiteral("ftp://"))))
         preset.clear();
 
-    // A small themed dialog: URL + a "whole course / playlist" toggle. The
-    // playlist flag flows to yt-dlp's --yes-playlist for course/playlist URLs.
+    // A small themed dialog: URL + a "whole playlist" toggle that flows to yt-dlp's
+    // --yes-playlist. It promises no whole courses: a Udemy course fails in yt-dlp's
+    // udemy:course (see YtDlpGrabber::start), and yt-dlp has no Coursera extractor.
     QDialog dlg(this);
     dlg.setWindowTitle(tr("New Download"));
     auto *outer = new QVBoxLayout(&dlg);
@@ -1145,10 +1146,10 @@ void MainWindow::promptAddUrlInto(const QString &toFolder)
     lbl->setProperty("ddRole", "label");
     auto *edit = new QLineEdit(preset, plate);
     edit->setMinimumWidth(420);
-    edit->setPlaceholderText(QStringLiteral("https://…  (HTTP/FTP, video, magnet, or a course/playlist)"));
-    auto *plCheck = new QCheckBox(tr("Download whole course / playlist"), plate);
-    auto *plHint = new QLabel(QStringLiteral("For Udemy/Coursera course URLs or a YouTube "
-                                             "playlist — fetches every lecture/video."), plate);
+    edit->setPlaceholderText(tr("https://…  (HTTP/FTP, video, magnet, or a playlist)"));
+    auto *plCheck = new QCheckBox(tr("Download whole playlist"), plate);
+    auto *plHint = new QLabel(tr("For a YouTube or other video-site playlist URL — "
+                                 "fetches every video in it."), plate);
     plHint->setProperty("ddRole", "label");
     plHint->setWordWrap(true);
 
@@ -1562,8 +1563,8 @@ void MainWindow::onFreeLimitReached(int id)
     QMessageBox box(this);
     box.setWindowTitle(tr("Free plan: 3 downloads at once"));
     box.setText(tr("This download is queued — the Free plan runs 3 downloads at a time."));
-    box.setInformativeText(QStringLiteral("Pro removes the limit (up to 16 at once), adds AI file naming, "
-                                          "and starts with a free 7-day trial — no card needed."));
+    box.setInformativeText(tr("Pro lifts that cap (up to 32 at once: Settings → Max simultaneous downloads), "
+                              "adds AI file naming, and starts with a free 7-day trial — no card needed."));
     QPushButton *trial = box.addButton(tr("Start free trial"), QMessageBox::AcceptRole);
     QPushButton *key   = box.addButton(tr("Sign in"), QMessageBox::ActionRole);
     box.addButton(tr("Not now"), QMessageBox::RejectRole);

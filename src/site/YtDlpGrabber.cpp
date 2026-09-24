@@ -130,22 +130,6 @@ QUrl normalizeUdemyUrl(const QUrl &url, bool playlist)
     return normalized;
 }
 
-// yt-dlp reported a login problem on a job that carried no credential at all:
-// the URL was pasted (or the browser export came back empty), so the fix is to
-// start it from the page through the extension, not to chase the site. Windows
-// makes this the common case — yt-dlp cannot read Chrome / Edge / Brave cookies
-// there (App-Bound Encryption), so a pasted course URL never gets a session.
-QString withCredentialHint(const QString &why, const QStringList &authArgs)
-{
-    static const QRegularExpression loginRe(
-        QStringLiteral("authentication required|login required|sign-in required"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (!authArgs.isEmpty() || !loginRe.match(why).hasMatch())
-        return why;
-    return why + QStringLiteral(" — use the Nexa button on the page in your browser "
-                                "so your login is sent with it");
-}
-
 // A readable course/playlist folder name pulled from the page URL slug, e.g.
 //   udemy.com/course/pythonforbeginnersintro/learn/lecture/123 -> "pythonforbeginnersintro"
 //   youtube.com/playlist?list=PL... (no /course/) -> "" (caller falls back).
@@ -467,19 +451,22 @@ void YtDlpGrabber::start()
     // Udemy: yt-dlp's UdemyCourseIE extractor is currently unable to extract
     // the numeric course id from modern Udemy course pages (the page no longer
     // embeds ng-init JSON or data-course-id attributes).  Whole-course /<slug>/
-    // URLs trigger that extractor and fail with "Unable to extract course id".
-    // Individual lecture URLs (UdemyIE) DO work, so for playlist jobs keep the
-    // original URL — that downloads the current lecture reliably, and the user
-    // can download additional lectures one-at-a-time.  For a single-lecture job
-    // we still normalize to the /<slug>/learn/v4/t/lecture/<id> canonical form
-    // that yt-dlp's UdemyIE expects.
+    // URLs trigger that extractor and fail with "Unable to extract course id",
+    // which authReasonFromYtDlpLine reports as "Udemy course download is not
+    // supported".  A playlist job keeps the original URL, so a whole-course
+    // download ends there, and so does a lecture page's
+    // /course/<slug>/learn/lecture/<id> address: udemy:course claims that too.
+    // Nothing falls back to the current lecture.  Only a non-playlist job is
+    // rewritten: a URL carrying a lecture id becomes the
+    // /<slug>/learn/v4/t/lecture/<id> form that yt-dlp's lecture extractor
+    // (UdemyIE) accepts.
     QUrl runUrl = m_url;
     const QString host = m_url.host().toLower();
     const bool isUdemy = host == QStringLiteral("udemy.com")
                       || host.endsWith(QStringLiteral(".udemy.com"));
     if (isUdemy && !m_playlist)
         runUrl = normalizeUdemyUrl(m_url, false);   // single lecture: canonical form
-    // playlist: keep the original URL so UdemyIE handles it
+    // playlist: the original URL, which udemy:course claims (see above)
     m_lastError.clear();
     m_tail.clear();
 
@@ -999,7 +986,7 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
                 why = m_tail.isEmpty() ? QStringLiteral("code %1").arg(exitCode) : m_tail.last();
             if (why.length() > 160)
                 why = why.left(157) + QStringLiteral("…");
-            setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
+            setState(DownloadState::Error, withCredentialHint(why, m_authArgs, m_url));
         }
         return;
     }
@@ -1022,7 +1009,7 @@ void YtDlpGrabber::onProcessFinished(int exitCode)
             why = why.left(157) + QStringLiteral("…");
         if (kDebug)
             qDebug().noquote() << "NEXA yt-dlp FAILED" << m_id << "\n" << m_tail.join('\n');
-        setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
+        setState(DownloadState::Error, withCredentialHint(why, m_authArgs, m_url));
     }
 }
 
@@ -1216,7 +1203,7 @@ void YtDlpGrabber::onPlProcFinished()
         emit progress(m_id, total, m_plTotal > 0 ? m_plTotal : total, 0.0);
         // Be honest about DRM: a course where most lectures are Widevine-protected
         // saves only its few plain videos — say so, or "saved 2 videos" reads like
-        // it stopped early. yt-dlp/aria2 cannot decrypt Udemy DRM; nothing can here.
+        // it stopped early. yt-dlp cannot decrypt Udemy DRM; nothing can here.
         QString detail = QStringLiteral("saved %1 video%2").arg(total).arg(total == 1 ? "" : "s");
         if (drm > 0)
             detail += QStringLiteral(" · %1 DRM-protected (can't download)").arg(drm);
@@ -1236,7 +1223,7 @@ void YtDlpGrabber::onPlProcFinished()
             why = m_tail.isEmpty() ? QStringLiteral("no videos downloaded") : m_tail.last();
         if (why.length() > 160)
             why = why.left(157) + QStringLiteral("…");
-        setState(DownloadState::Error, withCredentialHint(why, m_authArgs));
+        setState(DownloadState::Error, withCredentialHint(why, m_authArgs, m_url));
     }
 }
 

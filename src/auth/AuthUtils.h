@@ -1,6 +1,9 @@
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QByteArray>
+
+class QUrl;
 
 namespace nexa {
 
@@ -53,5 +56,27 @@ QString authErrorDetail(int httpStatus);
 // required, course-access errors, YouTube's bot check). Returns a UI-ready reason,
 // or an empty string if the line is not an auth error.
 QString authReasonFromYtDlpLine(const QString &line);
+
+// A YouTube host: youtube.com, youtu.be, or a subdomain of either. Nexa sends
+// YouTube no credential at all — AuthenticationManager::isExcludedHost is this
+// test — so no message may tell the user that their login would help there.
+inline bool isYouTubeHost(const QString &host)
+{
+    const QString h = host.toLower();
+    return h == QStringLiteral("youtube.com") ||
+           h.endsWith(QStringLiteral(".youtube.com")) ||
+           h == QStringLiteral("youtu.be") ||
+           h.endsWith(QStringLiteral(".youtu.be"));
+}
+
+// yt-dlp reported a login problem on a job that carried no credential at all:
+// the URL was pasted (or the browser export came back empty), so the fix is to
+// start it from the page through the extension, not to chase the site. Windows
+// makes this the common case — yt-dlp cannot read Chrome / Edge / Brave cookies
+// there (App-Bound Encryption), so a pasted course URL never gets a session.
+// Returns `why` with that hint appended; unchanged when the job had a credential
+// (`authArgs`), when `why` is not a login failure, and when `url` is YouTube,
+// where the extension's login is never sent.
+QString withCredentialHint(const QString &why, const QStringList &authArgs, const QUrl &url);
 
 } // namespace nexa

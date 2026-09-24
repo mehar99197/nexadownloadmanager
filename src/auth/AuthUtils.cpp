@@ -1,6 +1,7 @@
 #include "auth/AuthUtils.h"
 
 #include <QRegularExpression>
+#include <QUrl>
 
 namespace nexa {
 
@@ -28,17 +29,59 @@ QString authReasonFromYtDlpLine(const QString &line)
                        "giving up after|content too short"),
         QRegularExpression::CaseInsensitiveOption);
     if (const auto m = httpRe.match(line); m.hasMatch()) {
+        // yt-dlp ships inside Nexa and changes only with a Nexa update, so a stale
+        // one is fixed from Help → Check for updates…, not by "updating yt-dlp".
+        // At most 160 characters: YtDlpGrabber cuts a reason there, and the menu
+        // path is the part that must survive.
         if (m.captured(1) == QLatin1String("403") && mediaStageRe.match(line).hasMatch())
-            return QStringLiteral("media server refused the download (HTTP 403) — the "
-                                  "stream URL expired or yt-dlp is out of date. Update "
-                                  "yt-dlp, then retry (this is not a login problem)");
+            return QStringLiteral("media server refused the download (HTTP 403), not a "
+                                  "login problem: the stream URL expired or Nexa's yt-dlp "
+                                  "is out of date. Retry, then Help → Check for updates…");
         return QStringLiteral("authentication required (HTTP %1)").arg(m.captured(1));
     }
 
+    // YouTube refusing one video: private, members-only or age-gated. yt-dlp
+    // prints YouTube's own reason under its "[youtube]" tag, adding "Use
+    // --cookies-from-browser or --cookies" whenever that reason says "sign in".
+    // Each needs a signed-in YouTube session, and Nexa never sends YouTube one
+    // (isYouTubeHost), so "provide cookies" and a sign-in are both wrong here.
+    // The age markers come from yt-dlp's own age-gate test (_is_agegated), with
+    // "inappropriate" kept to YouTube's full phrase. Checked before the bot
+    // check: "Sign in to confirm your age" starts like it.
+    static const QRegularExpression youtubeRe(QStringLiteral("\\[youtube[^\\]]*\\]"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    if (youtubeRe.match(line).hasMatch()) {
+        static const QRegularExpression privateRe(QStringLiteral("private video"),
+                                                  QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression membersRe(
+            QStringLiteral("members[- ]only|this channel's members"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression ageRe(
+            QStringLiteral("confirm your age|age[- ]restricted|inappropriate for some users"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (privateRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is private — Nexa never sends a YouTube "
+                                  "login, so it can download it only once the owner makes it "
+                                  "public or unlisted");
+        if (membersRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is for channel members only — Nexa never "
+                                  "sends a YouTube login, so it can't download it");
+        if (ageRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is age-restricted — YouTube wants a "
+                                  "signed-in adult account, and Nexa never sends a YouTube "
+                                  "login, so it can't download it");
+    }
+
+    // YouTube's bot check ("Sign in to confirm you're not a bot"). It asks for a
+    // sign-in, but Nexa never sends YouTube a cookie (isYouTubeHost), so the
+    // message offers what works without one: retrying later or from another
+    // network, and the newer yt-dlp that a Nexa update brings.
     static const QRegularExpression botRe(QStringLiteral("Sign in to confirm you.*bot"),
                                           QRegularExpression::CaseInsensitiveOption);
     if (botRe.match(line).hasMatch())
-        return QStringLiteral("sign-in required — re-export cookies");
+        return QStringLiteral("YouTube asked to confirm you're not a bot — retry later or "
+                              "from another network, and check for a Nexa update "
+                              "(Help → Check for updates…)");
 
     // Windows-specific: yt-dlp can't read cookies straight from Chrome/Edge/Brave
     // because Chromium's App-Bound Encryption (Chrome 127+) blocks DPAPI decryption
@@ -90,6 +133,17 @@ QString authReasonFromYtDlpLine(const QString &line)
         return QStringLiteral("DRM-protected video — cannot be downloaded");
 
     return QString();
+}
+
+QString withCredentialHint(const QString &why, const QStringList &authArgs, const QUrl &url)
+{
+    static const QRegularExpression loginRe(
+        QStringLiteral("authentication required|login required|sign-in required"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (!authArgs.isEmpty() || isYouTubeHost(url.host()) || !loginRe.match(why).hasMatch())
+        return why;
+    return why + QStringLiteral(" — use the Nexa button on the page in your browser "
+                                "so your login is sent with it");
 }
 
 } // namespace nexa

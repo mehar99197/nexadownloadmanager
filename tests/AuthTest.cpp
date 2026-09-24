@@ -280,6 +280,106 @@ int main(int argc, char **argv)
               .contains("authentication required"),
           "extractor-stage 403 is still an authentication failure");
 
+    // ---- Every fix a message names is one the user can perform ------------
+    // yt-dlp ships inside Nexa and changes only with a Nexa update, so a stale
+    // one is fixed from Help → Check for updates…, never by "updating yt-dlp".
+    const QString staleYtDlp = authReasonFromYtDlpLine(
+        QStringLiteral("ERROR: unable to download video data: HTTP Error 403: Forbidden"));
+    CHECK(!staleYtDlp.contains("Update yt-dlp"),
+          "media-stage 403 does not ask the user to update yt-dlp by hand");
+    CHECK(staleYtDlp.contains(QStringLiteral("Help → Check for updates…")),
+          "media-stage 403 points at Help → Check for updates…");
+
+    // YouTube's bot check, as yt-dlp prints it. Nexa sends YouTube no cookie at
+    // all (see the exclusion safeguard above), so re-exporting one cannot help.
+    const QUrl youtube(QStringLiteral("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+    const QString botCheck = authReasonFromYtDlpLine(QStringLiteral(
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you’re not a bot. Use "
+        "--cookies-from-browser or --cookies for the authentication."));
+    CHECK(botCheck.contains("YouTube"), "bot check is reported as YouTube's");
+    CHECK(!botCheck.contains("cookie", Qt::CaseInsensitive),
+          "bot check does not mention cookies, which YouTube never gets");
+    CHECK(botCheck.contains("later") && botCheck.contains("another network"),
+          "bot check says to retry later or from another network");
+    CHECK(botCheck.contains(QStringLiteral("Help → Check for updates…")),
+          "bot check points at Help → Check for updates…");
+
+    // YtDlpGrabber cuts a reason at 160 characters before showing it; the
+    // control a message points at is its last words, so it must fit.
+    CHECK(staleYtDlp.length() <= 160 && botCheck.length() <= 160,
+          "both reasons fit the grabber's 160-character cut");
+
+    // The "start it from the page" hint is true only where the extension's
+    // login is used: a login site whose job carried no credential. Never on
+    // YouTube, whose login Nexa never sends.
+    const QUrl udemy(QStringLiteral("https://www.udemy.com/course/x/learn/lecture/1"));
+    const QString loginWhy = QStringLiteral("login required — provide cookies or a token");
+    CHECK(withCredentialHint(loginWhy, {}, udemy).contains("use the Nexa button on the page"),
+          "login site, no credential on the job: hint to start it from the page");
+    CHECK(withCredentialHint(loginWhy, {QStringLiteral("--cookies"), QStringLiteral("c.txt")}, udemy)
+              == loginWhy,
+          "login site whose job already carried a credential: no hint");
+    CHECK(withCredentialHint(loginWhy, {}, youtube) == loginWhy,
+          "YouTube: no hint, its login is never sent");
+    CHECK(withCredentialHint(QStringLiteral("authentication required (HTTP 403)"), {},
+                             QUrl(QStringLiteral("https://youtu.be/dQw4w9WgXcQ")))
+              == QStringLiteral("authentication required (HTTP 403)"),
+          "youtu.be: no hint either");
+    CHECK(withCredentialHint(botCheck, {}, youtube) == botCheck,
+          "bot check reaches the user without a login hint");
+    CHECK(withCredentialHint(staleYtDlp, {}, udemy) == staleYtDlp,
+          "a reason that is not a login failure gets no hint");
+
+    // YouTube refusing one video, as yt-dlp 2026.08.19 prints it: YouTube's own
+    // reason, plus yt-dlp's cookie advice whenever that reason says "sign in".
+    // All three need a signed-in YouTube session, which Nexa never sends, so
+    // "provide cookies" is wrong for every one of them.
+    const QString ytCookieAdvice = QStringLiteral(
+        " Use --cookies-from-browser or --cookies for the authentication. See  "
+        "https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to "
+        "manually pass cookies. Also see  "
+        "https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips "
+        "on effectively exporting YouTube cookies");
+    const QString privateVideo = authReasonFromYtDlpLine(QStringLiteral(
+        "ERROR: [youtube] dQw4w9WgXcQ: Private video. Sign in if you've been granted access "
+        "to this video.") + ytCookieAdvice);
+    const QString membersOnly = authReasonFromYtDlpLine(QStringLiteral(
+        "ERROR: [youtube] dQw4w9WgXcQ: Join this channel to get access to members-only content "
+        "like this video, and other exclusive perks."));
+    const QString ageGated = authReasonFromYtDlpLine(QStringLiteral(
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm your age. This video may be "
+        "inappropriate for some users.") + ytCookieAdvice);
+    CHECK(privateVideo.contains("private") && privateVideo.contains("owner")
+              && privateVideo.contains("public or unlisted"),
+          "private YouTube video: only its owner making it public or unlisted helps");
+    CHECK(membersOnly.contains("members only"), "members-only YouTube video is named as such");
+    CHECK(ageGated.contains("age-restricted"),
+          "age-gated YouTube video is named as age-restricted, not as a bot check");
+    for (const QString &why : {privateVideo, membersOnly, ageGated}) {
+        CHECK(why.contains("YouTube") && why.contains("never sends a YouTube login"),
+              "a YouTube refusal says Nexa never sends a YouTube login");
+        CHECK(!why.contains("cookie", Qt::CaseInsensitive) && !why.contains("login required"),
+              "a YouTube refusal asks for no cookies or login");
+        CHECK(why.length() <= 160, "a YouTube refusal fits the grabber's 160-character cut");
+        CHECK(withCredentialHint(why, {}, youtube) == why,
+              "a YouTube refusal reaches the user without a login hint");
+    }
+    // The same words from a login site keep the login advice: there Nexa does
+    // send the login it holds.
+    CHECK(authReasonFromYtDlpLine(QStringLiteral("ERROR: [vimeo] 76979871: Private video"))
+              .contains("login required"),
+          "a private video on a login site still says login required");
+
+    // The YouTube test behind both the credential exclusion and the hint:
+    // the host itself or a dot-boundary subdomain, nothing that merely ends alike.
+    CHECK(isYouTubeHost("youtube.com") && isYouTubeHost("www.youtube.com")
+              && isYouTubeHost("music.youtube.com") && isYouTubeHost("youtu.be")
+              && isYouTubeHost("WWW.YouTube.COM"),
+          "YouTube hosts are recognised, case-insensitively");
+    CHECK(!isYouTubeHost("notyoutube.com") && !isYouTubeHost("youtube.com.example.net")
+              && !isYouTubeHost("www.udemy.com") && !isYouTubeHost(QString()),
+          "look-alike and unrelated hosts are not YouTube");
+
     std::printf("\nAUTH TESTS: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
