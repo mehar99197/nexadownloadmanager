@@ -93,11 +93,28 @@ describe('Billing — a running trial', () => {
 describe('Billing — the other plans', () => {
   it('a paid plan cancels its subscription instead', async () => {
     renderBilling({
-      plan: 'pro', status: 'active', trial: false,
+      plan: 'pro', status: 'active', trial: false, billed: true,
       expiryDate: '2027-01-01T00:00:00.000Z', seats: 1, cancelAtPeriodEnd: false,
     });
     expect(await screen.findByRole('button', { name: /cancel subscription/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /manage billing/i })).toBeInTheDocument();
+    expect(screen.getByText('Renews')).toBeInTheDocument();
     expect(screen.queryByTestId('end-trial')).toBeNull();
+  });
+
+  // An admin-granted plan has no Stripe subscription behind it. It used to read
+  // "Renews" beside an empty payment history, with a cancel button and a portal
+  // button that answered an error.
+  it('a plan granted without a payment says when it ends, and offers nothing to cancel', async () => {
+    renderBilling({
+      plan: 'pro', status: 'active', trial: false, billed: false,
+      expiryDate: '2026-10-15T00:00:00.000Z', seats: 1, cancelAtPeriodEnd: false,
+    });
+    expect(await screen.findByText(/this plan is not billed/i)).toBeInTheDocument();
+    expect(screen.getByText('Active until')).toBeInTheDocument();
+    expect(screen.queryByText('Renews')).toBeNull();
+    expect(screen.queryByRole('button', { name: /cancel subscription/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /manage billing/i })).toBeNull();
   });
 
   it('a Team member sees whose plan it is, with nothing to pay or cancel', async () => {
@@ -119,5 +136,17 @@ describe('Billing — the other plans', () => {
     renderBilling({ plan: 'free', status: 'active', trial: false, seats: 1, cancelAtPeriodEnd: false });
     expect(await screen.findByText(/nothing to cancel/i)).toBeInTheDocument();
     expect(screen.queryByTestId('end-trial')).toBeNull();
+  });
+
+  // Free's stored expiry is a century out. Printed, it read "Expires
+  // <2126>" right above "The free plan never expires".
+  it('Free prints no expiry date', async () => {
+    renderBilling({
+      plan: 'free', status: 'active', trial: false, seats: 1, cancelAtPeriodEnd: false,
+      expiryDate: '2126-09-23T00:00:00.000Z',
+    });
+    expect(await screen.findByText(/never expires/i)).toBeInTheDocument();
+    expect(screen.queryByText('Expires')).toBeNull();
+    expect(screen.queryByText(/2126/)).toBeNull();
   });
 });

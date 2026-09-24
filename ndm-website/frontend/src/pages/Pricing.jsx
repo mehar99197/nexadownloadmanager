@@ -9,6 +9,7 @@ import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import { lastRead, readPublic } from '../api/reads';
+import { isBillingOpen } from '../hooks/useBillingOpen';
 import Skeleton, { useArrival } from '../components/Skeleton';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
@@ -189,9 +190,8 @@ export default function Pricing() {
 
   // A revisit starts from the last answer (api/reads.js) and asks again underneath.
   const [plans, setPlans] = useState(() => lastRead('/subscription/plans') ?? null);
-  // 'live' | 'mock' | 'disabled' — from /subscription/plans. Absent (an older
-  // API) counts as open, which is what the page always assumed before.
-  const billingOpen = !plans || plans.billing !== 'disabled';
+  // 'live' | 'mock' | 'disabled' — from /subscription/plans.
+  const billingOpen = isBillingOpen(plans);
   const [billingCycle, setBillingCycle] = useState('yearly');
   const [loading, setLoading] = useState(() => lastRead('/subscription/plans') === undefined);
   const arrive = useArrival(loading);
@@ -347,28 +347,45 @@ export default function Pricing() {
             </div>
           )}
 
-          <form onSubmit={handleApplyCoupon} className="mx-auto mt-6 flex max-w-md items-center gap-2">
-            <label htmlFor="coupon" className="sr-only">Promotion code</label>
-            <input
-              id="coupon"
-              value={coupon}
-              onChange={(e) => {
-                setCoupon(e.target.value);
-                setCouponState({ status: 'idle', message: '' });
-              }}
-              placeholder="Promotion code (optional)"
-              autoComplete="off"
-              className="input-field flex-1"
-            />
-            <Button
-              type="submit"
-              variant="ghost"
-              disabled={!coupon.trim() || couponState.status === 'checking'}
-            >
-              {couponState.status === 'checking' ? 'Checking…' : 'Apply'}
-            </Button>
-          </form>
-          {couponState.message && (
+          {/* The promo field's slot, so the toggle above stays where the
+              outline drew it. With billing off there is no checkout for a
+              code to apply to; the slot says so instead, BEFORE the prices —
+              it used to be a 12px footnote under the cards, reached only after
+              a reader had flipped the cycle and tried a code. */}
+          {!billingOpen && (
+            <div role="note" className="note-warn mx-auto mt-6 max-w-2xl rounded-xl px-4 py-3 text-sm leading-6">
+              <p className="font-bold">Paid plans are not on sale yet.</p>
+              <p className="mt-1">
+                Every account can start the 7-day Pro trial with no card. Beyond that, nothing on
+                this page can be bought yet and nobody is charged — the prices below are what Pro
+                and Team will cost when payments open.
+              </p>
+            </div>
+          )}
+          {billingOpen && (
+            <form onSubmit={handleApplyCoupon} className="mx-auto mt-6 flex max-w-md items-center gap-2">
+              <label htmlFor="coupon" className="sr-only">Promotion code</label>
+              <input
+                id="coupon"
+                value={coupon}
+                onChange={(e) => {
+                  setCoupon(e.target.value);
+                  setCouponState({ status: 'idle', message: '' });
+                }}
+                placeholder="Promotion code (optional)"
+                autoComplete="off"
+                className="input-field flex-1"
+              />
+              <Button
+                type="submit"
+                variant="ghost"
+                disabled={!coupon.trim() || couponState.status === 'checking'}
+              >
+                {couponState.status === 'checking' ? 'Checking…' : 'Apply'}
+              </Button>
+            </form>
+          )}
+          {billingOpen && couponState.message && (
             <p
               role="status"
               className={`mx-auto mt-2 max-w-md text-center text-sm ${
@@ -394,21 +411,14 @@ export default function Pricing() {
             ))}
           </div>
 
-          <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
-            {billingOpen ? (
-              <>
-                Every account gets a 7-day Pro trial — no card needed. Payment
-                processing is handled securely by Stripe. Cancel anytime from your
-                billing dashboard; refunds within 14 days of a charge, see the{' '}
-                <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
-              </>
-            ) : (
-              <>
-                Every account gets a 7-day Pro trial — no card needed. Paid plans
-                open soon; until then nothing can be bought here and nobody is charged.
-              </>
-            )}
-          </p>
+          {billingOpen && (
+            <p className="mx-auto mt-8 max-w-lg text-center text-xs leading-6 text-zinc-500">
+              Every account gets a 7-day Pro trial — no card needed. Payment
+              processing is handled securely by Stripe. Cancel anytime from your
+              billing dashboard; refunds within 14 days of a charge, see the{' '}
+              <a href="/terms" className="text-slate-300 hover:text-brand-300">terms</a>.
+            </p>
+          )}
         </div>
       ) : null}
     </Section>

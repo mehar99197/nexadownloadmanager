@@ -222,7 +222,7 @@ export default function Billing() {
     <Section>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-4xl font-extrabold tracking-tight text-white">Keep your <span className="text-gradient">flow moving.</span></h1>
+          <h1 className="text-4xl font-extrabold tracking-tight text-white">Plan &amp; <span className="text-gradient">billing.</span></h1>
           <p className="mt-2 text-sm text-slate-400">
             Manage your subscription and payment history.
           </p>
@@ -264,10 +264,18 @@ export default function Billing() {
                   {subStatus.cancelAtPeriodEnd ? 'Ending' : subStatus.status}
                 </span>
               </div>
-              {subStatus.expiryDate && (
+              {/* Free has no date worth printing: its stored expiry is a
+                  century out, and "Expires 2126" sat right above "The free
+                  plan never expires". */}
+              {subStatus.expiryDate && subStatus.plan !== 'free' && (
                 <div className="flex items-center justify-between">
+                  {/* Only a Stripe subscription renews. A plan granted without
+                      a payment used to read "Renews" here beside an empty
+                      payment history, with no card that could renew it. */}
                   <span className="text-sm text-zinc-400">
-                    {subStatus.cancelAtPeriodEnd ? 'Ends' : subStatus.plan === 'free' ? 'Expires' : 'Renews'}
+                    {subStatus.cancelAtPeriodEnd ? 'Ends'
+                      : subStatus.trial ? 'Trial ends'
+                      : subStatus.billed ? 'Renews' : 'Active until'}
                   </span>
                   <span className="text-sm text-white">
                     {formatDate(subStatus.expiryDate) || '—'}
@@ -280,13 +288,17 @@ export default function Billing() {
                   <span className="text-sm text-white">{subStatus.seats}</span>
                 </div>
               )}
-              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam && (
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam
+                && (subStatus.billed || subStatus.cancelAtPeriodEnd) && (
                 <div className="flex flex-wrap gap-3 border-t border-[var(--color-surface-border)] pt-4">
                   {/* Stripe's own portal handles cards, invoices and receipts —
-                      things we deliberately never store ourselves. */}
-                  <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
-                    {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
-                  </Button>
+                      things we deliberately never store ourselves. A plan with
+                      no Stripe subscription has none of those to show. */}
+                  {subStatus.billed && (
+                    <Button variant="ghost" onClick={handlePortal} disabled={portalBusy}>
+                      {portalBusy ? 'Opening…' : 'Manage billing & invoices'}
+                    </Button>
+                  )}
                   {subStatus.cancelAtPeriodEnd ? (
                     <Button onClick={handleResume} disabled={cancelling}>
                       {cancelling ? 'Resuming…' : 'Resume subscription'}
@@ -302,6 +314,14 @@ export default function Billing() {
                     </Button>
                   )}
                 </div>
+              )}
+              {subStatus.status === 'active' && subStatus.plan !== 'free' && !subStatus.trial && !subStatus.viaTeam
+                && !subStatus.billed && !subStatus.cancelAtPeriodEnd && (
+                <p className="border-t border-[var(--color-surface-border)] pt-4 text-xs leading-6 text-slate-500">
+                  This plan is not billed: it was added to your account without a payment, so
+                  nothing renews and there is nothing to cancel. It stays active until{' '}
+                  {formatDate(subStatus.expiryDate) || 'its end date'}.
+                </p>
               )}
               {subStatus.cancelAtPeriodEnd && (
                 <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-xs leading-6 text-amber-200">

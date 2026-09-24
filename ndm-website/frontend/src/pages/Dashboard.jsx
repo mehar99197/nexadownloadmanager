@@ -6,6 +6,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import api, { unwrap } from '../api/client';
 import { clearPendingTrial, hasPendingTrial, startTrial, trialDaysLeft } from '../api/trial';
 import usePageMeta from '../hooks/usePageMeta';
+import useBillingOpen from '../hooks/useBillingOpen';
 import { formatDate } from '../utils/formatDate';
 import Section from '../components/Section';
 import Card from '../components/Card';
@@ -50,7 +51,18 @@ function CardSkeleton({ label, lines = 3, action = true }) {
   );
 }
 
-function LicenseCard({ license, onRotated, className = '' }) {
+/**
+ * What the date on the key means. "Expires" was printed for every plan, while
+ * Billing said "Renews" for the same date — and only a Stripe subscription
+ * renews at all; a trial or an admin-granted plan just ends.
+ */
+function expiryLabel(license, cancelling) {
+  if (license.trial) return 'Trial ends';
+  if (cancelling) return 'Ends';
+  return license.billed ? 'Renews' : 'Active until';
+}
+
+function LicenseCard({ license, onRotated, cancelling = false, className = '' }) {
   const [copied, setCopied] = useState(false);
   const [keyShown, setKeyShown] = useState(false);
   const [rotating, setRotating] = useState(false);
@@ -154,7 +166,7 @@ function LicenseCard({ license, onRotated, className = '' }) {
         )}
         {license.expiryDate && (
           <span>
-            Expires:{' '}
+            {expiryLabel(license, cancelling)}:{' '}
             <span className="font-medium text-zinc-300">
               {formatDate(license.expiryDate) || '—'}
             </span>
@@ -517,7 +529,7 @@ function TeamCard({ onChanged }) {
   );
 }
 
-function TrialBanner({ subscription, onStart, starting }) {
+function TrialBanner({ subscription, onStart, starting, billingOpen }) {
   if (subscription?.trial) {
     const days = trialDaysLeft(subscription.trialEndsAt);
     return (
@@ -538,7 +550,13 @@ function TrialBanner({ subscription, onStart, starting }) {
           <Link to="/billing" className="text-sm text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline">
             End trial
           </Link>
-          <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+          {/* "Upgrade" only while there is something to buy: with billing off,
+              Pricing answers it with "Paid plans coming soon". */}
+          {billingOpen ? (
+            <Link to="/pricing" className="btn btn-primary">Upgrade</Link>
+          ) : (
+            <Link to="/pricing" className="btn btn-ghost">Compare plans</Link>
+          )}
         </div>
       </div>
     );
@@ -566,6 +584,7 @@ export default function Dashboard() {
 
   const { user, refreshMe } = useAuth();
   const toast = useToast();
+  const billingOpen = useBillingOpen();
   const [license, setLicense] = useState(null);
   const [loadingLicense, setLoadingLicense] = useState(true);
   const licenseArrives = useArrival(loadingLicense);
@@ -634,7 +653,14 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {!viaTeam && <TrialBanner subscription={subscription} onStart={handleStartTrial} starting={startingTrial} />}
+      {!viaTeam && (
+        <TrialBanner
+          subscription={subscription}
+          onStart={handleStartTrial}
+          starting={startingTrial}
+          billingOpen={billingOpen === true}
+        />
+      )}
 
       <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -692,7 +718,12 @@ export default function Dashboard() {
         {loadingLicense ? (
           <CardSkeleton label="Loading your license" />
         ) : (
-          <LicenseCard license={license} onRotated={loadLicense} className={licenseArrives} />
+          <LicenseCard
+            license={license}
+            onRotated={loadLicense}
+            cancelling={Boolean(subscription?.cancelAtPeriodEnd)}
+            className={licenseArrives}
+          />
         )}
         <DevicesCard />
         <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
@@ -703,8 +734,10 @@ export default function Dashboard() {
           <h3 className="font-semibold text-white">Quick actions</h3>
           <div className="mt-4 flex flex-wrap gap-3">
             <Link to="/download" className="btn btn-primary">Download the app</Link>
+            {/* An upgrade is only offered while one can be bought. With billing
+                off, "Upgrade to Team" led to a Team card reading "Coming soon". */}
             <Link to="/pricing" className="btn btn-ghost">
-              {subscription?.plan === 'team' ? 'Compare plans'
+              {billingOpen !== true || subscription?.plan === 'team' ? 'Compare plans'
                 : subscription?.plan === 'pro' ? 'Upgrade to Team' : 'Upgrade plan'}
             </Link>
             <Link to="/docs" className="btn btn-ghost">Docs</Link>

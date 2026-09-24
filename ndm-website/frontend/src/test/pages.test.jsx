@@ -340,7 +340,10 @@ describe('Pricing while billing is disabled', () => {
     expect(await screen.findByText(/^coming soon$/i)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /get team/i })).toBeNull();
     expect(screen.queryByText(/handled securely by Stripe/i)).toBeNull();
-    expect(screen.getByText(/paid plans open soon/i)).toBeInTheDocument();
+    // Said before the prices, in the note where the promo field would be —
+    // there is no checkout for a code to apply to.
+    expect(screen.getByRole('note')).toHaveTextContent(/paid plans are not on sale yet/i);
+    expect(screen.queryByLabelText(/promotion code/i)).toBeNull();
     // The free trial needs no card and keeps working.
     expect(screen.getByRole('link', { name: /start 7-day free trial/i })).toHaveAttribute('href', '/register?trial=1');
   });
@@ -350,6 +353,8 @@ describe('Pricing while billing is disabled', () => {
     expect(await screen.findByRole('link', { name: /get team/i })).toBeInTheDocument();
     expect(screen.getByText(/handled securely by Stripe/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /coming soon/i })).toBeNull();
+    expect(screen.getByLabelText(/promotion code/i)).toBeInTheDocument();
+    expect(screen.queryByRole('note')).toBeNull();
   });
 });
 
