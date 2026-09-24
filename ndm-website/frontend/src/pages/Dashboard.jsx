@@ -573,7 +573,7 @@ function TrialBanner({ subscription, onStart, starting, billingOpen }) {
       <div className="mt-6 flex flex-col gap-3 rounded-xl border border-brand-400/30 bg-brand-400/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-brand-100">
           <span className="font-bold text-white">Try Pro free for 7 days.</span>{' '}
-          Unlimited concurrent downloads and AI rename — no card needed.
+          Up to 32 downloads at once and AI rename — no card needed.
         </div>
         <Button onClick={onStart} disabled={starting}>
           {starting ? 'Starting…' : 'Start your free 7-day Pro trial'}

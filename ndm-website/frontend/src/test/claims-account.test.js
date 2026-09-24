@@ -50,6 +50,14 @@ describe('account pages — claims match the code', () => {
     expect(dashboard).toMatch(/Quitting Nexa frees its seat at once/);
   });
 
+  // A paid plan's cap is the "Max simultaneous downloads" setting, 1 to 32
+  // (SettingsDialog.cpp; DownloadEngine.cpp), not unlimited.
+  it('does not sell the trial as unlimited downloads', () => {
+    const dashboard = page('Dashboard.jsx');
+    expect(dashboard).not.toMatch(/Unlimited concurrent downloads/);
+    expect(dashboard).toMatch(/Up to 32 downloads at once/);
+  });
+
   it('says what leaving a team does to a computer on the team key', () => {
     const dashboard = page('Dashboard.jsx');
     expect(dashboard).not.toMatch(/and the app returns to your own plan\.'/);
