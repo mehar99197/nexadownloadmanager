@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api, { unwrap } from '../api/client';
 import { startTrial } from '../api/trial';
 import { useAuth } from '../context/AuthContext';
@@ -75,6 +75,10 @@ function resolveCta(plan, user, billingOpen = true) {
   if (currentPlan === 'team') return { label: 'Current plan', action: 'none', current: true };
   if (!billingOpen) return { label: 'Coming soon', action: 'none' };
   if (!user) return { label: 'Get Team', action: 'link', to: '/register' };
+  // Someone Stripe already bills changes plan in Stripe's portal, reached from
+  // Billing. A checkout here would open a second subscription and charge both,
+  // and the server refuses it (409 ALREADY_SUBSCRIBED).
+  if (sub?.billed) return { label: 'Manage billing', action: 'link', to: '/billing' };
   return { label: 'Get Team', action: 'checkout' };
 }
 
@@ -199,6 +203,7 @@ export default function Pricing() {
   const [coupon, setCoupon] = useState('');
   const [couponState, setCouponState] = useState({ status: 'idle', message: '' });
   const [error, setError] = useState('');
+  const [alreadyBilled, setAlreadyBilled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -243,6 +248,7 @@ export default function Pricing() {
       return;
     }
     setError('');
+    setAlreadyBilled(false);
     setChecking(true);
     try {
       const res = await api.post('/subscription/checkout', {
@@ -258,6 +264,14 @@ export default function Pricing() {
         navigate('/billing');
       }
     } catch (err) {
+      // The account is already paying and this page did not know (a status
+      // read before the subscription started). Point at the one place plan
+      // changes happen, and refresh so the buttons stop offering checkout.
+      if (err?.response?.data?.error?.code === 'ALREADY_SUBSCRIBED') {
+        setAlreadyBilled(true);
+        refreshMe().catch(() => {});
+        return;
+      }
       const msg =
         err?.response?.data?.error?.message ||
         err?.message ||
@@ -344,6 +358,14 @@ export default function Pricing() {
           {error && (
             <div className="mx-auto mt-6 max-w-md rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-center text-sm text-red-300">
               {error}
+            </div>
+          )}
+
+          {alreadyBilled && (
+            <div role="alert" className="note-warn mx-auto mt-6 max-w-md rounded-lg px-4 py-2.5 text-center text-sm leading-6">
+              This account already has a paid plan, so a second checkout would charge you twice.
+              Change plans with <span className="font-semibold">Manage billing</span> on the{' '}
+              <Link to="/billing" className="font-semibold underline underline-offset-2">Billing page</Link>.
             </div>
           )}
 
