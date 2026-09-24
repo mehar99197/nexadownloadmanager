@@ -39,9 +39,12 @@ const Payment = {
 
   async listRecent(limit = 10) {
     const limitNumber = Math.min(200, Math.max(1, Number(limit) || 10));
+    // LEFT JOIN: a payment outlives a deleted account (user_id is set NULL,
+    // not cascaded), and it still belongs in the list and in the totals.
     return query(
-      `SELECT p.*, u.email AS userEmail, u.name AS userName
-       FROM payments p JOIN users u ON u.id = p.user_id
+      `SELECT p.*, u.email AS userEmail,
+              CASE WHEN u.id IS NULL THEN 'Deleted account' ELSE u.name END AS userName
+       FROM payments p LEFT JOIN users u ON u.id = p.user_id
        ORDER BY p.created_at DESC LIMIT ${limitNumber}`
     );
   },

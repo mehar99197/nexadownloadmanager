@@ -55,8 +55,8 @@ const auditQuerySchema = {
     .strict(),
 };
 
-// Deleting an account is irreversible and cascades to its subscriptions,
-// payments and reviews, so the caller must retype the exact email to confirm.
+// Deleting an account is irreversible and cascades to its subscriptions
+// and reviews (payments are kept, detached), so the caller must retype the exact email to confirm.
 const deleteUserSchema = {
   params: z.object({ id: objectId }).strict(),
   body: z.object({ confirmEmail: z.string().trim().toLowerCase().email() }).strict(),
