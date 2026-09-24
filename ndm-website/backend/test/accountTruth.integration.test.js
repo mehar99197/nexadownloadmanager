@@ -217,6 +217,39 @@ test('account truth', async (t) => {
     assert.equal(goneNow.body.plan, 'free');
   });
 
+  await t.test("a banned owner's plan spares nobody when its key is replaced", async () => {
+    // Not reachable through the routes today — a banned owner cannot sign in to
+    // rotate, and the licence path answers `banned` before revokeBannedMembers —
+    // but the spare rule is the plan's own: utils/accountPlan.js stops a banned
+    // owner's plan entitling its members, so their machines hold no seat on it.
+    await srv.reset();
+    const Subscription = require('../src/models/Subscription');
+    const app = srv.client();
+    const site = srv.client();
+    const owner = await srv.makeUser(site, 'bannedowner');
+    const ownerId = await userId(owner.email);
+    await srv.query(
+      `UPDATE subscriptions SET plan = 'team', seats = 5, expiry_date = DATE_ADD(NOW(), INTERVAL 30 DAY)
+        WHERE user_id = ?`, [ownerId]);
+    const [sub] = await srv.query('SELECT id FROM subscriptions WHERE user_id = ?', [ownerId]);
+    const memberSite = srv.client();
+    const member = await srv.makeUser(memberSite, 'ofbannedowner');
+    await srv.query(
+      `INSERT INTO team_members (subscription_id, email, user_id, status, accepted_at)
+       VALUES (?, ?, ?, 'active', NOW())`, [sub.id, member.email, await userId(member.email)]);
+    const FP_OWNER = 'f6'.repeat(16);
+    const FP_MEMBER = 'a7'.repeat(16);
+    const ownerMachine = (await signIn(app, site, owner, FP_OWNER, 'Owner PC')).token;
+    const memberMachine = (await signIn(app, memberSite, member, FP_MEMBER, 'Member PC')).token;
+    for (const [token, fp] of [[ownerMachine, FP_OWNER], [memberMachine, FP_MEMBER]])
+      assert.equal((await app.post('/api/license/validate', { device_token: token, device_fingerprint: fp })).body.plan, 'team');
+
+    await srv.query('UPDATE users SET banned = 1 WHERE id = ?', [ownerId]);
+    const result = await Subscription.rotateLicenseKey(sub.id);
+    assert.equal(result.ok, true);
+    assert.equal(result.devicesRevoked, 2, "neither machine keeps a seat on a banned owner's plan");
+  });
+
   // ---------------------------------------------------------------- item 3
   await t.test('the public user count is customers who can sign in', async () => {
     await srv.reset();

@@ -31,9 +31,10 @@ const PAID_NOW = `s.status = 'active' AND s.plan IN ('pro', 'team') AND s.trial_
  * its team roster — and is that account still one the licence endpoints serve
  * (not banned, a customer)? routes/license.js refuses every other device token
  * (wrong fingerprint, banned, staff) before it reaches a seat, so a row that
- * fails this test can only have been taken with the key. Callers remove a
- * departing member from team_members BEFORE calling this, which is what makes
- * their machines lose the seat too.
+ * fails this test can only have been taken with the key. A banned owner's plan
+ * entitles nobody (utils/accountPlan.js), so nothing is spared on one. Callers
+ * remove a departing member from team_members BEFORE calling this, which is
+ * what makes their machines lose the seat too.
  */
 const REVOKE_KEY_SEATS_SQL = `
   UPDATE license_activations a
@@ -43,11 +44,14 @@ const REVOKE_KEY_SEATS_SQL = `
        SELECT 1
          FROM device_tokens t
          JOIN users u ON u.id = t.user_id
+         JOIN subscriptions s ON s.id = a.subscription_id
+         JOIN users o ON o.id = s.user_id
         WHERE t.device_fingerprint = a.device_fingerprint
           AND t.revoked_at IS NULL
           AND u.banned = 0 AND u.role = 'user'
+          AND o.banned = 0
           AND (
-            t.user_id = (SELECT s.user_id FROM subscriptions s WHERE s.id = a.subscription_id)
+            t.user_id = s.user_id
             OR t.user_id IN (
               SELECT m.user_id FROM team_members m
                WHERE m.subscription_id = a.subscription_id
