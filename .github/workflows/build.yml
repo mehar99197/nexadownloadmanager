@@ -31,7 +31,8 @@ permissions:
 #
 # yt-dlp publishes its own signed SHA2-256SUMS with each release, so that is
 # what we check against — a stronger chain of custody than a hash we copied.
-# BtbN and linuxdeploy publish no checksums, so their hashes are recorded here;
+# linuxdeploy publishes no checksums, and BtbN's checksums.sha256 sits in the
+# same release as the file it vouches for, so their hashes are recorded here;
 # bump the tag and the hash together.
 #
 # KEEP THESE FRESH. A pinned yt-dlp goes stale and stale yt-dlp means broken
@@ -46,15 +47,19 @@ env:
   # A release-branch build, not master: this one ships to users. ffmpeg 8.x also
   # carries the `allowed_segment_extensions` guard that stops a hostile HLS
   # playlist reading local files through a rewritten segment URI.
-  FFMPEG_TAG: 'autobuild-2026-09-08-23-15'
-  FFMPEG_ASSET: 'ffmpeg-n8.1.2-51-g7ba069f4f1-win64-gpl-8.1.zip'
-  FFMPEG_SHA256: '508400eb2ecfab27e2f0383817b54e2bf1946940a8aeda6fe3df9438ff511bf1'
+  # Pin a MONTH-END autobuild, the last one of its month. BtbN deletes daily
+  # builds after about two weeks but keeps each month's last build for about two
+  # years; a daily pin (autobuild-2026-09-08-23-15) vanished and every package
+  # job failed here with a 404.
+  FFMPEG_TAG: 'autobuild-2026-08-31-13-27'
+  FFMPEG_ASSET: 'ffmpeg-n8.1.2-50-g1a748fe2cd-win64-gpl-8.1.zip'
+  FFMPEG_SHA256: '273abb45f3f9f76c303e35ff39f5bb6c23c163ae65f6244a32b7d4a7f6cf0616'
   # Same release, same ffmpeg version, static Linux build. The .deb used to copy
   # the runner's apt /usr/bin/ffmpeg, which is dynamically linked against eight
   # libav*/libsw*/libpostproc libraries the package never shipped — see the
   # bundling step below.
-  FFMPEG_ASSET_LINUX: 'ffmpeg-n8.1.2-51-g7ba069f4f1-linux64-gpl-8.1.tar.xz'
-  FFMPEG_SHA256_LINUX: '04905bf1b10da0e53cd61e78ab284fd60125d1f1cd0a9e7681f7d73c8f3f3bed'
+  FFMPEG_ASSET_LINUX: 'ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-gpl-8.1.tar.xz'
+  FFMPEG_SHA256_LINUX: 'c733b4b2951e5957e15505f788b2c65a7a41b6da4b289e295852cc38079b4d2b'
   # Build-time only — these never reach a user's machine, but they DO execute on
   # a runner that holds the signing secrets.
   LINUXDEPLOY_TAG: '1-alpha-20251107-1'
@@ -62,11 +67,15 @@ env:
   LINUXDEPLOY_QT_TAG: '1-alpha-20250213-1'
   LINUXDEPLOY_QT_SHA256: '15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724'
 
+# Every job sets timeout-minutes at several times its normal run time. Without
+# one GitHub waits 6 hours, and a hung step (the macOS smoke test once launched
+# the whole app and never returned) held its runner for all of them.
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
     name: Build + .deb package (Ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -88,7 +97,12 @@ jobs:
           cmake --build build
 
       - name: Smoke test
-        run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+        timeout-minutes: 5
+        run: |
+          test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+          # Runs the binary for real: --version exits before a window or display
+          # is needed, so this proves every library it links resolves.
+          ./build/nexa --version
 
       # The package version comes from CMake's project() — the same number the
       # binary reports to the update feed — so a release bump is one edit, not
@@ -480,6 +494,7 @@ jobs:
   windows:
     name: Windows installer (MSYS2 + full torrent)
     runs-on: windows-latest
+    timeout-minutes: 45
     if: github.event_name != 'pull_request'
     defaults:
       run:
@@ -860,6 +875,8 @@ jobs:
   macos:
     name: macOS app bundle
     runs-on: macos-latest
+    # Notarisation waits on Apple's service, which can take a while on its own.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -885,10 +902,14 @@ jobs:
           cmake --build build
 
       - name: Smoke test
+        timeout-minutes: 5
         run: |
           test -d build/nexa.app && echo "bundle OK"
           test -x build/nexa-host && echo "host OK"
-          ./build/nexa.app/Contents/MacOS/nexa --help 2>/dev/null || true
+          # --version prints and exits before any window, socket or hook exists.
+          # This used to run --help, which the app did not handle: it launched in
+          # full and the job sat here until GitHub's 6-hour limit.
+          ./build/nexa.app/Contents/MacOS/nexa --version
 
       - name: Run unit tests
         run: |
@@ -1014,6 +1035,7 @@ jobs:
     name: Verify .deb is self-contained (clean container)
     needs: linux
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: ubuntu:24.04
     defaults:
       run:
@@ -1082,6 +1104,7 @@ jobs:
   quality:
     name: Tests, audits, and extension packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # The website's own checks — backend unit + integration tests against a
     # MariaDB service, frontend and admin lint/test/build/audit — live in
     # website.yml, which runs on every branch that touches ndm-website/, not
