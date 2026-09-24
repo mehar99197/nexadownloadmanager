@@ -220,13 +220,15 @@ describe('the download list', () => {
   });
 });
 
-// Open streams go to FFmpeg (HlsGrabber::muxViaFfmpegDirect); only a stream
-// behind a login is fetched segment by segment, in parallel, by Nexa.
+// Streams are copied, never re-encoded (HlsGrabber.cpp `-c copy`). Open streams go to
+// FFmpeg (HlsGrabber::muxViaFfmpegDirect); only an HLS stream with a credential is
+// fetched segment by segment by Nexa, 16 at a time by default (SettingsDialog.cpp).
 describe('video grabber', () => {
-  it('says only login-gated streams are fetched in parallel by Nexa', () => {
+  it('says only login-gated HLS streams are fetched in parallel by Nexa', () => {
     nowhere(/fetches its segments in parallel|fetched in parallel and muxed/);
-    says('featureShell', 'the ones behind your login are fetched in parallel');
-    says('prerender', 'through FFmpeg, or in parallel when the stream needs your login');
+    says('featureShell', 'an HLS stream behind your login is fetched in parallel');
+    says('prerender', 'into a single MP4 without re-encoding');
+    says('prerender', 'Nexa does, 16 at a time, for an HLS stream that needs your cookies');
   });
 });
 

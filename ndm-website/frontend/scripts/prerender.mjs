@@ -32,7 +32,7 @@ const ROUTES = [
   ['/compare', 'Nexa vs IDM vs FDM', 'An honest feature comparison of Nexa, Internet Download Manager, Free Download Manager and JDownloader.'],
   ['/features', 'Features', 'In-depth guides to segmented acceleration, the HLS/DASH video grabber, YouTube via yt-dlp, BitTorrent, the browser extension, scheduling and the phone dashboard.'],
   ['/features/acceleration', 'Segmented acceleration', 'How Nexa splits a file across up to 32 connections on Pro (16 on Free), re-splits the biggest range left as connections finish, and resumes exactly where it stopped.'],
-  ['/features/video-grabber', 'Video grabber', 'How Nexa finds the HLS or DASH stream behind a web player and saves it as a single MP4: through FFmpeg, or in parallel when the stream needs your login.'],
+  ['/features/video-grabber', 'Video grabber', 'How Nexa turns an HLS or DASH stream into a single MP4 without re-encoding: FFmpeg fetches the segments, or Nexa does, 16 at a time, for an HLS stream that needs your cookies.'],
   ['/features/youtube-sites', 'YouTube & video sites', 'Nexa drives yt-dlp for YouTube and other supported video sites: quality picker, playlists and subtitles. yt-dlp is updated with each Nexa release.'],
   ['/features/bittorrent', 'BitTorrent', 'Magnets and .torrent files in the same queue as everything else, on a real libtorrent engine with DHT, PEX and seed-ratio control.'],
   ['/features/browser-extension', 'Browser extension', 'The local bridge for Chrome, Edge, Brave and Firefox, every permission explained, and how to install it today.'],

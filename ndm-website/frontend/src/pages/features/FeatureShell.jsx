@@ -24,7 +24,7 @@ export const FEATURE_NAV = [
   {
     to: '/features/video-grabber',
     label: 'Video grabber',
-    blurb: 'HLS and DASH streams detected on the page and saved as one file; the ones behind your login are fetched in parallel.',
+    blurb: 'HLS and DASH streams detected on the page and saved as one file; an HLS stream behind your login is fetched in parallel.',
   },
   {
     to: '/features/youtube-sites',
