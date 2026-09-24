@@ -2501,6 +2501,60 @@ a few seconds later. That is the CDN's bot protection answering automated
 traffic, not anything this change touches — but a future automated check
 that fails on its very first request may be meeting it.
 
+# A sidebar that folds away — 2026-09-23
+
+Asked for once the panel's sidebar was sticky: "make this sidebar
+collapsible, so it opens and closes; as it is, it just stays open." Of the
+two usual answers, the owner chose a rail of icons over hiding the sidebar
+completely, so every screen stays one click away when it is folded.
+
+### What changed
+
+| | |
+|---|---|
+| The fold | A toggle in the topbar (☰, where the phone's menu button already was) folds the desktop sidebar from 240px to a 64px rail of icons, and back. It takes 200ms, and happens at once under reduced motion. The screen gets the 176px back. |
+| Only the width moves | The logo, the icons and the logout mark sat in three different columns, 38, 32 and 36px from the edge. They now share one at 32px, and the rail is 64px wide, so folding changes only the width and whether the labels are drawn. Measured on every frame of a fold: the icons never move. |
+| Names | Folded, each link keeps its label as its accessible name: visually hidden, not removed. The icon glyphs stay `aria-hidden`, and so now does the logout glyph, which used to be read out as part of that button's name. The toggle uses `aria-pressed` rather than `aria-expanded`, because folding hides nothing from a screen reader. |
+| An icon's name, beside it | Hovering over an icon, or tabbing to it, shows its name beside the rail (`RailTip.jsx`). The name is drawn in a portal on `<body>`, because the sidebar is scrolling, translated and sticky, and would clip anything inside it. As WCAG 1.4.13 requires, Escape dismisses it and the pointer can move onto it. It goes when its link is followed, when the page scrolls or when the window is resized. |
+| Remembered | Kept in `localStorage` (`nexa-admin-sidebar`) and read synchronously. The boot outline (`PanelSkeleton`) is drawn at the same width, so the panel never arrives wide and then folds. If storage refuses, the sidebar opens and a fold lasts only for the visit. |
+| Phone | Unchanged. The drawer always has its labels, whatever a desktop left behind. |
+
+### Held by tests
+
+- `admin/src/test/sidebar.test.jsx` (9) covers:
+  - the toggle, its state, and every link's exact name when folded;
+  - the choice kept and re-read, and the boot outline drawn folded;
+  - refused storage;
+  - when a name shows and goes: for a pointer, onto the name itself, with
+    Escape, for the keyboard, when its link is followed, never while the
+    sidebar is open, and never on a phone.
+
+  jsdom matches `:focus-visible` only on the first element the Tab key
+  reaches, so the keyboard test gives jsdom a browser's answer. Real Chrome's
+  answer is checked by the e2e spec.
+- `admin/e2e/advanced.spec.js` (+3) measures real Chrome:
+  - the rail's width, and the room the screen gets back;
+  - the icons at x = 32 on every frame of the fold;
+  - axe on the folded sidebar and the topbar;
+  - where a name lands (8px past the rail, level with its icon, uncovered);
+  - moving onto a name, and Escape;
+  - the keyboard, link by link;
+  - the panel opening folded from the first frame of its outline;
+  - the phone drawer keeping its labels.
+
+**Each e2e test was run against the live panel before the deploy, and each
+failed for what it names:** no sidebar to fold, no name beside an icon, and
+no toggle.
+
+### Verified on the live site
+
+CI went green on all three jobs for `5144ef9`, and only the admin was
+deployed (`SKIP_FRONTEND=1 SKIP_BACKEND=1`). The live bundle
+(`index-DDf_Xfm2.js`) is the one built locally. The API was stubbed as it
+is in the specs. All 12 panel specs pass against the live panel at `/admin`.
+The three sidebar specs also pass at `/root`, where the rail has twelve
+links instead of nine.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth
