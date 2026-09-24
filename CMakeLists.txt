@@ -601,10 +601,10 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_offline_grace_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
-    # "Remove license" while a check is still out, against a fake server that
-    # holds /validate or /heartbeat open: the app survives, ends on Free with
-    # the key and the cached token gone, and nothing in flight answers for the
-    # removed key afterwards. Built like the tests around it.
+    # "Remove license", or signing out, while a check is still out, against a
+    # fake server that holds /validate or /heartbeat open: the app survives,
+    # ends on Free with the credential and the cached token gone, and nothing
+    # in flight answers for them afterwards. Built like the tests around it.
     add_executable(nexa_license_remove_test
         tests/LicenseRemoveTest.cpp
         src/license/LicenseManager.cpp

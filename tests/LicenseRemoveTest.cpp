@@ -1,4 +1,4 @@
-// "Remove license" while a licence check is still out.
+// "Remove license", or signing out, while a licence check is still out.
 //
 // deactivate() aborted the validation in flight without detaching its handler.
 // abort() emits finished() synchronously, so the handler ran inside
@@ -9,11 +9,15 @@
 // its answer could land after the key was gone, with a fresh token that no key
 // was left to be checked against, and the plan came back.
 //
+// Signing out had that second half too. Every sign-in ends in forgetAccount(),
+// which left the validation and the heartbeat running, and an answer landing
+// afterwards re-adopted the plan with no account left to check it against.
+//
 // Drives the real LicenseManager against a fake server that can hold /validate
-// and /heartbeat open, so Remove lands while a reply is genuinely pending — in
-// the first seconds after launch, right after Activate, or while a beat is out.
-// The cases that crashed run last, so on the old code the ones before them
-// still get to report.
+// and /heartbeat open, so Remove or the sign-out lands while a reply is
+// genuinely pending — in the first seconds after launch, right after Activate,
+// or while a beat is out. C and D took the old code down outright, so they run
+// after A and B, which only failed.
 //
 // Built like ReverifyTest: NEXA_DEV_BUILD (so the endpoints can be moved),
 // NEXA_TEST_CREDENTIAL_STORE (so the stored key stays in this process), and no
@@ -56,14 +60,17 @@ static QByteArray b64u(const QByteArray &raw)
     return raw.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
 }
 
-static QString mintToken(const QString &plan, const QString &device, const QString &licenseKey)
+// `subject` is the licence key a key's token is minted for. An account's token
+// names the user there instead, and the account itself in `acct`.
+static QString mintToken(const QString &plan, const QString &device, const QString &subject,
+                         int accountId = 0)
 {
     const qint64 now = QDateTime::currentSecsSinceEpoch();
     const bool paid = plan != QLatin1String("free");
     const QJsonObject header{{QStringLiteral("alg"), QStringLiteral("EdDSA")},
                              {QStringLiteral("typ"), QStringLiteral("JWT")}};
-    const QJsonObject payload{
-        {QStringLiteral("sub"),    licenseKey},
+    QJsonObject payload{
+        {QStringLiteral("sub"),    subject},
         {QStringLiteral("plan"),   plan},
         {QStringLiteral("device"), device},
         {QStringLiteral("typ"),    QStringLiteral("license")},
@@ -78,6 +85,8 @@ static QString mintToken(const QString &plan, const QString &device, const QStri
             {QStringLiteral("seats"), 1},
         }},
     };
+    if (accountId > 0)
+        payload.insert(QStringLiteral("acct"), accountId);
     const QByteArray signingInput =
         b64u(QJsonDocument(header).toJson(QJsonDocument::Compact)) + '.'
         + b64u(QJsonDocument(payload).toJson(QJsonDocument::Compact));
@@ -231,6 +240,14 @@ static QString okBody(const QString &token)
         {QStringLiteral("trial"), false},
         {QStringLiteral("seats"), 1},
         {QStringLiteral("activeSeats"), 1},
+    }).toJson(QJsonDocument::Compact));
+}
+
+static QString rejectedBody(const QString &reason)
+{
+    return QString::fromUtf8(QJsonDocument(QJsonObject{
+        {QStringLiteral("valid"), false},
+        {QStringLiteral("reason"), reason},
     }).toJson(QJsonDocument::Compact));
 }
 
@@ -417,6 +434,117 @@ int main(int argc, char **argv)
         settle();
         CHECK(answers.size() == 1 && license.plan() == QLatin1String("free"),
               "D: the held activation's answer changes nothing");
+    }
+
+    // --- Signing out while a check is out ------------------------------------------
+    // Every sign-in ends in forgetAccount(): signOut(), or the server answering
+    // `signed_out` to a validation or to a heartbeat. It left the other
+    // requests running, and an answer that landed afterwards had no account
+    // left to be checked against — the id and the token had just been cleared
+    // — so it put the plan back and cached its token for the offline grace.
+    const QString accountToken =
+        mintToken(QStringLiteral("pro"), device, QStringLiteral("user:42"), 42);
+
+    // Signed in, with the checks answering Pro, and every count from zero.
+    auto signedIn = [&]() {
+        forgetLicence();
+        credentialstore::writeAccountToken(QStringLiteral("device-token-of-a-pro-account"));
+        server.on("validate", 200, okBody(accountToken));
+        server.on("heartbeat", 200, okBody(accountToken));
+        server.requests.clear();
+    };
+    // Every 10th completed download sends an early beat.
+    auto sendBeat = [](LicenseManager &license) {
+        for (int i = 0; i < LicenseManager::kReverifyEveryDownloads; ++i)
+            license.noteCompletedDownload();
+    };
+    // What every end of a sign-in must leave behind, whatever was in flight.
+    auto expectSignedOut = [&](LicenseManager &license, const QString &label) {
+        CHECK(!license.isSignedIn(), label + ": the machine is signed out");
+        CHECK(license.plan() == QLatin1String("free"), label + ": the plan ends Free");
+        CHECK(!license.verifiedFeatures().authSiteDownloads,
+              label + ": …by the signature-derived path too");
+        CHECK(license.licenseToken().isEmpty(), label + ": no token is held");
+        CHECK(cachedToken().isEmpty(), label + ": none is cached for offline grace");
+        CHECK(QSettings().value(QStringLiteral("license/accountId")).toString().isEmpty(),
+              label + ": the account id is not written back");
+    };
+
+    // --- E. Sign out with the launch check out ---------------------------------------
+    {
+        signedIn();
+        server.on("validate", 200, okBody(accountToken), /*hold=*/true);
+        LicenseManager license;
+        license.start();
+        pump([&]() { return server.count("validate") == 1; });
+        CHECK(license.isSignedIn() && server.count("validate") == 1,
+              "E: signed in, with the launch check out");
+
+        license.signOut();
+        server.release("validate");           // it answers Pro
+        settle();
+        expectSignedOut(license, QStringLiteral("E (sign out, launch check out)"));
+    }
+
+    // --- F. Sign out with a heartbeat out --------------------------------------------
+    {
+        signedIn();
+        server.on("heartbeat", 200, okBody(accountToken), /*hold=*/true);
+        LicenseManager license;
+        license.start();
+        pump([&]() { return license.plan() == QLatin1String("pro"); });
+        sendBeat(license);
+        pump([&]() { return server.count("heartbeat") == 1; });
+        CHECK(license.plan() == QLatin1String("pro") && server.count("heartbeat") == 1,
+              "F: signed in on Pro, with a heartbeat out");
+
+        license.signOut();
+        server.release("heartbeat");
+        settle();
+        expectSignedOut(license, QStringLiteral("F (sign out, heartbeat out)"));
+    }
+
+    // --- G. A re-check answers `signed_out` while a heartbeat is out -------------------
+    // start() again stands in for the six-hourly re-check: the same validate().
+    {
+        signedIn();
+        server.on("heartbeat", 200, okBody(accountToken), /*hold=*/true);
+        LicenseManager license;
+        license.start();
+        pump([&]() { return license.plan() == QLatin1String("pro"); });
+        sendBeat(license);
+        pump([&]() { return server.count("heartbeat") == 1; });
+
+        server.on("validate", 200, rejectedBody(QStringLiteral("signed_out")));
+        license.start();
+        pump([&]() { return !license.isSignedIn(); });
+        CHECK(!license.isSignedIn() && server.count("heartbeat") == 1,
+              "G: the re-check signs the machine out, with a heartbeat out");
+
+        server.release("heartbeat");
+        settle();
+        expectSignedOut(license, QStringLiteral("G (signed_out from a re-check)"));
+    }
+
+    // --- H. A heartbeat answers `signed_out` while a re-check is out -------------------
+    {
+        signedIn();
+        server.on("heartbeat", 200, rejectedBody(QStringLiteral("signed_out")));
+        LicenseManager license;
+        license.start();
+        pump([&]() { return license.plan() == QLatin1String("pro"); });
+
+        server.on("validate", 200, okBody(accountToken), /*hold=*/true);
+        license.start();
+        pump([&]() { return server.count("validate") == 2; });
+        sendBeat(license);
+        pump([&]() { return !license.isSignedIn(); });
+        CHECK(!license.isSignedIn() && server.count("validate") == 2,
+              "H: a heartbeat signs the machine out, with a re-check out");
+
+        server.release("validate");           // the re-check answers Pro
+        settle();
+        expectSignedOut(license, QStringLiteral("H (signed_out from a heartbeat)"));
     }
 
     forgetLicence();
