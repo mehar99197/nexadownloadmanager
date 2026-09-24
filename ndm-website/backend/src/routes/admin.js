@@ -124,6 +124,20 @@ function redactForStaff(req, subscription, ownerRole) {
   return redacted;
 }
 
+// The sign-in lock still in force on a users row, or null: the password one
+// (utils/loginLockout.js) or the authenticator-code one
+// (utils/twoFactorLockout.js), whichever lifts later. POST /users/:id/unlock
+// lifts both, so the list has to show either — a customer stuck behind wrong
+// codes is as locked out as one behind wrong passwords.
+function activeSignInLock(user, now = Date.now()) {
+  let lock = null;
+  for (const [reason, value] of [['password', user.locked_until], ['two_factor', user.totp_locked_until]]) {
+    const until = value ? new Date(value) : null;
+    if (until && until.getTime() > now && (!lock || until > lock.until)) lock = { reason, until };
+  }
+  return lock;
+}
+
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
     adminUserId: req.admin && req.admin.id,
@@ -408,12 +422,12 @@ router.get(
       // Only whether (and until when) sign-in is locked — what support needs
       // to offer POST /users/:id/unlock — never the failure counters. And only
       // on the accounts this admin could unlock (see blockedStaffTarget).
-      const lockedUntil = u.locked_until ? new Date(u.locked_until) : null;
-      const locked = Boolean(lockedUntil && lockedUntil.getTime() > now
-        && (req.isRoot || u.role === 'user'));
+      const lock = activeSignInLock(u, now);
+      const locked = Boolean(lock && (req.isRoot || u.role === 'user'));
       return {
         ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: redactForStaff(req, sub, u.role),
-        signInLockedUntil: locked ? lockedUntil.toISOString() : null,
+        signInLockedUntil: locked ? lock.until.toISOString() : null,
+        signInLockReason: locked ? lock.reason : null,
       };
     });
 

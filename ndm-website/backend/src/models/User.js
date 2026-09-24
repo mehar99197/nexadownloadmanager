@@ -215,9 +215,10 @@ const User = {
     const limitNumber = Math.min(200, Math.max(1, Number(limit) || 20));
     const offset = (pageNumber - 1) * limitNumber;
     const rows = await query(
-      // locked_until is for the admin list only (the route turns it into
-      // signInLockedUntil); publicUser drops it everywhere else.
-      `SELECT id, name, email, role, email_verified, banned, created_at, updated_at, locked_until FROM users ${w} ORDER BY created_at DESC LIMIT ${limitNumber} OFFSET ${offset}`,
+      // locked_until and totp_locked_until are for the admin list only (the
+      // route turns them into signInLockedUntil); publicUser drops them
+      // everywhere else.
+      `SELECT id, name, email, role, email_verified, banned, created_at, updated_at, locked_until, totp_locked_until FROM users ${w} ORDER BY created_at DESC LIMIT ${limitNumber} OFFSET ${offset}`,
       vals
     );
     const total = await queryOne(
