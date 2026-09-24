@@ -67,11 +67,15 @@ env:
   LINUXDEPLOY_QT_TAG: '1-alpha-20250213-1'
   LINUXDEPLOY_QT_SHA256: '15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724'
 
+# Every job sets timeout-minutes at several times its normal run time. Without
+# one GitHub waits 6 hours, and a hung step (the macOS smoke test once launched
+# the whole app and never returned) held its runner for all of them.
 jobs:
   # ── Linux CI ───────────────────────────────────────────────────────────────
   linux:
     name: Build + .deb package (Ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -93,7 +97,12 @@ jobs:
           cmake --build build
 
       - name: Smoke test
-        run: test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+        timeout-minutes: 5
+        run: |
+          test -x build/nexa && test -x build/nexa-host && echo "Build OK"
+          # Runs the binary for real: --version exits before a window or display
+          # is needed, so this proves every library it links resolves.
+          ./build/nexa --version
 
       # The package version comes from CMake's project() — the same number the
       # binary reports to the update feed — so a release bump is one edit, not
@@ -485,6 +494,7 @@ jobs:
   windows:
     name: Windows installer (MSYS2 + full torrent)
     runs-on: windows-latest
+    timeout-minutes: 45
     if: github.event_name != 'pull_request'
     defaults:
       run:
@@ -865,6 +875,8 @@ jobs:
   macos:
     name: macOS app bundle
     runs-on: macos-latest
+    # Notarisation waits on Apple's service, which can take a while on its own.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -890,10 +902,14 @@ jobs:
           cmake --build build
 
       - name: Smoke test
+        timeout-minutes: 5
         run: |
           test -d build/nexa.app && echo "bundle OK"
           test -x build/nexa-host && echo "host OK"
-          ./build/nexa.app/Contents/MacOS/nexa --help 2>/dev/null || true
+          # --version prints and exits before any window, socket or hook exists.
+          # This used to run --help, which the app did not handle: it launched in
+          # full and the job sat here until GitHub's 6-hour limit.
+          ./build/nexa.app/Contents/MacOS/nexa --version
 
       - name: Run unit tests
         run: |
@@ -1019,6 +1035,7 @@ jobs:
     name: Verify .deb is self-contained (clean container)
     needs: linux
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: ubuntu:24.04
     defaults:
       run:
@@ -1087,6 +1104,7 @@ jobs:
   quality:
     name: Tests, audits, and extension packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # The website's own checks — backend unit + integration tests against a
     # MariaDB service, frontend and admin lint/test/build/audit — live in
     # website.yml, which runs on every branch that touches ndm-website/, not

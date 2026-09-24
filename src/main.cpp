@@ -109,6 +109,38 @@ int main(int argc, char *argv[])
         qputenv("PATH", appdir + "/usr/bin:" + qgetenv("PATH"));
     }
 
+    // `nexa --version` / `nexa --help`: print and exit before anything else runs.
+    // Without them either flag fell through to a full launch (window, IPC
+    // socket, browser and Explorer hooks) that never returns; the macOS CI smoke
+    // test ran `nexa --help` and held its runner until GitHub's 6-hour limit.
+    for (int i = 1; i < argc; ++i) {
+        const bool version = qstrcmp(argv[i], "--version") == 0;
+        const bool help = qstrcmp(argv[i], "--help") == 0 || qstrcmp(argv[i], "-h") == 0;
+        if (!version && !help) continue;
+        QTextStream out(stdout);
+        out << "Nexa " << NEXA_VERSION << '\n';
+        if (help)
+            out << "\nUsage: nexa [options] [url ...]\n\n"
+                   "  <url>                   download each URL\n"
+                   "  --background            run without a window (used by the browser extension)\n"
+                   "  --batch                 quit once every download has finished or failed\n"
+                   "  --resume-all            resume the downloads interrupted last run\n"
+                   "  --max=<n>               run at most n downloads at once\n"
+                   "  --no-categorize         save into the download folder, not per-type folders\n"
+                   "  --ai <text>             queue or schedule downloads from a plain request (Pro)\n"
+                   "  --ai-rename             let AI name the downloaded files\n"
+                   "  --dashboard[=<port>]    serve the phone dashboard (port 8088 by default)\n"
+                   "  --dashboard-lan         let other devices on the network reach it\n"
+                   "  --dashboard-token=<t>   use this dashboard token (16 characters or more)\n"
+                   "  --new-download          open the Add URL box\n"
+                   "  --dir <folder>          with --new-download, save into <folder>\n"
+                   "  --register-extensions   register the browser extensions, then exit\n"
+                   "  --unregister-shell      remove the Windows Explorer entries, then exit\n"
+                   "  --version               print the version, then exit\n"
+                   "  -h, --help              print this help, then exit\n";
+        return 0;
+    }
+
     // `nexa --register-extensions`: write the browser-extension hooks and exit,
     // without a window. On Linux the hooks are system-wide, so this is what the
     // .deb postinst does (via packaging/register-browser-extensions) and what an
