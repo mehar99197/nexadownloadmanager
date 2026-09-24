@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api, { unwrap } from '../api/client';
@@ -44,20 +44,34 @@ export default function Activate() {
   const [errCode, setErrCode] = useState('');
   const [outcome, setOutcome] = useState(null);   // 'approved' | 'denied'
 
+  // The code the box holds now. Approve always sends that code, so the device
+  // on screen must be the one looked up for it: a slower reply for a code
+  // that has since changed (a second code pasted over the first) used to land
+  // last and show the OLD computer above a button that approves the new one.
+  const current = useRef('');
+
   const lookUp = useCallback(async (value) => {
     const c = normaliseCode(value);
-    if (c.length !== 9) return;
-    setLooking(true);
+    current.current = c;
     setError('');
     setErrCode('');
     setDevice(null);
+    // An incomplete code names no computer, so nothing is shown to approve —
+    // the previous code's device used to stay up, with its buttons live.
+    if (c.length !== 9) {
+      setLooking(false);
+      return;
+    }
+    setLooking(true);
     try {
-      setDevice(unwrap(await api.get(`/device/code/${encodeURIComponent(c)}`)));
+      const found = unwrap(await api.get(`/device/code/${encodeURIComponent(c)}`));
+      if (current.current === c) setDevice(found);
     } catch (err) {
+      if (current.current !== c) return;
       setErrCode(errorCode(err) || '');
       setError(errorMessage(err, 'Could not find that code.'));
     } finally {
-      setLooking(false);
+      if (current.current === c) setLooking(false);
     }
   }, []);
 
@@ -153,10 +167,10 @@ export default function Activate() {
             )}
 
             <div className="mt-6 flex flex-wrap gap-3">
-              <Button onClick={() => decide(true)} disabled={busy || !device}>
+              <Button onClick={() => decide(true)} disabled={busy || looking || !device}>
                 {busy ? 'Working…' : 'Approve this computer'}
               </Button>
-              <Button variant="ghost" onClick={() => decide(false)} disabled={busy || !device}>Deny</Button>
+              <Button variant="ghost" onClick={() => decide(false)} disabled={busy || looking || !device}>Deny</Button>
             </div>
             <p className="mt-4 text-xs leading-5 text-slate-500">
               Only approve a code you are looking at yourself. Approving signs that computer in to your account —
