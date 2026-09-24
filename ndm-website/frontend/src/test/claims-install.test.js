@@ -54,6 +54,12 @@ describe('what the installers ship', () => {
     expect(install).not.toMatch(/update its copy of yt-dlp|Update yt-dlp/i);
     expect(install).toMatch(/Check for updates/);
   });
+
+  // The app hands yt-dlp only the sites in resources/cloud_providers.json
+  // (isSiteVideo / routesThroughYtDlp), not everything yt-dlp can fetch.
+  it.each(Object.entries(ALL))('%s page does not promise 1000+ sites', (_name, src) => {
+    expect(src).not.toMatch(/1000\+|thousand (?:other )?sites/i);
+  });
 });
 
 describe('the Linux package', () => {

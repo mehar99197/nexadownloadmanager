@@ -53,7 +53,7 @@ nexa`}</Pre>
       <P>Both installers ship the external tools Nexa drives as subprocesses:</P>
       <Bullets
         items={[
-          <><strong className="text-white">yt-dlp</strong> — YouTube and 1000+ other sites. The app has no separate yt-dlp updater: the bundled copy is replaced when you install a newer Nexa, so if a site stops working, run <strong className="text-white">Help &rarr; Check for updates…</strong> in the app.</>,
+          <><strong className="text-white">yt-dlp</strong> — YouTube and the other <Link to="/docs/youtube" className="text-brand-300 underline underline-offset-2">video sites Nexa supports</Link>. The app has no separate yt-dlp updater: the bundled copy is replaced when you install a newer Nexa, so if a site stops working, run <strong className="text-white">Help &rarr; Check for updates…</strong> in the app.</>,
           <><strong className="text-white">ffmpeg</strong> — muxes HLS/DASH segments and merges separate video + audio streams into one file.</>,
           <><strong className="text-white">nexa-host</strong> — the tiny native messaging bridge the browser extension talks to.</>,
         ]}
