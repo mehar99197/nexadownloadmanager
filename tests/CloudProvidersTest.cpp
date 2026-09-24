@@ -58,5 +58,44 @@ int main(int argc, char **argv)
     CHECK(providers.providerForHost(QStringLiteral("pplx-res.cloudinary.com"))
               == providers.providerById(QStringLiteral("perplexity")));
 
+    // The Pro gate covers login-gated COURSE sites and nothing else. It used to
+    // reuse the login-cookie list (isAuthSite), which also holds Google, Vimeo,
+    // all of LinkedIn and Apple Music, so Free was refused a public Drive file
+    // or a Vimeo video that the website says Free gets.
+    const auto pro = [&](const char *url) {
+        return providers.requiresPro(QUrl(QString::fromLatin1(url)));
+    };
+    CHECK(pro("https://www.udemy.com/course/some-course/learn/lecture/123"));
+    CHECK(pro("https://acme.udemy.com/course/some-course/"));   // Udemy Business
+    CHECK(pro("https://www.coursera.org/learn/machine-learning/lecture/abc"));
+    CHECK(pro("https://www.skillshare.com/en/classes/some-class/123"));
+    CHECK(pro("https://app.pluralsight.com/course-player?clipId=1"));
+    CHECK(pro("https://www.linkedin.com/learning/some-course/welcome"));
+    CHECK(!pro("https://www.linkedin.com/posts/someone_activity-123"));
+    CHECK(!pro("https://www.linkedin.com/feed/update/urn:li:activity:1/"));
+    CHECK(!pro("https://drive.google.com/file/d/1AbCdEfGh/view"));
+    CHECK(!pro("https://docs.google.com/document/d/1AbC/export?format=pdf"));
+    CHECK(!pro("https://photos.google.com/share/AbCd"));
+    CHECK(!pro("https://vimeo.com/76979871"));
+    CHECK(!pro("https://player.vimeo.com/video/76979871"));
+    CHECK(!pro("https://music.apple.com/us/album/x/1"));
+    CHECK(!pro("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+    // Boundary-aware, like every other host match in the registry.
+    CHECK(!pro("https://evil-udemy.com/course/x"));
+    CHECK(!pro("https://udemy.com.evil.test/course/x"));
+    CHECK(!pro("https://notlinkedin.com/learning/x"));
+
+    // Which sites are paid is a product decision, so changing the list should
+    // take a deliberate edit here too.
+    QStringList gated;
+    for (const auto &p : providers.all()) {
+        if (p.proOnly)
+            gated.append(p.id);
+    }
+    gated.sort();
+    CHECK(gated == (QStringList{QStringLiteral("coursera"), QStringLiteral("linkedin"),
+                                QStringLiteral("pluralsight"), QStringLiteral("skillshare"),
+                                QStringLiteral("udemy")}));
+
     return failures == 0 ? 0 : 1;
 }

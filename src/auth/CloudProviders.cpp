@@ -24,6 +24,7 @@ CloudProvider CloudProvider::fromJson(const QJsonObject &obj)
     p.routesThroughYtDlp = obj.value(QStringLiteral("routesThroughYtDlp")).toBool(false);
     p.isSiteVideo = obj.value(QStringLiteral("isSiteVideo")).toBool(false);
     p.isAuthSite = obj.value(QStringLiteral("isAuthSite")).toBool(false);
+    p.proOnly = obj.value(QStringLiteral("proOnly")).toBool(false);
     p.handlesDriveViaHttp = obj.value(QStringLiteral("handlesDriveViaHttp")).toBool(false);
     p.confirmParser = obj.value(QStringLiteral("confirmParser")).toString();
 
@@ -37,6 +38,7 @@ CloudProvider CloudProvider::fromJson(const QJsonObject &obj)
     p.credentialSiblings = readList("credentialSiblings");
     p.driveDownloadHosts = readList("driveDownloadHosts");
     p.driveCDNHosts = readList("driveCDNHosts");
+    p.proOnlyPaths = readList("proOnlyPaths");
 
     return p;
 }
@@ -225,6 +227,36 @@ bool CloudProviders::isDirectFileUrl(const QUrl &url) const
             return true;
     }
 
+    return false;
+}
+
+bool CloudProviders::requiresPro(const QUrl &url) const
+{
+    const QString host = url.host().toLower();
+    if (host.isEmpty())
+        return false;
+
+    for (const CloudProvider &p : m_providers) {
+        if (!p.proOnly)
+            continue;
+        bool onHost = false;
+        for (const QString &ph : p.hosts) {
+            if (host == ph || host.endsWith(QLatin1Char('.') + ph)) {
+                onHost = true;
+                break;
+            }
+        }
+        if (!onHost)
+            continue;
+        // LinkedIn is one host for the feed and for Learning; only Learning is
+        // a course site.
+        if (p.proOnlyPaths.isEmpty())
+            return true;
+        for (const QString &prefix : p.proOnlyPaths) {
+            if (url.path().startsWith(prefix, Qt::CaseInsensitive))
+                return true;
+        }
+    }
     return false;
 }
 

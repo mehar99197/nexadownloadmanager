@@ -529,6 +529,7 @@
       "routesThroughYtDlp": true,
       "isSiteVideo": true,
       "isAuthSite": true,
+      "proOnly": true,
       "handlesDriveViaHttp": false
     },
     {
@@ -566,6 +567,7 @@
       "routesThroughYtDlp": true,
       "isSiteVideo": true,
       "isAuthSite": true,
+      "proOnly": true,
       "handlesDriveViaHttp": false
     },
     {
@@ -584,6 +586,7 @@
       "routesThroughYtDlp": true,
       "isSiteVideo": true,
       "isAuthSite": true,
+      "proOnly": true,
       "handlesDriveViaHttp": false
     },
     {
@@ -602,6 +605,7 @@
       "routesThroughYtDlp": true,
       "isSiteVideo": true,
       "isAuthSite": true,
+      "proOnly": true,
       "handlesDriveViaHttp": false
     },
     {
@@ -620,6 +624,10 @@
       "routesThroughYtDlp": true,
       "isSiteVideo": true,
       "isAuthSite": true,
+      "proOnly": true,
+      "proOnlyPaths": [
+        "/learning"
+      ],
       "handlesDriveViaHttp": false
     },
     {

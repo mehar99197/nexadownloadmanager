@@ -351,7 +351,7 @@ private:
     void    ensureTorrents();        // lazily create the libtorrent session
     int     addRemoteDownload(const QUrl &url);
     void    applyLicensePlan(const QString &plan);
-    bool    isAuthSiteUrl(const QUrl &url) const;
+    bool    isProOnlyUrl(const QUrl &url) const;   // a login-gated course site
     void    armScheduled(int id, const QUrl &url, const QDateTime &when,
                          const HeaderList &headers, const QString &name);
 

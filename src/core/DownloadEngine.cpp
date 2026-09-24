@@ -187,16 +187,22 @@ void DownloadEngine::applyLicensePlan(const QString &plan)
     schedule();
 }
 
-// Does this URL point at a site that needs a logged-in session? Matches the
-// provider list when one is loaded, so adding a site to cloud_providers.json
-// gates it here too without touching this file.
-bool DownloadEngine::isAuthSiteUrl(const QUrl &url) const
+// Is downloading from this URL a paid feature? Login-gated course sites are
+// (Udemy, Coursera, LinkedIn Learning…), marked `proOnly` in
+// cloud_providers.json. This used to reuse the login-cookie list (isAuthSite),
+// which also holds Google, Vimeo, all of LinkedIn and Apple Music — so Free was
+// refused a public Drive file or a Vimeo video that the site says Free gets.
+bool DownloadEngine::isProOnlyUrl(const QUrl &url) const
 {
+    if (m_providers)
+        return m_providers->requiresPro(url);
+
+    // No provider registry: gate every login-cookie site rather than none. A
+    // paid feature fails closed, as the licence does when it cannot validate.
     const QString host = url.host().toLower();
     if (host.isEmpty())
         return false;
-    const QStringList sites = m_providers ? m_providers->authSites() : browserlogin::authSites();
-    for (const QString &candidate : sites) {
+    for (const QString &candidate : browserlogin::authSites()) {
         const QString d = candidate.toLower();
         if (host == d || host.endsWith(QLatin1Char('.') + d))
             return true;
@@ -206,7 +212,7 @@ bool DownloadEngine::isAuthSiteUrl(const QUrl &url) const
 
 QString DownloadEngine::blockReason(const QUrl &url) const
 {
-    if (isAuthSiteUrl(url) && !m_authSiteDownloads)
+    if (isProOnlyUrl(url) && !m_authSiteDownloads)
         return tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
                   "or see nexadownloadmanager.com/pricing.").arg(url.host());
     return QString();
@@ -705,7 +711,7 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     // a patched bool here and a defeated signature there, not one edit.
     const bool authSitesAllowed = m_authSiteDownloads
         && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
-    if (isAuthSiteUrl(url) && !authSitesAllowed) {
+    if (isProOnlyUrl(url) && !authSitesAllowed) {
         emit downloadBlocked(url,
             tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
                "or see nexadownloadmanager.com/pricing.").arg(url.host()));
@@ -1729,7 +1735,7 @@ int DownloadEngine::addRemoteDownload(const QUrl &url)
     // a patched bool here and a defeated signature there, not one edit.
     const bool authSitesAllowed = m_authSiteDownloads
         && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
-    if (isHttp && isAuthSiteUrl(url) && !authSitesAllowed) {
+    if (isHttp && isProOnlyUrl(url) && !authSitesAllowed) {
         emit downloadBlocked(url,
             tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
                "or see nexadownloadmanager.com/pricing.").arg(url.host()));
