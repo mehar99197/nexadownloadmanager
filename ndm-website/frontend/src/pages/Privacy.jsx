@@ -324,7 +324,7 @@ export default function Privacy() {
           <ul className="list-disc space-y-1 pl-5">
             <li>
               <strong className="text-slate-200">Hostinger</strong> hosts this website and its API, so
-              everything the site stores passes through its servers, and our nightly backups are
+              everything the site stores passes through its servers, and our database backups are
               kept there.
             </li>
             <li>
@@ -387,7 +387,7 @@ export default function Privacy() {
             <li>our audit log, whose entries about your account — plan changes, key rotations, two-factor changes, team invitations and the deletion itself — name your email address;</li>
             <li>the security log, for up to 90 days, and the server log described in section 2, until it is trimmed;</li>
             <li>messages you sent through the contact form, with our replies;</li>
-            <li>nightly database backups, for about two weeks;</li>
+            <li>database backups made before the deletion, until those backups are removed;</li>
             <li>if you paid, Stripe&apos;s own customer record: we cancel your subscription with Stripe but do not delete the customer, so Stripe&apos;s privacy policy governs what it keeps.</li>
           </ul>
           <p>

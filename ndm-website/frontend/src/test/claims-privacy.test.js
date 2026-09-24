@@ -43,6 +43,9 @@ const TEXT = Object.fromEntries(Object.entries(SOURCE).map(([page, src]) => [pag
 
 describe('claims the audit found false are gone', () => {
   const REMOVED = [
+    // Nothing schedules backups yet (no cron runs backup.sh), so none are nightly.
+    ['privacy', 'nightly'],
+    ['security', 'nightly'],
     // A paid install asks once at launch, before its plan is confirmed.
     ['privacy', 'no request for one is made'],
     ['security', 'do not make this request at all'],
@@ -128,7 +131,7 @@ describe('the pages state what the code does', () => {
     ['privacy', '"Your data"'],
     ['privacy', 'for tax'],
     ['privacy', '90 days'],
-    ['privacy', 'about two weeks'],
+    ['privacy', 'backups made before the deletion'],
     ['security', 'every 6 hours'],
     ['security', 'every 5 minutes'],
     ['security', 'computer name'],

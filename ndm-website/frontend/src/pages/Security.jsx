@@ -314,7 +314,7 @@ export default function Security() {
             is immediate and removes your profile, license, device records and sessions. Afterwards,
             payment records are kept for tax; our audit log keeps its entries naming your email
             address, the deletion included; the security log keeps its entries for up to 90 days;
-            contact-form messages stay; nightly backups age out after about two weeks; and if you
+            contact-form messages stay; backups made before the deletion stay until they are removed; and if you
             paid, Stripe keeps its own customer record, because we cancel the subscription rather
             than delete the customer. To correct anything else, or for anything the download does
             not cover, email{' '}
