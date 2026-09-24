@@ -6,6 +6,7 @@ import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
+import ModalError from '../components/ModalError.jsx';
 import { formatBytes, formatDate } from '../utils.js';
 
 // Metadata only. The installer itself is uploaded separately (see the Installers
@@ -104,10 +105,17 @@ export default function Releases() {
         isLatest: Boolean(form.isLatest),
       };
       // Only send the legacy URLs when the operator actually opened that section
-      // — otherwise editing a file-backed release would blank its own fields.
+      // — otherwise editing a file-backed release would blank its own fields —
+      // and then only the ones that changed. An untouched empty field used to be
+      // sent as '' (which the API refused, so opening the section at all made
+      // the form unsavable); a field emptied on purpose is still sent as '',
+      // which is how a stored URL is cleared.
       if (showLegacyUrls) {
-        payload.windowsUrl = form.windowsUrl.trim();
-        payload.linuxUrl = form.linuxUrl.trim();
+        const stored = editing === 'new' ? { windowsUrl: '', linuxUrl: '' } : releaseForm(editing);
+        for (const key of ['windowsUrl', 'linuxUrl']) {
+          const value = form[key].trim();
+          if (value !== stored[key].trim()) payload[key] = value;
+        }
       }
       if (editing === 'new') {
         const created = await unwrap(api.post('/admin/releases', payload));
@@ -288,6 +296,7 @@ export default function Releases() {
           </>
         )}
       >
+        <ModalError>{error}</ModalError>
         <div className="grid gap-5 sm:grid-cols-2">
           <Input label="Version" name="version" placeholder="2.2.0" required value={form.version} onChange={update('version')} />
           <label className="flex items-center gap-3 self-end rounded-xl border border-admin-border bg-admin-surface-2/60 px-4 py-3">
@@ -326,6 +335,7 @@ export default function Releases() {
         title={uploadFor ? `Installers — v${uploadFor.version}` : 'Installers'} size="lg"
         footer={<Button variant="ghost" onClick={() => setUploadFor(null)}>Done</Button>}
       >
+        <ModalError>{error}</ModalError>
         <div className="space-y-4">
           {OSES.map(({ key, label, hint }) => {
             const a = uploadFor ? artifactState(uploadFor, key) : { kind: 'none' };

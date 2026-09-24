@@ -5,6 +5,7 @@ import Pagination from '../components/Pagination.jsx';
 import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
 import Modal from '../components/Modal.jsx';
+import ModalError from '../components/ModalError.jsx';
 import StatCard from '../components/StatCard.jsx';
 import { SkeletonText } from '../components/Skeleton.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
@@ -108,9 +109,29 @@ export default function Contact() {
       setNotice(`Reply emailed to ${result.message.email}.`);
       await loadMessages();
     } catch (err) {
-      // A 502 EMAIL_SEND_FAILED means the reply was stored but not delivered —
-      // the typed text is deliberately kept in the box so it can be retried.
-      setError(errorMessage(err, 'Unable to send this reply.'));
+      // A 502 EMAIL_SEND_FAILED means the reply WAS stored, marked not
+      // delivered — only the email failed. This used to leave the thread as it
+      // was and the text in the box, with the reason shown behind the dialog,
+      // so the obvious next move was Send again: a second stored copy, and a
+      // third. Now the thread is re-read, so the stored reply appears with its
+      // delivery error, and the box is emptied because its text is on the
+      // thread. Sending it again once email works is a deliberate new reply.
+      const undelivered = err?.response?.status === 502
+        || err?.response?.data?.error?.code === 'EMAIL_SEND_FAILED'
+        || err?.code === 'EMAIL_SEND_FAILED';
+      if (undelivered) {
+        setReply('');
+        try {
+          setThread(await unwrap(api.get(`/admin/contact/${thread.message.id}`)));
+          await loadMessages();
+        } catch {
+          /* the error below already says what matters */
+        }
+        // After the reload, which clears the page error as it starts.
+        setError(`${errorMessage(err, 'The reply was saved but could not be emailed.')} It is kept on the thread below, marked not delivered.`);
+      } else {
+        setError(errorMessage(err, 'Unable to send this reply.'));
+      }
     } finally {
       setSaving(false);
     }
@@ -387,6 +408,7 @@ export default function Contact() {
             {notice && (
               <div className="rounded-xl border border-admin-success/30 bg-admin-success/10 px-4 py-3 text-sm text-admin-success">{notice}</div>
             )}
+            <ModalError>{error}</ModalError>
 
             <div>
               <label className="block" htmlFor="contactReply">

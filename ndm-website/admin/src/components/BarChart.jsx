@@ -4,7 +4,11 @@ import Skeleton, { BAR_OUTLINE } from './Skeleton.jsx';
  * BarChart — lightweight pure-CSS/SVG bars. NO chart library.
  *
  * Props:
- *  - data: [{ label, value }]
+ *  - data: [{ label, value, tick? }]
+ *      `tick`, when present, is what is printed under the bar instead of
+ *      `label` (which still names the bar in its tooltip). A long run of bars
+ *      — thirty days — has no room for thirty labels; give most of them an
+ *      empty tick and the few that are printed may spill over their neighbours.
  *  - height?: number (px, default 200) — chart plotting area height
  *  - valueFormatter?: (value) => string
  *  - barClassName?: string (color of the bars)
@@ -88,9 +92,9 @@ export default function BarChart({
         {data.map((d, i) => (
           <div
             key={d.label ?? i}
-            className="min-w-0 flex-1 truncate text-center text-xs text-admin-faint"
+            className={`min-w-0 flex-1 text-center text-xs text-admin-faint ${d.tick === undefined ? 'truncate' : 'overflow-visible whitespace-nowrap'}`}
           >
-            {d.label}
+            {d.tick === undefined ? d.label : d.tick}
           </div>
         ))}
       </div>

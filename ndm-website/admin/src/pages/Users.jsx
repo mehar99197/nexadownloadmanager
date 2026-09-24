@@ -6,9 +6,10 @@ import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
 import Input from '../components/Input.jsx';
 import Modal from '../components/Modal.jsx';
+import ModalError from '../components/ModalError.jsx';
 import Skeleton, { SkeletonText } from '../components/Skeleton.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
-import { downloadCsv, formatDate } from '../utils.js';
+import { downloadCsv, exportTruncationNotice, formatDate, formatDateTime } from '../utils.js';
 
 const LIMIT = 12;
 // No `role` here: this panel only ever creates ordinary customers. Staff admins
@@ -63,6 +64,7 @@ export default function Users() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -190,13 +192,37 @@ export default function Users() {
     }
   };
 
+  // POST /users/:id/unlock existed with nothing in the panel calling it, so a
+  // customer locked out of sign-in waited out the lock however urgent it was.
+  // The list says who is locked (signInLockedUntil) and this lifts it.
+  const unlockSignIn = async (user) => {
+    const sure = await confirm({
+      title: `Unlock sign-in for ${user.email}?`,
+      message: `Their sign-in is locked until ${formatDateTime(user.signInLockedUntil)} after repeated wrong passwords. Unlocking lets them try again now and starts the failure count from zero. Only do this once you are sure it is them asking.`,
+      confirmLabel: 'Unlock sign-in',
+    });
+    if (!sure) return;
+    setError('');
+    setNotice('');
+    try {
+      await unwrap(api.post(`/admin/users/${user.id}/unlock`));
+      setNotice(`Sign-in unlocked for ${user.email}.`);
+      await loadUsers();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to unlock sign-in.'));
+    }
+  };
+
   const exportUsers = async () => {
+    setNotice('');
     try {
       const params = { q: query || undefined };
       Object.entries(filters).forEach(([key, value]) => {
         if (value) params[key] = value;
       });
-      const rows = await unwrap(api.get('/admin/users/export', { params }));
+      const response = await api.get('/admin/users/export', { params });
+      const rows = await unwrap(response);
+      setNotice(exportTruncationNotice(response, (rows || []).length, 'users'));
       downloadCsv('nexa-users.csv', rows || [], [
         { label: 'ID', value: (row) => row.id },
         { label: 'Name', value: (row) => row.name },
@@ -216,10 +242,10 @@ export default function Users() {
     { key: 'user', header: 'User', render: (user) => <button type="button" className="flex min-h-11 w-full flex-col justify-center text-left" onClick={() => openDetails(user)}><p className="font-semibold text-admin-text hover:text-admin-cyan">{user.name}</p><p className="mt-0.5 text-xs text-admin-faint">{user.email}</p></button> },
     { key: 'role', header: 'Role', render: (user) => <Badge tone={user.role === 'root' ? 'warning' : user.role === 'admin' ? 'info' : 'default'}>{user.role}</Badge> },
     { key: 'plan', header: 'Plan', render: (user) => <Badge tone={user.plan === 'pro' || user.plan === 'team' ? 'info' : 'default'}>{user.plan || 'free'}</Badge> },
-    { key: 'status', header: 'Status', render: (user) => <Badge status={user.banned ? 'banned' : 'active'} /> },
+    { key: 'status', header: 'Status', render: (user) => <span className="flex flex-wrap items-center gap-1.5"><Badge status={user.banned ? 'banned' : 'active'} />{user.signInLockedUntil ? <Badge tone="warning">sign-in locked</Badge> : null}</span> },
     { key: 'verified', header: 'Verified', render: (user) => <Badge tone={user.email_verified ? 'success' : 'warning'}>{user.email_verified ? 'Yes' : 'No'}</Badge> },
     { key: 'created', header: 'Joined', render: (user) => formatDate(user.created_at) },
-    { key: 'actions', header: '', className: 'text-right', render: (user) => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" onClick={() => openDetails(user)}>Details</Button><Button variant="secondary" size="sm" onClick={() => openEditor(user)}>Manage</Button></div> },
+    { key: 'actions', header: '', className: 'text-right', render: (user) => <div className="flex justify-end gap-2">{user.signInLockedUntil ? <Button variant="secondary" size="sm" onClick={() => unlockSignIn(user)}>Unlock sign-in</Button> : null}<Button variant="ghost" size="sm" onClick={() => openDetails(user)}>Details</Button><Button variant="secondary" size="sm" onClick={() => openEditor(user)}>Manage</Button></div> },
   ];
 
   return (
@@ -238,10 +264,12 @@ export default function Users() {
       </div>
 
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
+      {notice && <div role="status" className="rounded-xl border border-admin-warning/30 bg-admin-warning/10 px-4 py-3 text-sm text-admin-warning">{notice}</div>}
       <div className="admin-card !p-0"><div className="flex items-center justify-between border-b border-admin-border px-5 py-4"><p className="text-sm text-admin-muted"><span className="font-bold text-admin-text">{loading ? <SkeletonText chars={3} /> : data.totalCount}</span> matching users</p><Button variant="ghost" size="sm" onClick={loadUsers} disabled={loading}>Refresh</Button></div><DataTable columns={columns} rows={data.users} loading={loading} emptyMessage="No users match these filters." caption="User accounts matching the current filters" /></div>
       <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
 
       <Modal open={Boolean(editing)} onClose={() => !saving && setEditing(null)} title={editing ? `Manage ${editing.name}` : 'Manage user'} footer={(<><Button variant="ghost" onClick={() => setEditing(null)} disabled={saving}>Cancel</Button><Button onClick={saveUser} disabled={saving}>{saving ? 'Saving...' : 'Save changes'}</Button></>)}>
+        <ModalError>{error}</ModalError>
         {editing && <div className="space-y-5"><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-4"><p className="font-semibold text-admin-text">{editing.email}</p><p className="mt-1 text-xs text-admin-muted">User ID #{editing.id}</p></div><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Account banned</span><span className="mt-1 block text-xs text-admin-muted">Banned users cannot sign in.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.banned} onChange={(event) => setForm((current) => ({ ...current, banned: event.target.checked }))} /></label><label className="flex items-center justify-between gap-4 rounded-xl border border-admin-border bg-admin-surface-2/50 p-4"><span><span className="block text-sm font-semibold text-admin-text">Email verified</span><span className="mt-1 block text-xs text-admin-muted">Override verification for support cases.</span></span><input type="checkbox" className="h-5 w-5 accent-admin-accent" checked={form.emailVerified} onChange={(event) => setForm((current) => ({ ...current, emailVerified: event.target.checked }))} /></label><div className="block"><span className="admin-label">Role</span><p className="admin-input !cursor-default capitalize text-admin-muted">{editing.role}</p><p className="mt-1 text-xs text-admin-faint">Roles are managed by the creator in the root console.</p></div><label className="block"><span className="admin-label">Subscription plan</span><select className="admin-input" value={form.plan} onChange={(event) => setForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><div className="flex flex-wrap gap-2 border-t border-admin-border pt-4"><Button variant="secondary" size="sm" onClick={() => { setEditing(null); setResetTarget(editing); }}>Reset password</Button><Button variant="ghost" size="sm" onClick={() => revokeSessions(editing)}>Revoke sessions</Button></div>{editing.role === 'user' && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/5 p-4"><p className="text-sm font-semibold text-admin-danger">Delete account</p><p className="mt-1 text-xs text-admin-muted">Permanently erases this account with its subscriptions, payments, reviews and licence activations. This cannot be undone — ban the account instead if you only need to stop them signing in.</p><Button variant="danger" size="sm" className="mt-3" onClick={() => { setDeleteConfirm(''); setDeleteTarget(editing); setEditing(null); }}>Delete account</Button></div>}</div>}
       </Modal>
 
@@ -249,9 +277,10 @@ export default function Users() {
         {detailsLoading ? <DetailsOutline /> : details?.user && <div className="space-y-6"><div className="grid gap-3 sm:grid-cols-4"><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-3"><p className="text-xs text-admin-faint">Email</p><p className="mt-1 truncate text-sm font-semibold text-admin-text">{details.user.email}</p></div><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-3"><p className="text-xs text-admin-faint">Joined</p><p className="mt-1 text-sm font-semibold text-admin-text">{formatDate(details.user.created_at)}</p></div><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-3"><p className="text-xs text-admin-faint">Role</p><p className="mt-1 capitalize text-sm font-semibold text-admin-text">{details.user.role}</p></div><div className="rounded-xl border border-admin-border bg-admin-surface-2/60 p-3"><p className="text-xs text-admin-faint">State</p><p className="mt-1 text-sm font-semibold text-admin-text">{details.user.banned ? 'Banned' : 'Active'}</p></div></div><div><h4 className="text-sm font-bold text-admin-text">Subscriptions</h4><div className="mt-3 space-y-2">{details.subscriptions?.length ? details.subscriptions.map((subscription) => <div key={subscription.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-border bg-admin-surface-2/50 p-3"><span className="font-semibold capitalize text-admin-text">{subscription.plan} <span className="ml-2 text-xs font-normal text-admin-faint">{subscription.license_key}</span></span><span className="flex items-center gap-3"><Badge status={subscription.status} /><span className="text-xs text-admin-muted">{subscription.seats} seat(s)</span></span></div>) : <p className="text-sm text-admin-muted">No subscriptions.</p>}</div></div><div><h4 className="text-sm font-bold text-admin-text">Payment history</h4><div className="mt-3 overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-admin-accent)]" tabIndex={0} role="region" aria-label="Payment history — scrolls sideways"><table className="admin-table"><caption className="sr-only">Payment history for this account</caption><thead><tr><th scope="col">Date</th><th scope="col">Plan</th><th scope="col">Amount</th><th scope="col">Status</th></tr></thead><tbody>{details.payments?.length ? details.payments.map((payment) => <tr key={payment.id}><th scope="row">{formatDate(payment.created_at)}</th><td className="capitalize">{payment.plan}</td><td>{payment.currency?.toUpperCase()} {payment.amount}</td><td><Badge status={payment.status} /></td></tr>) : <tr><td colSpan="4" className="text-center text-admin-muted">No payments.</td></tr>}</tbody></table></div></div><div><h4 className="text-sm font-bold text-admin-text">Reviews</h4><div className="mt-3 space-y-2">{details.reviews?.length ? details.reviews.map((review) => <div key={review.id} className="rounded-xl border border-admin-border bg-admin-surface-2/50 p-3"><div className="flex justify-between gap-3"><span className="text-admin-warning">{'★'.repeat(review.rating)}</span><Badge status={review.status} /></div><p className="mt-2 text-sm leading-6 text-admin-muted">{review.comment}</p></div>) : <p className="text-sm text-admin-muted">No reviews.</p>}</div></div></div>}
       </Modal>
 
-      <Modal open={createOpen} onClose={() => !saving && setCreateOpen(false)} title="Create user" footer={(<><Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button><Button onClick={createUser} disabled={saving || !createForm.name || !createForm.email || createForm.password.length < 8}>{saving ? 'Creating...' : 'Create user'}</Button></>)}><div className="space-y-4"><Input label="Name" name="newName" placeholder="John Doe" value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} /><Input label="Email" name="newEmail" type="email" placeholder="you@example.com" value={createForm.email} onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))} /><Input label="Temporary password" name="newPassword" type="password" placeholder="At least 8 characters" hint="At least 8 characters" value={createForm.password} onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))} /><label className="block"><span className="admin-label">Plan</span><select className="admin-input" value={createForm.plan} onChange={(event) => setCreateForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><p className="text-xs text-admin-faint">New accounts are always created as ordinary users. Staff admins are created by the creator in the root console.</p></div></Modal>
+      <Modal open={createOpen} onClose={() => !saving && setCreateOpen(false)} title="Create user" footer={(<><Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={saving}>Cancel</Button><Button onClick={createUser} disabled={saving || !createForm.name || !createForm.email || createForm.password.length < 8}>{saving ? 'Creating...' : 'Create user'}</Button></>)}><ModalError>{error}</ModalError><div className="space-y-4"><Input label="Name" name="newName" placeholder="John Doe" value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} /><Input label="Email" name="newEmail" type="email" placeholder="you@example.com" value={createForm.email} onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))} /><Input label="Temporary password" name="newPassword" type="password" placeholder="At least 8 characters" hint="At least 8 characters" value={createForm.password} onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))} /><label className="block"><span className="admin-label">Plan</span><select className="admin-input" value={createForm.plan} onChange={(event) => setCreateForm((current) => ({ ...current, plan: event.target.value }))}><option value="free">Free</option><option value="pro">Pro</option><option value="team">Team</option></select></label><p className="text-xs text-admin-faint">New accounts are always created as ordinary users. Staff admins are created by the creator in the root console.</p></div></Modal>
 
       <Modal open={Boolean(deleteTarget)} onClose={() => !saving && setDeleteTarget(null)} title={`Delete ${deleteTarget?.email || 'account'}`} footer={(<><Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={saving}>Cancel</Button><Button variant="danger" onClick={deleteUser} disabled={saving || !deleteMatches}>{saving ? 'Deleting...' : 'Delete permanently'}</Button></>)}>
+        <ModalError>{error}</ModalError>
         <div className="space-y-4">
           <p className="text-sm leading-6 text-admin-muted">This erases <span className="font-semibold text-admin-text">{deleteTarget?.email}</span> and everything the account owns: its subscriptions and licence keys, payment records, reviews and every activated device. Admin activity remains in the audit log.</p>
           <p className="text-sm leading-6 text-admin-muted">There is no undo and no export step. If you only want to stop them signing in, cancel and use <span className="font-semibold text-admin-text">Account banned</span> instead.</p>
@@ -259,7 +288,7 @@ export default function Users() {
         </div>
       </Modal>
 
-      <Modal open={Boolean(resetTarget)} onClose={() => !saving && setResetTarget(null)} title={`Reset password: ${resetTarget?.name || ''}`} footer={(<><Button variant="ghost" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button><Button onClick={resetUserPassword} disabled={saving || resetPassword.length < 8}>{saving ? 'Resetting...' : 'Reset password'}</Button></>)}><Input label="New password" name="resetPassword" type="password" placeholder="At least 8 characters" hint="At least 8 characters. Existing sessions will be revoked." value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></Modal>
+      <Modal open={Boolean(resetTarget)} onClose={() => !saving && setResetTarget(null)} title={`Reset password: ${resetTarget?.name || ''}`} footer={(<><Button variant="ghost" onClick={() => setResetTarget(null)} disabled={saving}>Cancel</Button><Button onClick={resetUserPassword} disabled={saving || resetPassword.length < 8}>{saving ? 'Resetting...' : 'Reset password'}</Button></>)}><ModalError>{error}</ModalError><Input label="New password" name="resetPassword" type="password" placeholder="At least 8 characters" hint="At least 8 characters. Existing sessions will be revoked." value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} /></Modal>
     </div>
   );
 }

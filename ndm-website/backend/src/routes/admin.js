@@ -80,12 +80,7 @@ const {
 const { sendContactReply } = require('../utils/email');
 const { publicUser } = require('../utils/userView');
 const { isReservedEmail } = require('../utils/reservedEmail');
-
-function monthlyPrice(plan) {
-  if (plan === 'pro') return 5;
-  if (plan === 'team') return 15;
-  return 0;
-}
+const { monthlyRecurringRevenue } = require('../utils/revenue');
 
 // Never hand-roll a projection here: /users/:id/details reads the row with
 // SELECT *, so anything a deny-list missed reached a staff admin — including,
@@ -217,12 +212,18 @@ router.get(
 router.get(
   '/stats',
   asyncHandler(async (req, res) => {
-    const [totalUsers, activeSubscriptions, paidSubs, signupAgg,
+    const [totalUsers, activeSubscriptions, activeTrials, billedSubs, signupAgg,
            pendingReviews, recentPayments, planDistribution,
            revenueSeries, recentActivity, ads, contact] = await Promise.all([
       User.count(),
-      Subscription.countActive(),
-      Subscription.findPaidActive(),
+      // Paid plans (Pro/Team) in force, trials excluded. It used to count
+      // every active row — every account has an active Free one — so the
+      // tile was the user count under another name.
+      Subscription.countPaidActive(),
+      Subscription.countActiveTrials(),
+      // MRR counts only what renews through Stripe: not trials, not plans an
+      // admin granted by hand, and a yearly plan at its yearly price over 12.
+      Subscription.findBilledActive(),
       User.signupAgg(30),
       Review.count({ status: 'pending' }),
       Payment.listRecent(10),
@@ -233,13 +234,16 @@ router.get(
       ContactMessage.stats(),
     ]);
 
-    const mrr = paidSubs.reduce((sum, s) => sum + monthlyPrice(s.plan), 0);
+    const mrr = monthlyRecurringRevenue(billedSubs);
     const newSignups = (signupAgg || []).map((g) => ({ date: g.date, count: g.count }));
 
     return ok(res, {
       totalUsers,
       activeSubscriptions,
+      activeTrials,
       mrr,
+      // How many subscriptions the MRR figure is made of, so the tile can say.
+      mrrSubscriptions: billedSubs.length,
       newSignups,
       pendingReviews,
       recentPayments,
@@ -320,18 +324,34 @@ router.post(
 // Exports are capped so one click cannot pull the whole users table into
 // memory. The cap is shared with /subscriptions/export and reported back, so
 // the panel can say the file is truncated instead of silently losing rows.
+//
+// The body stays the bare array it has always been (anything already reading
+// `data` as the rows keeps working); the cap is reported in headers:
+//   X-Export-Total      rows that matched the filters
+//   X-Export-Limit      the cap
+//   X-Export-Truncated  'true' when the file holds fewer rows than matched
 const EXPORT_MAX = 5000;
+
+function reportExport(res, total) {
+  res.set('X-Export-Total', String(total));
+  res.set('X-Export-Limit', String(EXPORT_MAX));
+  res.set('X-Export-Truncated', total > EXPORT_MAX ? 'true' : 'false');
+}
 
 router.get(
   '/users/export', validate(usersExportQuerySchema),
   asyncHandler(async (req, res) => {
-    const users = await User.listAll({
-      limit: EXPORT_MAX,
+    const filters = {
       q: req.query.q,
       role: req.query.role,
       banned: req.query.banned === undefined ? undefined : req.query.banned === 'true',
       emailVerified: req.query.emailVerified === undefined ? undefined : req.query.emailVerified === 'true',
-    });
+    };
+    const [users, { totalCount }] = await Promise.all([
+      User.listAll({ ...filters, limit: EXPORT_MAX }),
+      User.list({ ...filters, page: 1, limit: 1 }),
+    ]);
+    reportExport(res, Number(totalCount) || 0);
     return ok(res, users.map(safeUser));
   })
 );
@@ -356,9 +376,19 @@ router.get(
       if (!subByUser.has(s.user_id)) subByUser.set(s.user_id, s);
     }
 
+    const now = Date.now();
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
+      // Only whether (and until when) sign-in is locked — what support needs
+      // to offer POST /users/:id/unlock — never the failure counters. And only
+      // on the accounts this admin could unlock (see blockedStaffTarget).
+      const lockedUntil = u.locked_until ? new Date(u.locked_until) : null;
+      const locked = Boolean(lockedUntil && lockedUntil.getTime() > now
+        && (req.isRoot || u.role === 'user'));
+      return {
+        ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub,
+        signInLockedUntil: locked ? lockedUntil.toISOString() : null,
+      };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -603,9 +633,11 @@ router.get(
 router.get(
   '/subscriptions/export', validate(subscriptionsExportQuerySchema),
   asyncHandler(async (req, res) => {
-    const { subscriptions } = await Subscription.list({
-      page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
+    const { subscriptions, totalCount } = await Subscription.list({
+      page: 1, limit: EXPORT_MAX, maxLimit: EXPORT_MAX,
+      status: req.query.status, plan: req.query.plan, q: req.query.q,
     });
+    reportExport(res, Number(totalCount) || 0);
     return ok(res, subscriptions);
   })
 );
