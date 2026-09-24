@@ -5,26 +5,30 @@ import Button from './Button.jsx';
 import { useRailTip } from './RailTip.jsx';
 import { IS_ROOT, PANEL_LABEL, PANEL_SUBTITLE, PANEL_HEADING } from '../realm.js';
 import { keepRail, readRail } from '../sidebarPreference.js';
+import {
+  ActivityIcon, AdminsIcon, AdsIcon, AuditIcon, DangerIcon, DashboardIcon, InboxIcon,
+  LogoutIcon, ReleasesIcon, ReviewsIcon, SecurityIcon, SubscriptionsIcon, UsersIcon,
+} from './NavIcons.jsx';
 
 const STAFF_NAV = [
-  { to: '/dashboard', label: 'Dashboard', icon: '▣' },
-  { to: '/users', label: 'Users', icon: '◍' },
-  { to: '/subscriptions', label: 'Subscriptions', icon: '◆' },
-  { to: '/reviews', label: 'Reviews', icon: '★' },
-  { to: '/contact', label: 'Contact inbox', icon: '✉' },
-  { to: '/releases', label: 'Releases', icon: '⤓' },
-  { to: '/ads', label: 'Ads', icon: '◈' },
-  { to: '/activity', label: 'Activity log', icon: '◷' },
-  { to: '/security', label: 'Security', icon: '⛨' },
+  { to: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
+  { to: '/users', label: 'Users', Icon: UsersIcon },
+  { to: '/subscriptions', label: 'Subscriptions', Icon: SubscriptionsIcon },
+  { to: '/reviews', label: 'Reviews', Icon: ReviewsIcon },
+  { to: '/contact', label: 'Contact inbox', Icon: InboxIcon },
+  { to: '/releases', label: 'Releases', Icon: ReleasesIcon },
+  { to: '/ads', label: 'Ads', Icon: AdsIcon },
+  { to: '/activity', label: 'Activity log', Icon: ActivityIcon },
+  { to: '/security', label: 'Security', Icon: SecurityIcon },
 ];
 
 // Creator-only screens. They are appended, not substituted: the owner keeps
 // every staff screen and gains account management, the full audit trail and
 // the irreversible actions.
 const ROOT_NAV = [
-  { to: '/admins', label: 'Admins', icon: '⚿' },
-  { to: '/audit', label: 'Audit trail', icon: '❧' },
-  { to: '/danger', label: 'Danger zone', icon: '⚠' },
+  { to: '/admins', label: 'Admins', Icon: AdminsIcon },
+  { to: '/audit', label: 'Audit trail', Icon: AuditIcon },
+  { to: '/danger', label: 'Danger zone', Icon: DangerIcon, danger: true },
 ];
 
 // The fold's own mark: a panel with its sidebar pane, and a chevron that turns
@@ -155,14 +159,25 @@ export default function AdminLayout() {
                 hideTip();
               }}
               className={({ isActive }) =>
-                `nav-link ${isActive ? 'nav-link-active' : ''}`
+                `nav-link group/link ${isActive ? 'nav-link-active' : ''}`
               }
               {...tipFor(item.label)}
             >
-              <span aria-hidden="true" className="w-4 shrink-0 text-center text-admin-muted">
-                {item.icon}
-              </span>
-              <span className={label}>{item.label}</span>
+              {({ isActive }) => (
+                <>
+                  {/* 16px wide, the 18px mark centred on it, so the column
+                      the rail keeps still is the same as before. */}
+                  <span
+                    aria-hidden="true"
+                    className={`flex w-4 shrink-0 justify-center transition-colors duration-150 ${
+                      item.danger ? 'text-admin-danger' : isActive ? 'text-accent-400' : 'text-admin-muted group-hover/link:text-admin-text'
+                    }`}
+                  >
+                    <item.Icon />
+                  </span>
+                  <span className={label}>{item.label}</span>
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -175,7 +190,7 @@ export default function AdminLayout() {
             onClick={handleLogout}
             {...tipFor('Logout')}
           >
-            <span aria-hidden="true" className="w-4 shrink-0 text-center">⎋</span>
+            <span aria-hidden="true" className="flex w-4 shrink-0 justify-center"><LogoutIcon /></span>
             <span className={label}>Logout</span>
           </Button>
         </div>
