@@ -465,6 +465,17 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_site_crawler_test PRIVATE
         Qt6::Core Qt6::Network Qt6::Sql ${LIBTORRENT_TARGET} OpenSSL::Crypto)
 
+    # Pausing or removing a Spotify download while its embed page, preview or
+    # cover art is being fetched: the real SpotifyGrabber against a fake server
+    # that holds the fetch open, reached through a network manager that sends
+    # every request there. The grabber needs nothing else from the app.
+    add_executable(nexa_spotify_cancel_test
+        tests/SpotifyCancelTest.cpp
+        src/site/SpotifyGrabber.cpp
+    )
+    target_include_directories(nexa_spotify_cancel_test PRIVATE src)
+    target_link_libraries(nexa_spotify_cancel_test PRIVATE Qt6::Core Qt6::Network)
+
     add_executable(nexa_engine_helpers_test
         tests/EngineHelpersTest.cpp
         # The batch dialog's expansion is a pure static, so it is tested here
@@ -667,6 +678,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME database_persistence COMMAND nexa_database_persistence_test)
     add_test(NAME categories COMMAND nexa_categories_test)
     add_test(NAME site_crawler COMMAND nexa_site_crawler_test)
+    add_test(NAME spotify_cancel COMMAND nexa_spotify_cancel_test)
     add_test(NAME download_task COMMAND nexa_download_task_test)
     add_test(NAME download_core COMMAND nexa_download_core_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)
