@@ -29,8 +29,8 @@ export default function FeatureBrowserExtension() {
       <Bullets
         items={[
           <><strong className="text-white">One-click handoff.</strong> Right-click any link and send it to Nexa, or let the extension take over downloads automatically so clicking a file in the browser starts it in the app instead.</>,
-          <><strong className="text-white">Video detection.</strong> It notices when a page loads an HLS or DASH stream and draws a download button over the player, with the quality levels the site actually published.</>,
-          <><strong className="text-white">Your session.</strong> It passes the cookies and request headers for that page along with the URL, so a download from a site you are signed in to works instead of returning 403.</>,
+          <><strong className="text-white">Video detection.</strong> It notices when a page loads a stream (HLS or DASH) or a video or audio file, and draws a download button over the player — or in the page&apos;s top-right corner when the page has no player of its own, as when it sits in a cross-origin iframe. For HLS it lists each quality in the stream&apos;s master playlist; DASH gets a single &ldquo;Best available (DASH)&rdquo; entry, and neither offers audio only. On YouTube and the other public video sites it supports, the app looks the qualities up with yt-dlp.</>,
+          <><strong className="text-white">Your session.</strong> It passes the cookies the download needs, the referrer and your browser&apos;s user agent along with the URL — for some services the cookies of their sign-in domain too, and on AI-assistant sites the file request&apos;s own headers — so a download from a site you are signed in to works instead of returning 403.</>,
         ]}
       />
       <P>
@@ -43,12 +43,15 @@ export default function FeatureBrowserExtension() {
 
       <H2 id="how">How it works</H2>
       <P>
-        The extension never downloads anything and never talks to our servers. It talks to the Nexa
-        app running on your own computer, through the browser&apos;s{' '}
-        <strong className="text-white">native messaging</strong> channel: a local pipe the browser
-        opens to a small helper program, <Code>nexa-host</Code>, installed alongside the app. The
-        helper forwards the message to the running app over a local socket. Nothing leaves your
-        machine at any point in that chain.
+        The extension never talks to our servers, and it does not download files itself. The one
+        request it makes to a website is for a stream&apos;s HLS master playlist, fetched from the
+        site you are watching, with that site&apos;s cookies, when you open the quality list.
+        Everything else goes to the Nexa app running on your own computer, through the
+        browser&apos;s <strong className="text-white">native messaging</strong> channel: a local
+        pipe the browser opens to a small helper program, <Code>nexa-host</Code>, installed
+        alongside the app. The helper forwards the message to the app over a local socket,
+        starting the app first if it is not running. Nothing leaves your machine at any point in
+        that chain.
       </P>
       <Flow
         caption="The path a download takes from the browser to the app."
@@ -69,7 +72,7 @@ export default function FeatureBrowserExtension() {
       </P>
       <P>
         The messages themselves are small and boring on purpose — a length-prefixed JSON object
-        carrying the URL, the suggested filename, the headers to replay, and flags like
+        carrying the URL, the suggested filename, the cookies and headers to replay, and flags like
         &ldquo;this is a playlist&rdquo; or &ldquo;ask me before starting&rdquo;. Because both the
         extension and the app are open source, you can read exactly what is sent rather than taking
         our word for it.
@@ -85,28 +88,44 @@ export default function FeatureBrowserExtension() {
         head={['Permission', 'Why it is needed']}
         rows={[
           [
-            'Read and change data on all sites',
-            <>To notice a streaming manifest on the page you are watching and draw the download button, and to read the cookies for <em>that</em> site when you click it. It cannot be scoped to a list, because you can download from any site. It is used on the page you act on, not harvested in the background.</>,
+            'Host access to all sites (<all_urls>)',
+            <>The download button has to work on any site, so the page script runs on every page and looks for video players, requests are watched on every site, and cookies can be read for any site you download from. To list a stream&apos;s qualities the extension also fetches its HLS master playlist from the site you are watching, with that site&apos;s cookies. It cannot be scoped to a list, because you can download from any site.</>,
           ],
           [
-            'Communicate with cooperating native applications',
-            <>The native-messaging bridge to <Code>nexa-host</Code>. This is the entire mechanism — without it the extension can do nothing at all.</>,
+            'nativeMessaging',
+            <>The native-messaging bridge to <Code>nexa-host</Code>, which starts the app if it is not running. Every hand-off goes this way, and so does the quality lookup the extension starts by itself about a second after a YouTube video page, or a page on the other public video sites it supports, loads.</>,
           ],
           [
-            'Access browser activity during navigation (webRequest)',
-            <>To see the media requests a player makes. A stream manifest is fetched by JavaScript and never appears in the DOM, so there is no other way to find it.</>,
+            'webRequest',
+            <>Watches the requests every tab makes, in the background, for streams and media files, and keeps a list per tab until the tab navigates or closes. A stream manifest is fetched by JavaScript and never appears in the DOM, so there is no other way to find it. On about two dozen AI-assistant sites it also keeps each request&apos;s headers, Cookie and Authorization included, for two minutes, so an attachment download can reuse them.</>,
           ],
           [
-            'Downloads',
+            'downloads',
             <>To intercept a download the browser was about to start and hand it to Nexa instead — the &ldquo;take over downloads&rdquo; option, which you can turn off.</>,
           ],
           [
-            'Cookies',
-            <>Read-only, and only for the site of the download you just triggered. They travel over the local bridge to the app on your machine and are never transmitted anywhere else.</>,
+            'cookies',
+            <>Read-only. It reads the cookies for a download you hand over and, for some services, their sign-in domain too: an Instagram download also carries your facebook.com cookies, a OneDrive or microsoft.com download your live.com cookies, and a Google Drive download every google.com cookie. They travel over the local bridge to the app, which uses them for your downloads from that site; they never reach our servers.</>,
           ],
           [
-            'Context menus, storage',
-            'The right-click entries, and your own extension settings.',
+            'tabs',
+            <>Reads the address and title of the tab you are using, to name files and send the page to Nexa. On install and each time the browser starts, it reads every open tab&apos;s address to add the download button there.</>,
+          ],
+          [
+            'scripting',
+            <>Adds the download button to tabs that were already open when the extension was installed or the browser started. Chrome and Firefox both use it.</>,
+          ],
+          [
+            'storage',
+            <>Your extension settings, your last 8 hand-offs and your last 20 errors, kept in the browser on this computer. The per-tab media lists and captured headers sit in session storage, which the browser clears when it closes.</>,
+          ],
+          [
+            'contextMenus',
+            <>Four right-click entries: <strong className="text-white">Download with Nexa</strong>, <strong className="text-white">Download video/audio with Nexa</strong>, <strong className="text-white">Download all links on page</strong> and <strong className="text-white">Download whole course with Nexa</strong>.</>,
+          ],
+          [
+            'notifications',
+            <>&ldquo;Sent to Nexa&rdquo; after each hand-off (you can turn it off), the result of sending a page&apos;s links, and errors.</>,
           ],
         ]}
       />
@@ -114,8 +133,8 @@ export default function FeatureBrowserExtension() {
         The <Link to="/security" className="text-brand-300 hover:underline">security page</Link>{' '}
         documents where every piece of data goes, and the{' '}
         <Link to="/privacy" className="text-brand-300 hover:underline">privacy policy</Link> is the
-        binding version. Short form: your cookies go from your browser to your own computer, and
-        nowhere else.
+        binding version. Short form: your cookies go from your browser to the Nexa app on your own
+        computer, which uses them for your downloads from that site. They never reach our servers.
       </Note>
 
       <H2 id="install">Installing it</H2>
@@ -162,7 +181,7 @@ export default function FeatureBrowserExtension() {
           'Press play before expecting a video button. Players fetch their manifest lazily.',
           <>Enable &ldquo;ask before handing off&rdquo; if you want a confirmation dialog in the app rather than downloads simply starting.</>,
           'Sign in to a site first, then click the Nexa button — the cookies are read at the moment you click.',
-          'Incognito/private windows need the extension explicitly allowed in incognito, and the app still needs to be running.',
+          'Incognito/private windows need the extension explicitly allowed in incognito.',
           'If you use several browsers, install it in each; the app registers the bridge for all of them, but each browser needs its own copy of the extension.',
         ]}
       />
@@ -174,10 +193,12 @@ export default function FeatureBrowserExtension() {
             symptom: '“Nexa: engine unavailable”',
             fix: (
               <>
-                The extension reached the bridge but nothing answered — the app is not running, or
-                has never been launched since the extension was installed. Start Nexa, wait for the
-                window, then reload the page. If it persists, launching the app once more rewrites
-                the native-host manifest, which repairs a broken registration.
+                The bridge ran but could not reach the app. <Code>nexa-host</Code> starts Nexa
+                itself when it is not running and waits about six seconds for it, so this means the
+                app did not answer in that time: it was still starting, or it could not be started
+                from the folder the bridge is in. Start Nexa yourself, wait for the window, then try
+                again. If it persists, launching the app once more rewrites the native-host
+                manifest, which repairs a broken registration.
               </>
             ),
           },
@@ -185,9 +206,11 @@ export default function FeatureBrowserExtension() {
             symptom: 'No download button on any video',
             fix: (
               <>
-                Check the extension is enabled for that site in the toolbar popup, that playback has
-                started, and that the player is not inside a cross-origin iframe. Progressive MP4
-                videos have no manifest and get a right-click entry instead of a floating button.
+                Check that the floating button is switched on in the extension&apos;s options and
+                that the site is not paused in the toolbar popup, then start playback: on most sites
+                the button appears once the player requests its stream or video file, progressive
+                MP4s included. A player inside a cross-origin iframe gets the button parked in the
+                page&apos;s top-right corner rather than over the video.
               </>
             ),
           },

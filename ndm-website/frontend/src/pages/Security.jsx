@@ -19,8 +19,8 @@ const PRINCIPLES = [
     body: 'Downloads go from the server straight to your disk. They are never proxied, mirrored, scanned or stored by us. We could not hand over your files if we were asked to, because we never have them.',
   },
   {
-    title: 'Credentials stay local',
-    body: 'The browser extension reads cookies for the site you are downloading from and passes them to the Nexa app on your own machine, over the browser’s local native-messaging pipe. They do not cross the internet.',
+    title: 'Credentials never reach us',
+    body: 'The browser extension reads the cookies a download needs and passes them to the Nexa app on your own machine, over the browser’s local native-messaging pipe. The app uses them for your downloads from that site. They never reach our servers.',
   },
   {
     title: 'You can check all of this',
@@ -45,10 +45,10 @@ const FLOWS = [
   },
   {
     what: 'Cookies and request headers',
-    where: 'Browser → extension → local bridge → Nexa app',
+    where: 'Browser → extension → local bridge → Nexa app → the site you download from',
     reaches: 'Never reaches us',
     tone: 'good',
-    detail: 'A local pipe on your own computer. The extension has no server of its own to talk to.',
+    detail: 'A local pipe on your own computer, then the download request itself. The extension has no server of its own to talk to.',
   },
   {
     what: 'URLs, filenames, download history',
@@ -58,25 +58,32 @@ const FLOWS = [
     detail: 'Your queue and history are a file in the app’s data folder. There is no sync and no backup to us.',
   },
   {
-    what: 'License check (every few hours)',
+    what: 'YouTube challenge solver',
+    where: 'yt-dlp → GitHub',
+    reaches: 'Never reaches us',
+    tone: 'good',
+    detail: 'For YouTube, including the quality lookup the extension asks the app for, the yt-dlp helper downloads its challenge-solver scripts from GitHub the first time it needs them, then caches them. It runs them with Node.js, Deno or Bun if you have one installed; none comes with Nexa.',
+  },
+  {
+    what: 'License check: at launch, every 6 hours, and a heartbeat every 5 minutes',
     where: 'Nexa app → our server',
-    reaches: 'Plan, device fingerprint, app version, IP',
+    reaches: 'License key or account token, device fingerprint, computer name, app version, IP',
     tone: 'info',
-    detail: 'Sends your license key or account token plus a device fingerprint — a SHA-256 of your primary network adapter’s MAC and machine id. The raw MAC never leaves your computer, and the fingerprint cannot be reversed into it. It carries nothing about what you are downloading.',
+    detail: 'Only once the app is signed in or has a license key. It checks your plan at launch and every 6 hours (/api/license/validate), sends a heartbeat every 5 minutes to hold its seat (/api/license/heartbeat), with an extra one after every tenth finished download, and gives the seat back when it closes (/api/license/release); signing in uses /api/device. The check, heartbeat and release carry your license key or account token, and every one of these requests carries a device fingerprint — a SHA-256 of your primary network adapter’s MAC and machine id. The raw MAC never leaves your computer, and the fingerprint cannot be reversed into it. The check and the heartbeat add the computer’s name (hostname and operating system), the check adds the app version, and we keep both with your account. None of it says what you are downloading.',
   },
   {
     what: 'Update check (daily, can be turned off)',
     where: 'Nexa app → our server',
-    reaches: 'Operating system, IP',
+    reaches: 'Operating system, app version, IP',
     tone: 'info',
-    detail: 'Asks whether a newer release exists for your platform. The response is Ed25519-signed so a tampered feed cannot hand your app an installer.',
+    detail: 'Asks whether a newer release exists for your platform; the request names your operating system and the app version. The response is Ed25519-signed so a tampered feed cannot hand your app an installer.',
   },
   {
-    what: 'Ad request — Free plan only',
+    what: 'Promo request — Free plan',
     where: 'Nexa app → our server',
-    reaches: 'License token, placement, IP',
+    reaches: 'Placement, app version, license token if any, IP',
     tone: 'warn',
-    detail: 'The in-app promo strip is fetched from us, so that request reaches our server with your token and therefore your IP address. It contains nothing about your downloads. Pro and Team do not make this request at all — the app stops asking once the plan is paid.',
+    detail: 'The in-app promo strip is fetched from us, so that request reaches our server with your IP address, the app version and, once the app holds one, your license token. It contains nothing about your downloads. A promo’s image comes from whatever address the promo gives, which can be another server. Pro and Team stop asking as soon as the app has confirmed the plan, normally a few seconds after launch; before that, a paid install asks once without its token, and a promo it shows in that moment is counted.',
   },
   {
     what: 'AI rename — off by default, Pro and Team',
@@ -95,9 +102,9 @@ const FLOWS = [
   {
     what: 'Account data (only if you sign in)',
     where: 'Browser → our server',
-    reaches: 'Email, name, plan, session',
+    reaches: 'Email, name, plan, sessions with IP and browser',
     tone: 'info',
-    detail: 'Ordinary account data for the website. Signing in is optional — the Free plan works without an account at all.',
+    detail: 'Ordinary account data for the website, plus the IP address and browser of each signed-in session and a 90-day security log of sign-ins. Signing in is optional — the Free plan works without an account at all.',
   },
 ];
 
@@ -109,28 +116,44 @@ const TONE = {
 
 const PERMISSIONS = [
   [
-    'Read and change data on all sites',
-    'To spot a streaming manifest on the page you are watching and draw the download button, and to read cookies for that site when you click it. It cannot be narrowed to a site list, because you can download from anywhere. It acts on the page you use it on; it does not collect in the background.',
+    'Host access to all sites (<all_urls>)',
+    'The download button runs on every page, requests are watched on every site, and cookies can be read for any site you download from. To list a stream’s qualities the extension also downloads its HLS master playlist from the site you are watching, with that site’s cookies. It cannot be narrowed to a site list, because you can download from anywhere.',
   ],
   [
-    'Communicate with cooperating native applications',
-    'The local bridge to the Nexa app. This is the whole mechanism — without it the extension cannot do anything.',
+    'nativeMessaging',
+    'The local bridge to the Nexa app, which starts the app if it is not running. Every hand-off goes this way, and so does the quality lookup the extension starts by itself about a second after a YouTube video page, or a page on the other public video sites it supports, loads.',
   ],
   [
-    'Access browser activity during navigation',
-    'To observe the media requests a player makes. A stream manifest is fetched by JavaScript and never appears in the page, so there is no other way to find it.',
+    'webRequest',
+    'Observes the requests every tab makes, in the background, to spot streams and media files. A stream manifest is fetched by JavaScript and never appears in the page, so there is no other way to find it. On about two dozen AI-assistant sites it also keeps each request’s headers, Cookie and Authorization included, for two minutes, so an attachment download can reuse them. It never blocks or changes a request.',
   ],
   [
-    'Downloads',
-    'To take over a download the browser was about to start. You can turn this off and use the right-click menu instead.',
+    'downloads',
+    'To take over a download the browser was about to start, and cancel the browser’s copy once Nexa has it. You can turn this off and use the right-click menu instead.',
   ],
   [
-    'Cookies',
-    'Read-only, for the site of the download you just triggered, sent over the local bridge to your own machine.',
+    'cookies',
+    'Read-only. Reads the cookies for a download you hand to Nexa and, for some services, their sign-in domain too — facebook.com for Instagram, live.com for OneDrive and microsoft.com, every google.com cookie for Google Drive — and sends them over the local bridge to your own machine.',
   ],
   [
-    'Context menus, storage',
-    'The right-click entries, and the extension’s own settings.',
+    'tabs',
+    'Reads the address and title of the tab you use, to name files and send pages to Nexa. On install and each time the browser starts, it reads every open tab’s address to add the download button to it.',
+  ],
+  [
+    'scripting',
+    'Adds the download button to tabs that were already open when the extension was installed or the browser started.',
+  ],
+  [
+    'storage',
+    'The extension’s own settings, your last 8 hand-offs and your last 20 errors, kept in the browser on this computer. Per-tab media lists and captured headers live in session storage, which the browser clears when it closes.',
+  ],
+  [
+    'contextMenus',
+    'Four right-click entries: Download with Nexa, Download video/audio with Nexa, Download all links on page, and Download whole course with Nexa.',
+  ],
+  [
+    'notifications',
+    '“Sent to Nexa” after each hand-off (you can turn it off), the result of sending a page’s links, and errors.',
   ],
 ];
 
@@ -138,7 +161,7 @@ export default function Security() {
   usePageMeta({
     title: 'Security & privacy',
     description:
-      'Exactly what Nexa Download Manager sends, what it never sends, what every browser-extension permission is for, and the two features that do transmit something — stated plainly.',
+      'Exactly what Nexa Download Manager sends, what it never sends, what every browser-extension permission is for, and the three requests that deserve a closer look — stated plainly.',
   });
 
   return (
@@ -147,7 +170,7 @@ export default function Security() {
         <span className="eyebrow"><span className="eyebrow-dot" />Security &amp; privacy</span>
         <h1 className="mt-5 text-white">Your downloads stay on <span className="text-gradient">your machine.</span></h1>
         <p>
-          Here is precisely what leaves your computer, what does not, and the two places where the
+          Here is precisely what leaves your computer, what does not, and the three places where the
           answer is less comfortable than we would like.
         </p>
       </div>
@@ -164,8 +187,8 @@ export default function Security() {
       <Card className="mt-8">
         <h2 className="text-lg font-bold text-white">Where every piece of data goes</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-          One row per thing the app handles. Three of them reach us and two of those deserve the
-          amber mark; the rest never leave your computer.
+          One row per thing the app handles. Six of them reach us, and three of those deserve the
+          amber mark; the other four never reach us at all.
         </p>
         <ScrollRegion className="mt-5" label="Where each kind of data travels — scrolls sideways">
           <table className="w-full min-w-[720px] text-left text-sm">
@@ -224,11 +247,13 @@ export default function Security() {
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-slate-400">
             {[
               'Your email address and name, if you created an account.',
-              'Your plan, license key and which devices currently hold a seat — shown to you on your dashboard, where you can sign any of them out.',
+              'Your plan, your license key, and every computer that has used it: its name, when it was first and last seen and, for a signed-in app, its version. Your dashboard lists them, and you can sign any of them out there.',
               'A device fingerprint per activated machine: a one-way hash, kept so seat limits and key-sharing checks can work at all.',
-              'Payment records from Stripe — the last four digits and the amount. Card numbers are handled by Stripe and never touch our servers.',
-              'Server access logs including IP addresses, kept short-term for abuse and rate limiting.',
-              'Reviews and support messages you send us, obviously.',
+              'Payment records: amount, currency, plan, billing cycle, Stripe’s payment ID, status and date. No card digits — cards are handled by Stripe and never touch our servers.',
+              'The IP address and browser of each signed-in website session, until 30 days after its last use, and a 90-day security log of sign-ins with the email address, IP address and browser involved.',
+              'Server logs of each request’s IP address and path, trimmed by size rather than by date.',
+              'If you use them: your Google account ID and picture address, your two-factor secret (encrypted) and recovery-code hashes, and the addresses you invite to a Team.',
+              'Reviews you post, and contact-form messages with the IP address and browser they came from. Those messages are not deleted automatically.',
             ].map((line) => (
               <li key={line} className="flex gap-2.5">
                 <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" />
@@ -276,20 +301,26 @@ export default function Security() {
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Credentials in the OS keychain.</strong> Your license key or account token lives in Windows Credential Manager or the Secret Service on Linux, not in a settings file.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">The remote dashboard is loopback-only by default</strong>, needs a token on every request, and flatly refuses to bind to your LAN without TLS — because the token would otherwise cross your Wi-Fi in clear text.</span></li>
             <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Two-factor authentication</strong> on the website, and one session per browser that can be revoked individually.</span></li>
-            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Optional SHA-256 verification</strong> on any download, and every release on the download page publishes its checksum.</span></li>
+            <li className="flex gap-2.5"><span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-300" /><span><strong className="text-slate-200">Optional SHA-256 verification</strong> for direct file downloads, and every release on the download page publishes its checksum.</span></li>
           </ul>
         </Card>
 
         <Card>
           <h2 className="text-lg font-bold text-white">Your rights, and the honest caveats</h2>
           <p className="mt-3 text-sm leading-6 text-slate-400">
-            You can ask for a copy of everything we hold about you, ask us to correct it, or ask us
-            to delete your account and its data. Email{' '}
+            Under &ldquo;Your data&rdquo; on your{' '}
+            <Link to="/profile" className="text-brand-300 underline underline-offset-2">profile page</Link>{' '}
+            you can download a copy of your account data and delete your account yourself. Deletion
+            is immediate and removes your profile, license, device records and sessions. Afterwards,
+            payment records are kept for tax; our audit log keeps its entries naming your email
+            address, the deletion included; the security log keeps its entries for up to 90 days;
+            contact-form messages stay; backups made before the deletion stay until they are removed; and if you
+            paid, Stripe keeps its own customer record, because we cancel the subscription rather
+            than delete the customer. To correct anything else, or for anything the download does
+            not cover, email{' '}
             <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">
               support@nexadownloadmanager.com
-            </a>{' '}
-            and we will action it. Deleting your account removes your profile, license and device
-            records; payment records are kept where tax law requires it.
+            </a>.
           </p>
           <p className="mt-3 text-sm leading-6 text-slate-400">
             We aim to meet GDPR and CCPA obligations, and the practices above are built for that —
