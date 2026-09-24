@@ -688,14 +688,18 @@ router.post(
     }
     const problem = await passwordProblem(password, { email: user.email });
     if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
-    await User.update(user.id, {
-      passwordHash: await bcrypt.hash(password, BCRYPT_COST),
-      // Receiving this link is itself proof the person reads that inbox, which
-      // is exactly what verification asks for. Marking it here gives every
-      // account created while email was undeliverable a way back in, instead of
-      // stranding it behind a verification mail it can never receive.
-      emailVerified: true,
-    });
+    // The check above only turns away a link that is already spent. Two
+    // requests carrying one link both pass it before either writes, so
+    // redeemReset is the real check: it moves the link's generation on in the
+    // same statement that sets the password, and only one of them lands. It
+    // also marks the address verified — receiving this link is itself proof
+    // the person reads that inbox, which is exactly what verification asks
+    // for, and it gives every account created while email was undeliverable a
+    // way back in.
+    const claimed = await User.redeemReset(
+      user.id, Number(payload.tv) || 0, await bcrypt.hash(password, BCRYPT_COST)
+    );
+    if (!claimed) return fail(res, 'INVALID_TOKEN', 'Reset link is invalid or has expired', 400);
     // Proof of the inbox is also the way out of a sign-in lock — the one the
     // lockout mail points at — and it takes the guessed-at password with it.
     await clearLock(user.id);

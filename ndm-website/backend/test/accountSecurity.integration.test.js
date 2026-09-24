@@ -103,6 +103,32 @@ test('account security', async (t) => {
     assert.equal((await login(api, 'reset@example.test', 'attacker-password')).status, 401);
   });
 
+  await t.test('two requests racing on one reset link: exactly one wins', async () => {
+    await srv.reset();
+    const api = srv.client();
+    const id = await signUp(api, 'two-tabs@example.test');
+    await srv.query('UPDATE users SET email_verified = 1 WHERE id = ?', [id]);
+
+    // Both start before either writes: bcrypt keeps each one busy for a few
+    // hundred milliseconds between reading the row and changing it, which is
+    // the window a read-then-write check leaves open.
+    const link = signResetToken(await User.findById(id));
+    const [a, b] = await Promise.all([
+      api.post('/api/auth/reset-password', { token: link, password: 'racer-number-one' }),
+      api.post('/api/auth/reset-password', { token: link, password: 'racer-number-two' }),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    assert.deepEqual(statuses, [200, 400], `one link, one reset — got ${a.status} and ${b.status}`);
+    const loser = a.status === 400 ? a : b;
+    assert.equal(loser.body.error.code, 'INVALID_TOKEN');
+
+    // The password that took is the winner's, and only the winner's.
+    const winner = a.status === 200 ? 'racer-number-one' : 'racer-number-two';
+    const other = winner === 'racer-number-one' ? 'racer-number-two' : 'racer-number-one';
+    assert.equal((await login(api, 'two-tabs@example.test', winner)).status, 200);
+    assert.equal((await login(api, 'two-tabs@example.test', other)).status, 401);
+  });
+
   await t.test('a reset also proves the address, so it is marked verified', async () => {
     await srv.reset();
     const api = srv.client();

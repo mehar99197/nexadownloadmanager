@@ -137,6 +137,30 @@ const User = {
     return result.affectedRows > 0;
   },
 
+  /**
+   * Redeem a password-reset link: set the new password — and mark the address
+   * verified, since the link reached that inbox — but only while token_version
+   * still holds the generation the link was minted with. Resolves true when
+   * THIS call is the one that used the link.
+   *
+   * The same race as spendTotpStep. The route checks the link's generation
+   * against the row, then spends a few hundred milliseconds in bcrypt before
+   * writing, so two requests carrying one link both pass that check and both
+   * set a password — the later write wins and the earlier caller is told it
+   * succeeded. Moving token_version on in the same statement is what makes the
+   * link single use under concurrency: the second UPDATE finds the generation
+   * already gone and matches nothing.
+   */
+  async redeemReset(id, linkVersion, passwordHash) {
+    const result = await execute(
+      `UPDATE users
+          SET password_hash = ?, email_verified = 1, token_version = token_version + 1
+        WHERE id = ? AND token_version = ?`,
+      [passwordHash, id, linkVersion]
+    );
+    return result.affectedRows > 0;
+  },
+
   async create({ name, email, passwordHash, role, emailVerified, googleId, avatarUrl }) {
     const id = await insert(
       `INSERT INTO users (name, email, password_hash, role, email_verified, google_id, avatar_url)
