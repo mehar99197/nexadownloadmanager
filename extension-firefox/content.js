@@ -86,10 +86,14 @@
   }
   function isPublicSite() { return hostIn(PUBLIC_VIDEO_HOSTS); }
   function isAuthSite()   { return hostIn(AUTH_VIDEO_HOSTS); }
-  // Coursera needs special handling: it's login-gated (so it lives in the auth
-  // list for cookies), but yt-dlp has NO Coursera extractor — handing it the page
-  // URL fails with "Unsupported URL". So instead we download the actual video the
-  // page is streaming, sniffed from its own network requests.
+  // Sites above that the bundled yt-dlp has NO extractor for (its
+  // --list-extractors has no Coursera, Skillshare or Threads): handing it the
+  // page URL fails with "Unsupported URL". The button is still offered there,
+  // but instead of yt-dlp qualities the panel lists the video the page is
+  // actually streaming, sniffed from its own network requests. Re-check this
+  // list when YTDLP_VERSION in .github/workflows/build.yml moves.
+  const SNIFF_ONLY_HOSTS = ["coursera.org", "skillshare.com", "threads.net"];
+  function isSniffOnlySite() { return hostIn(SNIFF_ONLY_HOSTS); }
   function isCoursera()   { return /(^|\.)coursera\.org$/.test(location.host.toLowerCase()); }
   function isYouTubeHost() {
     return /(^|\.)youtube\.com$/.test(location.host) || /(^|\.)youtu\.be$/.test(location.host);
@@ -243,19 +247,6 @@
     }
     t = t.replace(/\s*[|–-]\s*Coursera\s*$/i, "").trim();
     return t.replace(/[\/\\:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
-  }
-
-  // The course's name, used as the download FOLDER for "Entire course". Prefer a
-  // course-title element, else clean the page title (Udemy: "Course: <name>").
-  function courseTitle() {
-    const el = document.querySelector(
-      '[data-purpose="course-header-title"], h1[data-purpose="lead-title"], ' +
-      'a[data-purpose="course-header-back-button"]');
-    let t = (el && el.textContent || document.title || "Course");
-    return t.replace(/\s*[|–-]\s*Udemy\s*$/i, "")
-            .replace(/^\s*Course:\s*/i, "")
-            .replace(/^\(\d+\)\s*/, "")
-            .trim() || "Course";
   }
 
   // ---- playlist detection (YouTube) ------------------------------------
@@ -575,7 +566,6 @@
   // gets no tag at all and simply takes the full width.
   function splitLabel(label, q) {
     const raw = String(label == null ? "" : label).replace(/^[⬇↓\s]+/, "").trim();
-    if (q && q.course) return { tag: "ALL", name: raw || "Entire course" };
     if (q && q.quality === "best") return { tag: "BEST", name: raw || "Best available" };
     const res = /^(\d{3,4}p(?:\d{2,3})?)\b[\s(]*([^)]*)\)?\s*$/.exec(raw);
     if (res) {
@@ -894,11 +884,12 @@
       const withPlaylist = (videoGroup) =>
         hasPlaylist ? [videoGroup, playlistGroup()] : [videoGroup];
 
-      // Coursera: yt-dlp can't extract its pages, so don't hand off the page URL
-      // (that's the "Unsupported URL" error). Instead offer the real video the page
-      // is streaming — the MP4/HLS sniffed from its own requests — which downloads
-      // via Nexa's normal HTTP/HLS engine. The user grabs lectures one by one.
-      if (isCoursera()) {
+      // Coursera / Skillshare / Threads: yt-dlp can't extract their pages, so don't
+      // hand off the page URL (that's the "Unsupported URL" error). Instead offer
+      // the real video the page is streaming — the MP4/HLS sniffed from its own
+      // requests — a direct media URL the app downloads without a site extractor.
+      // The user grabs videos one by one.
+      if (isSniffOnlySite()) {
         renderPanel([{ title: siteTitle(),
                        qualities: [{ label: "Detecting video…" }, { label: "" }] }]);
         sendMessageSafe({ type: "nexa-get-qualities" }, (groups) => {
@@ -911,20 +902,17 @@
       // Auth sites (Udemy/…): the -J probe can't see login-gated formats, so offer
       // Best/Audio directly — the handoff carries the cookies.
       if (isAuthSite()) {
-        // "Entire course" sends the current lecture page URL with the playlist
-        // flag; the engine normalises it to yt-dlp's /<slug>/ course URL so the
-        // extractor can enumerate every lecture. NOTE: DRM-protected lectures
-        // can't be downloaded by yt-dlp, so a DRM course yields only its
-        // non-DRM (plain) videos.
+        // A Udemy lecture is offered on its own, never as the whole course:
+        // yt-dlp's course extractor can't find the course id on today's Udemy
+        // pages, so a whole-course job always failed ("Udemy course download is
+        // not supported", src/auth/AuthUtils.cpp). Lectures go one at a time.
         const onLecture = /\/learn\/(?:v4\/t\/)?lecture\//.test(location.pathname)
                           || /(?:^|\/)lecture\/\d+/.test(location.hash);
-        const quals = [];
-        if (onLecture)
-          quals.push({ label: "⬇  Entire course — all lectures", quality: "best",
-                       meta: "every video", course: true, name: courseTitle() });
-        quals.push({ label: onLecture ? "This lecture only" : "Best available",
-                     quality: "best", meta: "video + audio" });
-        quals.push({ label: "Audio only (m4a)", quality: "audio:m4a", meta: "" });
+        const quals = [
+          { label: onLecture ? "This lecture only" : "Best available",
+            quality: "best", meta: "video + audio" },
+          { label: "Audio only (m4a)", quality: "audio:m4a", meta: "" }
+        ];
         renderPanel(withPlaylist({ title: siteTitle(), name: dlName, site: true,
                                    url: vurl, qualities: quals }));
         return;
@@ -1053,12 +1041,12 @@
           if (!tag && /^\S{1,6}$/.test(meta)) { tag = meta.toUpperCase(); meta = ""; }
           const row = el("div", {
             class: "nx-q" + (live ? "" : " nx-skel") + (audio ? " nx-audio" : "")
-                   + (live && q.quality === "best" && !q.course ? " nx-best" : ""),
+                   + (live && q.quality === "best" ? " nx-best" : ""),
             role: live ? "button" : null,
             tabindex: live ? "0" : null,
             data: { url: q.url || "", quality: q.quality || "", name: q.name || g.name || "",
                     plurl: g.playlist ? (g.playlistUrl || "") : "",
-                    siteurl: g.url || "", course: q.course ? "1" : "" }
+                    siteurl: g.url || "" }
           }, [
             tag || !live ? el("span", { class: "nx-tag", text: tag }) : null,
             el("span", { class: "nx-name", title: parts.name, text: parts.name }),
@@ -1097,7 +1085,6 @@
                 msg.url = siteUrl;
                 msg.quality = quality;
                 msg.filename = row.dataset.name || "";   // empty -> yt-dlp uses real title
-                if (row.dataset.course === "1") msg.playlist = true;  // whole course
               } else {                         // sniffed direct media URL
                 msg.url = row.dataset.url;
                 msg.filename = row.dataset.name || document.title;
@@ -1149,11 +1136,12 @@
   // so opening the panel shows qualities instantly instead of "Loading qualities…".
   // The expensive yt-dlp -J probe runs in the background during page viewing; by
   // the time the user clicks, it's a cache hit (best case: O(1), instant).
-  // Auth sites are skipped (their formats are login-gated and offered directly).
+  // Auth sites are skipped (their formats are login-gated and offered directly),
+  // and so are sites yt-dlp has no extractor for (the probe can only fail).
   // Deduped per URL and debounced so quickly skimming past videos doesn't fire a
   // burst of probes.
   function maybePrefetch() {
-    if (!isSiteVideo() || isAuthSite()) return;
+    if (!isSiteVideo() || isAuthSite() || isSniffOnlySite()) return;
     const vurl = videoUrl();
     if (!vurl || vurl === prefetchedUrl || vurl === prefetchArmedUrl) return;
     prefetchArmedUrl = vurl;

@@ -112,10 +112,15 @@ Settings live in `chrome.storage.local`:
   Best / 1080p / 720p / 480p / 360p / Audio. The desktop app downloads the
   chosen quality with **yt-dlp** (handles signatures/SABR + video+audio mux).
   Requires `yt-dlp` installed on the system.
+- **Coursera, Skillshare, Threads** — yt-dlp has no extractor for these sites,
+  so the button lists the video the page is actually streaming (start it
+  playing first) instead of yt-dlp qualities.
 - **Media sniffing** — `webRequest` detects `.m3u8` / `.mpd` / `.mp4` / media.
-- **Context menus** — "Download with Nexa", "Download all links on page" (sends
-  ONE `links` message with every http(s) link — deduped, capped at 2000 — and
-  the app opens its grabber dialog), "Download whole course with Nexa".
+- **Context menus** — "Download with Nexa", "Download video/audio with Nexa",
+  "Download all links on page" (sends ONE `links` message with every http(s)
+  link — deduped, capped at 2000 — and the app opens its grabber dialog). There
+  is no whole-course entry: yt-dlp cannot read a whole Udemy course, so a
+  lecture is sent on its own from the Download button.
 
 ## Native-messaging protocol (extension → `nexa-host` → app)
 

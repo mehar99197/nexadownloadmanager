@@ -31,7 +31,11 @@ if (!JSDOM) {
   process.exit(0);
 }
 
-const SRC = fs.readFileSync(path.join(__dirname, "..", "extension-chromium", "content.js"), "utf8");
+// The Firefox build ships the same content.js (extension-firefox/README.md);
+// the per-site cases at the end run against both copies.
+const COPIES = ["extension-chromium/content.js", "extension-firefox/content.js"];
+const SOURCES = new Map(COPIES.map((p) => [p, fs.readFileSync(path.join(__dirname, "..", p), "utf8")]));
+const SRC = SOURCES.get(COPIES[0]);
 
 // Fake layout: the video is a 640x360 box at (100,80); the button is 100x30 at
 // wherever content.js put it; everything else has no box.
@@ -55,8 +59,8 @@ function fakeRects(win) {
 }
 
 // Boot content.js in a page. `replies` answers chrome.runtime.sendMessage by
-// message type; `settings` is what storage.local holds.
-function boot({ url, html, replies = {}, settings = {} }) {
+// message type; `settings` is what storage.local holds; `src` picks the copy.
+function boot({ url, html, replies = {}, settings = {}, src = SRC }) {
   const dom = new JSDOM(html, { url, pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window;
   fakeRects(win);
@@ -79,7 +83,7 @@ function boot({ url, html, replies = {}, settings = {} }) {
       onChanged: { addListener() {} },
     },
   };
-  win.eval(SRC);
+  win.eval(src);
   const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
   return { win, doc: win.document, sent, tick };
 }
@@ -276,6 +280,67 @@ const PLAYER = '<video data-rect="100,80,640,360"></video><p>comments</p>';
     await tick(50);
     const btn = doc.getElementById("nexa-video-btn");
     assert.ok(!btn || btn.style.display === "none", "paused on this site: no button");
+  }
+
+  for (const copy of COPIES) {
+    const src = SOURCES.get(copy);
+
+    // ---- Udemy lecture: this lecture or its audio, never the whole course ------
+    // A whole-course job always fails: yt-dlp's Udemy course extractor cannot
+    // find the course id on today's pages, and the app reports "Udemy course
+    // download is not supported". Only the lecture itself is offered.
+    {
+      const url = "https://www.udemy.com/course/python-basics/learn/lecture/123456#overview";
+      const replies = { "nexa-download": { ok: true } };
+      const { doc, win, tick, sent } = boot({ url, html: `<body>${PLAYER}</body>`, replies, src });
+      await tick(50);
+      doc.getElementById("nexa-video-btn").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+      await tick(30);
+      const panel = doc.getElementById("nexa-panel");
+      const rows = Array.from(panel.querySelectorAll(".nx-q"));
+      assert.deepEqual(rows.map((r) => r.querySelector(".nx-name").textContent),
+                       ["This lecture only", "Audio only"], `${copy}: Udemy lecture offers`);
+      assert.doesNotMatch(panel.textContent, /entire course|all lectures/i, `${copy}: no whole-course row`);
+      rows[0].dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+      await tick(30);
+      const dl = sent.find((m) => m.type === "nexa-download");
+      assert.ok(dl, `${copy}: the lecture is handed off`);
+      assert.equal(dl.url, url, `${copy}: as the lecture page`);
+      assert.equal(dl.quality, "best", copy);
+      assert.ok(!dl.playlist, `${copy}: never as a playlist (whole-course) job`);
+    }
+
+    // ---- no yt-dlp extractor: the panel lists the stream the page is playing ---
+    // The bundled yt-dlp has no Coursera, Skillshare or Threads extractor, so a
+    // page URL from them fails with "Unsupported URL". Nothing there may reach
+    // yt-dlp — no quality probe, no quality rows — only the sniffed media.
+    const stream = "https://cdn.example.net/media/lesson-720p.mp4";
+    const pages = ["https://www.coursera.org/learn/ml/lecture/abc12/intro",
+                   "https://www.skillshare.com/en/classes/drawing-basics/123456789",
+                   "https://www.threads.net/@someone/post/C8abcDEFghi"].map((url) => ({
+      url,
+      ...boot({ url, html: `<body>${PLAYER}</body>`, src, replies: {
+        "nexa-get-qualities": [{ title: "cdn.example.net/media/lesson-720p.mp4", name: "lesson-720p.mp4",
+                                 qualities: [{ label: "Original", meta: "video", url: stream }] }],
+        "nexa-download": { ok: true } } })
+    }));
+    await pages[0].tick(1300);   // past the 1.2 s quality-prefetch debounce
+    for (const { url, doc, win, tick, sent } of pages) {
+      const tag = `${copy}: ${new URL(url).hostname}`;
+      assert.ok(!sent.some((m) => m.type === "nexa-prefetch-formats"), `${tag}: no yt-dlp quality prefetch`);
+      doc.getElementById("nexa-video-btn").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+      await tick(30);
+      assert.ok(sent.some((m) => m.type === "nexa-get-qualities"), `${tag}: asks for the sniffed media`);
+      assert.ok(!sent.some((m) => m.type === "nexa-list-formats"), `${tag}: never asks yt-dlp for qualities`);
+      const rows = Array.from(doc.getElementById("nexa-panel").querySelectorAll(".nx-q"));
+      assert.equal(rows.length, 1, `${tag}: only the detected stream is offered`);
+      rows[0].dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+      await tick(30);
+      const dl = sent.find((m) => m.type === "nexa-download");
+      assert.ok(dl, `${tag}: the stream is handed off`);
+      assert.equal(dl.url, stream, `${tag}: the stream itself, not the page URL`);
+      assert.ok(!dl.quality, `${tag}: with no yt-dlp quality`);
+    }
   }
 
   console.log("Extension content tests passed");

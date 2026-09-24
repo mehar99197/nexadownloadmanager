@@ -854,7 +854,8 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: "nexa-link",  title: "Download with Nexa",        contexts: ["link"] });
   chrome.contextMenus.create({ id: "nexa-media", title: "Download video/audio with Nexa", contexts: ["video", "audio", "image"] });
   chrome.contextMenus.create({ id: "nexa-page",  title: "Download all links on page",  contexts: ["page"] });
-  chrome.contextMenus.create({ id: "nexa-course", title: "Download whole course with Nexa", contexts: ["page", "link"] });
+  // No "whole course" item: yt-dlp can't read a whole Udemy course, so that
+  // handoff always failed. A lecture goes from the Download button on its page.
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -870,9 +871,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       await handoff(info.srcUrl, tab, "", "", "", false, true);
   } else if (info.menuItemId === "nexa-page" && tab?.id) {
     await grabLinks(tab, "links");
-  } else if (info.menuItemId === "nexa-course") {
-    const target = info.linkUrl || tab?.url;
-    if (target) await handoff(target, tab, tab?.url, "", "", true, true);
   }
 });
 
