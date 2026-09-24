@@ -636,6 +636,47 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_reverify_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
+    # The Pro gate on course sites, through the real engine and IPC server: a
+    # CDN stream handed over from a course page is a course download. Free is
+    # the default plan; Pro comes from a minted token under offline grace, so
+    # this is built like the licence tests above.
+    add_executable(nexa_pro_gate_test
+        tests/ProGateTest.cpp
+        src/ipc/IpcServer.cpp
+        src/core/DownloadEngine.cpp
+        src/core/DownloadTask.cpp
+        src/core/SegmentDownloader.cpp
+        src/core/RateLimiter.cpp
+        src/core/Database.cpp
+        src/core/Categories.cpp
+        src/core/Portable.cpp
+        src/core/UpdateChecker.cpp
+        src/core/ProxyConfig.cpp
+        src/grabber/HlsGrabber.cpp
+        src/torrent/TorrentManager.cpp
+        src/site/YtDlpGrabber.cpp
+        src/site/MegaGrabber.cpp
+        src/site/SpotifyGrabber.cpp
+        src/ai/AiClient.cpp
+        src/auth/AuthenticationManager.cpp
+        src/auth/AuthUtils.cpp
+        src/auth/BrowserLogin.cpp
+        src/auth/CookieFile.cpp
+        src/auth/CloudProviders.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+        src/web/PublicUrlPolicy.cpp
+        resources.qrc
+    )
+    target_include_directories(nexa_pro_gate_test PRIVATE src)
+    target_compile_definitions(nexa_pro_gate_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
+    target_link_libraries(nexa_pro_gate_test PRIVATE
+        Qt6::Core Qt6::Network Qt6::Sql ${LIBTORRENT_TARGET} OpenSSL::Crypto)
+
     # The licence guard, compiled BOTH ways from the same source, each asserting
     # the same results. No Qt: the guard depends only on the standard library.
     #   nexa_guard_test      — the plain, debuggable path (what dev/test builds use)
@@ -673,6 +714,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
     add_test(NAME account_signin COMMAND nexa_account_signin_test)
     add_test(NAME reverify COMMAND nexa_reverify_test)
+    add_test(NAME pro_gate COMMAND nexa_pro_gate_test)
     add_test(NAME guard COMMAND nexa_guard_test)
     add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()
