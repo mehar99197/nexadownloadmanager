@@ -78,6 +78,12 @@ public:
     void signOut();
 
     QString plan() const { return m_plan; }
+    // Whether plan() is this launch's answer yet. Until it is, plan() reads
+    // "free" on a paid install too: start() reads the stored credential a turn
+    // of the event loop later, then validates it over the network. The first
+    // outcome settles it — at once when nothing is stored, otherwise the
+    // server's answer, the offline-grace plan, or a definitive failure.
+    bool isPlanSettled() const { return m_planSettled; }
     QString status() const { return m_status; }
     bool isPaid() const { return m_plan == QLatin1String("pro") || m_plan == QLatin1String("team"); }
     // True while the entitlement comes from the 7-day Pro trial (plan reads "pro").
@@ -139,6 +145,10 @@ public:
 
 signals:
     void entitlementChanged(const QString &plan);
+    // plan() is now this launch's answer (see isPlanSettled()). Emitted once,
+    // after any entitlementChanged: a stored credential that turns out to be
+    // Free changes no plan, so this is the only notice it gives.
+    void planSettled(const QString &plan);
     void statusChanged(const QString &status);
     void activationFinished(bool valid, const QString &message);
     // Every seat on the licence is in use by other machines right now. Distinct
@@ -224,6 +234,7 @@ private:
     QNetworkReply *m_reply = nullptr;
     QString m_plan = QStringLiteral("free");
     QString m_status = QStringLiteral("Free plan");
+    bool m_planSettled = false;       // the first setPlan() settles it; see isPlanSettled()
     QString m_licenseKey;             // key in use this session (for periodic re-validation)
     QString m_licenseToken;           // server-signed entitlement (24h), for plan-gated APIs
     // The account credential, when this machine is signed in. Mutually
