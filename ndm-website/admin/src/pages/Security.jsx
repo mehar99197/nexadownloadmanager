@@ -21,7 +21,7 @@ function errorMessage(err, fallback) {
  * Two-factor authentication for the signed-in control-panel account.
  *
  * Flow: "Turn on" → the API mints a secret (stored, not yet active) → QR code
- * + manual key → the first correct code enables it and returns eight one-time
+ * + manual key → the first correct code, with the account password, enables it and returns eight one-time
  * recovery codes, shown exactly once. "Turn off" needs the password and a
  * current code. Everything is per realm: the creator's 2FA is separate from
  * a staff admin's, because they are separate logins.
@@ -145,6 +145,7 @@ export default function Security() {
   // Enrolment
   const [setup, setSetup] = useState(null);       // { secret, otpauthUrl, qr }
   const [code, setCode] = useState('');
+  const [enablePassword, setEnablePassword] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState(null);
 
   // Disable
@@ -174,6 +175,7 @@ export default function Security() {
       const qr = await QRCode.toDataURL(data.otpauthUrl, { margin: 1, width: 196, errorCorrectionLevel: 'M' });
       setSetup({ ...data, qr });
       setCode('');
+      setEnablePassword('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to start the setup.'));
     } finally {
@@ -186,9 +188,12 @@ export default function Security() {
     setBusy(true);
     setError('');
     try {
-      const data = await unwrap(api.post(`${AUTH_NS}/2fa/enable`, { code: code.trim() }));
+      // The password as well as the code: an access token alone must not be
+      // able to enrol an authenticator nobody else holds and lock the owner out.
+      const data = await unwrap(api.post(`${AUTH_NS}/2fa/enable`, { password: enablePassword, code: code.trim() }));
       setRecoveryCodes(data.recoveryCodes || []);
       setSetup(null);
+      setEnablePassword('');
       setNotice('Two-factor authentication is on. Save your recovery codes now — they are shown only once.');
       await load();
       await refreshAdmin?.();
@@ -365,8 +370,22 @@ export default function Security() {
                   required
                 />
               </div>
+              <div>
+                <p className="text-sm font-semibold text-admin-text">3. Confirm with your password</p>
+                <Input
+                  label="Password"
+                  name="enablePassword"
+                  type="password"
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
+                  className="mt-2 max-w-[20rem]"
+                  value={enablePassword}
+                  onChange={(e) => setEnablePassword(e.target.value)}
+                  required
+                />
+              </div>
               <div className="flex gap-2">
-                <Button type="submit" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify and turn on'}</Button>
+                <Button type="submit" disabled={busy || code.length !== 6 || !enablePassword}>{busy ? 'Verifying…' : 'Verify and turn on'}</Button>
                 <Button variant="ghost" onClick={() => setSetup(null)} disabled={busy}>Cancel</Button>
               </div>
             </form>

@@ -4,6 +4,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import ScrollRegion from '../components/ScrollRegion';
 
 /* ------------------------------------------------------------------ *
  *  Everything on this page was measured. Nothing here is illustrative.
@@ -240,7 +241,7 @@ export default function Benchmarks() {
         <p className="mt-2 text-sm leading-6 text-slate-400">
           A benchmark without its conditions is an advertisement. These are ours.
         </p>
-        <div className="mt-5 overflow-x-auto">
+        <ScrollRegion className="mt-5" label="Test methodology, hardware and network conditions — scrolls sideways">
           <table className="w-full min-w-[520px] text-left text-sm">
             <caption className="sr-only">Test methodology, hardware and network conditions</caption>
             <thead>
@@ -258,7 +259,7 @@ export default function Benchmarks() {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       </Card>
 
       <Card className="mt-8">
@@ -296,7 +297,7 @@ export default function Benchmarks() {
 
         <div className="mt-4">
           {showTable ? (
-            <div className="overflow-x-auto">
+            <ScrollRegion label="Median throughput and elapsed time per connection count — scrolls sideways">
               <table className="w-full min-w-[560px] text-left text-sm">
                 <caption className="sr-only">
                   Median throughput and elapsed time for 24 MiB at each connection count, per host
@@ -325,7 +326,7 @@ export default function Benchmarks() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollRegion>
           ) : (
             <ThroughputChart colors={colors} />
           )}
@@ -360,7 +361,7 @@ export default function Benchmarks() {
           from the same host — a size Nexa splits into 16 segments — with everything real included:
           probing, writing to disk, the queue, the interface.
         </p>
-        <div className="mt-5 overflow-x-auto">
+        <ScrollRegion className="mt-5" label="Nexa end-to-end download runs — scrolls sideways">
           <table className="w-full min-w-[420px] text-left text-sm">
             <caption className="sr-only">Nexa end-to-end download runs</caption>
             <thead>
@@ -385,7 +386,7 @@ export default function Benchmarks() {
               </tr>
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
         <div className="note-warn mt-5 rounded-xl px-4 py-3 text-sm leading-6">
           <p className="font-bold">This came out lower than the bare range client, and we are not hiding it.</p>
           <p className="mt-1">

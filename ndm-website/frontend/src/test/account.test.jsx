@@ -60,9 +60,13 @@ describe('TwoFactorCard — enrolment', () => {
       return envelope({});
     });
     await userEvent.type(screen.getByLabelText(/code from the app/i), '123456');
+    // The code alone is not enough: the server wants the password too, so a
+    // stolen session cannot enrol an authenticator of its own.
+    expect(screen.getByRole('button', { name: /verify and turn on/i })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(/^password/i), 'my-password-1');
     await userEvent.click(screen.getByRole('button', { name: /verify and turn on/i }));
 
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/auth/2fa/enable', { code: '123456' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/auth/2fa/enable', { code: '123456', password: 'my-password-1' }));
     const codes = await screen.findByTestId('recovery-codes');
     expect(within(codes).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['aaaaa-11111', 'bbbbb-22222']);
     await waitFor(() => expect(screen.getByTestId('two-factor-status')).toHaveTextContent('On'));
@@ -79,6 +83,24 @@ describe('TwoFactorCard — enrolment', () => {
     await userEvent.type(screen.getByLabelText(/code from the app/i), '654321');
     await userEvent.click(screen.getByRole('button', { name: /turn off two-factor/i }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/auth/2fa/disable', { code: '654321' }));
+  });
+
+  it('turns 2FA on for a Google-created account with the code alone', async () => {
+    api.get.mockImplementation(() => envelope({ enabled: false, pending: false, recoveryCodesLeft: 0 }));
+    api.post.mockImplementation((path) => {
+      if (path === '/auth/2fa/setup')
+        return envelope({ secret: 'JBSWY3DPEHPK3PXP', otpauthUrl: 'otpauth://totp/Nexa:me?secret=JBSWY3DPEHPK3PXP' });
+      return envelope({ enabled: true, recoveryCodes: ['aaaaa-11111'] });
+    });
+
+    renderCard(<TwoFactorCard user={{ hasPassword: false }} />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /turn on/i }));
+    await screen.findByTestId('totp-secret');
+    expect(screen.queryByLabelText(/^password/i)).toBeNull();
+    await userEvent.type(screen.getByLabelText(/code from the app/i), '123456');
+    await userEvent.click(screen.getByRole('button', { name: /verify and turn on/i }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/auth/2fa/enable', { code: '123456' }));
   });
 });
 

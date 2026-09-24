@@ -37,7 +37,13 @@ app.use(helmet({
     directives: { ...helmet.contentSecurityPolicy.getDefaultDirectives(), 'frame-ancestors': ["'none'"] },
   },
 }));
-app.use(cors({ origin: config.CORS_ORIGINS, credentials: true }));
+// The export caps are reported in headers (routes/admin.js#reportExport); a
+// panel served from another allowed origin could not read them otherwise.
+app.use(cors({
+  origin: config.CORS_ORIGINS,
+  credentials: true,
+  exposedHeaders: ['X-Export-Total', 'X-Export-Limit', 'X-Export-Truncated'],
+}));
 app.use(cookieParser());
 
 // Request logging.

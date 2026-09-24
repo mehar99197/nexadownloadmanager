@@ -3,7 +3,8 @@
 const { z } = require('zod');
 
 // Release artifact URLs become installer downloads — https only.
-const { httpsUrl } = require('./common');
+// An empty value (or null) clears a stored URL — see clearableHttpsUrl.
+const { clearableHttpsUrl } = require('./common');
 
 // The website backend uses MySQL AUTO_INCREMENT ids, not Mongo ObjectIds.
 const objectId = z.coerce.number().int().positive('Invalid id');
@@ -107,8 +108,8 @@ const createReleaseSchema = {
   body: z
     .object({
       version: z.string().trim().min(1).max(50),
-      windowsUrl: httpsUrl.optional(),
-      linuxUrl: httpsUrl.optional(),
+      windowsUrl: clearableHttpsUrl.optional(),
+      linuxUrl: clearableHttpsUrl.optional(),
       windowsSha256: sha256.optional(),
       linuxSha256: sha256.optional(),
       changelog: z.string().max(20000).optional(),
@@ -122,8 +123,8 @@ const updateReleaseSchema = {
   body: z
     .object({
       version: z.string().trim().min(1).max(50).optional(),
-      windowsUrl: httpsUrl.optional(),
-      linuxUrl: httpsUrl.optional(),
+      windowsUrl: clearableHttpsUrl.optional(),
+      linuxUrl: clearableHttpsUrl.optional(),
       windowsSha256: sha256.nullable().optional(),
       linuxSha256: sha256.nullable().optional(),
       changelog: z.string().max(20000).optional(),
@@ -197,7 +198,7 @@ const releaseArtifactParamsSchema = {
 };
 
 // Deleting an account is irreversible and cascades through subscriptions,
-// payments, reviews and licence activations. The body must repeat the target's
+// reviews and licence activations (payments are kept, detached). The body must repeat the target's
 // exact address, so the destructive call cannot be made by clicking the wrong
 // row — the same guard the creator's Danger Zone uses.
 const deleteUserSchema = {

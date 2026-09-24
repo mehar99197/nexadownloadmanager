@@ -26,6 +26,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireRoot, rootIpWhitelist, isRootUser } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
+const { stopBillingBeforeDelete, BILLING_CANCEL_FAILED } = require('../utils/accountDeletion');
 const { publicUser } = require('../utils/userView');
 const { signRootToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { mountTwoFactor, signChallenge } = require('./twoFactor');
@@ -423,10 +424,17 @@ router.delete(
     if (String(user.email).toLowerCase() !== req.body.confirmEmail)
       return fail(res, 'CONFIRM_MISMATCH', 'The confirmation email does not match this account', 400);
 
+    // Stop Stripe first; a customer deleted while still subscribed would be
+    // billed forever with no row left to cancel from (utils/accountDeletion.js).
+    const billing = await stopBillingBeforeDelete(user.id);
+    if (!billing.ok)
+      return fail(res, BILLING_CANCEL_FAILED.code, BILLING_CANCEL_FAILED.message, BILLING_CANCEL_FAILED.status);
+
     // Write the audit row BEFORE the delete: audit_logs.admin_user_id is
     // ON DELETE SET NULL, and the row must survive the cascade that follows.
     await audit(req, 'user.deleted', 'user', user.id,
-      `Deleted account ${user.email} and all of its data`, { email: user.email, role: user.role });
+      `Deleted account ${user.email} and all of its data`,
+      { email: user.email, role: user.role, stripeSubscriptionsCancelled: billing.cancelled });
     await User.remove(user.id);
     return ok(res, { deleted: true });
   })

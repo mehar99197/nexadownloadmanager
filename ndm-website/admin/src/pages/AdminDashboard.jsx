@@ -7,7 +7,7 @@ import Skeleton, { SkeletonText } from '../components/Skeleton.jsx';
 import BarChart from '../components/BarChart.jsx';
 import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
-import { formatDate, formatDateTime, formatMoney } from '../utils.js';
+import { dailySignupSeries, formatDate, formatDateTime, formatMoney } from '../utils.js';
 
 function MetricIcon({ children }) {
   return <span className="text-lg">{children}</span>;
@@ -70,6 +70,8 @@ const PAYMENT_OUTLINE = [0, 1, 2, 3].map((i) => (
   </tr>
 ));
 
+const SIGNUP_DAYS = 30;
+
 export default function AdminDashboard() {
   const { admin } = useAdminAuth();
   const [stats, setStats] = useState(null);
@@ -102,7 +104,11 @@ export default function AdminDashboard() {
   // Refresh keeps what is on screen until the new numbers replace it.
   const first = loading && !stats;
 
-  const signupData = (stats?.newSignups || []).slice(-14).map((item) => ({ label: formatDate(item.date, { month: 'short', day: 'numeric' }), value: item.count }));
+  // Exactly the thirty days the caption names, zero-filled — see dailySignupSeries.
+  const signupData = dailySignupSeries(stats?.newSignups, SIGNUP_DAYS);
+  const signupTotal = signupData.reduce((sum, day) => sum + day.value, 0);
+  const trials = Number(stats?.activeTrials) || 0;
+  const billedCount = Number(stats?.mrrSubscriptions) || 0;
   const revenueData = (stats?.revenueSeries || []).map((item) => ({ label: item.month?.slice(5) || '-', value: Number(item.revenue) || 0 }));
   const plans = stats?.planDistribution || [];
   const maxPlan = Math.max(...plans.map((item) => Number(item.count) || 0), 1);
@@ -137,8 +143,8 @@ export default function AdminDashboard() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Total users" value={stats?.totalUsers ?? '-'} loading={first} hint="All registered accounts" icon={<MetricIcon>◉</MetricIcon>} accent="text-admin-cyan" />
-        <StatCard label="Active subscriptions" value={stats?.activeSubscriptions ?? '-'} loading={first} hint="Currently active plans" icon={<MetricIcon>◆</MetricIcon>} accent="text-accent-400" />
-        <StatCard label="Monthly recurring revenue" value={formatMoney(stats?.mrr)} loading={first} hint="Active paid plans" icon={<MetricIcon>$</MetricIcon>} accent="text-admin-success" />
+        <StatCard label="Active subscriptions" value={stats?.activeSubscriptions ?? '-'} loading={first} hint={`Pro & Team plans in force, trials excluded${trials ? ` · ${trials} on trial` : ''}`} icon={<MetricIcon>◆</MetricIcon>} accent="text-accent-400" />
+        <StatCard label="Monthly recurring revenue" value={formatMoney(stats?.mrr)} loading={first} hint={`${billedCount} Stripe-billed plan${billedCount === 1 ? '' : 's'} at list price, yearly ÷ 12 · trials and admin-granted plans not counted`} icon={<MetricIcon>$</MetricIcon>} accent="text-admin-success" />
         <StatCard label="Pending reviews" value={stats?.pendingReviews ?? '-'} loading={first} hint="Waiting for moderation" icon={<MetricIcon>★</MetricIcon>} accent="text-admin-warning" />
       </div>
 
@@ -160,7 +166,7 @@ export default function AdminDashboard() {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last 30 days.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} loading={first} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
+        <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">New signups</h3><p className="mt-1 text-xs text-admin-muted">Daily registrations over the last {SIGNUP_DAYS} days (UTC){first ? '' : ` · ${signupTotal} in total`}.</p></div><span className="rounded-full border border-admin-cyan/20 bg-admin-cyan/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-cyan">Growth</span></div><div className="mt-6"><BarChart data={signupData} loading={first} height={220} barClassName="bg-gradient-to-t from-admin-accent to-admin-cyan" /></div></section>
         <section className="admin-card"><div className="flex items-start justify-between gap-4"><div><h3 className="text-base font-bold text-admin-text">Revenue trend</h3><p className="mt-1 text-xs text-admin-muted">Paid revenue by month for the latest six months.</p></div><span className="rounded-full border border-admin-success/20 bg-admin-success/10 px-2.5 py-1 text-xs font-bold tracking-wide text-admin-success">{first ? <SkeletonText chars={9} /> : <>MRR {formatMoney(stats?.mrr)}</>}</span></div><div className="mt-6"><BarChart data={revenueData} loading={first} skeletonBars={6} height={220} valueFormatter={formatMoney} barClassName="bg-gradient-to-t from-admin-success to-admin-cyan" /></div></section>
       </div>
 

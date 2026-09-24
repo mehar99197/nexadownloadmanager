@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, queryOne, insert, execute } = require('../config/db');
+const { lastMonths } = require('../utils/revenue');
 
 const Payment = {
   async findByUserId(userId, { page = 1, limit = 20 } = {}) {
@@ -39,25 +40,48 @@ const Payment = {
 
   async listRecent(limit = 10) {
     const limitNumber = Math.min(200, Math.max(1, Number(limit) || 10));
+    // LEFT JOIN: a payment outlives a deleted account (user_id is set NULL,
+    // not cascaded), and it still belongs in the list and in the totals.
     return query(
-      `SELECT p.*, u.email AS userEmail, u.name AS userName
-       FROM payments p JOIN users u ON u.id = p.user_id
+      `SELECT p.*, u.email AS userEmail,
+              CASE WHEN u.id IS NULL THEN 'Deleted account' ELSE u.name END AS userName
+       FROM payments p LEFT JOIN users u ON u.id = p.user_id
        ORDER BY p.created_at DESC LIMIT ${limitNumber}`
     );
   },
 
-  async revenueByMonth(months = 6) {
+  /**
+   * Paid revenue for exactly the last `months` calendar months, the current one
+   * included, oldest first — one bucket per month, zero-filled.
+   *
+   * The window used to start `months` months before TODAY, which is partway
+   * through a month: six months asked for came back as up to seven buckets,
+   * the first holding only the tail end of its month, and a month with no
+   * payments had no bucket at all, so the bars no longer lined up with months.
+   */
+  async revenueByMonth(months = 6, now = new Date()) {
     const safeMonths = Math.min(24, Math.max(1, Number(months) || 6));
-    return query(
+    const keys = lastMonths(safeMonths, now);
+    const rows = await query(
       `SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
               COALESCE(SUM(amount), 0) AS revenue,
               COUNT(*) AS payments
        FROM payments
        WHERE status = 'paid'
-         AND created_at >= DATE_SUB(CURRENT_DATE, INTERVAL ${safeMonths} MONTH)
+         AND created_at >= ?
        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-       ORDER BY month`
+       ORDER BY month`,
+      [`${keys[0]}-01 00:00:00`]
     );
+    const byMonth = new Map(rows.map((r) => [r.month, r]));
+    return keys.map((month) => {
+      const row = byMonth.get(month);
+      return {
+        month,
+        revenue: row ? Number(row.revenue) || 0 : 0,
+        payments: row ? Number(row.payments) || 0 : 0,
+      };
+    });
   },
 };
 

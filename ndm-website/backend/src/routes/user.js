@@ -17,7 +17,7 @@ const Review = require('../models/Review');
 const TeamMember = require('../models/TeamMember');
 const ContactMessage = require('../models/ContactMessage');
 const AuditLog = require('../models/AuditLog');
-const stripe = require('../utils/stripe');
+const { stopBillingBeforeDelete, BILLING_CANCEL_FAILED } = require('../utils/accountDeletion');
 const { isTrialActive, isBilled } = require('../utils/license');
 const { publicUser } = require('../utils/userView');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
@@ -82,6 +82,7 @@ function subscriptionSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
 async function teamMembership(userId) {
   const m = await TeamMember.findActiveByUserId(userId);
   if (!m || m.owner_plan !== 'team' || m.owner_status !== 'active') return null;
+  if (Number(m.owner_banned)) return null; // same rule as accountPlan.teamPlanForUser
   if (m.owner_expiry_date && new Date(m.owner_expiry_date).getTime() < Date.now()) return null;
   return m;
 }
@@ -511,8 +512,10 @@ router.get(
 
 /**
  * Self-service account deletion. Irreversible: the row cascades to
- * subscriptions, activations, payments, reviews and team rows. A paid Stripe
- * subscription is cancelled first so nobody is billed for a deleted account.
+ * subscriptions, activations, reviews and team rows; payments are kept for the
+ * books with their user detached (ON DELETE SET NULL). A paid Stripe
+ * subscription is cancelled first so nobody is billed for a deleted account,
+ * and the account is NOT deleted when that cancel fails.
  * Control-panel accounts are excluded — the creator removes those.
  */
 router.delete(
@@ -531,18 +534,13 @@ router.delete(
       if (!matches) return fail(res, 'INVALID_PASSWORD', 'Password is incorrect', 400);
     }
 
+    // Stripe first, and no deletion if it cannot be stopped — see
+    // utils/accountDeletion.js for why logging and carrying on was the worst
+    // of the available answers.
+    const billing = await stopBillingBeforeDelete(user.id);
+    if (!billing.ok)
+      return fail(res, BILLING_CANCEL_FAILED.code, BILLING_CANCEL_FAILED.message, BILLING_CANCEL_FAILED.status);
     const subs = await Subscription.findByUserId(user.id);
-    for (const s of subs) {
-      if (s.stripe_subscription_id && s.status === 'active') {
-        // Immediate, unlike /subscription/cancel: the account is going away,
-        // so there is no remaining period to hand back to anybody.
-        try { await stripe.cancelSubscription(s.stripe_subscription_id, { atPeriodEnd: false }); }
-        catch (err) {
-          // eslint-disable-next-line no-console
-          console.error('[user] stripe cancel on delete failed:', err.message);
-        }
-      }
-    }
     const members = subs.length
       ? (await Promise.all(subs.map((s) => TeamMember.countBySubscription(s.id)))).reduce((a, b) => a + b, 0)
       : 0;

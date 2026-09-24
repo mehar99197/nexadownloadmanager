@@ -2,6 +2,7 @@ import { Link, NavLink } from 'react-router-dom';
 import Section from '../../components/Section';
 import Card from '../../components/Card';
 import Button from '../../components/Button';
+import ScrollRegion from '../../components/ScrollRegion';
 
 /**
  * The feature deep-dives share one skeleton so a reader who lands on any of
@@ -120,7 +121,7 @@ export function Flow({ caption, steps, note }) {
  */
 export function SpecTable({ caption, head = ['', ''], rows }) {
   return (
-    <div className="mt-5 overflow-x-auto">
+    <ScrollRegion className="mt-5" label={`${caption} — scrolls sideways`}>
       <table className="w-full min-w-[520px] text-left text-sm">
         <caption className="sr-only">{caption}</caption>
         <thead>
@@ -145,7 +146,7 @@ export function SpecTable({ caption, head = ['', ''], rows }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollRegion>
   );
 }
 

@@ -17,6 +17,7 @@ const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
 const { passwordMatches } = require('../utils/passwordCheck');
 const { clearLock } = require('../utils/loginLockout');
+const twoFactorLockout = require('../utils/twoFactorLockout');
 const security = require('../utils/securityEvents');
 const { getPool } = require('../config/db');
 
@@ -25,6 +26,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireAdmin, ipWhitelist } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
+const { stopBillingBeforeDelete, BILLING_CANCEL_FAILED } = require('../utils/accountDeletion');
 const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { thresholds: sharingThresholdsFor, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
 const { recentRejections } = require('../utils/tokenAbuse');
@@ -80,12 +82,7 @@ const {
 const { sendContactReply } = require('../utils/email');
 const { publicUser } = require('../utils/userView');
 const { isReservedEmail } = require('../utils/reservedEmail');
-
-function monthlyPrice(plan) {
-  if (plan === 'pro') return 5;
-  if (plan === 'team') return 15;
-  return 0;
-}
+const { monthlyRecurringRevenue } = require('../utils/revenue');
 
 // Never hand-roll a projection here: /users/:id/details reads the row with
 // SELECT *, so anything a deny-list missed reached a staff admin — including,
@@ -105,6 +102,26 @@ function blockedStaffTarget(req, res, user, verb = 'modify') {
   if (req.isRoot || user.role === 'user') return false;
   fail(res, 'FORBIDDEN', `Only the creator can ${verb} a control-panel account`, 403);
   return true;
+}
+
+// The same line, for a subscription reached through its id rather than its
+// owner. The owner is loaded so the refusal is the account's: a staff admin
+// freeing the creator's seats knocks the creator's machines off their plan.
+async function blockedStaffSubscription(req, res, subscription) {
+  if (req.isRoot) return false;
+  return blockedStaffTarget(req, res, await User.findById(subscription.user_id));
+}
+
+// Lists stop at the same line the details view does. The subscription list,
+// its export and the users list each embed whole subscription rows, so a staff
+// admin who could not open the creator's details could still read the
+// creator's licence key and Stripe ids off the table — or out of the CSV.
+const PANEL_ACCOUNT_SECRETS = ['license_key', 'stripe_customer_id', 'stripe_subscription_id'];
+function redactForStaff(req, subscription, ownerRole) {
+  if (!subscription || req.isRoot || ownerRole === 'user') return subscription;
+  const redacted = { ...subscription };
+  for (const column of PANEL_ACCOUNT_SECRETS) if (column in redacted) redacted[column] = null;
+  return redacted;
 }
 
 async function audit(req, action, entityType, entityId, summary, metadata) {
@@ -217,12 +234,18 @@ router.get(
 router.get(
   '/stats',
   asyncHandler(async (req, res) => {
-    const [totalUsers, activeSubscriptions, paidSubs, signupAgg,
+    const [totalUsers, activeSubscriptions, activeTrials, billedSubs, signupAgg,
            pendingReviews, recentPayments, planDistribution,
            revenueSeries, recentActivity, ads, contact] = await Promise.all([
       User.count(),
-      Subscription.countActive(),
-      Subscription.findPaidActive(),
+      // Paid plans (Pro/Team) in force, trials excluded. It used to count
+      // every active row — every account has an active Free one — so the
+      // tile was the user count under another name.
+      Subscription.countPaidActive(),
+      Subscription.countActiveTrials(),
+      // MRR counts only what renews through Stripe: not trials, not plans an
+      // admin granted by hand, and a yearly plan at its yearly price over 12.
+      Subscription.findBilledActive(),
       User.signupAgg(30),
       Review.count({ status: 'pending' }),
       Payment.listRecent(10),
@@ -233,13 +256,16 @@ router.get(
       ContactMessage.stats(),
     ]);
 
-    const mrr = paidSubs.reduce((sum, s) => sum + monthlyPrice(s.plan), 0);
+    const mrr = monthlyRecurringRevenue(billedSubs);
     const newSignups = (signupAgg || []).map((g) => ({ date: g.date, count: g.count }));
 
     return ok(res, {
       totalUsers,
       activeSubscriptions,
+      activeTrials,
       mrr,
+      // How many subscriptions the MRR figure is made of, so the tile can say.
+      mrrSubscriptions: billedSubs.length,
       newSignups,
       pendingReviews,
       recentPayments,
@@ -296,6 +322,10 @@ router.post(
       return fail(res, 'RESERVED_ADDRESS',
         'That address is reserved for the creator account and cannot be used for a customer.', 400);
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
+    // The same policy the reset route below applies: a password that would be
+    // refused on reset — breached, or carrying the address — is refused here.
+    const problem = await passwordProblem(password, { email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     const user = await User.create({
       name,
       email,
@@ -320,18 +350,34 @@ router.post(
 // Exports are capped so one click cannot pull the whole users table into
 // memory. The cap is shared with /subscriptions/export and reported back, so
 // the panel can say the file is truncated instead of silently losing rows.
+//
+// The body stays the bare array it has always been (anything already reading
+// `data` as the rows keeps working); the cap is reported in headers:
+//   X-Export-Total      rows that matched the filters
+//   X-Export-Limit      the cap
+//   X-Export-Truncated  'true' when the file holds fewer rows than matched
 const EXPORT_MAX = 5000;
+
+function reportExport(res, total) {
+  res.set('X-Export-Total', String(total));
+  res.set('X-Export-Limit', String(EXPORT_MAX));
+  res.set('X-Export-Truncated', total > EXPORT_MAX ? 'true' : 'false');
+}
 
 router.get(
   '/users/export', validate(usersExportQuerySchema),
   asyncHandler(async (req, res) => {
-    const users = await User.listAll({
-      limit: EXPORT_MAX,
+    const filters = {
       q: req.query.q,
       role: req.query.role,
       banned: req.query.banned === undefined ? undefined : req.query.banned === 'true',
       emailVerified: req.query.emailVerified === undefined ? undefined : req.query.emailVerified === 'true',
-    });
+    };
+    const [users, { totalCount }] = await Promise.all([
+      User.listAll({ ...filters, limit: EXPORT_MAX }),
+      User.list({ ...filters, page: 1, limit: 1 }),
+    ]);
+    reportExport(res, Number(totalCount) || 0);
     return ok(res, users.map(safeUser));
   })
 );
@@ -356,9 +402,19 @@ router.get(
       if (!subByUser.has(s.user_id)) subByUser.set(s.user_id, s);
     }
 
+    const now = Date.now();
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
+      // Only whether (and until when) sign-in is locked — what support needs
+      // to offer POST /users/:id/unlock — never the failure counters. And only
+      // on the accounts this admin could unlock (see blockedStaffTarget).
+      const lockedUntil = u.locked_until ? new Date(u.locked_until) : null;
+      const locked = Boolean(lockedUntil && lockedUntil.getTime() > now
+        && (req.isRoot || u.role === 'user'));
+      return {
+        ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: redactForStaff(req, sub, u.role),
+        signInLockedUntil: locked ? lockedUntil.toISOString() : null,
+      };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -457,10 +513,12 @@ router.put(
  *    `audit_logs.admin_user_id` is ON DELETE SET NULL and the record has to
  *    outlive the cascade.
  *
- * The cascade is the schema's, not this route's: subscriptions, payments,
- * reviews and (through subscriptions) licence activations and team rows are
- * ON DELETE CASCADE, while audit logs, ads and contact messages are
- * ON DELETE SET NULL so the history of what was done survives the person.
+ * The cascade is the schema's, not this route's: subscriptions, reviews and
+ * (through subscriptions) licence activations and team rows are
+ * ON DELETE CASCADE, while payments, audit logs, ads and contact messages are
+ * ON DELETE SET NULL so the books and the history of what was done survive
+ * the person. A billed Stripe subscription is cancelled first, and the
+ * account is kept (502) when Stripe will not cancel it.
  */
 router.delete(
   '/users/:id', validate(deleteUserSchema),
@@ -481,8 +539,15 @@ router.delete(
     if (String(user.email).toLowerCase() !== req.body.confirmEmail)
       return fail(res, 'CONFIRM_MISMATCH', 'The confirmation email does not match this account', 400);
 
+    // Stop Stripe first; a customer deleted while still subscribed would be
+    // billed forever with no row left to cancel from (utils/accountDeletion.js).
+    const billing = await stopBillingBeforeDelete(user.id);
+    if (!billing.ok)
+      return fail(res, BILLING_CANCEL_FAILED.code, BILLING_CANCEL_FAILED.message, BILLING_CANCEL_FAILED.status);
+
     await audit(req, 'user.deleted', 'user', user.id,
-      `Deleted account ${user.email} and all of its data`, { email: user.email, role: user.role });
+      `Deleted account ${user.email} and all of its data`,
+      { email: user.email, role: user.role, stripeSubscriptionsCancelled: billing.cancelled });
     await User.remove(user.id);
     return ok(res, { deleted: true });
   })
@@ -515,8 +580,12 @@ router.post(
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    const wasLocked = Boolean(user.locked_until && new Date(user.locked_until).getTime() > Date.now());
+    const wasLocked = Boolean(user.locked_until && new Date(user.locked_until).getTime() > Date.now())
+      || twoFactorLockout.isLocked(user);
     await clearLock(user.id);
+    // …and the second-factor lock (utils/twoFactorLockout.js), which the same
+    // person may be stuck behind instead. A correct password does not lift it.
+    await twoFactorLockout.clear(user.id);
     await audit(req, 'user.unlocked', 'user', user.id,
       `${wasLocked ? 'Lifted sign-in lock' : 'Reset sign-in failure count'} for ${user.email}`);
     return ok(res, { unlocked: true, wasLocked });
@@ -540,7 +609,10 @@ router.get(
   asyncHandler(async (req, res) => {
     const { page, limit, status, plan, q } = req.query;
     const { subscriptions, totalCount } = await Subscription.list({ page, limit, status, plan, q });
-    return ok(res, { subscriptions, page, limit, totalCount });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      page, limit, totalCount,
+    });
   })
 );
 
@@ -576,6 +648,9 @@ router.get(
 router.post(
   '/subscriptions/:id/sharing/clear', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
     if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.clear', 'subscription', req.params.id,
@@ -588,6 +663,9 @@ router.post(
 router.post(
   '/subscriptions/:id/sharing/resume', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
     if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.resume', 'subscription', req.params.id,
@@ -607,17 +685,22 @@ router.get(
   '/subscriptions/flagged', validate(limitQuerySchema),
   asyncHandler(async (req, res) => {
     const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
-    return ok(res, { subscriptions, thresholds: sharingThresholds });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      thresholds: sharingThresholds,
+    });
   })
 );
 
 router.get(
   '/subscriptions/export', validate(subscriptionsExportQuerySchema),
   asyncHandler(async (req, res) => {
-    const { subscriptions } = await Subscription.list({
-      page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
+    const { subscriptions, totalCount } = await Subscription.list({
+      page: 1, limit: EXPORT_MAX, maxLimit: EXPORT_MAX,
+      status: req.query.status, plan: req.query.plan, q: req.query.q,
     });
-    return ok(res, subscriptions);
+    reportExport(res, Number(totalCount) || 0);
+    return ok(res, subscriptions.map((s) => redactForStaff(req, s, s.userRole)));
   })
 );
 
@@ -705,6 +788,7 @@ router.post(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     // Drop every live seat lease. The activation rows stay, so the devices are
     // still listed and can re-take a seat — this frees the seats, it does not
     // blacklist the machines.

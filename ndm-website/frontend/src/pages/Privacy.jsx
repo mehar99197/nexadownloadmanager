@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
+import ScrollRegion from '../components/ScrollRegion';
 
 const LAST_UPDATED = 'September 23, 2026';
 
@@ -159,7 +160,7 @@ export default function Privacy() {
         </Block>
 
         <Block title="4. What the extension can access and why">
-          <div className="mt-3 overflow-x-auto rounded-xl border border-white/5">
+          <ScrollRegion className="mt-3 rounded-xl border border-white/5" label="Browser extension permissions and why each is needed — scrolls sideways">
             <table className="w-full text-left text-sm">
               <caption className="sr-only">Browser extension permissions and why each one is needed</caption>
               <thead>
@@ -177,7 +178,7 @@ export default function Privacy() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollRegion>
         </Block>
 
         <Block title="5. Optional AI features (Pro and Team)">

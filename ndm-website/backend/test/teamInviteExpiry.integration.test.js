@@ -142,6 +142,61 @@ test('team invitations expire', async (t) => {
     assert.equal(joined.body.data.role, 'member');
   });
 
+  // GET /api/team saying canInvite:true is only half of M-12: the invite route
+  // itself used to count every roster row, dead invitations included, and
+  // answered TEAM_FULL to the very invitation the roster said had room.
+  await t.test('an expired invitation frees its seat for a NEW invitation, not just on the roster', async () => {
+    const { owner, o, m } = await setup();
+    // Fill the five-seat team: the owner, the setup invite and three more.
+    const stamp = Date.now();
+    await captureMail(async () => {
+      for (const n of ['fill1', 'fill2', 'fill3']) {
+        const res = await owner.post('/api/team/invites', { email: `${n}x${stamp}@example.test` }, { token: o.token });
+        assert.equal(res.status, 201, res.text);
+      }
+      const over = await owner.post('/api/team/invites', { email: `over${stamp}@example.test` }, { token: o.token });
+      assert.equal(over.status, 400, over.text);
+      assert.equal(over.body.error.code, 'TEAM_FULL');
+    });
+
+    // One of them ages out: the roster says a seat is free again…
+    await age(m.email, 2);
+    const roster = await owner.get('/api/team', { token: o.token });
+    assert.equal(roster.body.data.used, 4);
+    assert.equal(roster.body.data.canInvite, true);
+
+    // …and the invite route agrees, rather than answering TEAM_FULL.
+    await captureMail(async () => {
+      const res = await owner.post('/api/team/invites', { email: `after${stamp}@example.test` }, { token: o.token });
+      assert.equal(res.status, 201, res.text);
+    });
+    const now = await owner.get('/api/team', { token: o.token });
+    assert.equal(now.body.data.used, 5);
+    assert.equal(now.body.data.canInvite, false);
+  });
+
+  // The count and the insert were two separate statements, so invitations
+  // sent together all read the same "room for one more" and all went in.
+  await t.test('invitations sent at the same moment cannot exceed the seats', async () => {
+    const { owner, o } = await setup();
+    // Owner + the setup invite hold two of five seats: three more fit.
+    const stamp = Date.now();
+    const emails = Array.from({ length: 8 }, (_, i) => `race${i}x${stamp}@example.test`);
+    let results;
+    await captureMail(async () => {
+      results = await Promise.all(emails.map((email) =>
+        owner.post('/api/team/invites', { email }, { token: o.token })));
+    });
+    const created = results.filter((r) => r.status === 201).length;
+    const refused = results.filter((r) => r.status === 400 && r.body?.error?.code === 'TEAM_FULL').length;
+    assert.equal(created, 3, results.map((r) => r.status).join(','));
+    assert.equal(refused, emails.length - 3);
+
+    const roster = await owner.get('/api/team', { token: o.token });
+    assert.equal(roster.body.data.used, 5);
+    assert.equal(roster.body.data.members.length, 4);
+  });
+
   await t.test('an accepted membership does not expire', async () => {
     const { owner, o, member, m, token } = await setup();
     assert.equal((await member.post('/api/team/join', { token }, { token: m.token })).status, 200);

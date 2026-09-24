@@ -563,12 +563,12 @@ test('backend flows', async (t) => {
       assert.equal(setup.status, 200, setup.text);
       secret = setup.body.data.secret;
       assert.match(setup.body.data.otpauthUrl, /^otpauth:\/\/totp\//);
-      const wrong = await api.post('/api/admin/2fa/enable', { code: '000000' }, auth);
+      const wrong = await api.post('/api/admin/2fa/enable', { password: admin.password, code: '000000' }, auth);
       assert.equal(wrong.status, 400);
       const state = await api.get('/api/admin/2fa', auth);
       assert.equal(state.body.data.enabled, false);
       assert.equal(state.body.data.pending, true);
-      const right = await api.post('/api/admin/2fa/enable', { code: await code(admin.email) }, auth);
+      const right = await api.post('/api/admin/2fa/enable', { password: admin.password, code: await code(admin.email) }, auth);
       assert.equal(right.status, 200, right.text);
       recoveryCodes = right.body.data.recoveryCodes;
       assert.equal(recoveryCodes.length, 8);

@@ -3,8 +3,14 @@
 const { query, queryOne, insert, execute, getPool, withTransaction } = require('../config/db');
 const {
   generateLicenseKey, planSeats, planExpiry, TRIAL_PLAN, trialEndsAt, isTrialExpired,
-  isPaidPlanLapsed, SEAT_LEASE_SECONDS,
+  isPaidPlanLapsed, SEAT_LEASE_SECONDS, PAID_GRACE_DAYS,
 } = require('../utils/license');
+
+// A paid row the dashboard may count: Pro or Team, active, not a trial, and not
+// a plan whose period ended past its grace (Subscription.current drops that one
+// to Free the next time anybody reads it — see isPaidPlanLapsed).
+const PAID_NOW = `s.status = 'active' AND s.plan IN ('pro', 'team') AND s.trial_ends_at IS NULL
+   AND (s.expiry_date IS NULL OR s.expiry_date > NOW() - INTERVAL ${Number(PAID_GRACE_DAYS)} DAY)`;
 
 /**
  * Revoke the seats on a subscription that were taken with its licence KEY,
@@ -438,7 +444,7 @@ const Subscription = {
       `SELECT s.id, s.license_key, s.plan, s.status, s.seats,
               s.sharing_level, s.sharing_devices, s.sharing_reason, s.sharing_checked_at,
               s.sharing_suspended_at, s.sharing_exempt,
-              u.email
+              u.email, u.role AS userRole
          FROM subscriptions s
          JOIN users u ON u.id = s.user_id
         WHERE s.sharing_level <> 'ok' OR s.sharing_suspended_at IS NOT NULL
@@ -622,13 +628,51 @@ const Subscription = {
     return query('SELECT plan, COUNT(*) AS count FROM subscriptions GROUP BY plan ORDER BY plan');
   },
 
-  async findPaidActive() {
+  /**
+   * Paid plans in force right now — Pro and Team, trials excluded. This is the
+   * dashboard's "Active subscriptions". countActive() counts every active row,
+   * and since every account holds an active Free one, that was the user count
+   * again. Admin-granted (comped) plans are included: they are paid plans
+   * somebody holds, even though nobody is charged — the MRR figure is where
+   * those are separated out.
+   */
+  async countPaidActive() {
+    const r = await queryOne(`SELECT COUNT(*) AS cnt FROM subscriptions s WHERE ${PAID_NOW}`);
+    return r ? Number(r.cnt) : 0;
+  },
+
+  /** Trials still running — reported beside the paid count, never inside it. */
+  async countActiveTrials() {
+    const r = await queryOne(
+      `SELECT COUNT(*) AS cnt FROM subscriptions
+        WHERE status = 'active' AND trial_ends_at IS NOT NULL AND trial_ends_at > NOW()`
+    );
+    return r ? Number(r.cnt) : 0;
+  },
+
+  /**
+   * The rows that actually bring money in every month: paid plans in force that
+   * renew through Stripe (utils/license.js#isBilled — a comped plan or a trial
+   * carries no Stripe id). The subscription row has no billing-cycle column, so
+   * each row carries the cycle of its owner's most recent paid charge; a row
+   * with no charge on record yet reads as monthly.
+   */
+  async findBilledActive() {
     return query(
-      "SELECT * FROM subscriptions WHERE status = 'active' AND plan IN ('pro', 'team')"
+      `SELECT s.id, s.user_id, s.plan, s.status, s.trial_ends_at, s.expiry_date,
+              s.stripe_subscription_id,
+              (SELECT p.billing_cycle FROM payments p
+                WHERE p.user_id = s.user_id AND p.status = 'paid'
+                ORDER BY p.created_at DESC, p.id DESC LIMIT 1) AS billing_cycle
+         FROM subscriptions s
+        WHERE ${PAID_NOW} AND s.stripe_subscription_id IS NOT NULL`
     );
   },
 
-  async list({ page = 1, limit = 20, status, plan, q } = {}) {
+  // `maxLimit` is for the CSV export. The admin table pages at up to 200, and
+  // the export — which passed its 5000-row cap straight in here — was silently
+  // clamped to that same 200.
+  async list({ page = 1, limit = 20, status, plan, q, maxLimit = 200 } = {}) {
     const where = [];
     const vals = [];
     if (q) { where.push('(u.name LIKE ? OR u.email LIKE ?)'); vals.push(`%${q}%`, `%${q}%`); }
@@ -636,10 +680,10 @@ const Subscription = {
     if (plan) { where.push('s.plan = ?'); vals.push(plan); }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const pageNumber = Math.max(1, Number(page) || 1);
-    const limitNumber = Math.min(200, Math.max(1, Number(limit) || 20));
+    const limitNumber = Math.min(maxLimit, Math.max(1, Number(limit) || 20));
     const offset = (pageNumber - 1) * limitNumber;
     const rows = await query(
-      `SELECT s.*, u.email AS userEmail, u.name AS userName
+      `SELECT s.*, u.email AS userEmail, u.name AS userName, u.role AS userRole
        FROM subscriptions s
        JOIN users u ON u.id = s.user_id
        ${w}

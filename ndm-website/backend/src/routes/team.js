@@ -14,7 +14,9 @@
  *   POST   /join {token}      → accepts; the signed-in email must match the invite
  *   POST   /leave
  *
- * Member: GET / → { role:'member', owner:{name,email}, licenseKey, plan, status }
+ * Member: GET / → { role:'member', owner:{name,email}, licenseKey, plan, status, usable }
+ *         (licenseKey is null unless `usable`: the owner is on a live Team plan
+ *         and not banned)
  *
  * The roster is capped at the plan's seats (owner included) so a five-seat
  * team is five people, and the desktop app keeps counting seats per device.
@@ -89,8 +91,8 @@ async function ownerPayload(sub) {
   // accepted, so holding a place for it just means a five-seat team quietly
   // becoming a four-seat one, with nothing on the roster explaining why.
   // The row stays — the owner can resend it, which revives it — but it stops
-  // taking up room until they do.
-  const held = members.filter((m) => !TeamMember.isExpired(m)).length + 1;
+  // taking up room until they do. POST /invites counts with the same helper.
+  const held = TeamMember.heldSeats(members);
   return {
     role: 'owner',
     plan: sub.plan,
@@ -104,16 +106,22 @@ async function ownerPayload(sub) {
   };
 }
 
+// The owner's key is handed out only while the membership actually grants
+// something: the owner is on a live Team plan and is not banned. Nothing
+// clears the roster when the owner moves off Team (to Pro, say), so without
+// this gate every former member kept reading the owner's key — a paid plan
+// the owner no longer pays to share.
 function memberPayload(m) {
+  const usable = !Number(m.owner_banned) && teamUsable({
+    plan: m.owner_plan, status: m.owner_status, expiry_date: m.owner_expiry_date, trial_ends_at: null,
+  });
   return {
     role: 'member',
     owner: { name: m.owner_name, email: m.owner_email },
     plan: m.owner_plan,
     status: m.owner_status,
-    usable: teamUsable({
-      plan: m.owner_plan, status: m.owner_status, expiry_date: m.owner_expiry_date, trial_ends_at: null,
-    }),
-    licenseKey: m.owner_license_key,
+    usable,
+    licenseKey: usable ? m.owner_license_key : null,
     acceptedAt: toIso(m.accepted_at),
   };
 }
@@ -160,17 +168,19 @@ router.post(
     const { email } = req.body;
     if (email === String(req.user.email).toLowerCase())
       return fail(res, 'SELF_INVITE', 'You are already on your own team', 400);
-    if (await TeamMember.findBySubscriptionAndEmail(sub.id, email))
-      return fail(res, 'ALREADY_INVITED', 'That address is already on this team', 409);
-    const count = await TeamMember.countBySubscription(sub.id);
-    const seats = Math.max(1, Number(sub.seats) || 1);
-    if (count + 1 >= seats)
-      return fail(res, 'TEAM_FULL', `This plan covers ${seats} people including you`, 400);
-
+    // Seat check and insert are one locked transaction (TeamMember.createWithinSeats),
+    // counting held seats exactly as the roster does — an expired invitation
+    // frees its place here too, and simultaneous invites cannot overfill.
     const { token, hash } = newInviteToken();
-    const member = await TeamMember.create({
+    const created = await TeamMember.createWithinSeats({
       subscriptionId: sub.id, email, tokenHash: hash, invitedBy: req.user.id,
     });
+    if (!created.ok && created.reason === 'already_invited')
+      return fail(res, 'ALREADY_INVITED', 'That address is already on this team', 409);
+    if (!created.ok && created.reason === 'team_full')
+      return fail(res, 'TEAM_FULL', `This plan covers ${created.seats} people including you`, 400);
+    if (!created.ok) return fail(res, 'NOT_TEAM_OWNER', 'Only a Team plan can invite members', 403);
+    const { member } = created;
     await sendTeamInviteEmail({ to: email, ownerName: req.user.name, ownerEmail: req.user.email, token });
     await AuditLog.create({
       adminUserId: null, action: 'team.invited', entityType: 'subscription', entityId: sub.id,
