@@ -10,6 +10,7 @@ import Button from '../components/Button';
 import Input from '../components/Input';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import GoogleButton, { googleAuthEnabled } from '../components/GoogleButton';
+import safeNext from '../utils/safeNext';
 
 export default function Register() {
   usePageMeta({
@@ -23,8 +24,7 @@ export default function Register() {
   const [searchParams] = useSearchParams();
   const wantsTrial = searchParams.get('trial') === '1';
   // Only same-site paths are honoured, so a crafted link cannot bounce elsewhere.
-  const rawNext = searchParams.get('next') || '';
-  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard';
+  const next = safeNext(searchParams.get('next'));
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');

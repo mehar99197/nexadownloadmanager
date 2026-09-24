@@ -10,6 +10,7 @@ import Input from '../components/Input';
 import GoogleButton, { googleAuthEnabled, refreshNonce } from '../components/GoogleButton';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import usePageMeta from '../hooks/usePageMeta';
+import safeNext from '../utils/safeNext';
 
 export default function Login() {
   usePageMeta({ title: "Sign in", description: "Sign in to your Nexa Download Manager account to manage your plan, license key and billing." });
@@ -64,8 +65,7 @@ export default function Login() {
 
   // Where to go after signing in. Only same-site paths are honoured, so a
   // crafted link cannot bounce a visitor to another origin.
-  const rawNext = searchParams.get('next') || '';
-  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard';
+  const next = safeNext(searchParams.get('next'));
 
   // A signed-in visitor is sent on to `next`. This branch also fires the
   // instant login() resolves (isAuthenticated flips before navigate() runs),
