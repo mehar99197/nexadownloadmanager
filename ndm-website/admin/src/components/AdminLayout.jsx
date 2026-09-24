@@ -47,9 +47,7 @@ export default function AdminLayout() {
     <div className="flex min-h-screen bg-admin-bg text-admin-text">
       {mobileOpen && <button type="button" aria-label="Close navigation" className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} />}
       {/* Sidebar */}
-      {/* Sticky on a desktop: moving between screens should never start with
-          scrolling back up a long list to find the navigation. */}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-admin-border bg-admin-sidebar transition-transform md:sticky md:top-0 md:bottom-auto md:z-auto md:h-screen md:w-60 md:shrink-0 md:self-start md:overflow-y-auto md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-admin-border bg-admin-sidebar transition-transform md:static md:z-auto md:w-60 md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex h-16 items-center gap-2 border-b border-admin-border px-5">
           <img src={LOGO} alt="" className="admin-brand-logo h-9 w-9 rounded-xl" aria-hidden="true" />
           <div className="leading-tight">

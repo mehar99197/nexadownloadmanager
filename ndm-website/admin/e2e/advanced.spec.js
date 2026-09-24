@@ -130,9 +130,9 @@ test('moving between screens from a scrolled list does not jolt, and Back return
       requestAnimationFrame(tick);
     });
 
-  // Activated the way a keyboard would, so the only thing that moves the page
-  // is the app. (The sidebar is sticky on a desktop now, so a pointer can
-  // reach it from anywhere in the list, too.)
+  // Activated the way a keyboard would, without Playwright scrolling the page
+  // up to reach it first — the sidebar is not sticky, so a real pointer has to
+  // scroll too, but that is the reader's scroll, not the app's.
   await record();
   await page.evaluate(() =>
     [...document.querySelectorAll('a.nav-link')].find((a) => a.textContent.trim().endsWith('Dashboard')).click()
