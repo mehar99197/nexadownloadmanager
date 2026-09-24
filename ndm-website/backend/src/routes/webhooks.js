@@ -6,7 +6,7 @@ const config = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
 const stripe = require('../utils/stripe');
 const { sendLicenseEmail, sendReceiptEmail } = require('../utils/email');
-const { planSeats, planExpiry } = require('../utils/license');
+const { planSeats, planExpiry, isBilled } = require('../utils/license');
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
@@ -42,6 +42,35 @@ function cycleFromObject(obj) {
   return c === 'yearly' ? 'yearly' : 'monthly';
 }
 
+/**
+ * Does this event belong to a Stripe subscription OTHER than the one our row is
+ * billed through?
+ *
+ * The lookups below fall back from the subscription id to the customer id and
+ * then to the billing email, so an event for a second, stale subscription on
+ * the same customer — a Pro plan left running after a Team checkout, say —
+ * used to land on the row anyway: its invoice.paid wrote its own id back over
+ * the current one, and its customer.subscription.deleted downgraded a paying
+ * Team customer to Free. Once the row names its subscription, only that
+ * subscription's events may change it. The others are logged (somebody has to
+ * go and stop that subscription in Stripe) and otherwise ignored.
+ *
+ * A row on Free is exempt: whatever id it still carries (expireIfLapsed leaves
+ * it in place) names a subscription that already ended, and a returning
+ * customer's NEW subscription often announces itself through invoice.paid
+ * before checkout.session.completed has written its id.
+ */
+function belongsToAnotherSubscription(row, stripeSubId, eventType) {
+  if (!row || !stripeSubId || !row.stripe_subscription_id || row.plan === 'free') return false;
+  if (String(row.stripe_subscription_id) === String(stripeSubId)) return false;
+  console.warn(
+    `[webhook] ${eventType}: ignoring event for Stripe subscription ${stripeSubId};`
+    + ` subscription row ${row.id} is billed through ${row.stripe_subscription_id}.`
+    + ' If both are live in Stripe, the customer is being charged twice — cancel the stale one.'
+  );
+  return true;
+}
+
 /* --------------------------------------------------------------- invoices */
 
 /**
@@ -73,14 +102,18 @@ async function subscriptionForInvoice(obj) {
  * Stripe just billed for, so our clock never drifts from theirs.
  *
  * The FIRST invoice of a subscription also arrives here (billing_reason
- * 'subscription_create'), right beside checkout.session.completed. Everything
- * below is idempotent — the payment insert dedupes on stripe_payment_id and the
- * expiry write is absolute, not relative — and the receipt email is limited to
- * genuine renewals so nobody is thanked twice for the same purchase.
+ * 'subscription_create'), right beside checkout.session.completed. This
+ * handler is the ONLY writer of payment rows for a subscription — first charge
+ * included — because only the invoice carries the payment intent a later
+ * charge.refunded names. Everything below is idempotent — the payment insert
+ * dedupes on stripe_payment_id and the expiry write is absolute, not relative —
+ * and the receipt email is limited to genuine renewals so nobody is thanked
+ * twice for the same purchase.
  */
 async function handleInvoicePaid(obj) {
   const subscription = await subscriptionForInvoice(obj);
   if (!subscription) { console.warn('[webhook] invoice paid: no matching subscription'); return; }
+  if (belongsToAnotherSubscription(subscription, invoice.subscriptionId(obj), 'invoice.paid')) return;
 
   // Normally our own row names the plan. When it says 'free' the subscription
   // has lapsed — a card that kept failing, say — and this renewal is the
@@ -172,6 +205,12 @@ async function handleCheckoutCompleted(obj, eventId) {
     );
     return;
   }
+  // A redelivery of an event this handler already completed. The grant commits
+  // before the licence email is claimed, so a sent email means the grant is in
+  // too — and re-running it would rewrite start/expiry from today, rewinding
+  // an expiry a renewal has since pushed forward.
+  if (eventId && await LicenseEmailDelivery.wasSent(eventId)) return;
+
   const user = await resolveUser(obj);
   if (!user) throw new Error('checkout.session.completed has no matching user');
 
@@ -181,8 +220,16 @@ async function handleCheckoutCompleted(obj, eventId) {
   const amount = typeof obj.amount_total === 'number' ? obj.amount_total / 100
     : typeof obj.amount === 'number' ? obj.amount / 100 : 0;
 
-  const stripePaymentId = obj.payment_intent ? String(obj.payment_intent)
-    : obj.id ? String(obj.id) : null;
+  // In subscription mode the session has no payment_intent: the charge is on
+  // the subscription's first invoice, and invoice.paid records it under its
+  // pi_ id. Recording it here as well — under the cs_ session id, the only id
+  // there is — counted every first payment twice, and uq_payments_stripe_id
+  // could not see that the two ids were one charge. Only a one-off
+  // (mode 'payment') session is the charge itself.
+  const stripePaymentId = obj.mode === 'subscription' ? null
+    : obj.payment_intent ? String(obj.payment_intent)
+      : obj.id ? String(obj.id) : null;
+  let replacedSubscriptionId = null;
   const subscription = await withTransaction(async (connection) => {
     const [subs] = await connection.execute(
       'SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1 FOR UPDATE',
@@ -202,6 +249,13 @@ async function handleCheckoutCompleted(obj, eventId) {
       const [created] = await connection.execute('SELECT * FROM subscriptions WHERE id = ?', [result.insertId]);
       current = created[0];
     } else {
+      // /checkout refuses a billed account, but two checkout tabs opened
+      // before either was paid can still both complete. The row can only
+      // follow one subscription; the other keeps charging until somebody
+      // cancels it in Stripe, so leave a record that says so.
+      if (isBilled(current) && obj.subscription
+          && String(obj.subscription) !== String(current.stripe_subscription_id))
+        replacedSubscriptionId = current.stripe_subscription_id;
       // A paid activation ends any running no-card trial (trial_ends_at = NULL).
       await connection.execute(
         `UPDATE subscriptions
@@ -228,6 +282,20 @@ async function handleCheckoutCompleted(obj, eventId) {
     }
     return current;
   });
+
+  if (replacedSubscriptionId) {
+    console.error(
+      `[webhook] checkout ${obj.id} moved subscription row ${subscription.id} from Stripe subscription`
+      + ` ${replacedSubscriptionId} to ${obj.subscription}; ${replacedSubscriptionId} may still be charging`
+    );
+    await AuditLog.create({
+      adminUserId: null, action: 'subscription.duplicate_checkout', entityType: 'subscription',
+      entityId: subscription.id,
+      summary: `${user.email} completed a second checkout while billed — cancel ${replacedSubscriptionId} in Stripe if it is still active`,
+      metadata: { previousStripeSubscriptionId: replacedSubscriptionId,
+                  newStripeSubscriptionId: String(obj.subscription), checkoutSession: obj.id || null },
+    }).catch((err) => console.error('[webhook] could not audit duplicate checkout:', err.message));
+  }
 
   const delivery = await LicenseEmailDelivery.claim(eventId, user.id, subscription.license_key, plan);
   if (delivery === 'sent' || delivery === 'in_progress') return;
@@ -277,6 +345,7 @@ async function subscriptionForStripeObject(obj) {
 async function handleSubscriptionDeleted(obj) {
   const subscription = await subscriptionForStripeObject(obj);
   if (!subscription) { console.warn('[webhook] customer.subscription.deleted: no match'); return; }
+  if (belongsToAnotherSubscription(subscription, obj.id, 'customer.subscription.deleted')) return;
   if (subscription.plan === 'free') return;
 
   await withTransaction(async (connection) => {
@@ -310,6 +379,7 @@ async function handleSubscriptionDeleted(obj) {
 async function handleSubscriptionUpdated(obj) {
   const subscription = await subscriptionForStripeObject(obj);
   if (!subscription) { console.warn('[webhook] customer.subscription.updated: no match'); return; }
+  if (belongsToAnotherSubscription(subscription, obj.id, 'customer.subscription.updated')) return;
 
   const updates = {};
   const plan = invoice.planFromSubscription(obj, PLANS);
@@ -402,6 +472,7 @@ async function handleChargeRefunded(obj) {
  */
 async function handlePaymentFailed(obj) {
   const subscription = await subscriptionForInvoice(obj);
+  if (belongsToAnotherSubscription(subscription, invoice.subscriptionId(obj), 'invoice.payment_failed')) return;
   const user = subscription
     ? await User.findById(subscription.user_id)
     : await resolveUser(obj);

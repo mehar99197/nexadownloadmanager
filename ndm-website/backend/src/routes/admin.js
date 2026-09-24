@@ -26,6 +26,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { requireAdmin, ipWhitelist } = require('../middleware/adminAuth');
 const { adminLoginLimiter, adminRefreshLimiter } = require('../middleware/rateLimiter');
 const { ok, fail } = require('../utils/respond');
+const { stopBillingBeforeDelete, BILLING_CANCEL_FAILED } = require('../utils/accountDeletion');
 const { signAdminToken, generateRefreshToken, hashRefreshToken } = require('../utils/jwt');
 const { thresholds: sharingThresholdsFor, SHARING_WINDOW_DAYS } = require('../utils/licenseAbuse');
 const { recentRejections } = require('../utils/tokenAbuse');
@@ -477,10 +478,12 @@ router.put(
  *    `audit_logs.admin_user_id` is ON DELETE SET NULL and the record has to
  *    outlive the cascade.
  *
- * The cascade is the schema's, not this route's: subscriptions, payments,
- * reviews and (through subscriptions) licence activations and team rows are
- * ON DELETE CASCADE, while audit logs, ads and contact messages are
- * ON DELETE SET NULL so the history of what was done survives the person.
+ * The cascade is the schema's, not this route's: subscriptions, reviews and
+ * (through subscriptions) licence activations and team rows are
+ * ON DELETE CASCADE, while payments, audit logs, ads and contact messages are
+ * ON DELETE SET NULL so the books and the history of what was done survive
+ * the person. A billed Stripe subscription is cancelled first, and the
+ * account is kept (502) when Stripe will not cancel it.
  */
 router.delete(
   '/users/:id', validate(deleteUserSchema),
@@ -501,8 +504,15 @@ router.delete(
     if (String(user.email).toLowerCase() !== req.body.confirmEmail)
       return fail(res, 'CONFIRM_MISMATCH', 'The confirmation email does not match this account', 400);
 
+    // Stop Stripe first; a customer deleted while still subscribed would be
+    // billed forever with no row left to cancel from (utils/accountDeletion.js).
+    const billing = await stopBillingBeforeDelete(user.id);
+    if (!billing.ok)
+      return fail(res, BILLING_CANCEL_FAILED.code, BILLING_CANCEL_FAILED.message, BILLING_CANCEL_FAILED.status);
+
     await audit(req, 'user.deleted', 'user', user.id,
-      `Deleted account ${user.email} and all of its data`, { email: user.email, role: user.role });
+      `Deleted account ${user.email} and all of its data`,
+      { email: user.email, role: user.role, stripeSubscriptionsCancelled: billing.cancelled });
     await User.remove(user.id);
     return ok(res, { deleted: true });
   })

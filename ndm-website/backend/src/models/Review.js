@@ -19,20 +19,19 @@ const Review = {
     return Review.findById(id);
   },
 
+  // One review per account, decided by the database: reviews.user_id is
+  // UNIQUE (uq_reviews_user, config/schema.js), so this single statement either
+  // creates the row or edits the existing one. The old find-then-insert let two
+  // requests in flight together both insert, and the public average then
+  // counted that person twice. An edit goes back to moderation.
   async upsertByUserId(userId, { userName, rating, comment }) {
-    const existing = await Review.findByUserId(userId);
-    if (existing) {
-      await execute(
-        'UPDATE reviews SET user_name = ?, rating = ?, comment = ?, status = ? WHERE user_id = ?',
-        [userName, rating, comment, 'pending', userId]
-      );
-      return Review.findByUserId(userId);
-    }
-    const id = await insert(
-      'INSERT INTO reviews (user_id, user_name, rating, comment, status) VALUES (?, ?, ?, ?, ?)',
-      [userId, userName, rating, comment, 'pending']
+    await execute(
+      `INSERT INTO reviews (user_id, user_name, rating, comment, status) VALUES (?, ?, ?, ?, 'pending')
+       ON DUPLICATE KEY UPDATE user_name = VALUES(user_name), rating = VALUES(rating),
+                               comment = VALUES(comment), status = 'pending'`,
+      [userId, userName, rating, comment]
     );
-    return Review.findById(id);
+    return Review.findByUserId(userId);
   },
 
   async listApproved({ page = 1, limit = 10, rating } = {}) {

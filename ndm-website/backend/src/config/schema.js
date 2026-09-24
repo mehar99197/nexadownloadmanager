@@ -90,6 +90,48 @@ async function ensureColumnNullable(table, column, definition) {
   await execute(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
 }
 
+/**
+ * Make `table.column` reference `refTable(refColumn)` with the given ON DELETE
+ * rule, replacing whatever foreign key on that column says otherwise.
+ *
+ * MySQL cannot alter a foreign key's rule in place, and the original keys were
+ * declared without names (so they are `<table>_ibfk_N`, whatever N happened
+ * to be), so the existing key is found through information_schema, dropped by
+ * the name it actually has, and re-added under a stable name. A database that
+ * already has the right rule — a fresh one, or any boot after the first — does
+ * no ALTER at all. A crash between the DROP and the ADD leaves no key on the
+ * column, which the next boot sees and repairs the same way.
+ *
+ * `nullableDefinition`, when given, is applied between the two steps: ON
+ * DELETE SET NULL on a NOT NULL column is refused outright, and changing the
+ * column while the old key still covers it is refused by some servers too.
+ */
+async function ensureForeignKeyRule(table, column, refTable, refColumn, onDelete, constraintName,
+  nullableDefinition = null) {
+  const keys = await query(
+    `SELECT rc.CONSTRAINT_NAME AS name, rc.DELETE_RULE AS rule
+       FROM information_schema.REFERENTIAL_CONSTRAINTS rc
+       JOIN information_schema.KEY_COLUMN_USAGE k
+         ON k.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+        AND k.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
+        AND k.TABLE_NAME = rc.TABLE_NAME
+      WHERE rc.CONSTRAINT_SCHEMA = DATABASE() AND rc.TABLE_NAME = ?
+        AND k.COLUMN_NAME = ? AND k.REFERENCED_TABLE_NAME = ?`,
+    [table, column, refTable]
+  );
+  const wanted = onDelete.toUpperCase();
+  const right = keys.filter((k) => String(k.rule).toUpperCase() === wanted);
+  const wrong = keys.filter((k) => String(k.rule).toUpperCase() !== wanted);
+  for (const key of wrong)
+    await execute(`ALTER TABLE ${table} DROP FOREIGN KEY \`${key.name}\``);
+  if (nullableDefinition) await ensureColumnNullable(table, column, nullableDefinition);
+  if (right.length) return;
+  await execute(
+    `ALTER TABLE ${table} ADD CONSTRAINT ${constraintName}
+       FOREIGN KEY (${column}) REFERENCES ${refTable}(${refColumn}) ON DELETE ${wanted}`
+  );
+}
+
 async function initSchema() {
   await execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -317,7 +359,7 @@ async function initSchema() {
   await execute(`
     CREATE TABLE IF NOT EXISTS payments (
       id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-      user_id INT UNSIGNED NOT NULL,
+      user_id INT UNSIGNED NULL DEFAULT NULL,
       amount DECIMAL(10,2) NOT NULL DEFAULT 0,
       currency VARCHAR(3) NOT NULL DEFAULT 'usd',
       plan VARCHAR(20) NOT NULL,
@@ -327,9 +369,17 @@ async function initSchema() {
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_user_id (user_id),
       INDEX idx_status (status),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      CONSTRAINT fk_payments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // Payments are the books, not account data. They used to CASCADE with the
+  // user, so deleting an account rewrote last month's revenue after the fact,
+  // and a refund Stripe sent afterwards found no row to mark. The row now
+  // stays, detached (user_id NULL); readers LEFT JOIN users. Existing
+  // databases are converted in place here; a fresh one already matches.
+  await ensureForeignKeyRule('payments', 'user_id', 'users', 'id', 'SET NULL', 'fk_payments_user',
+    'INT UNSIGNED NULL DEFAULT NULL');
 
   // One payment row per Stripe payment id. The DELETE only clears duplicates a
   // database from before the index could still be carrying, so it is skipped
@@ -392,12 +442,34 @@ async function initSchema() {
       status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_user_id (user_id),
+      UNIQUE KEY uq_reviews_user (user_id),
       INDEX idx_status (status),
       INDEX idx_rating (rating),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // One review per account. Review.upsertByUserId used to find-then-insert
+  // over a plain index, so two POSTs in flight together left two rows and the
+  // public average counted that person twice. A database from before this
+  // index may hold such pairs: keep each account's NEWEST review (latest
+  // updated_at, then highest id) and drop the rest, then enforce it. Both steps
+  // are skipped once the index exists, so a normal boot does neither.
+  if (!(await indexExists('reviews', 'uq_reviews_user'))) {
+    await execute(`
+      DELETE r1 FROM reviews r1
+      JOIN reviews r2
+        ON r1.user_id = r2.user_id AND r1.id <> r2.id
+       AND (r2.updated_at > r1.updated_at
+            OR (r2.updated_at = r1.updated_at AND r2.id > r1.id))
+    `);
+    await addUniqueIndexIfMissing('reviews', 'uq_reviews_user (user_id)');
+  }
+  // The plain index the unique one replaces. Dropped only once the unique
+  // index exists, which also covers the user_id foreign key.
+  if ((await indexExists('reviews', 'idx_user_id')) && (await indexExists('reviews', 'uq_reviews_user'))) {
+    await execute('ALTER TABLE reviews DROP INDEX idx_user_id');
+  }
 
   await execute(`
     CREATE TABLE IF NOT EXISTS releases (

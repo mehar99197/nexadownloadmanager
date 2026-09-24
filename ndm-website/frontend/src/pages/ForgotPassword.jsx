@@ -57,7 +57,7 @@ export default function ForgotPassword() {
               </div>
                 <Link
                   to="/login"
-                  className="inline-block text-sm font-medium text-brand-300 hover:text-brand-200 hover:underline"
+                  className="inline-flex min-h-6 items-center text-sm font-medium text-brand-300 hover:text-brand-200 hover:underline"
               >
                 &larr; Back to sign in
               </Link>
@@ -90,7 +90,7 @@ export default function ForgotPassword() {
               <p className="text-center text-sm text-zinc-500">
                 <Link
                   to="/login"
-                  className="font-medium text-brand-300 hover:text-brand-200 hover:underline"
+                  className="inline-flex min-h-6 items-center font-medium text-brand-300 hover:text-brand-200 hover:underline"
                 >
                   &larr; Back to sign in
                 </Link>

@@ -21,6 +21,11 @@ const TeamMember = require('../models/TeamMember');
 async function teamPlanForUser(userId) {
   const m = await TeamMember.findActiveByUserId(userId);
   if (!m || m.owner_plan !== 'team' || m.owner_status !== 'active') return null;
+  // A banned owner's plan entitles nobody. The licence-key path refuses it
+  // (`banned`) and a banned device holder is signed out, but a MEMBER's
+  // device token reaches the owner's plan only through here — without this
+  // the members of a banned account went on validating as Team.
+  if (Number(m.owner_banned)) return null;
   const row = await Subscription.findById(m.subscription_id);
   if (!row) return null;
   const sub = await Subscription.current(row);
