@@ -220,11 +220,43 @@ bool DownloadEngine::isProOnlyUrl(const QUrl &url) const
     return false;
 }
 
-QString DownloadEngine::blockReason(const QUrl &url) const
+// A download's own address is not the whole story. Coursera and Skillshare
+// stream their lectures from a CDN, and the extension hands the stream over
+// under the CDN's address with the lecture page as the Referer — judged by its
+// own host alone, every one of those lectures downloaded on Free. So the page
+// counts too, and every Referer does, not only the first: the extension sends
+// the page it was on and may pass on the one the browser set on the request,
+// and a harmless one listed first must not hide the course page. A CDN file
+// taken from any other page is not a course download.
+QUrl DownloadEngine::proOnlySource(const QUrl &url, const HeaderList &headers) const
 {
-    if (isProOnlyUrl(url) && !m_authSiteDownloads)
-        return tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
-                  "or see nexadownloadmanager.com/pricing.").arg(url.host());
+    if (isProOnlyUrl(url))
+        return url;
+    for (const auto &h : headers) {
+        if (qstricmp(h.first.constData(), "Referer") != 0)
+            continue;
+        const QUrl page(QString::fromUtf8(h.second));
+        if (isProOnlyUrl(page))
+            return page;
+    }
+    return QUrl();
+}
+
+QString DownloadEngine::proOnlyReason(const QUrl &course) const
+{
+    // Settings has no trial control: the trial is taken on the website, once
+    // per account, and the app picks the plan up from the account it is
+    // signed in to.
+    return tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial at "
+              "nexadownloadmanager.com/pricing (one per account, no card needed), then "
+              "sign in to that account under Settings → Account.").arg(course.host());
+}
+
+QString DownloadEngine::blockReason(const QUrl &url, const HeaderList &headers) const
+{
+    const QUrl course = proOnlySource(url, headers);
+    if (!course.isEmpty() && !m_authSiteDownloads)
+        return proOnlyReason(course);
     return QString();
 }
 
@@ -679,6 +711,34 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
     if (!url.isValid() || url.scheme().isEmpty())
         return -1;
 
+    // Login-gated course sites (Udemy, Coursera, LinkedIn Learning…) are a paid
+    // feature. Refuse before any work is queued or a row appears, so the user
+    // gets one clear explanation instead of a download that fails later for a
+    // reason that looks like a bug. The page the download came from counts as
+    // much as its own address (proOnlySource), and this runs before the refresh
+    // capture below: re-aiming a waiting download at a lecture is a course
+    // download too.
+    //
+    // Be honest about what this is: a purely client-side gate. The server
+    // decides the *plan*, but it is never consulted at download time — the
+    // download goes straight to the course site with the user's own cookies.
+    // A patched build will always be able to pass this check. It is kept
+    // because it is the honest behaviour for an unmodified client, not because
+    // it is unbreakable. Anything that must be unforgeable has to be something
+    // the client cannot compute alone.
+    // Deliberately a second, independent read. m_authSiteDownloads is the
+    // cached copy every other gate uses; verifiedFeatures() re-runs the
+    // Ed25519 check against the token itself. They live in different
+    // translation units and fail differently, so getting past this needs both
+    // a patched bool here and a defeated signature there, not one edit.
+    const bool authSitesAllowed = m_authSiteDownloads
+        && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
+    const QUrl course = proOnlySource(url, headers);
+    if (!course.isEmpty() && !authSitesAllowed) {
+        emit downloadBlocked(url, proOnlyReason(course));
+        return -1;
+    }
+
     // A refresh capture is armed: the user went back to their browser to fetch a
     // fresh link for a download whose address had expired. When this handoff is
     // for that same file, re-aim the waiting task instead of starting a second
@@ -701,32 +761,6 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
                       + m_torrentIds.size() + m_scheduledTimers.size();
     if (tracked >= kMaxTrackedJobs)
         return -1;
-
-    // Login-gated course sites (Udemy, Coursera, LinkedIn Learning…) are a paid
-    // feature. Refuse before any work is queued or a row appears, so the user
-    // gets one clear explanation instead of a download that fails later for a
-    // reason that looks like a bug.
-    //
-    // Be honest about what this is: a purely client-side gate. The server
-    // decides the *plan*, but it is never consulted at download time — the
-    // download goes straight to the course site with the user's own cookies.
-    // A patched build will always be able to pass this check. It is kept
-    // because it is the honest behaviour for an unmodified client, not because
-    // it is unbreakable. Anything that must be unforgeable has to be something
-    // the client cannot compute alone.
-    // Deliberately a second, independent read. m_authSiteDownloads is the
-    // cached copy every other gate uses; verifiedFeatures() re-runs the
-    // Ed25519 check against the token itself. They live in different
-    // translation units and fail differently, so getting past this needs both
-    // a patched bool here and a defeated signature there, not one edit.
-    const bool authSitesAllowed = m_authSiteDownloads
-        && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
-    if (isProOnlyUrl(url) && !authSitesAllowed) {
-        emit downloadBlocked(url,
-            tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
-               "or see nexadownloadmanager.com/pricing.").arg(url.host()));
-        return -1;
-    }
 
     const int id = m_db->nextId();
     // IDM-style: hold an externally-added download for confirmation instead of
@@ -1749,9 +1783,7 @@ int DownloadEngine::addRemoteDownload(const QUrl &url)
     const bool authSitesAllowed = m_authSiteDownloads
         && (!m_license || m_license->verifiedFeatures().authSiteDownloads);
     if (isHttp && isProOnlyUrl(url) && !authSitesAllowed) {
-        emit downloadBlocked(url,
-            tr("Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, "
-               "or see nexadownloadmanager.com/pricing.").arg(url.host()));
+        emit downloadBlocked(url, proOnlyReason(url));
         return -1;
     }
 

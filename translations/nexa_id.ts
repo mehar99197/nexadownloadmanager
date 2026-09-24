@@ -30,7 +30,7 @@
     <context>
         <name>BatchDownloadDialog</name>
         <message numerus="yes">
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="136" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="145" />
             <source>%n download(s) will be queued.</source>
             <translation type="unfinished">
                 <numerusform />
@@ -38,7 +38,7 @@
             </translation>
         </message>
         <message numerus="yes">
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="123" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="132" />
             <source>... %n more ...</source>
             <translation type="unfinished">
                 <numerusform />
@@ -46,12 +46,12 @@
             </translation>
         </message>
         <message>
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="140" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="149" />
             <source>Add</source>
             <translation type="unfinished" />
         </message>
         <message numerus="yes">
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="140" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="149" />
             <source>Add %n download(s)</source>
             <translation type="unfinished">
                 <numerusform />
@@ -64,12 +64,12 @@
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="132" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="141" />
             <source>More than %1 addresses - only the first %1 will be queued. Narrow the range and add the rest afterwards.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/BatchDownloadDialog.cpp" line="130" />
+            <location filename="../src/ui/BatchDownloadDialog.cpp" line="139" />
             <source>Nothing to queue yet.</source>
             <translation type="unfinished" />
         </message>
@@ -290,8 +290,8 @@ Files already downloaded stay where they are. New downloads that matched it will
     <context>
         <name>DownloadEngine</name>
         <message>
-            <location filename="../src/core/DownloadEngine.cpp" line="202" />
-            <source>Downloading from %1 needs Nexa Pro. Start the free 7-day trial in Settings, or see nexadownloadmanager.com/pricing.</source>
+            <location filename="../src/core/DownloadEngine.cpp" line="250" />
+            <source>Downloading from %1 needs Nexa Pro. Start the free 7-day trial at nexadownloadmanager.com/pricing (one per account, no card needed), then sign in to that account under Settings → Account.</source>
             <translation type="unfinished" />
         </message>
     </context>
@@ -371,7 +371,7 @@ Files already downloaded stay where they are. New downloads that matched it will
     <context>
         <name>LicenseManager</name>
         <message numerus="yes">
-            <location filename="../src/license/LicenseManager.cpp" line="433" />
+            <location filename="../src/license/LicenseManager.cpp" line="483" />
             <source>All %n seat(s) on this license are in use on other devices</source>
             <translation type="unfinished">
                 <numerusform />
@@ -379,27 +379,27 @@ Files already downloaded stay where they are. New downloads that matched it will
             </translation>
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1234" />
+            <location filename="../src/license/LicenseManager.cpp" line="1302" />
             <source>Could not reach nexadownloadmanager.com. Check your connection and try again.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1247" />
+            <location filename="../src/license/LicenseManager.cpp" line="1315" />
             <source>Could not start signing in. Please try again in a minute.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="586" />
+            <location filename="../src/license/LicenseManager.cpp" line="636" />
             <source>Free plan</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="462" />
+            <location filename="../src/license/LicenseManager.cpp" line="512" />
             <source>Free plan — no active plan on your account (%1)</source>
             <translation type="unfinished" />
         </message>
         <message numerus="yes">
-            <location filename="../src/license/LicenseManager.cpp" line="723" />
+            <location filename="../src/license/LicenseManager.cpp" line="780" />
             <source>Seat not available on this license — all %n seat(s) are in use on other devices</source>
             <translation type="unfinished">
                 <numerusform />
@@ -407,52 +407,52 @@ Files already downloaded stay where they are. New downloads that matched it will
             </translation>
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="722" />
+            <location filename="../src/license/LicenseManager.cpp" line="779" />
             <source>Seat not available on this license — it was freed from your account</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1373" />
+            <location filename="../src/license/LicenseManager.cpp" line="1441" />
             <source>Sign-in cancelled.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1344" />
+            <location filename="../src/license/LicenseManager.cpp" line="1412" />
             <source>Signed in as %1</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1345" />
+            <location filename="../src/license/LicenseManager.cpp" line="1413" />
             <source>Signed in as %1 (this session only; OS credential store unavailable)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="463" />
+            <location filename="../src/license/LicenseManager.cpp" line="513" />
             <source>Signed in as %1 — Free plan (%2)</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="459" />
+            <location filename="../src/license/LicenseManager.cpp" line="509" />
             <source>Signed out — sign in again in Settings</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1318" />
+            <location filename="../src/license/LicenseManager.cpp" line="1386" />
             <source>Signing in did not complete. Please try again.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1211" />
+            <location filename="../src/license/LicenseManager.cpp" line="1279" />
             <source>Signing in needs a secure connection to nexadownloadmanager.com</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1268" />
+            <location filename="../src/license/LicenseManager.cpp" line="1336" />
             <source>That code expired. Start signing in again.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/license/LicenseManager.cpp" line="1307" />
+            <location filename="../src/license/LicenseManager.cpp" line="1375" />
             <source>That sign-in was denied on the website.</source>
             <translation type="unfinished" />
         </message>

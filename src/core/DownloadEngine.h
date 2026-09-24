@@ -240,10 +240,10 @@ public:
     AuthenticationManager *auth() const { return m_auth; }
     LicenseManager *license() const { return m_license; }
     QString licensePlan() const { return m_licensePlan; }
-    // Why addDownload() would refuse `url` before queuing anything — empty when
-    // it would not. The IPC reply carries it so the browser extension shows the
-    // same reason the desktop dialog does.
-    QString blockReason(const QUrl &url) const;
+    // Why addDownload() would refuse `url`, handed over with `headers`, before
+    // queuing anything — empty when it would not. The IPC reply carries it so
+    // the browser extension shows the same reason the desktop dialog does.
+    QString blockReason(const QUrl &url, const HeaderList &headers) const;
 
     // Data-driven cloud provider registry (loaded from JSON at startup).
     CloudProviders *providers() const { return m_providers; }
@@ -352,6 +352,10 @@ private:
     int     addRemoteDownload(const QUrl &url);
     void    applyLicensePlan(const QString &plan);
     bool    isProOnlyUrl(const QUrl &url) const;   // a login-gated course site
+    // The course-site address that puts a download behind Pro: its own, or a
+    // page it was taken from (a Referer). Empty when there is none.
+    QUrl    proOnlySource(const QUrl &url, const HeaderList &headers) const;
+    QString proOnlyReason(const QUrl &course) const;   // the refusal, naming `course`
     void    armScheduled(int id, const QUrl &url, const QDateTime &when,
                          const HeaderList &headers, const QString &name);
 

@@ -262,6 +262,15 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if (type == QStringLiteral("links")) {
         constexpr int kMaxLinks = 2000;
         const QUrl pageUrl = QUrl::fromUserInput(obj.value(QStringLiteral("pageUrl")).toString());
+        const HeaderList headers = headersFromPayload(obj);
+        // Every link picked here is queued with this page as its Referer, so on
+        // a plan without course sites a course page's links would each be
+        // refused on their own, one dialog per link. Say it once, up front.
+        const QString why = m_engine->blockReason(pageUrl, headers);
+        if (!why.isEmpty()) {
+            sendReply(QJsonObject{{"ok", false}, {"message", why}});
+            return;
+        }
         const QString pageTitle = obj.value(QStringLiteral("pageTitle")).toString().simplified().left(200);
         const QJsonArray arr = obj.value(QStringLiteral("links")).toArray();
         QVector<LinkItem> items;
@@ -289,7 +298,7 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
             return;
         }
         const QString page = (pageUrl.isValid() && !pageUrl.host().isEmpty()) ? pageUrl.toString() : QString();
-        emit linksReceived(page, pageTitle, items, headersFromPayload(obj));
+        emit linksReceived(page, pageTitle, items, headers);
         sendReply(QJsonObject{{"ok", true}, {"count", items.size()}});
         return;
     }
@@ -421,7 +430,7 @@ void IpcServer::handlePayload(QLocalSocket *sock, const QByteArray &json)
     if (id < 0) {
         // Say WHY when the engine can. A bare "rejected" sent Udemy users
         // hunting for a broken extension when the answer was the plan gate.
-        const QString why = m_engine->blockReason(url);
+        const QString why = m_engine->blockReason(url, headers);
         sendReply(QJsonObject{{"ok", false},
                               {"message", why.isEmpty() ? QStringLiteral("rejected") : why}});
     } else {
