@@ -215,9 +215,14 @@ export default function Users() {
   // customer locked out of sign-in waited out the lock however urgent it was.
   // The list says who is locked (signInLockedUntil) and this lifts it.
   const unlockSignIn = async (user) => {
+    // Either lock: wrong passwords, or wrong authenticator codes after a
+    // correct password (signInLockReason). The unlock lifts both.
+    const cause = user.signInLockReason === 'two_factor'
+      ? 'repeated wrong authenticator codes (one of their recovery codes also still gets them in)'
+      : 'repeated wrong passwords';
     const sure = await confirm({
       title: `Unlock sign-in for ${user.email}?`,
-      message: `Their sign-in is locked until ${formatDateTime(user.signInLockedUntil)} after repeated wrong passwords. Unlocking lets them try again now and starts the failure count from zero. Only do this once you are sure it is them asking.`,
+      message: `Their sign-in is locked until ${formatDateTime(user.signInLockedUntil)} after ${cause}. Unlocking lets them try again now and starts the failure count from zero. Only do this once you are sure it is them asking.`,
       confirmLabel: 'Unlock sign-in',
     });
     if (!sure) return;
