@@ -8,7 +8,9 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import GoogleButton, { googleAuthEnabled, refreshNonce } from '../components/GoogleButton';
+import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import usePageMeta from '../hooks/usePageMeta';
+import safeNext from '../utils/safeNext';
 
 export default function Login() {
   usePageMeta({ title: "Sign in", description: "Sign in to your Nexa Download Manager account to manage your plan, license key and billing." });
@@ -40,24 +42,30 @@ export default function Login() {
   const [challenge, setChallenge] = useState((location.state && location.state.challenge) || null);
   const [code, setCode] = useState('');
   const [resending, setResending] = useState(false);
+  // Re-sending sits behind the same Turnstile gate as registering, so with a
+  // site key configured it needs a token of its own, or the server refuses it.
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   const resendVerification = async () => {
     setResending(true);
     try {
-      await api.post('/auth/resend-verification', { email });
+      await api.post('/auth/resend-verification', { email, ...(turnstileToken ? { turnstileToken } : {}) });
       toast.success('If that address needs verifying, a new link is on its way.');
       setNeedsVerification(false);
     } catch {
       toast.error('Could not send the link. Please try again in a moment.');
     } finally {
+      // A token is single-use: the next attempt needs a fresh challenge.
+      setTurnstileToken(null);
+      setTurnstileReset((n) => n + 1);
       setResending(false);
     }
   };
 
   // Where to go after signing in. Only same-site paths are honoured, so a
   // crafted link cannot bounce a visitor to another origin.
-  const rawNext = searchParams.get('next') || '';
-  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard';
+  const next = safeNext(searchParams.get('next'));
 
   // A signed-in visitor is sent on to `next`. This branch also fires the
   // instant login() resolves (isAuthenticated flips before navigate() runs),
@@ -69,6 +77,8 @@ export default function Login() {
     e.preventDefault();
     setError('');
     setNeedsVerification(false);
+    // The challenge unmounts with the resend button; a token it issued goes with it.
+    setTurnstileToken(null);
     setSubmitting(true);
     try {
       const result = await login(email, password);
@@ -159,9 +169,12 @@ export default function Login() {
 
           {justRegistered && (
             <div role="status" className="mt-5 rounded-[var(--radius-2)] border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-              <strong className="font-semibold">Account created.</strong> We sent a verification
-              link{registeredEmail ? <> to <span className="font-semibold">{registeredEmail}</span></> : null}.
-              Open it, then sign in here{location.state && location.state.wantsTrial ? ' to start your 7-day Pro trial' : ''}.
+              {/* Not "Account created": an address that already has an account
+                  gets an email saying so instead, and the server answers both
+                  the same way on purpose. This sentence is true for either. */}
+              <strong className="font-semibold">Check your inbox.</strong> We sent an
+              email{registeredEmail ? <> to <span className="font-semibold">{registeredEmail}</span></> : null}.
+              Open the link in it, then sign in here{location.state && location.state.wantsTrial ? ' to start your 7-day Pro trial' : ''}.
               Nothing in your inbox? Check spam, or use the button below after a first sign-in attempt to get a new link.
             </div>
           )}
@@ -236,14 +249,17 @@ export default function Login() {
               <div role="alert" className="rounded-[var(--radius-2)] border border-red-400/25 bg-red-400/10 px-4 py-3 text-sm text-red-200">
                 {error}
                 {needsVerification && (
-                  <button
-                    type="button"
-                    onClick={resendVerification}
-                    disabled={resending || !email}
-                    className="mt-2 block font-semibold text-red-100 underline underline-offset-2 hover:text-white disabled:opacity-60"
-                  >
-                    {resending ? 'Sending…' : 'Send me a new verification link'}
-                  </button>
+                  <>
+                    <Turnstile onToken={setTurnstileToken} resetKey={turnstileReset} className="mt-3" />
+                    <button
+                      type="button"
+                      onClick={resendVerification}
+                      disabled={resending || !email || (turnstileEnabled() && !turnstileToken)}
+                      className="mt-2 block font-semibold text-red-100 underline underline-offset-2 hover:text-white disabled:opacity-60"
+                    >
+                      {resending ? 'Sending…' : 'Send me a new verification link'}
+                    </button>
+                  </>
                 )}
                 {/*
                   The server deliberately cannot tell us that THIS address was
@@ -265,7 +281,7 @@ export default function Login() {
                 */}
                 {!needsVerification && googleAuthEnabled() && (
                   <p className="mt-2 text-xs text-red-200/80">
-                    Created your account with Google? Use “Continue with Google” below.
+                    Created your account with Google? Use “Continue with Google” above.
                     Never set a password? Use “Forgot password”.
                   </p>
                 )}

@@ -279,7 +279,7 @@ function DevicesCard({ onChanged }) {
           <h3 className="font-semibold text-white">Your devices</h3>
           <p className="mt-1 text-xs text-slate-500">
             {seatsEnforced
-              ? `${seats} seat${seats === 1 ? '' : 's'} · ${activeSeats} in use right now. A seat frees itself 15 minutes after the app closes.`
+              ? `${seats} seat${seats === 1 ? '' : 's'} · ${activeSeats} in use right now. Quitting Nexa frees its seat at once; closing the window keeps it running in the tray. After a crash or lost connection, the seat frees itself within 15 minutes.`
               : 'Every computer signed in to this account. The Free plan has no seat limit.'}
           </p>
         </div>
@@ -421,7 +421,12 @@ function TeamCard({ onChanged }) {
   const leave = async () => {
     const sure = await confirm({
       title: `Leave ${team.owner.name}'s team?`,
-      message: 'The team license key disappears from your dashboard and the app returns to your own plan.',
+      // Leaving only edits the roster (routes/team.js). A machine that was
+      // activated by typing the team's key still holds that key, as the
+      // owner's Remove dialog says.
+      message: 'The team license key disappears from your dashboard, and computers signed in with your '
+        + 'account return to your own plan at their next check. '
+        + 'A computer activated with the team’s license key keeps it until the owner replaces the key.',
       confirmLabel: 'Leave team',
       danger: true,
     });
@@ -568,7 +573,7 @@ function TrialBanner({ subscription, onStart, starting, billingOpen }) {
       <div className="mt-6 flex flex-col gap-3 rounded-xl border border-brand-400/30 bg-brand-400/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-sm text-brand-100">
           <span className="font-bold text-white">Try Pro free for 7 days.</span>{' '}
-          Unlimited concurrent downloads and AI rename — no card needed.
+          Up to 32 downloads at once and AI rename — no card needed.
         </div>
         <Button onClick={onStart} disabled={starting}>
           {starting ? 'Starting…' : 'Start your free 7-day Pro trial'}

@@ -18,7 +18,7 @@ export default function FeatureBittorrent() {
       hero={
         <Figure kind="Screenshot">
           The main window with an HTTP download, a YouTube video and a torrent running side by side —
-          the torrent row showing peer count and seed ratio.
+          the torrent row showing its progress and download speed.
         </Figure>
       }
     >
@@ -30,16 +30,16 @@ export default function FeatureBittorrent() {
       </P>
       <P>
         Nexa treats a magnet link or a <Code>.torrent</Code> file as a download like any other. It
-        goes in the same list, obeys the same global speed limit, shows the same progress bar, uses
-        the same scheduler, and lands in the same folders. The engine underneath is{' '}
+        goes in the same list, shows the same progress bar, uses the same scheduler and saves into
+        your download folder; its speed limits are its own, under Settings &rarr; BitTorrent. The
+        engine underneath is{' '}
         <strong className="text-white">libtorrent-rasterbar</strong> — the same library
         qBittorrent and Deluge are built on — so this is a genuine BitTorrent client, not a
         simplified imitation.
       </P>
       <P>
-        Practically this means one window instead of two, one bandwidth budget instead of two
-        competing ones, and one place to look when you want to know what your machine is
-        downloading tonight.
+        Practically this means one window instead of two, and one place to look when you want to
+        know what your machine is downloading tonight.
       </P>
 
       <H2 id="how">How it works</H2>
@@ -90,27 +90,27 @@ export default function FeatureBittorrent() {
         caption="BitTorrent capabilities in Nexa"
         head={['', 'Support']}
         rows={[
-          ['Magnet links', <>Yes — paste one, or click a <Code>magnet:</Code> link in the browser</>],
-          ['.torrent files', 'Yes — drag one onto the window, or open it from the file dialog'],
+          ['Magnet links', <>Yes — paste one into New download (<Code>Ctrl+N</Code>), drag it onto the window, or right-click it in the browser and choose <strong className="text-white">Download with Nexa</strong> (needs the extension). Clicking a <Code>magnet:</Code> link does not open Nexa.</>],
+          ['.torrent files', <>Yes — drag one onto the window, or click a link whose address ends in <Code>.torrent</Code> in the browser (needs the extension)</>],
           ['DHT (trackerless)', 'Yes'],
           ['Peer exchange (PEX)', 'Yes'],
           ['Local peer discovery', 'Yes'],
           ['Piece verification', 'Always — SHA-1 per piece, part of the protocol'],
           ['Seed ratio target', 'Yes, configurable; 0 stops seeding at completion'],
           ['Separate up/down limits', 'Yes, independent of the global HTTP cap'],
-          ['Resume after restart', 'Yes — the session state is persisted'],
+          ['Resume after restart', 'No — torrents are not restored when Nexa restarts; add them again'],
           ['Selective file download', <>Not yet — a torrent downloads in full. <span className="text-amber-300">Planned.</span></>],
           ['Creating torrents', <>Not supported. Nexa downloads torrents; it is not a tracker or a creation tool.</>],
-          ['Anonymity / VPN binding', <>Not built in. Nexa uses your system network and proxy settings — if you need to bind to a VPN interface, do it at the OS level.</>],
+          ['Anonymity / VPN binding', <>Not built in. Torrent traffic (peers, trackers and DHT) never goes through a proxy: not the one in Settings &rarr; Network, and not your system proxy. If you need it on a VPN, set the VPN up at the OS level.</>],
         ]}
       />
 
       <H2 id="use">Using it</H2>
       <Steps
         items={[
-          <>Copy a magnet link and press <Code>Ctrl+V</Code> with the Nexa window focused, or drop a <Code>.torrent</Code> file onto the list.</>,
+          <>Press <Code>Ctrl+N</Code> for a new download and paste the magnet link, or drop a <Code>.torrent</Code> file onto the list.</>,
           <>For a magnet, wait a moment while the metadata arrives. The row will show the real name and size once it does.</>,
-          <>Watch progress as usual. The row shows peers connected, download and upload rate, and the current ratio.</>,
+          <>Watch progress as usual. The row shows progress and download speed; hover over its status badge to see how many peers it is connected to.</>,
           <>To control bandwidth, open <strong className="text-white">Settings &rarr; BitTorrent</strong> and set the download and upload caps and the seed ratio.</>,
           <>With a seed ratio set, a completed torrent keeps seeding until it hits that ratio. Stop the row by hand at any time if you need the bandwidth back.</>,
         ]}
@@ -129,8 +129,8 @@ export default function FeatureBittorrent() {
       </P>
       <P>
         Nexa is the right choice when torrents are a small part of what you download and you would
-        rather not run a second application for them — one queue, one speed limit, one set of
-        folders. It is the wrong choice if you seed a large library, need selective downloading, or
+        rather not run a second application for them — one queue and one download folder. It is
+        the wrong choice if you seed a large library, need selective downloading, or
         run a headless box. Those are real gaps, not marketing softeners, and they are on the{' '}
         <Link to="/compare" className="text-brand-300 hover:underline">compare page</Link> too.
       </P>
@@ -142,7 +142,7 @@ export default function FeatureBittorrent() {
           <>A magnet stuck at &ldquo;fetching metadata&rdquo; for minutes usually has no reachable peers — the torrent is dead rather than broken.</>,
           'Set a seed ratio you are comfortable with once, rather than stopping torrents by hand. 1.0 is the usual courtesy floor on public swarms.',
           'Use the scheduler for large torrents: start at 2am, cap upload during the day, and let it seed overnight.',
-          'Torrents obey the same category rules as everything else, so a folder of media lands where your Video category points.',
+          'Category rules do not apply to torrents. With category folders on (the default), every torrent lands in the Torrents folder inside your download folder, whatever it contains.',
           'If your ISP or network blocks BitTorrent, no client setting fixes it — that is a network-level block and needs a VPN configured at the OS level.',
           'Only download what you have the right to. A torrent client is a transfer tool; what you move with it is your responsibility.',
         ]}
@@ -185,20 +185,19 @@ export default function FeatureBittorrent() {
             symptom: 'A magnet link in the browser does nothing',
             fix: (
               <>
-                The operating system has not been told Nexa handles <Code>magnet:</Code> links.
-                Reinstalling registers the handler on Windows; on Linux the <Code>.deb</Code>{' '}
-                installs the desktop entry that claims it. Copying the link and pasting it into the
-                app always works in the meantime.
+                Nexa does not register itself as the handler for <Code>magnet:</Code> links, so
+                clicking one does not reach it. Right-click the link and choose{' '}
+                <strong className="text-white">Download with Nexa</strong> instead (needs the
+                extension), or copy it and paste it into New download (<Code>Ctrl+N</Code>).
               </>
             ),
           },
           {
-            symptom: 'Downloads resume from 0% after restarting the app',
+            symptom: 'A torrent is gone after restarting the app',
             fix: (
               <>
-                The destination files were moved or deleted while Nexa was closed, so the pieces on
-                disk no longer verify. Point the torrent at the original folder, or accept the
-                re-download — the protocol will not trust unverified data, and neither should it.
+                Nexa does not restore torrents when it restarts; only regular file downloads and
+                scheduled jobs come back. Add the magnet link or <Code>.torrent</Code> file again.
               </>
             ),
           },

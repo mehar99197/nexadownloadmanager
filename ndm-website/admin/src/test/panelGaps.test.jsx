@@ -265,6 +265,25 @@ describe('unlocking a customer who is locked out of sign-in', () => {
     await waitFor(() => expect(screen.queryByText('sign-in locked')).not.toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Unlock sign-in' })).not.toBeInTheDocument();
   });
+
+  it('says so when the lock is on the authenticator-code step, not the password', async () => {
+    routeGets([
+      ['/admin/users', () => ok({
+        users: [
+          { id: 5, name: 'Codes', email: 'codes@example.test', role: 'user', plan: 'free', banned: 0, email_verified: 1, signInLockedUntil: '2099-01-01T00:00:00.000Z', signInLockReason: 'two_factor' },
+        ],
+        totalCount: 1,
+      })],
+    ]);
+
+    renderPage(<Users />);
+    const user = userEvent.setup();
+    expect(await screen.findByText('sign-in locked')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Unlock sign-in' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent(/wrong authenticator codes/);
+    expect(dialog).not.toHaveTextContent(/wrong passwords/);
+  });
 });
 
 describe('the release external-URL fields', () => {

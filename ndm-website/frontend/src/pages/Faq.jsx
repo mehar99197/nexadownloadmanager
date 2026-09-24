@@ -23,22 +23,22 @@ const SECTIONS = [
       {
         q: 'Is Nexa completely free?',
         keywords: 'price cost free plan pay',
-        a: <>Yes, and it stays free. The Free plan never expires and includes the browser extension, the video grabber, YouTube via yt-dlp, BitTorrent and cloud links. Its one limit is three downloads running at the same time — the rest queue rather than fail. It shows a single promo strip inside the app. Pro removes the concurrency cap and the promo and adds course-site downloads and AI rename, at $5/month or $45/year. Every account also gets a 7-day Pro trial with no card required. See <A to="/pricing">pricing</A>.</>,
+        a: <>Yes, and it stays free. The Free plan never expires and includes the browser extension, the video grabber, YouTube via yt-dlp, BitTorrent and cloud links. It runs three plain file downloads at a time — the rest queue rather than fail — with up to 16 connections per file, offers two themes and shows a single promo strip inside the app. Pro allows up to 32 downloads at once and 32 connections per file, removes the promo, unlocks all 64 themes, and adds course-site downloads, AI rename and Smart add, at $5/month or $45/year. Every account also gets a 7-day Pro trial with no card required. See <A to="/pricing">pricing</A>.</>,
       },
       {
         q: 'Which operating systems are supported?',
         keywords: 'windows linux mac macos ubuntu debian platform',
-        a: <>Windows 10 or newer, and Ubuntu 22.04+ / Debian 12+ via a <M>.deb</M> package. macOS is not shipped: the codebase is Qt and builds there, and our CI produces an app bundle, but it is unsigned so Gatekeeper refuses it. We would rather say that than sell you a broken download. Register interest on the <A to="/contact?topic=macos">contact page</A> and we will tell you when it lands.</>,
+        a: <>Windows 10 or newer, and Ubuntu 24.04 or newer (x86-64) via a <M>.deb</M> package. macOS is not shipped: the codebase is Qt and builds there, and our CI produces an app bundle, but it is unsigned so Gatekeeper refuses it. We would rather say that than sell you a broken download. Register interest on the <A to="/contact?topic=macos">contact page</A> and we will tell you when it lands.</>,
       },
       {
         q: 'How do I install Nexa?',
         keywords: 'install setup exe deb installer',
-        a: <>Download the installer for your platform from the <A to="/download">download page</A> and run it. On Windows that is a single <M>.exe</M>; on Debian or Ubuntu, <M>sudo apt install ./nexa_*.deb</M>. yt-dlp, ffmpeg and aria2 are bundled, so there is nothing else to install. Launch the app once afterwards — that is what registers the browser bridge. Full walkthrough in the <A to="/docs/install">install guide</A>.</>,
+        a: <>Download the installer for your platform from the <A to="/download">download page</A> and run it. On Windows that is a single <M>.exe</M>; on Ubuntu, <M>sudo apt install ./nexa_*.deb</M>. yt-dlp and ffmpeg are bundled, so there is nothing else to install. Launch the app once afterwards — that is what registers the browser bridge. Full walkthrough in the <A to="/docs/install">install guide</A>.</>,
       },
       {
         q: 'What is the difference between Free and Pro?',
         keywords: 'pro upgrade plan difference features',
-        a: <>Free caps you at three simultaneous downloads, shows one in-app promo strip and includes two themes. Pro removes the cap, removes the promo, unlocks all 64 themes, allows downloads from login-gated course sites such as Udemy and Coursera, and adds AI rename. Everything else — the extension, the video grabber, YouTube, torrents, the scheduler, the remote dashboard — is in both. Team is Pro for five machines at a time on one account.</>,
+        a: <>Free runs three plain file downloads at a time (videos, streams, MEGA links and torrents do not count toward it), uses up to 16 connections per file, shows one in-app promo strip and includes two themes. Pro lets you run up to 32 downloads at once (you set the number in Settings → Downloads) with up to 32 connections per file, removes the promo, unlocks all 64 themes, allows downloads from the login-gated course sites (Udemy, Coursera, Skillshare, Pluralsight and LinkedIn Learning), and adds AI rename and Smart add. Everything else — the extension, the video grabber, YouTube, torrents, the scheduler, the remote dashboard — is in both. Team is Pro for five machines at a time on one account.</>,
       },
       {
         q: 'Do I need to create an account?',
@@ -48,12 +48,12 @@ const SECTIONS = [
       {
         q: 'How do I update Nexa?',
         keywords: 'update upgrade version new release',
-        a: <>Install the newer build over the old one. The Windows installer and the <M>.deb</M> both upgrade in place and keep your queue, history and settings. The app also checks for updates daily (you can turn that off) and tells you when one exists. Separately, yt-dlp inside the app can be updated on its own from Settings → Video sites when a site breaks between releases — that is the fix for most &ldquo;this site stopped working&rdquo; problems. See the <A to="/changelog">changelog</A>.</>,
+        a: <>Install the newer build over the old one. The Windows installer and the <M>.deb</M> both upgrade in place and keep your queue, history and settings. The app also checks for updates daily (you can turn that off) and tells you when one exists; Help → Check for updates… checks on the spot. yt-dlp ships inside Nexa and has no updater of its own: a newer copy arrives only when you install a Nexa update, which is the fix for most &ldquo;this site stopped working&rdquo; problems. See the <A to="/changelog">changelog</A>.</>,
       },
       {
         q: 'Can I use Nexa without the browser extension?',
         keywords: 'without extension standalone paste url',
-        a: <>Yes, with one trade-off. Paste any URL, magnet link or <M>.m3u8</M> into the app and it downloads normally. What you lose is the session: a URL copied out of a browser carries no cookies, so anything behind a login will fail with a 403. For public files the app alone is entirely sufficient.</>,
+        a: <>Yes, with trade-offs. Paste any URL, magnet link or <M>.m3u8</M> into the app and it downloads normally. What you lose is the session: a URL copied out of a browser carries no cookies, so a download behind a login usually fails with a 403. The exception is the login sites Nexa knows, such as Vimeo, Google Drive and the course sites, where it reads the login from your browser itself — from Firefox or a Chromium browser on Linux, but only from Firefox on Windows. You also lose the extension&apos;s quality menu, so a pasted video URL downloads the best quality, and its stream detection on sites Nexa does not hand to yt-dlp. For public files the app alone is entirely sufficient.</>,
       },
       {
         q: 'What languages is Nexa available in?',
@@ -63,7 +63,7 @@ const SECTIONS = [
       {
         q: 'Where are downloads saved by default?',
         keywords: 'folder location save path downloads directory',
-        a: <>Your system Downloads folder — <M>%USERPROFILE%\Downloads</M> on Windows, <M>~/Downloads</M> on Linux — with files sorted into category subfolders (Video, Audio, Documents, Compressed, Programs, Images, Other). Change the base folder in Settings → Downloads, change where each category points in Settings → Categories, or set a location per download when you add one. The toolbar&apos;s &ldquo;Open folder&rdquo; button jumps straight there.</>,
+        a: <>Your system Downloads folder — <M>%USERPROFILE%\Downloads</M> on Windows, <M>~/Downloads</M> on Linux — with files sorted into category subfolders (Video, Audio, Documents, Compressed, Programs, Images, Other). Change the base folder in Settings → General → Download folder, change where each category points with the Categories… button in the same section (it works only while sorting into subfolders is on), or set a location per download when you add one. The toolbar&apos;s &ldquo;Open folder&rdquo; button jumps straight there.</>,
       },
       {
         q: 'Can I import downloads from IDM or JDownloader?',
@@ -84,7 +84,7 @@ const SECTIONS = [
       {
         q: 'How do I install the extension?',
         keywords: 'install extension unpacked zip store',
-        a: <>For now, from the packaged zip on the <A to="/download">download page</A> — the Chrome Web Store and Firefox Add-ons listings are still in review. Unzip it somewhere permanent, open <M>chrome://extensions</M>, turn on Developer mode, and use &ldquo;Load unpacked&rdquo;. Firefox uses <M>about:debugging</M> → Load Temporary Add-on. Then launch Nexa once and reload your tabs. Step-by-step with screenshots in the <A to="/docs/extension">extension guide</A>.</>,
+        a: <>For now, from the packaged zip on the <A to="/download">download page</A> — the Chrome Web Store and Firefox Add-ons listings are still in review. Unzip it somewhere permanent, open <M>chrome://extensions</M>, turn on Developer mode, and use &ldquo;Load unpacked&rdquo;. Firefox uses <M>about:debugging</M> → Load Temporary Add-on. Then launch Nexa once and reload your tabs. Step-by-step in the <A to="/docs/extension">extension guide</A>.</>,
       },
       {
         q: 'Why does the extension need so many permissions?',
@@ -119,7 +119,7 @@ const SECTIONS = [
       {
         q: 'How do I update the extension?',
         keywords: 'update extension new version',
-        a: <>Download the new zip, unzip it over the old folder, then press the reload icon on the extension&apos;s card in <M>chrome://extensions</M>. Once the store listings are live this becomes automatic. The app tells you if it ever sees an extension too old to speak to it.</>,
+        a: <>Download the new zip, unzip it over the old folder, then press the reload icon on the extension&apos;s card in <M>chrome://extensions</M>. Once the store listings are live this becomes automatic.</>,
       },
       {
         q: 'Does it work in incognito or private windows?',
@@ -135,22 +135,22 @@ const SECTIONS = [
       {
         q: 'Can I download YouTube videos?',
         keywords: 'youtube download video mp4',
-        a: <>Yes. Paste the URL into the app or use the extension button on the page. Nexa probes it with yt-dlp, shows the title and the available qualities, and downloads the one you choose — merging the separate video and audio streams into one file automatically. Playlists and channels work the same way. Details on the <A to="/features/youtube-sites">YouTube &amp; 1000+ sites page</A>.</>,
+        a: <>Yes. Paste the URL into the app or use the extension button on the page. The button shows the title and the qualities yt-dlp finds for that video, and Nexa downloads the one you choose; a pasted URL downloads the best quality available. Either way the separate video and audio streams are merged into one file automatically. Playlists and channels work the same way. Details on the <A to="/features/youtube-sites">YouTube &amp; video sites page</A>.</>,
       },
       {
         q: 'Why do I get a 403 error on YouTube?',
         keywords: '403 forbidden error authentication required youtube failed',
-        a: <>Two different problems share that code, and Nexa words them differently. &ldquo;Authentication required (HTTP 403)&rdquo; means the video wants a signed-in session — sign in to the site and start the download from the extension so your cookies travel with it. &ldquo;Media server refused the download — the stream URL expired or yt-dlp is out of date&rdquo; is not a login problem: update yt-dlp from Settings → Video sites and retry. Full guide: <A to="/docs/youtube">downloading from YouTube</A>.</>,
+        a: <>Two different problems share that code, and Nexa words them differently. &ldquo;Authentication required (HTTP 403)&rdquo; means the video wants a signed-in session, and Nexa never sends your YouTube login — not from the extension, not from your browser — so a video that needs one cannot be downloaded. &ldquo;Media server refused the download — the stream URL expired or yt-dlp is out of date&rdquo; is not a login problem: update Nexa, which carries its own copy of yt-dlp (Help → Check for updates…), and retry. Full guide: <A to="/docs/youtube">downloading from YouTube</A>.</>,
       },
       {
         q: 'How do I download a whole playlist?',
         keywords: 'playlist channel bulk all videos',
-        a: <>Paste the playlist URL and tick &ldquo;Download whole course / playlist&rdquo; before confirming. Each video becomes its own row, the playlist name becomes a subfolder, and several download in parallel up to your concurrency limit — three on Free. Private, deleted and members-only entries are skipped with a note rather than failing the whole playlist.</>,
+        a: <>Paste the playlist URL and tick &ldquo;Download whole course / playlist&rdquo; before confirming. The playlist becomes one row that counts its videos as they finish, and they are saved into a subfolder named after the playlist. Settings → Downloads → Playlist videos in parallel sets how many download at once — three by default, up to eight, on any plan. Private, deleted and members-only entries are skipped rather than failing the whole playlist, and the row ends by saying how many videos were saved.</>,
       },
       {
         q: 'Can I choose the video quality?',
         keywords: 'quality resolution 1080p 4k 2160p choose',
-        a: <>Yes — 2160p, 1440p, 1080p, 720p, 480p or best available, plus audio-only. Nexa asks yt-dlp for the best stream at or below your choice. Set a default in Settings → Video sites so you are not asked every time. If only low qualities appear, you are either signed out or running an out-of-date yt-dlp.</>,
+        a: <>Yes, from the extension button on the video: its menu lists the resolutions that video actually offers, up to 4K or 8K where it has them, plus &ldquo;Best available&rdquo; and audio-only. Nexa asks yt-dlp for the best stream at or below your choice. There is no default-quality setting, and a video URL pasted into the app always downloads the best available. If only low qualities appear, see the 360p question below.</>,
       },
       {
         q: 'Does Nexa download subtitles?',
@@ -160,27 +160,27 @@ const SECTIONS = [
       {
         q: 'Can I download age-restricted videos?',
         keywords: 'age restricted 18 sign in gated',
-        a: <>Yes, when you are signed in to the site and the extension supplies your cookies. Age-gated content is a login problem rather than a technical one — start the download from the extension button on a page where you are signed in and it behaves like any other video.</>,
+        a: <>Not from YouTube when it asks you to sign in: Nexa never sends your YouTube login. Age-gated content is a login problem rather than a technical one, so on a site where Nexa does use your login, such as Vimeo, start the download from the extension button on a page where you are signed in and it behaves like any other video.</>,
       },
       {
         q: 'What about YouTube Premium or purchased videos?',
         keywords: 'premium paid purchased rental drm netflix',
-        a: <>Premium-quality streams behave like any other format if your session has access to them. Purchased or rented films are usually DRM-protected, and Nexa does not break DRM — the app will tell you rather than producing an unplayable file. The same applies to Netflix, Prime Video, Disney+ and anything else using Widevine, PlayReady or FairPlay.</>,
+        a: <>Premium-only formats are out of reach: Nexa never sends your YouTube login, so yt-dlp sees what a signed-out viewer sees. Purchased or rented films are usually DRM-protected, and Nexa does not break DRM — the app will tell you rather than producing an unplayable file. The same applies to Netflix, Prime Video, Disney+ and anything else using Widevine, PlayReady or FairPlay.</>,
       },
       {
         q: 'Why is only 360p available for some videos?',
         keywords: '360p low quality only one format',
-        a: <>You are seeing the format list your session was given. An unauthenticated session is often handed a reduced list, so sign in and retry through the extension. The other common cause is an out-of-date yt-dlp that can no longer decipher the higher formats — update it from Settings and try again before anything else.</>,
+        a: <>You are seeing the format list yt-dlp was given. A common cause is an out-of-date yt-dlp that can no longer decipher the higher formats — update Nexa, which carries its own copy (Help → Check for updates…), and try again before anything else. On a site where Nexa uses your login, such as Vimeo, a signed-out session is often handed a reduced list too, so sign in and retry through the extension. Signing in changes nothing on YouTube, because Nexa never sends your YouTube login.</>,
       },
       {
         q: 'Can I download private or unlisted videos?',
         keywords: 'private unlisted hidden link only',
-        a: <>Unlisted videos work like public ones — the link is all that is needed. Private videos work only if the account you are signed in to has access, and only when you start the download from the extension so that session travels with it. Nothing here grants access you do not already have.</>,
+        a: <>Unlisted videos work like public ones — the link is all that is needed. Private YouTube videos do not, because Nexa never sends your YouTube login. On a site where Nexa uses your login, such as Vimeo, a private video works if the account you are signed in to has access and you start the download from the extension so that session travels with it. Nothing here grants access you do not already have.</>,
       },
       {
         q: 'Which other video sites are supported?',
         keywords: 'sites supported vimeo twitch tiktok instagram soundcloud list',
-        a: <>Over a thousand, because Nexa drives yt-dlp rather than maintaining its own extractors. Vimeo, Twitch VODs, X, Instagram, Facebook, TikTok, Reddit, Dailymotion, SoundCloud, Bandcamp, TED, the Internet Archive and most public broadcasters all work. The honest test is to paste the link and see. A sample list is on the <A to="/features/youtube-sites">feature page</A>.</>,
+        a: <>A fixed list, not every site yt-dlp supports. Besides YouTube, the sites Nexa hands to yt-dlp include Vimeo, Twitch, X, Instagram, Facebook, Threads, TikTok, Reddit, Dailymotion and Bilibili, plus the course sites Udemy, Skillshare, Pluralsight and LinkedIn Learning on Pro. Anywhere else, play the video with the extension installed: when the page plays a direct, HLS or DASH stream, the extension finds it and Nexa downloads it; when it does not, Nexa cannot. More on the <A to="/features/youtube-sites">feature page</A>.</>,
       },
     ],
   },
@@ -191,12 +191,12 @@ const SECTIONS = [
       {
         q: 'How do I download a torrent?',
         keywords: 'torrent file download start magnet',
-        a: <>Drag a <M>.torrent</M> file onto the window, or copy a magnet link and press <M>Ctrl+V</M> with Nexa focused. It joins the same queue as everything else and obeys the same limits and folders. There is no separate torrent window or second application. More on the <A to="/features/bittorrent">BitTorrent page</A>.</>,
+        a: <>Drag a <M>.torrent</M> file onto the window. For a magnet link, right-click it in your browser and choose &ldquo;Download with Nexa&rdquo;, paste it into File → New download (<M>Ctrl+N</M>), or drag it onto the window; with clipboard monitoring on (Tools → Monitor clipboard for links, off by default), Nexa also offers to grab one you copy. It lands in the same list as everything else, under your download folder, with its own speed limits in Settings → BitTorrent. There is no separate torrent window or second application. More on the <A to="/features/bittorrent">BitTorrent page</A>.</>,
       },
       {
         q: 'Does Nexa support magnet links?',
         keywords: 'magnet link dht metadata',
-        a: <>Yes, including DHT and peer exchange, so a magnet with no working tracker still finds peers. A magnet briefly shows &ldquo;fetching metadata&rdquo; before any progress appears — that is the client finding peers who can describe the torrent, and it is a normal part of the protocol rather than a stall. If your browser does not hand magnet links to Nexa, copy and paste it instead.</>,
+        a: <>Yes, including DHT and peer exchange, so a magnet with no working tracker still finds peers. A magnet briefly shows &ldquo;fetching metadata&rdquo; before any progress appears — that is the client finding peers who can describe the torrent, and it is a normal part of the protocol rather than a stall. Clicking a magnet link does not open Nexa, because Nexa does not register itself as your system&apos;s magnet handler: right-click the link and choose &ldquo;Download with Nexa&rdquo;, or paste it into File → New download.</>,
       },
       {
         q: 'What is seeding, and can I control it?',
@@ -268,12 +268,12 @@ const SECTIONS = [
       {
         q: 'A download is stuck at 99%. What do I do?',
         keywords: 'stuck 99 percent frozen not finishing hang',
-        a: <>Pause the row and resume it. This is almost always one connection whose socket died without an error — the server stopped sending but never closed, so the app is waiting on bytes that will not arrive. Resuming re-opens only the outstanding ranges, so nothing already downloaded is lost. If it happens repeatedly on the same host, lower that download&apos;s connection count to four.</>,
+        a: <>Pause the row and resume it. This is almost always one connection whose socket died without an error — the server stopped sending but never closed, so the app is waiting on bytes that will not arrive. Resuming re-opens only the outstanding ranges, so nothing already downloaded is lost.</>,
       },
       {
         q: 'Download speed is slower than I expected',
         keywords: 'slow speed bandwidth throttle performance',
-        a: <>Check three things in order. Is a speed limit set — globally in Settings → Downloads, or on that row via right-click? Does the details window say <M>ranges: no</M>, meaning the server refused to be split? And is the server itself simply slow, which no download manager can fix? More connections is not automatically faster: past about eight, most servers are the bottleneck.</>,
+        a: <>Check three things in order. Is a speed limit set — globally in Settings → Downloads, or on that row via right-click? Does the details window show <M>Resume capability: No</M> for a plain file download, meaning the server refused to be split? And is the server itself simply slow, which no download manager can fix? More connections is not automatically faster: past about eight, most servers are the bottleneck.</>,
       },
       {
         q: 'A file downloaded but will not open',
@@ -288,7 +288,7 @@ const SECTIONS = [
       {
         q: 'My downloads disappeared after restarting',
         keywords: 'downloads gone missing history lost after restart',
-        a: <>Completed downloads are cleared if you have history cleanup switched on in Settings — check there first. The files themselves are untouched on disk either way. If the whole list is empty including active downloads, the app is running as a different user or in portable mode from a different folder, and so is reading a different database.</>,
+        a: <>Only plain file downloads come back after a restart — video, stream and torrent rows are not restored. Nothing is cleared on its own either: a finished row leaves the list only when you remove it, choose Downloads → Clear completed, or press &ldquo;Clear completed downloads&rdquo; at the bottom of the window. The files themselves are untouched on disk either way. If plain file downloads are missing too, the app is running as a different user or in portable mode from a different folder, and so is reading a different database.</>,
       },
       {
         q: '“Connection refused”',
@@ -298,7 +298,7 @@ const SECTIONS = [
       {
         q: '“Disk full” but I have plenty of space',
         keywords: 'disk full space error no space left',
-        a: <>Nexa allocates the full file size before it starts writing, so a 40&nbsp;GB download needs 40&nbsp;GB free at the beginning rather than at the end. The other causes are a destination on a different drive from the one you checked, a filesystem with a per-file size limit (FAT32 stops at 4&nbsp;GB), or a disk quota on a shared machine.</>,
+        a: <>On a FAT32 or exFAT drive, Nexa sets aside the full file size before it starts writing, so a 40&nbsp;GB download needs 40&nbsp;GB free at the beginning rather than at the end. On NTFS, ext4, APFS and XFS it does not: the file fills in as data arrives, and a disk that runs out partway stops the download with a write error. The other causes are a destination on a different drive from the one you checked, a filesystem with a per-file size limit (FAT32 stops at 4&nbsp;GB), or a disk quota on a shared machine.</>,
       },
       {
         q: 'A scheduled download did not start',
@@ -318,12 +318,12 @@ const SECTIONS = [
       {
         q: 'How do I completely reset Nexa?',
         keywords: 'reset factory defaults clean wipe settings start over',
-        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your license sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
+        a: <>Quit the app, then delete two things: its data folder, <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux, which holds the queue, history and categories; and its settings, the registry key <M>HKEY_CURRENT_USER\Software\Nexa\Nexa</M> on Windows or the <M>~/.config/Nexa</M> folder on Linux. Your downloaded files are elsewhere and are not touched. Your license key and account sign-in sit in the OS credential store instead, so sign out or remove the key in Settings → Account first if you also want those cleared. The app rebuilds everything from defaults on the next launch.</>,
       },
       {
         q: 'Where are Nexa’s settings and database stored?',
         keywords: 'settings location config database file appdata where stored',
-        a: <>On Windows, <M>%APPDATA%\Nexa</M>; on Linux, <M>~/.local/share/Nexa</M>, with preferences under <M>~/.config/Nexa</M>. The queue, history and categories live in a SQLite file there called <M>nexa.db</M>. In portable mode — a <M>portable.txt</M> beside the executable — everything moves next to the app instead, which is what makes it runnable from a USB stick.</>,
+        a: <>On Windows, the database is <M>%APPDATA%\Nexa\Nexa\nexa.db</M> and preferences are in the registry under <M>HKEY_CURRENT_USER\Software\Nexa\Nexa</M>; on Linux, they are <M>~/.local/share/Nexa/Nexa/nexa.db</M> and <M>~/.config/Nexa/Nexa.conf</M>. The database is a SQLite file holding the queue, history and categories. Your license key and account sign-in are kept in the OS credential store: Windows Credential Manager, or the Secret Service on Linux. In portable mode — a <M>portable.txt</M> beside the executable — the database and preferences move into a <M>NexaData</M> folder next to the app instead, which is what makes it runnable from a USB stick.</>,
       },
     ],
   },

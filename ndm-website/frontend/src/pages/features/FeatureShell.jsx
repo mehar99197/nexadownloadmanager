@@ -19,17 +19,17 @@ export const FEATURE_NAV = [
   {
     to: '/features/acceleration',
     label: 'Segmented acceleration',
-    blurb: 'Up to 32 connections per file, with the tail of the slowest one stolen by whoever finishes first.',
+    blurb: 'Up to 32 connections per file on Pro (16 on Free); a connection that finishes early takes half of the biggest range left.',
   },
   {
     to: '/features/video-grabber',
     label: 'Video grabber',
-    blurb: 'HLS and DASH streams detected on the page, fetched in parallel and muxed into one file.',
+    blurb: 'HLS and DASH streams detected on the page and saved as one file; an HLS stream behind your login is fetched in parallel.',
   },
   {
     to: '/features/youtube-sites',
-    label: 'YouTube & 1000+ sites',
-    blurb: 'yt-dlp under the hood: quality picker, playlists, subtitles, and updates between releases.',
+    label: 'YouTube & video sites',
+    blurb: 'yt-dlp under the hood, updated with each Nexa release: quality picker, playlists and subtitles.',
   },
   {
     to: '/features/bittorrent',
@@ -44,7 +44,7 @@ export const FEATURE_NAV = [
   {
     to: '/features/scheduler',
     label: 'Scheduler & limits',
-    blurb: 'Start at 2am, cap the bandwidth while you work, shut the machine down when it is done.',
+    blurb: 'Start at 2am, cap the speed of direct downloads while you work, shut the machine down when it is done.',
   },
   {
     to: '/features/remote-dashboard',

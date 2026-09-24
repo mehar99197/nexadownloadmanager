@@ -10,10 +10,10 @@ import { FEATURE_NAV } from './features/FeatureShell';
 const DETAIL = {
   '/features/acceleration': 'How a file is split, why segments are stolen mid-transfer, and what happens to a download when the power goes out.',
   '/features/video-grabber': 'Why "save video as" gives you nothing, what a manifest is, and how the page you are watching becomes one MP4.',
-  '/features/youtube-sites': 'Why Nexa drives yt-dlp instead of writing its own extractors, and how to update it when a site changes.',
+  '/features/youtube-sites': 'Why Nexa drives yt-dlp instead of writing its own extractors, and how site fixes reach you: yt-dlp ships inside Nexa and is updated with each Nexa release.',
   '/features/bittorrent': 'A real libtorrent engine in the same queue — and an honest account of where a dedicated client still wins.',
   '/features/browser-extension': 'The local bridge, every permission explained, and installing it while the store listings are still in review.',
-  '/features/scheduler': 'Start at 2am, cap the bandwidth, shut the machine down afterwards — and the one thing you should not schedule.',
+  '/features/scheduler': 'Start at 2am, cap the speed of direct downloads, shut the machine down afterwards — and the one thing you should not schedule.',
   '/features/remote-dashboard': 'Your queue on your phone, served by your own machine, behind a token and TLS.',
 };
 
@@ -21,7 +21,7 @@ export default function Features() {
   usePageMeta({
     title: 'Features',
     description:
-      'In-depth guides to what Nexa Download Manager actually does: segmented acceleration, the HLS/DASH video grabber, YouTube and 1000+ sites via yt-dlp, BitTorrent, the browser extension, scheduling and the phone dashboard.',
+      'In-depth guides to what Nexa Download Manager actually does: segmented acceleration, the HLS/DASH video grabber, YouTube & video sites via yt-dlp, BitTorrent, the browser extension, scheduling and the phone dashboard.',
   });
 
   return (
@@ -57,7 +57,7 @@ export default function Features() {
         <Card>
           <h2 className="text-base font-bold text-white">Prefer step-by-step?</h2>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            The docs are task-shaped: install it, wire up the browser, download a course, fix a 403.
+            The docs are task-shaped: install it, wire up the browser, download a course lecture, fix a 403.
           </p>
           <Link to="/docs" className="mt-4 inline-flex items-center py-3 -my-3 text-sm font-semibold text-brand-300">
             Read the docs &rarr;

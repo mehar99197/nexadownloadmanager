@@ -78,7 +78,7 @@ const GROUPS = [
       {
         label: 'Dynamic re-segmentation',
         values: [true, true, false, false, 'partial', false, false, false],
-        note: 'Stealing the tail of the slowest segment while the download runs, rather than cutting fixed pieces up front.',
+        note: 'A connection that finishes early takes the back half of the biggest range still in flight, when 4 MB or more of it is left, rather than the file being cut into fixed pieces up front.',
       },
       { label: 'Speed limits (global + per download)', values: [true, true, true, true, 'partial', true, true, true] },
       { label: 'Checksum verification', values: [true, false, 'partial', true, false, false, 'partial', false] },
@@ -90,9 +90,9 @@ const GROUPS = [
     rows: [
       { label: 'Video grabber (HLS/DASH)', values: [true, true, 'partial', true, 'partial', true, false, false] },
       {
-        label: 'YouTube & 1000+ sites via yt-dlp',
+        label: 'YouTube & video sites via yt-dlp',
         values: [true, 'partial', 'partial', 'partial', false, 'partial', false, false],
-        note: 'Only Nexa runs yt-dlp itself. The others use their own site plugins, which cover fewer sites and break differently.',
+        note: 'Only Nexa runs yt-dlp itself, for the video sites it supports. The others use their own site plugins, which break differently.',
       },
       { label: 'Subtitle download', values: [true, 'partial', false, 'partial', false, false, false, false] },
       { label: 'BitTorrent', values: [true, false, true, false, true, false, true, 'partial'] },
@@ -100,8 +100,8 @@ const GROUPS = [
       { label: 'FTP', values: [false, true, true, true, true, true, true, true], note: 'An honest miss on our side: Nexa is HTTP/HTTPS only.' },
       {
         label: 'Whole-site spider / grabber',
-        values: [false, true, false, false, false, false, false, false],
-        note: 'IDM alone does this — download every image on a site, or a whole site for offline reading. Nexa has a link grabber for one page, which is not the same thing.',
+        values: ['partial', true, false, false, false, false, false, false],
+        note: 'Nexa’s Tools → Grab Website… crawls a site and queues the files it links to — images, videos, documents — but saves none of the pages, so there is no copy to browse offline. IDM alone saves a whole site for offline reading.',
       },
       { label: 'Batch / pattern downloads', values: [true, true, 'partial', true, true, true, 'partial', true] },
     ],
@@ -129,7 +129,7 @@ const GROUPS = [
 ];
 
 const PRICING = [
-  ['Nexa', 'Yes — 3 concurrent downloads, forever', '$5/mo or $45/yr', '7-day Pro trial, no card'],
+  ['Nexa', 'Yes — 3 direct downloads at once, forever', '$5/mo or $45/yr', '7-day Pro trial, no card'],
   ['IDM', 'No — trial only', 'From ~$12 one-year to ~$25 lifetime, 1 PC', '30-day trial, no card'],
   ['FDM', 'Yes — all features', '—', '—'],
   ['JDownloader', 'Yes — installer carries bundled offers', '—', '—'],
@@ -146,7 +146,7 @@ const BEST_FOR = [
     points: [
       'You are on Linux as well as Windows',
       'You want torrents, streams and YouTube in one queue',
-      'You download from a thousand-odd sites and want yt-dlp behind it',
+      'You want yt-dlp behind YouTube and the other video sites Nexa supports',
       'You want to read the code that handles your cookies',
       'You control the queue from a phone',
     ],
@@ -155,7 +155,7 @@ const BEST_FOR = [
     name: 'IDM',
     points: [
       'You are on Windows only and want 25 years of polish',
-      'You need the site spider — whole sites or every image on a page',
+      'You need a browsable offline copy of a website',
       'You would rather pay once than subscribe',
       'Proven stability matters more than breadth',
     ],

@@ -3,7 +3,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 
-const LAST_UPDATED = 'September 23, 2026';
+const LAST_UPDATED = 'September 24, 2026';
 
 function Clause({ n, title, children }) {
   return (
@@ -44,12 +44,13 @@ export default function Terms() {
 
         <Clause n={2} title="Plans">
           <p>
-            <strong className="text-slate-200">Free</strong> is free forever and limited to 3 concurrent
-            downloads. <strong className="text-slate-200">Pro</strong> removes the concurrency cap and
-            enables AI rename and priority support, billed monthly or yearly. <strong className="text-slate-200">Team</strong>{' '}
+            <strong className="text-slate-200">Free</strong> is free forever and runs up to 3 direct file
+            downloads at once; video-site, stream, MEGA and torrent downloads don&apos;t count toward that
+            limit. <strong className="text-slate-200">Pro</strong> lets you run up to 32 at once (you choose the
+            number in the app&apos;s settings) and enables AI rename, billed monthly or yearly. <strong className="text-slate-200">Team</strong>{' '}
             includes everything in Pro for up to 5 seats. Prices are shown on the{' '}
-            <Link to="/pricing" className="text-slate-200 hover:text-brand-300">pricing page</Link> in US dollars,
-            exclusive of any taxes we are required to collect.
+            <Link to="/pricing" className="text-slate-200 hover:text-brand-300">pricing page</Link> in US dollars.
+            Prices do not include any taxes that may apply.
           </p>
           <p>
             Every new account may start one 7-day Pro trial without entering a card. When the trial
@@ -67,8 +68,11 @@ export default function Terms() {
             dashboard to free its seat.
           </p>
           <p>
-            Do not share your account or resell or publish license keys. We may revoke keys that are being shared
-            or that were obtained through fraud or a chargeback.
+            Do not share your account or resell or publish license keys. A license used on far more
+            computers than it has seats can be suspended automatically; while it is suspended, the app
+            runs on Free and reports that all of its seats are in use. If that happens and you have not
+            shared your license, contact support and we can lift the suspension. We may also revoke keys
+            that were obtained through fraud or a chargeback.
           </p>
         </Clause>
 
@@ -149,9 +153,12 @@ export default function Terms() {
         <Clause n={10} title="Your account">
           <p>
             Keep your password private and tell us promptly if you think your account has been
-            compromised. You can delete your account by emailing support; we will remove your
-            personal data as described in the{' '}
-            <Link to="/privacy" className="text-slate-200 hover:text-brand-300">Privacy Policy</Link>.
+            compromised. You can delete your account yourself at any time from &ldquo;Your data&rdquo; on
+            your <Link to="/profile" className="text-slate-200 hover:text-brand-300">profile page</Link>.
+            Deletion takes effect immediately, cannot be undone and cancels any paid subscription. We
+            keep payment records for tax purposes; the{' '}
+            <Link to="/privacy" className="text-slate-200 hover:text-brand-300">Privacy Policy</Link> lists
+            what else is kept after deletion.
           </p>
         </Clause>
 

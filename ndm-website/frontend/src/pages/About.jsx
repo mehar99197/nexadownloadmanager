@@ -7,7 +7,7 @@ import { SOURCE_URL } from '../components/Footer';
 
 const FACTS = [
   { label: 'Platforms', value: 'Windows & Linux', note: 'macOS is building but not yet signed' },
-  { label: 'License', value: 'Free core', note: 'Pro removes the 3-download cap' },
+  { label: 'License', value: 'Free core', note: 'Free: 3 direct downloads at once; Pro: up to 32' },
   { label: 'Engine', value: 'C++ / Qt 6', note: 'native, no Electron' },
   { label: 'Status', value: 'Public beta', note: 'shipping openly, bugs and all' },
 ];
@@ -29,9 +29,9 @@ export default function About() {
         <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
           Nexa started with a simple annoyance: the best-known download manager on Windows is
           paid, closed and Windows-only, and browsers still download big files on a single
-          connection. Nexa splits a file across up to 32 connections, resumes exactly where it
-          stopped, grabs video from the page you are on, and handles torrents and cloud links in
-          the same queue — on Windows and Linux.
+          connection. Nexa splits a file across up to 32 connections on Pro (16 on Free), resumes
+          exactly where it stopped, grabs video from the page you are on, and handles torrents and
+          cloud links in the same queue — on Windows and Linux.
         </p>
       </Section>
 
@@ -55,7 +55,10 @@ export default function About() {
               <li>
                 <strong className="text-slate-200">Your files are yours.</strong> Downloads happen on
                 your machine, to your disk. Nothing is proxied through our servers, and we could not
-                see your files if we wanted to.
+                see your files if we wanted to. Two opt-in Pro features are the exception: AI rename
+                (off by default) sends a finished file&apos;s name and its URL without the query
+                string, and Smart add sends the text you type, to our server, which passes them to
+                Anthropic.
               </li>
               <li>
                 <strong className="text-slate-200">Credentials stay local.</strong> The browser
@@ -68,7 +71,9 @@ export default function About() {
               <li>
                 <strong className="text-slate-200">Free should be genuinely usable.</strong> The free
                 plan is not a trial: extension, video grabber, YouTube support and BitTorrent are all
-                included forever. Pro lifts the concurrency cap and adds AI renaming.
+                included forever. Pro runs up to 32 direct downloads at once instead of 3, doubles the
+                connections per file to 32, drops the in-app promos, and adds login-gated course
+                sites, AI renaming and Smart add.
               </li>
               <li>
                 <strong className="text-slate-200">Say what is true.</strong> We do not publish

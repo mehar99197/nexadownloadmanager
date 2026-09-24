@@ -10,8 +10,9 @@ import Button from '../components/Button';
  *
  *  None of these are recorded yet, and the page says so on every card rather
  *  than showing a play button that does nothing. Each entry links to the
- *  written guide covering the same ground, so the page is useful today instead
- *  of being a promise.
+ *  closest written guide, so the page is useful today instead of being a
+ *  promise. Three topics (Google Drive, categories, AI rename) have no guide
+ *  of their own yet; their cards point at the nearest page instead.
  *
  *  PRODUCTION NOTES (for whoever records these — deliberately not rendered):
  *    - Under 5 minutes each; most of these should be under 3.
@@ -127,7 +128,7 @@ export default function Tutorials() {
   usePageMeta({
     title: 'Tutorials',
     description:
-      'Video guides planned for Nexa Download Manager. None are recorded yet; every topic has a written guide today.',
+      'Video guides planned for Nexa Download Manager. None are recorded yet; most topics have a written guide today.',
     // Every card still reads "video to be created". Off the footer and out of
     // search results until there are videos to show; the route stays so old
     // links still land somewhere honest.
@@ -149,8 +150,8 @@ export default function Tutorials() {
       <div className="note-warn mx-auto mt-6 max-w-3xl rounded-xl px-5 py-4 text-sm leading-6">
         <p className="font-bold">The videos are not recorded yet.</p>
         <p className="mt-1">
-          All {total} are planned and listed below so you can see what is coming — and every one of
-          them already has a written guide that covers the same ground, linked on its card. We would
+          All {total} are planned and listed below so you can see what is coming — and most of them
+          already have a written guide that covers the same ground, linked on the card. We would
           rather show you the plan than an empty page.{' '}
           <Link to="/contact" className="font-semibold underline">Tell us which to record first</Link>{' '}
           and it moves up the list.
@@ -198,7 +199,7 @@ export default function Tutorials() {
       <div className="surface-panel mx-auto mt-12 max-w-3xl rounded-[var(--radius-3)] px-6 py-6">
         <p className="text-sm font-bold text-white">Prefer to read?</p>
         <p className="mt-1 text-xs text-slate-400">
-          Every topic above exists as a written guide today, with screenshots and copy-paste commands.
+          Most topics above already have a written guide, several with copy-paste commands.
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
           <Button to="/docs">Read the docs</Button>

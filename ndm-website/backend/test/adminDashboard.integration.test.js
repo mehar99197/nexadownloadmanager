@@ -281,12 +281,40 @@ test('admin dashboard figures and panel reads', async (t) => {
     const find = async () => (await api.get('/api/admin/users?q=locked-out', { token })).body.data.users[0];
     const before = await find();
     assert.ok(before.signInLockedUntil, 'the lock is visible to support');
+    assert.equal(before.signInLockReason, 'password');
     assert.equal('failed_logins' in before, false, 'the counters stay private');
     assert.equal('locked_until' in before, false);
 
     const unlock = await api.post(`/api/admin/users/${id}/unlock`, {}, { token });
     assert.equal(unlock.status, 200, unlock.text);
     assert.equal((await find()).signInLockedUntil, null);
+  });
+
+  await t.test('a customer locked out of the authenticator-code step shows as locked too, and unlocking clears it', async () => {
+    await srv.reset();
+    const api = srv.client();
+    const token = await staffToken(api);
+    const id = await customer('code-locked', { plan: 'free' });
+    // The password is fine; the second step is what is locked
+    // (utils/twoFactorLockout.js). The unlock route already lifted this lock,
+    // but the list only ever showed the password one, so support never saw it.
+    await srv.query(
+      'UPDATE users SET totp_failures = 5, totp_lock_level = 1, totp_locked_until = NOW() + INTERVAL 30 MINUTE WHERE id = ?', [id]
+    );
+
+    const find = async () => (await api.get('/api/admin/users?q=code-locked', { token })).body.data.users[0];
+    const before = await find();
+    assert.ok(before.signInLockedUntil, 'the code lock is visible to support');
+    assert.equal(before.signInLockReason, 'two_factor');
+    assert.equal('totp_locked_until' in before, false, 'the raw column stays private');
+    assert.equal('totp_failures' in before, false);
+
+    const unlock = await api.post(`/api/admin/users/${id}/unlock`, {}, { token });
+    assert.equal(unlock.status, 200, unlock.text);
+    assert.equal(unlock.body.data.wasLocked, true);
+    const after = await find();
+    assert.equal(after.signInLockedUntil, null);
+    assert.equal(after.signInLockReason, null);
   });
 
   await srv.stop();
