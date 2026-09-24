@@ -46,6 +46,12 @@ chmod 700 "$out_dir" 2>/dev/null || true
 umask 077
 stamp="$(date +%Y%m%d-%H%M)"
 file="$out_dir/nexa-$stamp.sql.gz"
+# The dump is written under a name the pruning and a restorer both ignore, and
+# only renamed once it has been verified. A mysqldump that fails part-way stops
+# this script (set -e + pipefail) before any check below runs, and used to leave
+# a truncated nexa-*.sql.gz behind looking exactly like a good backup.
+partial="$file.partial"
+trap 'rm -f "$partial"' EXIT
 
 echo "[backup] dumping $MYSQL_DB -> $file"
 # --single-transaction keeps InnoDB consistent without locking writers out.
@@ -53,16 +59,16 @@ MYSQL_PWD="${MYSQL_PASS:-}" mysqldump \
   --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
   --single-transaction --quick --routines --triggers --events \
   --default-character-set=utf8mb4 \
-  "$MYSQL_DB" | gzip -9 > "$file"
+  "$MYSQL_DB" | gzip -9 > "$partial"
 
 # A backup nobody verified is not a backup.
-if [ ! -s "$file" ]; then
+if [ ! -s "$partial" ]; then
   echo "[backup] FAILED: dump is empty" >&2
-  rm -f "$file"
   exit 1
 fi
-gunzip -t "$file"
-chmod 600 "$file" 2>/dev/null || true
+gunzip -t "$partial"
+chmod 600 "$partial" 2>/dev/null || true
+mv "$partial" "$file"
 size="$(du -h "$file" | cut -f1)"
 echo "[backup] ok ($size)"
 

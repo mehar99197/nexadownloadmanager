@@ -107,6 +107,26 @@ function blockedStaffTarget(req, res, user, verb = 'modify') {
   return true;
 }
 
+// The same line, for a subscription reached through its id rather than its
+// owner. The owner is loaded so the refusal is the account's: a staff admin
+// freeing the creator's seats knocks the creator's machines off their plan.
+async function blockedStaffSubscription(req, res, subscription) {
+  if (req.isRoot) return false;
+  return blockedStaffTarget(req, res, await User.findById(subscription.user_id));
+}
+
+// Lists stop at the same line the details view does. The subscription list,
+// its export and the users list each embed whole subscription rows, so a staff
+// admin who could not open the creator's details could still read the
+// creator's licence key and Stripe ids off the table — or out of the CSV.
+const PANEL_ACCOUNT_SECRETS = ['license_key', 'stripe_customer_id', 'stripe_subscription_id'];
+function redactForStaff(req, subscription, ownerRole) {
+  if (!subscription || req.isRoot || ownerRole === 'user') return subscription;
+  const redacted = { ...subscription };
+  for (const column of PANEL_ACCOUNT_SECRETS) if (column in redacted) redacted[column] = null;
+  return redacted;
+}
+
 async function audit(req, action, entityType, entityId, summary, metadata) {
   await AuditLog.create({
     adminUserId: req.admin && req.admin.id,
@@ -296,6 +316,10 @@ router.post(
       return fail(res, 'RESERVED_ADDRESS',
         'That address is reserved for the creator account and cannot be used for a customer.', 400);
     if (await User.findByEmail(email)) return fail(res, 'EMAIL_EXISTS', 'An account with this email already exists', 409);
+    // The same policy the reset route below applies: a password that would be
+    // refused on reset — breached, or carrying the address — is refused here.
+    const problem = await passwordProblem(password, { email });
+    if (problem) return fail(res, 'WEAK_PASSWORD', problem, 400);
     const user = await User.create({
       name,
       email,
@@ -358,7 +382,7 @@ router.get(
 
     const withPlan = users.map((u) => {
       const sub = subByUser.get(u.id) || null;
-      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: sub };
+      return { ...safeUser(u), plan: sub ? sub.plan : 'free', subscription: redactForStaff(req, sub, u.role) };
     });
 
     return ok(res, { users: withPlan, page, limit, totalCount });
@@ -529,7 +553,10 @@ router.get(
   asyncHandler(async (req, res) => {
     const { page, limit, status, plan, q } = req.query;
     const { subscriptions, totalCount } = await Subscription.list({ page, limit, status, plan, q });
-    return ok(res, { subscriptions, page, limit, totalCount });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      page, limit, totalCount,
+    });
   })
 );
 
@@ -565,6 +592,9 @@ router.get(
 router.post(
   '/subscriptions/:id/sharing/clear', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { cleared } = await Subscription.clearSharingSuspension(req.params.id);
     if (!cleared) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.clear', 'subscription', req.params.id,
@@ -577,6 +607,9 @@ router.post(
 router.post(
   '/subscriptions/:id/sharing/resume', validate(idParamSchema),
   asyncHandler(async (req, res) => {
+    const subscription = await Subscription.findById(Number(req.params.id));
+    if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     const { resumed } = await Subscription.resumeSharingEnforcement(req.params.id);
     if (!resumed) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
     await audit(req, 'subscription.sharing.resume', 'subscription', req.params.id,
@@ -596,7 +629,10 @@ router.get(
   '/subscriptions/flagged', validate(limitQuerySchema),
   asyncHandler(async (req, res) => {
     const subscriptions = await Subscription.listFlaggedForSharing({ limit: req.query.limit });
-    return ok(res, { subscriptions, thresholds: sharingThresholds });
+    return ok(res, {
+      subscriptions: subscriptions.map((s) => redactForStaff(req, s, s.userRole)),
+      thresholds: sharingThresholds,
+    });
   })
 );
 
@@ -606,7 +642,7 @@ router.get(
     const { subscriptions } = await Subscription.list({
       page: 1, limit: EXPORT_MAX, status: req.query.status, plan: req.query.plan, q: req.query.q,
     });
-    return ok(res, subscriptions);
+    return ok(res, subscriptions.map((s) => redactForStaff(req, s, s.userRole)));
   })
 );
 
@@ -686,6 +722,7 @@ router.post(
     const id = Number(req.params.id);
     const subscription = await Subscription.findById(id);
     if (!subscription) return fail(res, 'NOT_FOUND', 'Subscription not found', 404);
+    if (await blockedStaffSubscription(req, res, subscription)) return undefined;
     // Drop every live seat lease. The activation rows stay, so the devices are
     // still listed and can re-take a seat — this frees the seats, it does not
     // blacklist the machines.
