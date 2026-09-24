@@ -386,7 +386,7 @@ export default function Billing() {
               <p className="text-sm font-semibold text-slate-300">No payments yet</p>
               <p className="max-w-xs text-sm leading-6 text-slate-500">
                 A free plan and the Pro trial are never charged. Once you pay for a plan,
-                every invoice shows up here.
+                your most recent payments show up here.
               </p>
             </div>
           ) : (

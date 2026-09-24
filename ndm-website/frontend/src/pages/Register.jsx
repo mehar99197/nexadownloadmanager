@@ -54,10 +54,14 @@ export default function Register() {
       // Trying here was a guaranteed 401 plus the interceptor's doomed
       // /auth/refresh on every single signup.
       if (wantsTrial) markPendingTrial();
+      // Not "Account created": for an address that is already registered the
+      // server creates nothing and emails the owner instead, and it answers
+      // exactly as it does for a new one so the form cannot reveal who has an
+      // account. "Check your email" is true either way.
       toast.success(
         wantsTrial
-          ? 'Account created! Sign in to start your 7-day Pro trial.'
-          : 'Account created! Please check your email to verify.'
+          ? 'Check your email to finish signing up, then sign in to start your 7-day Pro trial.'
+          : 'Check your email to finish signing up.'
       );
       // The toast is gone in a few seconds; the sign-in page also gets the
       // address (to prefill) and the fact that it is fresh, so it can keep

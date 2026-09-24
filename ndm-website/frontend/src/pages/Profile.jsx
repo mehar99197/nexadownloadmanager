@@ -104,8 +104,9 @@ function DataCard({ user }) {
           </p>
         ) : (
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Permanently removes your account, license keys, devices, payment history, review and team
-            membership. A paid plan is cancelled first so nothing is charged afterwards. This cannot be undone.
+            Permanently removes your account, license keys, devices, review and team membership. A paid
+            plan is cancelled first so nothing is charged afterwards; if that fails, nothing is deleted.
+            Payment records are kept for tax, detached from the account. This cannot be undone.
           </p>
         )}
         {!isStaff && (
@@ -135,8 +136,10 @@ function DataCard({ user }) {
           >
             <h2 id="delete-account-title" className="text-lg font-bold text-white">Delete your account?</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              Everything tied to <span className="font-semibold text-slate-200">{user.email}</span> is erased
-              immediately. Confirm with your password and type <span className="font-mono font-semibold text-slate-200">DELETE</span>.
+              The account <span className="font-semibold text-slate-200">{user.email}</span> is erased
+              immediately; payment records are kept for tax, and the{' '}
+              <Link to="/privacy" className="text-slate-300 underline underline-offset-2 hover:text-brand-300">privacy policy</Link>{' '}
+              lists what else stays. Confirm with your password and type <span className="font-mono font-semibold text-slate-200">DELETE</span>.
             </p>
             <div className="mt-5 space-y-4">
               <Input

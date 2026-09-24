@@ -169,9 +169,12 @@ export default function Login() {
 
           {justRegistered && (
             <div role="status" className="mt-5 rounded-[var(--radius-2)] border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-              <strong className="font-semibold">Account created.</strong> We sent a verification
-              link{registeredEmail ? <> to <span className="font-semibold">{registeredEmail}</span></> : null}.
-              Open it, then sign in here{location.state && location.state.wantsTrial ? ' to start your 7-day Pro trial' : ''}.
+              {/* Not "Account created": an address that already has an account
+                  gets an email saying so instead, and the server answers both
+                  the same way on purpose. This sentence is true for either. */}
+              <strong className="font-semibold">Check your inbox.</strong> We sent an
+              email{registeredEmail ? <> to <span className="font-semibold">{registeredEmail}</span></> : null}.
+              Open the link in it, then sign in here{location.state && location.state.wantsTrial ? ' to start your 7-day Pro trial' : ''}.
               Nothing in your inbox? Check spam, or use the button below after a first sign-in attempt to get a new link.
             </div>
           )}
@@ -278,7 +281,7 @@ export default function Login() {
                 */}
                 {!needsVerification && googleAuthEnabled() && (
                   <p className="mt-2 text-xs text-red-200/80">
-                    Created your account with Google? Use “Continue with Google” below.
+                    Created your account with Google? Use “Continue with Google” above.
                     Never set a password? Use “Forgot password”.
                   </p>
                 )}

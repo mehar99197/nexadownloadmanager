@@ -116,8 +116,9 @@ export default function Activate() {
         {outcome === 'denied' && (
           <Card className="mt-6 !p-6" data-testid="activate-denied">
             <p className="text-sm leading-6 text-slate-300">
-              That sign-in was refused and the code is now useless. If you did not start it yourself, someone had
-              physical access to that computer — nothing on your account changed.
+              That sign-in was refused and the code is now useless. If you did not start it yourself, someone
+              may have sent you a link with their own code in it. Refusing was right, and nothing on your
+              account changed.
             </p>
             <div className="mt-4"><Link to="/dashboard" className="btn btn-ghost">Back to dashboard</Link></div>
           </Card>
