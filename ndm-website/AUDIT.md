@@ -2423,21 +2423,13 @@ accurate, and the first was a consequence of the jolt fix itself.
 |---|---|
 | Site: the next page's outline | If a page's code is not here 150ms after the tap, its **outline** is swapped in (`PageSkeleton.jsx` — four shapes: a centred intro over cards, an account page, a docs article, a sign-in card), and the page replaces it the moment the code lands. The grace period is so a fast page never flashes an outline for two frames. |
 | Site: fewer waits at all | A page's code is fetched at the first sign of intent — a pointer over a link, a finger on it, keyboard focus — and the header's pages once the first page has loaded and the browser is idle (not on Save-Data or 2G). A failed fetch is forgotten, so it is retried rather than remembered. |
-| Both: the change itself | The root dissolve is 340ms on the site and 300ms in the panel (was 200 and 160), with its timing set identically on both halves so the browser's plus-lighter blend keeps whatever is the same on both sides perfectly still — the site's header, and the panel's sidebar and topbar when a screen change starts from the top. The arriving page settles 14px (panel: 10px) up into place. Reduced motion keeps a shorter dissolve (200/180ms) and loses the movement — a cut is not less motion, it is the jolt with the animation removed. |
+| Both: the change itself | The root dissolve is 340ms on the site and 300ms in the panel (was 200 and 160), with its timing set identically on both halves so the browser's plus-lighter blend keeps the header and sidebar perfectly still. The arriving page settles 14px (panel: 10px) up into place. Reduced motion keeps a shorter dissolve (200/180ms) and loses the movement — a cut is not less motion, it is the jolt with the animation removed. |
 | Site: data | Every page that loads data draws that data's outline until it arrives, and the content fades up into it. Outlines are built from the real components — `SkeletonText` is a run of figure spaces laid out in the real text's font and line box — and what does not depend on the data (the Download page's cards, its extension section and notes) is drawn at once instead of waiting behind a spinner. |
 | Site: revisits | `api/reads.js` keeps the last answer to each public read — plans, releases, reviews, stats — for the life of the tab. A revisit draws its content in its first frame and asks again underneath, which also lets Back return to the exact place on a page of data. Nothing that belongs to an account is kept. |
 | Panel: opening | `PanelSkeleton` — the panel's own layout in outline. It stays invisible for its first 140ms, so a visit with no session goes to sign-in without flashing a panel it was never going to see, and the real panel replaces it inside a dissolve. |
 | Panel: the dashboard | The stats, service health, both charts, plan mix, activity, payments and moderation counts are outlines on the first load; a Refresh keeps the numbers on screen until new ones replace them. A chart's outline and its "No data" state both take a full chart's height, so an empty series no longer shrinks the card. |
-| Panel: everything else | The "N matching" lines and the Contact and Ads stat cards are outlines while their lists load; table rows fade up out of the stand-ins they replace; the account-history modal has an outline instead of "Loading account history...". |
+| Panel: everything else | The "N matching" lines and the Contact and Ads stat cards are outlines while their lists load; table rows fade up out of the stand-ins they replace; the account-history modal has an outline instead of "Loading account history...". The sidebar is sticky on a desktop, so moving between screens never starts with scrolling back up a long list. |
 | Skeleton tone | A translucent tint of the ink instead of a surface colour. On the light theme the old bars were white on white cards; on the dark theme they faded out across a card's own gradient. Found in screenshots, not by a test. |
-
-**The panel's sidebar scrolls with the page, as it always has.** It went
-live sticky with this work (`cc3e5c6`) and was put back the same day at the
-owner's request. What that leaves, found by freezing a dissolve halfway: a
-screen change started partway down a list, with the lower links still in
-view, dissolves from the sidebar where it had scrolled to into the sidebar
-at the top, so for the 300ms of the dissolve its links show in both places.
-It did the same before this work, over 160ms.
 
 ### Held by tests
 
