@@ -104,7 +104,7 @@ export default function Privacy() {
             <li>if you use Google sign-in, your Google account ID and the address of your Google profile picture;</li>
             <li>if you turn on two-factor authentication, its secret (encrypted) and hashes of your recovery codes;</li>
             <li>whether your email is verified, and counts of wrong passwords and two-factor codes, with any lock-out they triggered;</li>
-            <li>for each browser you sign in on, a hashed session token and the IP address and browser it signed in from, kept until 30 days after that session was last used;</li>
+            <li>for each browser you sign in on, a hashed session token and the IP address and browser it signed in from, kept until 30 days after that session was last used or signed out;</li>
             <li>your plan, license key, seat count and trial dates;</li>
             <li>each computer that has used your license: its device fingerprint and name, when it was first and last seen, and the app version it reports when signed in;</li>
             <li>for a paid license, a verdict on whether the key looks shared, based on how many different computers have used it overall and in the last week; past a high threshold the server suspends the key by itself;</li>
