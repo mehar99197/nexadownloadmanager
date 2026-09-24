@@ -126,7 +126,9 @@ describe('who is let in', () => {
     refreshAdminToken.mockReturnValue(new Promise((r) => { settle = r; }));
     renderPanel('/dashboard');
 
-    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    // The panel in outline — it used to be the word "Loading…" alone on an
+    // empty screen, and then the whole panel at once.
+    expect(screen.getByRole('status', { name: /loading the control panel/i })).toBeInTheDocument();
     expect(screen.queryByText('SIGN IN SCREEN')).not.toBeInTheDocument();
 
     settle('a-bearer-token');

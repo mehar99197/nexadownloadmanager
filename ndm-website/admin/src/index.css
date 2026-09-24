@@ -249,24 +249,95 @@ body::before {
   }
 }
 
-/* Moving between screens.
-   navigation.js swaps the screen inside document.startViewTransition, and
-   this is the whole of the animation: the browser's own cross-fade of the
-   window, a little quicker. The sidebar and topbar are identical on both
-   sides of it, so they appear to hold still while the screen dissolves.
-   Only the duration is overridden, which keeps the browser's plus-lighter
-   blend — replacing the animation outright dropped it, and the two
-   half-faded screens dipped towards the background in the middle. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 160ms;
+/* A stand-in for a run of text (Skeleton.jsx, SkeletonText): the placeholder
+   is laid out in the real text's font and line box and painted as a bar, so
+   a stat's number or a count in a sentence lands exactly where its outline
+   was. */
+.skeleton-text {
+  color: transparent !important;
+  border-radius: 0.35em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  user-select: none;
 }
 
-/* A view transition is motion like any other. */
+/* Data arriving where its outline was: a fade, and a 6px rise unless the
+   reader asked for less motion. Backwards, not both — an animation still
+   filling after it ends keeps the element in a stacking context of its own.
+   Table rows only fade: they arrive twenty at a time, in rows that must line
+   up with the header above them. */
+.fade-in {
+  animation: admin-fade-in 200ms ease-out backwards;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fade-in {
+    animation: admin-fade-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+}
+
+.row-in {
+  animation: admin-fade-in 260ms ease-out backwards;
+}
+
+/* The panel in outline while the session is checked (PanelSkeleton). It
+   stays invisible for its first 140ms and then fades in: a visit with no
+   session is on the sign-in screen within a frame or two, and must not flash
+   a panel it was never going to see. */
+.panel-boot {
+  animation: admin-fade-in 240ms ease-out 140ms backwards;
+}
+
+@keyframes admin-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes admin-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* Moving between screens.
+   navigation.js swaps the screen inside document.startViewTransition. The
+   window dissolves: the browser's own cross-fade of the root, with only its
+   timing set — and set the same on both halves, which keeps the browser's
+   plus-lighter blend, so the sidebar and topbar, identical on both sides of
+   it, hold perfectly still while the screen between them changes. (Replacing
+   the animation outright drops that blend, and the two half-faded screens dip
+   towards the background mid-fade.) And the arriving screen settles 10px up
+   into place (.screen-enter, on the keyed screen in AdminLayout).
+
+   It was a 160ms dissolve, which read as the screen appearing "all at once",
+   and none at all under reduced motion — a cut. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 300ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .screen-enter {
+    animation: admin-screen-settle 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+}
+
+@keyframes admin-screen-settle {
+  from {
+    transform: translateY(10px);
+  }
+}
+
+/* Reduced motion keeps the dissolve and drops the movement. A cross-fade is
+   what the platforms substitute for a slide when a reader asks for less
+   motion; a cut from one screen to the next is not less motion, it is the
+   jolt with the animation removed. Shorter, and nothing settles. */
 @media (prefers-reduced-motion: reduce) {
-  ::view-transition-group(*),
-  ::view-transition-old(*),
-  ::view-transition-new(*) {
-    animation: none !important;
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 180ms;
   }
 }

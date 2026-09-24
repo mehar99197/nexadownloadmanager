@@ -102,12 +102,12 @@ export default function AdminLayout() {
         </header>
 
         {/* Keyed, so each screen starts from a fresh tree rather than reusing
-            the last one's state. The transition between screens is the
-            browser's root cross-fade, started in navigation.js — nothing in
-            here is named, because a named element slides when the scroll
-            position changes under it. */}
+            the last one's state — and settles into place as it arrives. The
+            transition between screens is the browser's root cross-fade,
+            started in navigation.js; nothing in here is named, because a
+            named element slides when the scroll position changes under it. */}
         <main className="flex-1 overflow-y-auto p-6">
-          <div key={location.pathname}>
+          <div key={location.pathname} className="screen-enter">
             <Outlet />
           </div>
         </main>

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import api, {
   setAdminAccessToken,
   clearAdminAccessToken,
@@ -8,6 +9,7 @@ import api, {
   SESSION_ENDED_EVENT,
 } from '../api/client.js';
 import { AUTH_NS, IS_ROOT } from '../realm.js';
+import { dissolve } from '../navigation.js';
 
 const AdminAuthContext = createContext(null);
 
@@ -75,7 +77,9 @@ export function AdminAuthProvider({ children }) {
           await loadMe();
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        // The panel (or the sign-in screen) replaces its outline in a
+        // dissolve, rather than cutting from an empty screen to everything.
+        if (!cancelled) dissolve(() => flushSync(() => setLoading(false)));
       }
     })();
     return () => {
