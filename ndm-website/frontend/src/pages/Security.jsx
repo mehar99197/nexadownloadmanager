@@ -5,10 +5,11 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 
 /* Every claim on this page was checked against the source before it was
-   written. Two of them are uncomfortable and are stated anyway: AI rename
-   sends a filename and a URL to our server, and the Free plan's ad request
-   reaches us with your license token and therefore your IP. A privacy page
-   that omits its own awkward cases is marketing. */
+   written. Some of them are uncomfortable and are stated anyway: AI rename
+   sends a filename and a URL to our server, Smart add sends whatever you type
+   into it, and the Free plan's ad request reaches us with your license token
+   and therefore your IP. A privacy page that omits its own awkward cases is
+   marketing. */
 
 const PRINCIPLES = [
   {
@@ -69,11 +70,18 @@ const FLOWS = [
     detail: 'The in-app promo strip is fetched from us, so that request reaches our server with your token and therefore your IP address. It contains nothing about your downloads. Pro and Team do not make this request at all — the app stops asking once the plan is paid.',
   },
   {
-    what: 'AI rename — off by default, Pro only',
+    what: 'AI rename — off by default, Pro and Team',
     where: 'Nexa app → our server → Anthropic',
-    reaches: 'The filename, the source URL and the content type',
+    reaches: 'The filename and the source URL, minus its query string',
     tone: 'warn',
-    detail: 'This is the one feature that sends something about a download off your machine, and it is why it ships switched off. When you enable it, the current filename, the URL it came from and its content type are sent to our server, which asks Anthropic’s API for a better name and returns it. Nothing else about the file — never its contents. Leave the toggle off and none of it happens.',
+    detail: 'This is the one feature that sends something about a download off your machine on its own, and it is why it ships switched off. When you enable it, a finished file’s name and the address it came from — with the query string stripped — are sent to our server, which asks Anthropic’s API for a better name and returns it. Nothing else about the file — never its contents. Leave the toggle off and none of it happens.',
+  },
+  {
+    what: 'Smart add (AI) — Pro and Team, only when you use it',
+    where: 'Nexa app → our server → Anthropic',
+    reaches: 'Exactly the text you type into it',
+    tone: 'warn',
+    detail: 'Smart add turns a sentence such as “download these two links tonight at 2am” into queued downloads. What you type — links included — is sent with your license token to our server, which has Anthropic’s API read it and returns the result. Nothing is sent until you submit some text.',
   },
   {
     what: 'Account data (only if you sign in)',
@@ -187,8 +195,8 @@ export default function Security() {
           <h2 className="text-lg font-bold text-white">What we do not collect</h2>
           <ul className="mt-4 space-y-2.5 text-sm leading-6 text-slate-400">
             {[
-              'The URLs you download from — except when you switch AI rename on, which is covered above.',
-              'The names or contents of your files.',
+              'The URLs you download from — except when you switch AI rename on or type them into Smart add, both covered above.',
+              'The contents of your files, ever. Their names only pass through when AI rename is on, as above.',
               'Your site logins, cookies or passwords.',
               'Usage analytics. There is no analytics SDK in the desktop app — not a disabled one, none at all.',
               'Crash reports. The app has no crash reporter; the optional troubleshooting log writes to a file on your disk and is never uploaded.',

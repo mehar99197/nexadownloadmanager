@@ -3,7 +3,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 
-const LAST_UPDATED = 'August 30, 2026';
+const LAST_UPDATED = 'September 23, 2026';
 
 function Clause({ n, title, children }) {
   return (
@@ -116,10 +116,13 @@ export default function Terms() {
         <Clause n={7} title="Third-party components">
           <p>
             The app bundles or invokes open-source tools including yt-dlp, FFmpeg, aria2 and
-            libtorrent, each under its own license. The optional AI rename feature sends filenames
-            to Anthropic&apos;s API using an API key you supply and is governed by Anthropic&apos;s terms.
-            We are not responsible for third-party services, and site-specific downloading can stop
-            working when those sites change.
+            libtorrent, each under its own license. The optional AI features on Pro and Team (AI
+            rename and Smart add) send a file&apos;s name and source address, or the text you type,
+            through our server to Anthropic&apos;s API, as the{' '}
+            <Link to="/privacy" className="text-slate-200 hover:text-brand-300">privacy policy</Link>{' '}
+            describes; Anthropic processes them under its own terms. We are not responsible for
+            third-party services, and site-specific downloading can stop working when those sites
+            change.
           </p>
         </Clause>
 

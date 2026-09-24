@@ -29,7 +29,7 @@ const ROUTES = [
   ['/pricing', 'Pricing', 'Nexa is free to use. Pro removes the 3-download limit and adds AI renaming — $5/month or $45/year, with a 7-day trial and no card required.'],
   ['/compare', 'Nexa vs IDM vs FDM', 'An honest feature comparison of Nexa, Internet Download Manager, Free Download Manager and JDownloader.'],
   ['/features', 'Features', 'In-depth guides to segmented acceleration, the HLS/DASH video grabber, YouTube via yt-dlp, BitTorrent, the browser extension, scheduling and the phone dashboard.'],
-  ['/features/acceleration', 'Segmented acceleration', 'How Nexa splits a file across up to 16 connections, steals the tail of the slowest segment, and resumes exactly where it stopped.'],
+  ['/features/acceleration', 'Segmented acceleration', 'How Nexa splits a file across up to 32 connections, steals the tail of the slowest segment, and resumes exactly where it stopped.'],
   ['/features/video-grabber', 'Video grabber', 'How Nexa finds the HLS or DASH stream behind a web player, fetches its segments in parallel and muxes them into a single MP4.'],
   ['/features/youtube-sites', 'YouTube & 1000+ sites', 'Nexa drives yt-dlp: quality picker, playlists, subtitles, and an updater for when a site changes.'],
   ['/features/bittorrent', 'BitTorrent', 'Magnets and .torrent files in the same queue as everything else, on a real libtorrent engine with DHT, PEX and seed-ratio control.'],

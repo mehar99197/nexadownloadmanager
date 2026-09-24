@@ -18,23 +18,24 @@ export default function DocsTorrents() {
         items={[
           <><strong className="text-white">Magnet link:</strong> paste it into the app, or click it in the browser — with the extension installed, <Code>magnet:</Code> links are handed to Nexa. Metadata is fetched from the swarm before the row shows a size.</>,
           <><strong className="text-white">.torrent file:</strong> open it with Nexa, drag it onto the window, or download it normally — the extension recognises the file type and passes it to the app.</>,
-          <>Multi-file torrents show a file list; untick what you do not want before it starts.</>,
+          <>A torrent downloads in full: choosing individual files from a multi-file torrent is not supported yet.</>,
         ]}
       />
 
       <H2 id="seeding">Seed ratio</H2>
       <P>
-        After a torrent completes, Nexa keeps seeding until the upload/download ratio reaches the
-        value in Settings &rarr; Torrents &rarr; <strong className="text-white">Seed ratio</strong>. The default is{' '}
-        <Code>0</Code>, which means seed indefinitely until you pause or remove the torrent; set{' '}
-        <Code>1.0</Code> to stop once you have uploaded as much as you downloaded. Changing the
-        value applies live to torrents already seeding.
+        By default a torrent stops the moment it completes: Settings &rarr; BitTorrent &rarr;{' '}
+        <strong className="text-white">Seed to ratio</strong> starts at <Code>0</Code>, shown as
+        &ldquo;Don&apos;t seed&rdquo;. Set it above zero and Nexa keeps uploading after the download
+        finishes until the upload/download ratio reaches that value, then stops on its own —{' '}
+        <Code>1.0</Code> means you have given back as much as you took. Changing the value applies
+        live to torrents already seeding.
       </P>
 
       <H2 id="limits">Speed limits</H2>
       <P>
         Separate download and upload caps for the whole torrent session live under Settings &rarr;
-        Torrents. <Code>0</Code> is unlimited. These are independent of the HTTP speed limit and of the
+        BitTorrent, where <Code>0</Code> shows as Unlimited. These are independent of the HTTP speed limit and of the
         global &ldquo;quiet hours&rdquo; scheduler, which pauses everything. On a shared connection an
         upload cap around 80% of your uplink keeps the rest of the house happy.
       </P>
@@ -43,8 +44,8 @@ export default function DocsTorrents() {
       <Bullets
         items={[
           <>DHT and peer exchange (PEX) are on by default so magnet links resolve without a tracker.</>,
-          <>Nexa listens on a random high port unless you set one; forward it on your router for better connectivity, or leave it — most swarms work fine without.</>,
-          <>Trackerless private torrents (with the <Code>private</Code> flag) automatically disable DHT/PEX as the spec requires.</>,
+          <>Nexa listens on libtorrent&apos;s standard port, 6881, and asks your router to open it (UPnP and NAT-PMP). The app has no setting to change the port; most swarms work fine even when the router declines.</>,
+          <>Private torrents (with the <Code>private</Code> flag) never use DHT or peer exchange, as the spec requires.</>,
         ]}
       />
 

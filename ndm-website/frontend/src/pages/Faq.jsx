@@ -201,7 +201,7 @@ const SECTIONS = [
       {
         q: 'What is seeding, and can I control it?',
         keywords: 'seeding ratio upload stop sharing',
-        a: <>Seeding is uploading the file to other people after you have finished downloading it — it is how BitTorrent works at all. Nexa keeps seeding until it reaches the seed ratio you set, then stops on its own. Set that ratio in Settings → BitTorrent: <M>1.0</M> means you have given back as much as you took; <M>0</M> stops the moment the download completes. You can also stop any row by hand.</>,
+        a: <>Seeding is uploading the file to other people after you have finished downloading it — it is how BitTorrent works at all. Out of the box Nexa does not seed: Settings → BitTorrent → Seed to ratio starts at <M>0</M>, shown as &ldquo;Don&apos;t seed&rdquo;, so a torrent stops the moment it completes. Set a ratio and Nexa keeps uploading until it reaches it, then stops on its own — <M>1.0</M> means you have given back as much as you took. You can also stop any row by hand.</>,
       },
       {
         q: 'Why is my torrent download slow?',
