@@ -17,6 +17,7 @@ const { refreshCookieOptions } = require('../utils/cookies');
 const { passwordProblem } = require('../utils/passwordPolicy');
 const { passwordMatches } = require('../utils/passwordCheck');
 const { clearLock } = require('../utils/loginLockout');
+const twoFactorLockout = require('../utils/twoFactorLockout');
 const security = require('../utils/securityEvents');
 const { getPool } = require('../config/db');
 
@@ -504,8 +505,12 @@ router.post(
     const user = await User.findById(Number(req.params.id));
     if (!user) return fail(res, 'NOT_FOUND', 'User not found', 404);
     if (blockedStaffTarget(req, res, user)) return undefined;
-    const wasLocked = Boolean(user.locked_until && new Date(user.locked_until).getTime() > Date.now());
+    const wasLocked = Boolean(user.locked_until && new Date(user.locked_until).getTime() > Date.now())
+      || twoFactorLockout.isLocked(user);
     await clearLock(user.id);
+    // …and the second-factor lock (utils/twoFactorLockout.js), which the same
+    // person may be stuck behind instead. A correct password does not lift it.
+    await twoFactorLockout.clear(user.id);
     await audit(req, 'user.unlocked', 'user', user.id,
       `${wasLocked ? 'Lifted sign-in lock' : 'Reset sign-in failure count'} for ${user.email}`);
     return ok(res, { unlocked: true, wasLocked });

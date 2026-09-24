@@ -219,6 +219,7 @@ process.env.RATE_LIMIT_DISABLED = '1';
 const bcrypt = require('bcryptjs');
 const User = require('../src/models/User');
 const twoFactor = require('../src/routes/twoFactor');
+const twoFactorLockout = require('../src/utils/twoFactorLockout');
 
 const REALM = { realm: 'admin', secret: 'test-only-challenge-secret-0123456789' };
 const sha = (code) => crypto.createHash('sha256').update(code).digest('hex');
@@ -236,6 +237,10 @@ async function staffRow({ recovery, enabled = 1 } = {}) {
       totp_recovery: recovery === undefined ? null : JSON.stringify(recovery),
       // Never used a code: the column is NULL on every row until one is spent.
       totp_last_step: null,
+      // No wrong codes, no code-step lock (utils/twoFactorLockout.js).
+      totp_failures: 0,
+      totp_locked_until: null,
+      totp_lock_level: 0,
     },
   };
 }
@@ -263,6 +268,10 @@ async function withUserRow(row, fn) {
     findById: User.findById, update: User.update,
     spendTotpStep: User.spendTotpStep, swapRecoveryCodes: User.swapRecoveryCodes,
   };
+  const originalLockout = {
+    recordFailure: twoFactorLockout.recordFailure, recordSuccess: twoFactorLockout.recordSuccess,
+    clear: twoFactorLockout.clear,
+  };
   const updates = [];
   const column = (k) => k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
   User.findById = async (id) => (Number(id) === row.id ? { ...row } : null);
@@ -288,7 +297,32 @@ async function withUserRow(row, fn) {
     updates.push({ totpRecovery: next });
     return true;
   };
-  try { await fn(updates); } finally { Object.assign(User, original); }
+  // The code-step lockout's writes, applied to the row the way its SQL would.
+  // They are not pushed onto `updates`: those tests are about the spends.
+  twoFactorLockout.recordFailure = async (user) => {
+    assert.equal(user.id, row.id);
+    row.totp_failures = (Number(row.totp_failures) || 0) + 1;
+    if (row.totp_failures < twoFactorLockout.threshold()) return { locked: false, minutes: 0 };
+    const minutes = 15;
+    row.totp_locked_until = new Date(Date.now() + minutes * 60000);
+    row.totp_lock_level = (Number(row.totp_lock_level) || 0) + 1;
+    row.totp_failures = 0;
+    return { locked: true, minutes };
+  };
+  twoFactorLockout.clear = async (id, { keepLevel = false } = {}) => {
+    assert.equal(id, row.id);
+    row.totp_failures = 0;
+    row.totp_locked_until = null;
+    if (!keepLevel) row.totp_lock_level = 0;
+  };
+  twoFactorLockout.recordSuccess = async (user) => {
+    if (!Number(user.totp_failures) && !Number(user.totp_lock_level) && !user.totp_locked_until) return;
+    await twoFactorLockout.clear(user.id);
+  };
+  try { await fn(updates); } finally {
+    Object.assign(User, original);
+    Object.assign(twoFactorLockout, originalLockout);
+  }
 }
 
 /** Mount the realm on a fake router; returns a runner for its handler chains plus the audit trail. */
@@ -580,7 +614,7 @@ test('the code that turns 2FA on cannot then complete a login', async () => {
   const { call } = mountFake();
   await withUserRow(row, async () => {
     const code = totp.totpAt(secret);
-    const enabled = await call('POST /2fa/enable', { admin: row, body: { code } });
+    const enabled = await call('POST /2fa/enable', { admin: row, body: { password: 'correct horse', code } });
     assert.equal(enabled.statusCode, 200, JSON.stringify(enabled.body));
     assert.equal(enabled.body.data.recoveryCodes.length, totp.RECOVERY_COUNT);
     assert.equal(typeof row.totp_last_step, 'number');
@@ -677,8 +711,8 @@ test('a second enable racing on the same code cannot mint a second recovery set'
     // req.admin is the row the gate loaded, so both requests see 2FA off —
     // the same pre-check both would pass before either wrote.
     const [a, b] = await Promise.all([
-      call('POST /2fa/enable', { admin: { ...row }, body: { code } }),
-      call('POST /2fa/enable', { admin: { ...row }, body: { code } }),
+      call('POST /2fa/enable', { admin: { ...row }, body: { password: 'correct horse', code } }),
+      call('POST /2fa/enable', { admin: { ...row }, body: { password: 'correct horse', code } }),
     ]);
     assert.deepEqual([a.statusCode, b.statusCode].sort(), [200, 400], `${JSON.stringify(a.body)} / ${JSON.stringify(b.body)}`);
     // Exactly one printed set of recovery codes, and it is the one stored.
@@ -688,4 +722,93 @@ test('a second enable racing on the same code cannot mint a second recovery set'
     assert.ok(await totp.consumeRecoveryCode(stored, winner.body.data.recoveryCodes[0]));
     assert.deepEqual(updates.map((u) => Object.keys(u)), [['totpLastStep'], ['totpEnabled', 'totpRecovery']]);
   });
+});
+
+/* ------------------------------ enrolment needs the password (bug: token-only enrol) */
+
+test('POST /2fa/enable refuses without the password on an account that has one, and spends nothing', async () => {
+  const { secret, row } = await staffRow({ enabled: 0 });
+  const { call, auditLog } = mountFake();
+  await withUserRow(row, async (updates) => {
+    const code = totp.totpAt(secret);
+    const bare = await call('POST /2fa/enable', { admin: { ...row }, body: { code } });
+    assert.equal(bare.statusCode, 400);
+    assert.equal(bare.body.error.code, 'INVALID_PASSWORD');
+    const wrong = await call('POST /2fa/enable', { admin: { ...row }, body: { password: 'wrong', code } });
+    assert.equal(wrong.statusCode, 400);
+    assert.equal(wrong.body.error.code, 'INVALID_PASSWORD');
+    // Nothing was spent or switched on, so the owner's own attempt still works.
+    assert.deepEqual(updates, []);
+    assert.deepEqual(auditLog, []);
+    const right = await call('POST /2fa/enable', { admin: { ...row }, body: { password: 'correct horse', code } });
+    assert.equal(right.statusCode, 200, JSON.stringify(right.body));
+  });
+});
+
+test('POST /2fa/enable on a password-less (Google-created) account needs only the code, like /disable', async () => {
+  const { secret, row } = await staffRow({ enabled: 0 });
+  row.password_hash = null;
+  const { call } = mountFake();
+  await withUserRow(row, async () => {
+    const res = await call('POST /2fa/enable', { admin: { ...row }, body: { code: totp.totpAt(secret) } });
+    assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  });
+});
+
+/* ------------------------------------ per-account code-step lockout */
+
+test('wrong codes lock the code step; the lock refuses a right authenticator code but not a recovery code', async () => {
+  const recovery = 'k7f3q-9x2mp';
+  const { secret, row } = await staffRow({ recovery: [await totp.hashRecoveryCode(recovery)] });
+  const { call, auditLog } = mountFake();
+  await withUserRow(row, async () => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const live = [-1, 0, 1].map((s) => totp.totpAt(secret, Date.now() + s * totp.STEP_SECONDS * 1000));
+    let n = 0;
+    const wrong = () => { while (live.includes(String(n).padStart(6, '0'))) n += 1; return String(n++).padStart(6, '0'); };
+
+    const limit = twoFactorLockout.threshold();
+    for (let i = 0; i < limit - 1; i += 1) {
+      const res = await call('POST /login/2fa', { body: { challenge, code: wrong() } });
+      assert.equal(res.body.error.code, 'INVALID_CODE');
+    }
+    const crossing = await call('POST /login/2fa', { body: { challenge, code: wrong() } });
+    assert.equal(crossing.statusCode, 429);
+    assert.equal(crossing.body.error.code, 'TWO_FACTOR_LOCKED');
+    assert.match(crossing.body.error.message, /recovery code/);
+    assert.ok(auditLog.some((a) => a.action === 'admin.2fa_locked'));
+
+    const right = await call('POST /login/2fa', { body: { challenge, code: totp.totpAt(secret) } });
+    assert.equal(right.statusCode, 429, 'the lock holds against the right code too');
+    assert.equal(row.totp_last_step, null, 'and that code was not spent');
+
+    const rescued = await call('POST /login/2fa', { body: { challenge, code: recovery } });
+    assert.equal(rescued.statusCode, 200, JSON.stringify(rescued.body));
+    assert.equal(row.totp_locked_until, null, 'a correct code clears the lock');
+    assert.equal(row.totp_lock_level, 0);
+  });
+});
+
+test('a replayed code is not counted as a guess', async () => {
+  const { secret, row } = await staffRow({ recovery: [] });
+  const { call } = mountFake();
+  await withUserRow(row, async () => {
+    const challenge = twoFactor.signChallenge(row, REALM);
+    const code = totp.totpAt(secret);
+    assert.equal((await call('POST /login/2fa', { body: { challenge, code } })).statusCode, 200);
+    for (let i = 0; i < twoFactorLockout.threshold() + 2; i += 1) {
+      const again = await call('POST /login/2fa', { body: { challenge, code } });
+      assert.equal(again.body.error.code, 'CODE_ALREADY_USED');
+    }
+    assert.equal(Number(row.totp_failures), 0);
+    assert.equal(row.totp_locked_until, null);
+  });
+});
+
+test('twoFactorLockout.isLocked reads only a future totp_locked_until', () => {
+  assert.equal(twoFactorLockout.isLocked(null), false);
+  assert.equal(twoFactorLockout.isLocked({ totp_locked_until: null }), false);
+  assert.equal(twoFactorLockout.isLocked({ totp_locked_until: new Date(Date.now() - 1000) }), false);
+  assert.equal(twoFactorLockout.isLocked({ totp_locked_until: new Date(Date.now() + 60000) }), true);
+  assert.equal(twoFactorLockout.minutesLeft({ totp_locked_until: new Date(Date.now() + 90000) }), 2);
 });

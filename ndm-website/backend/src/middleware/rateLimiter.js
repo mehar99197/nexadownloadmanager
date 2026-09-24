@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 const { ipKeyGenerator } = require('express-rate-limit');
 const config = require('../config/env');
 const { fail } = require('../utils/respond');
@@ -73,11 +74,36 @@ function loginKey(req) {
   return `${ipKey(req)}|${email}`;
 }
 
-// Register / forgot / reset: 5 per 15 min per address. These carry no shared
-// account identity, so the IP is the only key available.
-const authLimiter = makeDurableLimiter('auth', {
+// Register, verify-email, resend-verification, forgot-password and
+// reset-password: 5 per 15 min per address EACH. These carry no shared account
+// identity, so the address is the only key available.
+//
+// Each route has its own durable prefix, and so its own budget. They used to
+// be one limiter instance — one `auth:<ip>` counter — mounted on all five and
+// on Google sign-in too, so behind a campus, office or carrier NAT one person
+// asking for a reset link spent everybody else's sign-ups, verifications and
+// Google sign-ins, and the sixth Google sign-in of the quarter hour was a 429.
+const authRouteLimiter = (name) => makeDurableLimiter(name, {
   windowMs: 15 * 60 * 1000,
   max: 5,
+});
+const registerLimiter = authRouteLimiter('auth-register');
+const verifyEmailLimiter = authRouteLimiter('auth-verify-email');
+const resendVerificationLimiter = authRouteLimiter('auth-resend-verification');
+const forgotPasswordLimiter = authRouteLimiter('auth-forgot-password');
+const resetPasswordLimiter = authRouteLimiter('auth-reset-password');
+
+// "Continue with Google": its own, roomier per-address budget. There is
+// nothing to guess here — the credential is an ID token Google signed, checked
+// against Google's keys, bound to this server's nonce and spendable once — so
+// five per quarter hour protected nothing and refused real people on a shared
+// address. The cap still bounds how hard one address can make the server
+// verify signatures, modelled on authIpLimiter's ceiling for password sign-in.
+const googleLimiter = makeDurableLimiter('auth-google', {
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  keyGenerator: ipKey,
+  message: 'Too many sign-in attempts from this network. Please wait a few minutes.',
 });
 
 // Sign-in: 5 per 15 min per (IP, email) — see loginKey.
@@ -96,13 +122,42 @@ const authIpLimiter = makeDurableLimiter('auth-ip', {
   message: 'Too many sign-in attempts from this network. Please wait a few minutes.',
 });
 
-// License validation (called by the C++ app): 10 per hour per source IP. The
-// fingerprint is untrusted input and must not be the sole rate-limit key.
-const licenseLimiter = makeDurableLimiter('license', {
+// License validation (called by the C++ app on activation and sign-in; the
+// periodic re-check is /heartbeat, on apiLimiter).
+//
+// Two budgets, both of which a request must pass:
+//
+//   per (address, credential) — 10 an hour. One installation retrying, or one
+//     key being hammered from one place, is capped exactly as before.
+//   per address                — 120 an hour. The ceiling on one address
+//     working through many keys or device tokens, so the per-credential key
+//     is never a way to buy unlimited attempts.
+//
+// It used to be a single 10-an-hour budget per address, which an office or a
+// carrier NAT spends on its first ten activations: the eleventh colleague to
+// install Nexa that hour was refused. The credential goes into the key hashed
+// (a device token is a bearer secret) and alongside the address, never alone —
+// it is attacker-chosen, so on its own it would be a fresh budget per request.
+// The fingerprint is not part of the key for the same reason.
+function licenseCredentialKey(req) {
+  const credential = String(req.body?.license_key || req.body?.device_token || '').slice(0, 256);
+  const digest = credential
+    ? crypto.createHash('sha256').update(credential).digest('hex').slice(0, 32)
+    : '';
+  return `${ipKey(req)}|${digest}`;
+}
+const licenseKeyLimiter = makeDurableLimiter('license', {
   windowMs: 60 * 60 * 1000,
   max: 10,
+  keyGenerator: licenseCredentialKey,
+});
+const licenseIpLimiter = makeDurableLimiter('license-ip', {
+  windowMs: 60 * 60 * 1000,
+  max: 120,
   keyGenerator: ipKey,
 });
+// Address ceiling first: a request it refuses never touches the per-key count.
+const licenseLimiter = [licenseIpLimiter, licenseKeyLimiter];
 
 // Admin login: 5 per 15 min.
 const adminLoginLimiter = makeDurableLimiter('admin-login', {
@@ -264,9 +319,10 @@ const deviceApproveLimiter = makeDurableLimiter('device-approve', {
 });
 
 module.exports = {
-  authLimiter, loginLimiter, authIpLimiter, licenseRotateLimiter,
+  registerLimiter, verifyEmailLimiter, resendVerificationLimiter, forgotPasswordLimiter,
+  resetPasswordLimiter, googleLimiter, loginLimiter, authIpLimiter, licenseRotateLimiter,
   deviceCodeLimiter, devicePollLimiter, deviceApproveLimiter,
   licenseLimiter, adminLoginLimiter, adminRefreshLimiter, apiLimiter, downloadLimiter,
   adsLimiter, contactLimiter, faqVoteLimiter, twoFactorLimiter, teamInviteLimiter, aiLimiter,
-  loginKey, ipKey,
+  loginKey, ipKey, licenseCredentialKey, licenseIpLimiter, licenseKeyLimiter,
 };

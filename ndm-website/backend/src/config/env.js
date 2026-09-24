@@ -199,6 +199,10 @@ const config = {
   // doubling per repeat and capped at four times the base.
   LOGIN_LOCKOUT_THRESHOLD: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_THRESHOLD, 10)),
   LOGIN_LOCKOUT_MINUTES: Math.max(1, intOrDefault(process.env.LOGIN_LOCKOUT_MINUTES, 15)),
+  // Per-account second-factor lockout (utils/twoFactorLockout.js): this many
+  // wrong codes in a row at /login/2fa refuse authenticator codes for the same
+  // escalating LOGIN_LOCKOUT_MINUTES. Recovery codes still work meanwhile.
+  TWO_FACTOR_LOCKOUT_THRESHOLD: Math.max(1, intOrDefault(process.env.TWO_FACTOR_LOCKOUT_THRESHOLD, 5)),
 
   // How long a team invitation stays acceptable (AUDIT.md M-12). invited_at was
   // recorded and never read, so a link worked for ever — a year-old forwarded

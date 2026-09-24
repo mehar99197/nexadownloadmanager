@@ -12,7 +12,10 @@ const Subscription = require('../models/Subscription');
 const validate = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
-const { authLimiter, loginLimiter, authIpLimiter } = require('../middleware/rateLimiter');
+const {
+  registerLimiter, verifyEmailLimiter, resendVerificationLimiter, forgotPasswordLimiter,
+  resetPasswordLimiter, googleLimiter, loginLimiter, authIpLimiter,
+} = require('../middleware/rateLimiter');
 const { requireTurnstile } = require('../middleware/turnstile');
 const { ok, fail } = require('../utils/respond');
 
@@ -36,6 +39,7 @@ const {
 const { verifyGoogleIdToken } = require('../utils/googleAuth');
 const { generateLicenseKey, planSeats, planExpiry } = require('../utils/license');
 const { isLocked, recordFailure, recordSuccess, clearLock } = require('../utils/loginLockout');
+const twoFactorLockout = require('../utils/twoFactorLockout');
 const { passwordProblem } = require('../utils/passwordPolicy');
 const { passwordMatches } = require('../utils/passwordCheck');
 const UserSession = require('../models/UserSession');
@@ -73,7 +77,7 @@ async function finishSignIn(req, res, user, extra = {}) {
 }
 
 router.post(
-  '/register', authLimiter, requireTurnstile, validate(registerSchema),
+  '/register', registerLimiter, requireTurnstile, validate(registerSchema),
   asyncHandler(async (req, res) => {
     const { name, email, password } = req.body;
 
@@ -348,7 +352,7 @@ router.get(
 );
 
 router.post(
-  '/google', authLimiter, validate(googleSchema),
+  '/google', googleLimiter, validate(googleSchema),
   asyncHandler(async (req, res) => {
     if (!config.isGoogleAuthEnabled)
       return fail(res, 'GOOGLE_AUTH_DISABLED', 'Google sign-in is not available', 503);
@@ -475,13 +479,13 @@ router.post(
 );
 
 router.post(
-  // authLimiter in the same position as every other limited route in this
+  // A limiter in the same position as every other limited route in this
   // file (AUDIT.md L-01). The finding was written against a lineage where this
   // route had a limiter in the wrong place; here it had none, which is the
   // same hole with less to argue about. The token is an unguessable JWT, so
   // this is not about brute force — it is that an unauthenticated endpoint
   // doing signature verification and a database write should not be free.
-  '/verify-email', authLimiter, validate(verifyEmailSchema),
+  '/verify-email', verifyEmailLimiter, validate(verifyEmailSchema),
   asyncHandler(async (req, res) => {
     const { token } = req.body;
     let payload;
@@ -519,7 +523,7 @@ router.post(
  * anything to wait for.
  */
 router.post(
-  '/resend-verification', authLimiter, requireTurnstile, validate(resendVerificationSchema),
+  '/resend-verification', resendVerificationLimiter, requireTurnstile, validate(resendVerificationSchema),
   asyncHandler(async (req, res) => {
     const user = await User.findByEmail(req.body.email);
     if (user && !user.email_verified && !user.banned) {
@@ -621,7 +625,7 @@ router.post(
 );
 
 router.post(
-  '/forgot-password', authLimiter, requireTurnstile, validate(forgotPasswordSchema),
+  '/forgot-password', forgotPasswordLimiter, requireTurnstile, validate(forgotPasswordSchema),
   asyncHandler(async (req, res) => {
     const { email } = req.body;
     const user = await User.findByEmail(email);
@@ -665,7 +669,7 @@ router.post(
 );
 
 router.post(
-  '/reset-password', authLimiter, validate(resetPasswordSchema),
+  '/reset-password', resetPasswordLimiter, validate(resetPasswordSchema),
   asyncHandler(async (req, res) => {
     const { token, password } = req.body;
     let payload;
@@ -703,6 +707,10 @@ router.post(
     // Proof of the inbox is also the way out of a sign-in lock — the one the
     // lockout mail points at — and it takes the guessed-at password with it.
     await clearLock(user.id);
+    // The second-factor lock too: the reset takes the known password away
+    // from whoever was guessing codes with it. The escalation level stays, so
+    // if guessing resumes the next lock is the longer one.
+    await twoFactorLockout.clear(user.id, { keepLevel: true });
     // Ends every other session on the account — the whole point of a reset when
     // the reason for it is "somebody else may be in here".
     await User.revokeSessions(user.id);
@@ -733,7 +741,7 @@ mountTwoFactor(router, {
   onEvent: (req, user, what) => security.record(
     { failed: '2fa.failed', replayed: '2fa.replayed', recovery: '2fa.recovery_used',
       enabled: '2fa.enabled', disabled: '2fa.disabled' }[what] || `2fa.${what}`,
-    { req, user, severity: ['failed', 'replayed', 'recovery'].includes(what) ? 'warning' : 'info' }
+    { req, user, severity: ['failed', 'replayed', 'recovery', 'locked'].includes(what) ? 'warning' : 'info' }
   ),
 });
 

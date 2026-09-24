@@ -157,6 +157,14 @@ async function initSchema() {
   // mark, so the same six digits cannot be presented twice inside their
   // 90-second validity window (RFC 6238 §5.2). See routes/twoFactor.js.
   await addColumnIfMissing('users', 'totp_last_step BIGINT UNSIGNED NULL DEFAULT NULL');
+  // Second-factor lockout state (utils/twoFactorLockout.js): wrong codes in a
+  // row at /login/2fa, until when authenticator codes are refused, and how
+  // many code locks so far (escalation). Separate from the password lockout
+  // above on purpose — a correct password clears that one, and whoever is
+  // guessing codes is by definition holding the correct password.
+  await addColumnIfMissing('users', 'totp_failures INT UNSIGNED NOT NULL DEFAULT 0');
+  await addColumnIfMissing('users', 'totp_locked_until DATETIME NULL DEFAULT NULL');
+  await addColumnIfMissing('users', 'totp_lock_level TINYINT UNSIGNED NOT NULL DEFAULT 0');
 
   // "Continue with Google". `google_id` is Google's immutable subject claim —
   // never the email, which a user can change at Google. It is UNIQUE so one
