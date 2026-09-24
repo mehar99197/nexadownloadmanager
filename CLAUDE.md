@@ -456,7 +456,8 @@ Single-instance guard: on launch, `main.cpp` probes the socket — if alive, for
 These must be on `PATH` or bundled (the `.deb` bundles them):
 - `ffmpeg` — HLS/DASH muxing
 - `yt-dlp` — YouTube and 1000+ site support
-- `aria2c` — optional accelerated HTTP fallback
+
+The released `.deb` (built by `.github/workflows/build.yml`) bundles Qt and libtorrent too, but takes glibc, libstdc++/libgcc, the GL stack and `python3` (which runs the bundled yt-dlp) from the host. Its `Depends` carries the real glibc/libstdc++ floors, derived at build time by `dpkg-shlibdeps` from the packaged binaries. An older release such as Ubuntu 22.04 is therefore refused by apt at install time instead of failing at launch; CI proves that in a clean 22.04 container.
 
 ## Runtime Auth Sites
 

@@ -86,7 +86,7 @@ jobs:
             qt6-base-dev libqt6sql6-sqlite qt6-tools-dev qt6-tools-dev-tools \
             libtorrent-rasterbar-dev \
             patchelf file \
-            ffmpeg yt-dlp aria2 \
+            ffmpeg yt-dlp \
             dpkg-dev
 
       - name: Configure & Build
@@ -389,7 +389,7 @@ jobs:
           SH
           chmod +x ${PKG}/usr/bin/nexa
 
-          # ── Postinst: update icon/desktop caches + aria2 install ──────────
+          # ── Postinst: update icon/desktop caches ──────────────────────────
           cat > ${PKG}/DEBIAN/postinst <<'POST'
           #!/bin/sh
           update-desktop-database /usr/share/applications 2>/dev/null || true
@@ -416,7 +416,49 @@ jobs:
           POST
           chmod 755 ${PKG}/DEBIAN/postinst
 
-          # ── control file — NO external dependencies required ──────────────
+          # ── Real floors for the host-provided C/C++ runtime ───────────────
+          # glibc and libstdc++/libgcc are the libraries DENY keeps out of the
+          # bundle, so the package has to say which versions its binaries need.
+          # Unversioned, apt on an older release (Ubuntu 22.04 has glibc 2.35,
+          # Debian 12 has 2.36) accepted the package, and nexa then died at
+          # launch with "GLIBC_2.3x not found". dpkg-shlibdeps reads the symbol
+          # versions every packaged ELF file really uses and maps them to package
+          # versions through this builder's symbols files. The bundled libraries
+          # are private (-l), and --ignore-missing-info skips them. Only the
+          # floors for libc6, libstdc++6 and libgcc-s1 are taken from its answer;
+          # the rest of Depends is unchanged.
+          PKG_ABS="$(realpath ${PKG})"
+          SHLIB_WS="$(mktemp -d)"
+          mkdir -p "${SHLIB_WS}/debian"
+          printf 'Source: nexa\n\nPackage: nexa\nArchitecture: amd64\n' > "${SHLIB_WS}/debian/control"
+          mapfile -t ELFS < <(find "${PKG_ABS}/usr/lib/nexa" -type f -print0 \
+            | xargs -0 file | grep -E ':[[:space:]]+ELF ' | cut -d: -f1)
+          [ "${#ELFS[@]}" -gt 0 ] || { echo "ERROR: no ELF files under ${PKG_ABS}/usr/lib/nexa"; exit 1; }
+          # Captured on its own so a dpkg-shlibdeps failure is reported as one,
+          # not later as a missing floor (this step runs without pipefail).
+          SHLIB_OUT="$(cd "${SHLIB_WS}" && dpkg-shlibdeps -O --ignore-missing-info \
+            -l"${PKG_ABS}/usr/lib/nexa" "${ELFS[@]}")" \
+            || { echo "ERROR: dpkg-shlibdeps failed; see its messages above"; exit 1; }
+          SHLIBS="$(printf '%s\n' "${SHLIB_OUT}" | sed -n 's/^shlibs:Depends=//p')"
+          echo "dpkg-shlibdeps: ${SHLIBS}"
+          floor() {   # the "pkg (>= ver)" entry for $1 from SHLIBS, else the bare name
+            local hit
+            hit="$(printf '%s\n' "${SHLIBS}" | tr ',' '\n' | sed 's/^ *//; s/ *$//' \
+              | grep -E "^$2( |$)" | head -1)"
+            printf '%s' "${hit:-$1}"
+          }
+          DEP_LIBC="$(floor libc6 'libc6')"
+          DEP_LIBSTDCXX="$(floor libstdc++6 'libstdc\+\+6')"
+          DEP_LIBGCC="$(floor libgcc-s1 'libgcc-s1')"
+          # A libc6 without a version means the derivation failed. Stop here
+          # rather than ship the unversioned dependency that caused the bug.
+          case "${DEP_LIBC}" in
+            'libc6 (>= '*) ;;
+            *) echo "ERROR: could not derive the glibc floor (got '${DEP_LIBC}')"; exit 1 ;;
+          esac
+          echo "Runtime floors: ${DEP_LIBC}, ${DEP_LIBSTDCXX}, ${DEP_LIBGCC}"
+
+          # ── control file ──────────────────────────────────────────────────
           INSTALLED_SIZE=$(du -sk ${PKG} | cut -f1)
           cat > ${PKG}/DEBIAN/control <<CTRL
           Package: nexa
@@ -424,7 +466,7 @@ jobs:
           Architecture: amd64
           Maintainer: Nexa <tauseeqtufail649@gmail.com>
           Installed-Size: ${INSTALLED_SIZE}
-          Depends: libc6, libstdc++6, libgcc-s1, libgl1, libglx0, libopengl0, libegl1, python3
+          Depends: ${DEP_LIBC}, ${DEP_LIBSTDCXX}, ${DEP_LIBGCC}, libgl1, libglx0, libopengl0, libegl1, python3
           Description: Nexa Download Manager
            Fast multi-protocol download manager with browser integration.
            Supports HTTP/HTTPS segmented downloads, HLS video streams,
@@ -1100,6 +1142,41 @@ jobs:
             exit 1
           fi
           echo "🎉 .deb is fully self-contained"
+
+  # The .deb is built on 24.04 and takes glibc/libstdc++ from the host, so an
+  # older release must be refused at install time rather than accept the
+  # package and fail at launch. Proven where it matters: a clean 22.04.
+  refuse-older-glibc:
+    name: Ubuntu 22.04 refuses the .deb (clean container)
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: ubuntu:22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download .deb artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: nexa-linux-amd64-deb
+
+      - name: apt must refuse it on the runtime floor
+        run: |
+          apt-get update
+          if apt-get install -y ./nexa_*_amd64.deb > install.log 2>&1; then
+            cat install.log
+            echo "::error::apt installed the .deb on Ubuntu 22.04: its Depends do not state the glibc/libstdc++ its binaries need"
+            exit 1
+          fi
+          cat install.log
+          # Refused for the right reason: an unmet C/C++ runtime version, not a
+          # network or download failure.
+          grep -E "Depends: (libc6|libstdc\+\+6|libgcc-s1) \(>= [^)]+\) but " install.log \
+            || { echo "::error::apt failed, but not on the runtime floor; see the log above"; exit 1; }
+          echo "✅ Ubuntu 22.04 refuses the package on its C/C++ runtime floor"
 
   quality:
     name: Tests, audits, and extension packages
