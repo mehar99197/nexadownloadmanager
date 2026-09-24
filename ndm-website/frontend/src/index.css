@@ -677,27 +677,6 @@ body::before {
     background: #36caff;
   }
 
-  /* Sentence case, not uppercase: 17 characters of all-caps is a phrase
-     being read, not a label being scanned. Caps stay for the short ones
-     (.eyebrow, the stat labels). */
-  .console-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--color-ink-3);
-    font-size: 0.75rem;
-    letter-spacing: 0.01em;
-  }
-
-  .console-status::before {
-    width: 0.38rem;
-    height: 0.38rem;
-    content: "";
-    border-radius: var(--radius-pill);
-    background: #45dfc1;
-    box-shadow: 0 0 12px #45dfc1;
-  }
-
   .console-heading {
     display: flex;
     align-items: center;
@@ -1049,7 +1028,7 @@ body::before {
    for that subtree only. */
 /* The hero console stays dark on the light theme, so every token the light
    theme inverts has to be inverted back inside it — not just the ink ramp.
-   Missing the rest left the percentages, the "Live" chip and the throughput
+   Missing the rest left the percentages, the status chip and the throughput
    line painting light-theme greys and blues on a near-black panel: 2.3-3.1:1. */
 :root[data-theme='light'] .hero-console {
   --color-ink-1: #eef2ff;

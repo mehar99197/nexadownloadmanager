@@ -22,12 +22,26 @@
         "rating": 3,
         "comment": "Good for daily use, still beta in places.",
         "createdAt": "2026-09-16T10:00:00.000Z"
+      },
+      {
+        "id": 104,
+        "userName": "Test Reader Four",
+        "rating": 4,
+        "comment": "Scheduled a large download for the night and it was waiting for me in the morning.",
+        "createdAt": "2026-09-14T10:00:00.000Z"
+      },
+      {
+        "id": 105,
+        "userName": "Test Reader Five",
+        "rating": 5,
+        "comment": "Magnet links go straight into the same queue as everything else.",
+        "createdAt": "2026-09-12T10:00:00.000Z"
       }
     ],
     "page": 1,
     "limit": 10,
-    "totalCount": 3,
-    "averageRating": 4,
-    "ratingBreakdown": { "1": 0, "2": 0, "3": 1, "4": 1, "5": 1 }
+    "totalCount": 5,
+    "averageRating": 4.2,
+    "ratingBreakdown": { "1": 0, "2": 0, "3": 1, "4": 2, "5": 2 }
   }
 }

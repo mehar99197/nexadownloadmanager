@@ -88,9 +88,19 @@ const HOME_REVIEWS = { page: 1, limit: 3 };
 // answer without them hides its tile or section rather than inventing one.
 const usableStats = (data) => (data && typeof data === 'object' ? data : null);
 const usableRelease = (data) => (data?.version ? data : null);
-// Same rule as the tiles: real reviews or no section at all. An empty "what
-// users say" block is worse than not claiming anything.
-const usableReviews = (data) => (data?.reviews?.length ? data : null);
+/**
+ * How many approved reviews the homepage waits for before it shows any.
+ *
+ * Same rule as the tiles — real reviews or no section at all — plus a floor.
+ * One review is an anecdote, and as the first social proof a visitor sees it
+ * decides the product's score on its own: a single three-star entry put
+ * "3.0 out of 5" under the hero. Below the floor every review still appears on
+ * /reviews, where it is read as one of a list rather than as the verdict.
+ */
+const MIN_REVIEWS_ON_HOME = 5;
+
+const usableReviews = (data) =>
+  (data?.reviews?.length && Number(data.totalCount) >= MIN_REVIEWS_ON_HOME ? data : null);
 
 const firstVisit = () =>
   lastRead('/stats') === undefined ||
@@ -227,10 +237,12 @@ export default function Home() {
 
             <div className="rise rise-3 relative mx-auto w-full max-w-xl lg:ml-auto">
               <div className="absolute -inset-7 rounded-[var(--radius-5)] bg-[radial-gradient(circle,rgba(153,92,244,0.24),transparent_65%)] blur-2xl" />
+              {/* An illustration of the app, and labelled as one: a green "Live"
+                  chip and "All systems ready" over made-up transfers claimed a
+                  state nothing on this page is measuring. */}
               <div className="hero-console">
                 <div className="console-bar">
                   <div className="console-dots"><span /><span /><span /></div>
-                  <span className="console-status">All systems ready</span>
                 </div>
                 <div className="console-heading">
                   <BrandMark size={48} className="brand-mark-hero" />
@@ -238,7 +250,7 @@ export default function Home() {
                     <p>NexaDownloadManager</p>
                     <p>Unified download queue</p>
                   </div>
-                  <span className="ml-auto rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em] text-emerald-300">Live</span>
+                  <span className="ml-auto rounded-full border border-brand-400/25 bg-brand-400/10 px-2.5 py-1 text-xs font-bold uppercase tracking-[0.12em] text-brand-300">Preview</span>
                 </div>
                 <div className="download-row">
                   <div className="download-row-top"><span>project-setup-x64.exe</span><span>82%</span></div>

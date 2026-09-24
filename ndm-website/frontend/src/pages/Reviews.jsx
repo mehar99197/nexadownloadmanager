@@ -28,6 +28,13 @@ const USE_CASES = [
   { id: 'linux', label: 'On Linux', words: ['linux', 'ubuntu', 'debian'] },
 ];
 
+/**
+ * Below this many reviews the use-case and star filters are left out: nine
+ * buttons that can each narrow one or two reviews down to none are furniture,
+ * and they made a short list look emptier than it is.
+ */
+const MIN_REVIEWS_FOR_FILTERS = 5;
+
 const matchesUseCase = (review, useCase) => {
   if (!useCase) return true;
   const def = USE_CASES.find((u) => u.id === useCase);
@@ -251,8 +258,10 @@ export default function Reviews() {
     <Section>
       <div className="page-intro">
         <span className="eyebrow"><span className="eyebrow-dot" />From the queue</span>
-        <h1 className="mt-5 text-white">Loved by people who <span className="text-gradient">move fast.</span></h1>
-        <p>Real experiences from real downloaders. No inflated promises, just work that gets out of the way.</p>
+        {/* The heading claims nothing the score has to live up to: "Loved by
+            people who move fast" sat above a 3.0 from a single review. */}
+        <h1 className="mt-5 text-white">What people <span className="text-gradient">actually say.</span></h1>
+        <p>Written by people who used it, read by a person before it appears, and published even when it is critical.</p>
       </div>
 
       {/* The score line sits ABOVE the list, so arriving on its own it pushed
@@ -304,42 +313,46 @@ export default function Reviews() {
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              {USE_CASES.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    useCase === u.id
-                      ? 'on-brand'
-                      : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
-                  }`}
-                  onClick={() => setUseCase(useCase === u.id ? '' : u.id)}
-                >
-                  {u.label}
-                </button>
-              ))}
-              {useCase && (
-                <span className="text-xs text-slate-500">matches the words people wrote</span>
-              )}
-            </div>
+            {totalReviews >= MIN_REVIEWS_FOR_FILTERS && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  {USE_CASES.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        useCase === u.id
+                          ? 'on-brand'
+                          : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
+                      }`}
+                      onClick={() => setUseCase(useCase === u.id ? '' : u.id)}
+                    >
+                      {u.label}
+                    </button>
+                  ))}
+                  {useCase && (
+                    <span className="text-xs text-slate-500">matches the words people wrote</span>
+                  )}
+                </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {[5, 4, 3, 2, 1].map((star) => (
-                <button
-                  key={star}
-                  type="button"
-                  className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    filter === String(star)
-                      ? 'on-brand'
-                      : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
-                  }`}
-                  onClick={() => handleFilter(String(star))}
-                >
-                  {star} ★
-                </button>
-              ))}
-            </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {[5, 4, 3, 2, 1].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      className={`min-h-11 min-w-11 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        filter === String(star)
+                          ? 'on-brand'
+                          : 'border border-white/5 bg-surface-2 text-slate-400 hover:text-white'
+                      }`}
+                      onClick={() => handleFilter(String(star))}
+                    >
+                      {star} ★
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
             {visibleReviews.length === 0 ? (
               <Card className="!p-7 text-center">

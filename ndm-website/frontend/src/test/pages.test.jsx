@@ -515,3 +515,28 @@ describe('Waiting for data — the outline of what is coming, then the thing', (
     expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
   });
 });
+
+describe('Home — reviews wait until there are enough of them', () => {
+  const review = (id, rating) => ({ id, rating, comment: `Review number ${id}`, userName: `Reader ${id}` });
+  const serveReviews = (reviews, totalCount) =>
+    api.get.mockImplementation((path) => (path === '/reviews'
+      ? Promise.resolve({ data: { ok: true, data: { reviews, totalCount, averageRating: 3 } } })
+      : Promise.reject(new Error('not under test'))));
+
+  // One three-star review used to become the homepage's verdict:
+  // "3.0 out of 5 from 1 review", right under the hero.
+  it('shows no reviews section for a single review', async () => {
+    serveReviews([review(1, 3)], 1);
+    renderPage(<Home />);
+    await waitFor(() => expect(screen.queryByRole('status', { name: /loading reviews/i })).toBeNull());
+    expect(screen.queryByText(/what users say/i)).toBeNull();
+    expect(screen.queryByText(/review number 1/i)).toBeNull();
+  });
+
+  it('shows them once there are five', async () => {
+    serveReviews([review(1, 5), review(2, 4), review(3, 3)], 5);
+    renderPage(<Home />);
+    expect(await screen.findByText(/what users say/i)).toBeInTheDocument();
+    expect(screen.getByText(/from 5 reviews/i)).toBeInTheDocument();
+  });
+});
