@@ -58,6 +58,8 @@ describe('Video grabber page', () => {
       // Iframe players get the button in the corner; a sniffed MP4 gets it too.
       'cross-origin iframe the content script cannot reach',
       'a plain progressive MP4, in which case there is nothing to grab',
+      // Nexa routes only its own host list to yt-dlp (resources/cloud_providers.json).
+      'thousand-odd sites',
       'The app logs which one',
       'drop the parallel-segment count',
     ]);

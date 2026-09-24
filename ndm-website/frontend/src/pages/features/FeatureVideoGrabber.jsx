@@ -139,7 +139,7 @@ export default function FeatureVideoGrabber() {
           <>If a site always fails, sign in to it first. The extension exports that session&apos;s cookies with the download; a signed-out session simply gets a shorter manifest or none.</>,
           'For an HLS stream that comes with cookies, raise Settings → Downloads → HLS stream connections for slow, far-away CDNs and lower it for sites that start returning errors. Other streams are fetched by ffmpeg, which ignores that setting.',
           'Do not use the grabber to record a live stream. Stopping the row ends ffmpeg before it finishes the file, so the recording is lost.',
-          <>For YouTube and the other thousand-odd sites with their own extractors, the <Link to="/features/youtube-sites" className="text-brand-300 hover:underline">yt-dlp path</Link> is better than raw manifest grabbing — it handles their signing and format juggling for you.</>,
+          <>For YouTube and the other video sites Nexa hands to yt-dlp, the <Link to="/features/youtube-sites" className="text-brand-300 hover:underline">yt-dlp path</Link> is better than raw manifest grabbing — it handles their signing and format juggling for you.</>,
         ]}
       />
 
