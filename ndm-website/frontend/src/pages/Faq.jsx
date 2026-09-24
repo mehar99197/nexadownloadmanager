@@ -38,7 +38,7 @@ const SECTIONS = [
       {
         q: 'What is the difference between Free and Pro?',
         keywords: 'pro upgrade plan difference features',
-        a: <>Free runs three plain file downloads at a time (videos, streams, MEGA links and torrents do not count toward it), uses up to 16 connections per file, shows one in-app promo strip and includes two themes. Pro lets you run up to 32 downloads at once (you set the number in Settings → Downloads) with up to 32 connections per file, removes the promo, unlocks all 64 themes, allows downloads from login-gated course sites such as Udemy and Coursera, and adds AI rename and Smart add. Everything else — the extension, the video grabber, YouTube, torrents, the scheduler, the remote dashboard — is in both. Team is Pro for five machines at a time on one account.</>,
+        a: <>Free runs three plain file downloads at a time (videos, streams, MEGA links and torrents do not count toward it), uses up to 16 connections per file, shows one in-app promo strip and includes two themes. Pro lets you run up to 32 downloads at once (you set the number in Settings → Downloads) with up to 32 connections per file, removes the promo, unlocks all 64 themes, allows downloads from the login-gated course sites (Udemy, Coursera, Skillshare, Pluralsight and LinkedIn Learning), and adds AI rename and Smart add. Everything else — the extension, the video grabber, YouTube, torrents, the scheduler, the remote dashboard — is in both. Team is Pro for five machines at a time on one account.</>,
       },
       {
         q: 'Do I need to create an account?',
