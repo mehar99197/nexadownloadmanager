@@ -118,7 +118,9 @@ export default function Contact() {
         <Card className="!p-7 sm:!p-8">
           <h2 className="text-lg font-bold text-white">Send a message</h2>
           <p className="mt-1 text-sm text-slate-400">
-            Goes straight to the support inbox. We reply to the address you give — nothing else is stored.
+            Goes straight to our support inbox and is emailed to the team. We keep it there with your
+            name, email address, topic, IP address and browser, alongside our replies, and we do not
+            delete it automatically. We reply to the address you give.
           </p>
           {sent && (
             <div role="status" className="note-info mt-4 rounded-xl px-4 py-3 text-sm">
