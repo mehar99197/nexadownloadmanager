@@ -106,6 +106,8 @@ export default function Ads() {
   const confirm = useConfirm();
   const [ads, setAds] = useState([]);
   const [loading, setLoading] = useState(true);
+  // The totals are outlines until the first list is in; a Refresh keeps them.
+  const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(null);
@@ -129,6 +131,7 @@ export default function Ads() {
       setError(err?.response?.data?.error?.message || err?.message || 'Unable to load ads.');
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }, []);
 
@@ -291,10 +294,10 @@ export default function Ads() {
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Live right now" value={count(totals.live)} hint={`${ads.length} total`} />
-        <StatCard label="Impressions" value={count(totals.impressions)} hint="All time" />
-        <StatCard label="Clicks" value={count(totals.clicks)} hint="All time" />
-        <StatCard label="Click-through rate" value={totals.ctr} hint="Clicks ÷ impressions" />
+        <StatCard label="Live right now" loading={!loaded} value={count(totals.live)} hint={`${ads.length} total`} />
+        <StatCard label="Impressions" loading={!loaded} value={count(totals.impressions)} hint="All time" />
+        <StatCard label="Clicks" loading={!loaded} value={count(totals.clicks)} hint="All time" />
+        <StatCard label="Click-through rate" loading={!loaded} value={totals.ctr} hint="Clicks ÷ impressions" />
       </div>
 
       <div className="admin-card !p-0">

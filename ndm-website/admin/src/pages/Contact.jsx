@@ -6,6 +6,7 @@ import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
 import Modal from '../components/Modal.jsx';
 import StatCard from '../components/StatCard.jsx';
+import { SkeletonText } from '../components/Skeleton.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
 import { downloadCsv, formatDateTime } from '../utils.js';
 
@@ -244,10 +245,10 @@ export default function Contact() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total messages" value={stats.total} icon="✉" />
-        <StatCard label="Unread" value={stats.unread} hint="Nobody has opened these yet" icon="●" accent="text-admin-cyan" />
-        <StatCard label="Awaiting reply" value={stats.awaiting} hint="New + opened, not yet answered" icon="◷" accent="text-admin-warning" />
-        <StatCard label="Replied" value={stats.replied} icon="↩" accent="text-admin-success" />
+        <StatCard label="Total messages" value={stats.total} loading={loading && !data.stats} icon="✉" />
+        <StatCard label="Unread" value={stats.unread} loading={loading && !data.stats} hint="Nobody has opened these yet" icon="●" accent="text-admin-cyan" />
+        <StatCard label="Awaiting reply" value={stats.awaiting} loading={loading && !data.stats} hint="New + opened, not yet answered" icon="◷" accent="text-admin-warning" />
+        <StatCard label="Replied" value={stats.replied} loading={loading && !data.stats} icon="↩" accent="text-admin-success" />
       </div>
 
       <div className="admin-card flex flex-wrap items-end gap-3">
@@ -292,7 +293,7 @@ export default function Contact() {
       <div className="admin-card !p-0">
         <div className="border-b border-admin-border px-5 py-4">
           <p className="text-sm text-admin-muted">
-            <span className="font-bold text-admin-warning">{data.totalCount}</span> matching messages
+            <span className="font-bold text-admin-warning">{loading ? <SkeletonText chars={3} /> : data.totalCount}</span> matching messages
           </p>
         </div>
         <DataTable

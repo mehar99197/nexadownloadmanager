@@ -4,6 +4,7 @@ import DataTable from '../components/DataTable.jsx';
 import Pagination from '../components/Pagination.jsx';
 import Badge from '../components/Badge.jsx';
 import Button from '../components/Button.jsx';
+import { SkeletonText } from '../components/Skeleton.jsx';
 import { downloadCsv, formatDate } from '../utils.js';
 
 const LIMIT = 15;
@@ -92,7 +93,7 @@ export default function Reviews() {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between"><div><p className="admin-eyebrow text-admin-cyan">Community quality</p><h2 className="mt-2 text-3xl font-extrabold tracking-tight text-admin-text">Review moderation</h2><p className="mt-2 max-w-2xl text-sm text-admin-muted">Review every submission, filter by sentiment signal, and moderate in bulk with an auditable trail.</p></div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={exportReviews}>Export CSV</Button><Button variant="ghost" onClick={loadReviews} disabled={loading}>Refresh</Button></div></div>
       <div className="admin-card flex flex-wrap items-end gap-3"><label className="block"><span className="admin-label">Status</span><select className="admin-input w-44" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}><option value="">All reviews</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label><label className="block"><span className="admin-label">Rating</span><select className="admin-input w-36" value={rating} onChange={(event) => { setRating(event.target.value); setPage(1); }}><option value="">All ratings</option>{[5, 4, 3, 2, 1].map((value) => <option key={value} value={value}>{value} stars</option>)}</select></label><div className="ml-auto flex items-center gap-2"><span className="text-xs text-admin-muted">{selected.size} selected</span><Button size="sm" onClick={() => moderateSelected('approved')} disabled={!selected.size || busy}>Approve selected</Button><Button size="sm" variant="danger" onClick={() => moderateSelected('rejected')} disabled={!selected.size || busy}>Reject selected</Button></div></div>
       {error && <div className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-4 py-3 text-sm text-admin-danger">{error}</div>}
-      <div className="admin-card !p-0"><div className="border-b border-admin-border px-5 py-4"><p className="text-sm text-admin-muted"><span className="font-bold text-admin-warning">{data.totalCount}</span> matching reviews</p></div><DataTable columns={columns} rows={data.reviews} loading={loading} emptyMessage="No reviews match these filters." caption="Customer reviews awaiting or past moderation" /></div>
+      <div className="admin-card !p-0"><div className="border-b border-admin-border px-5 py-4"><p className="text-sm text-admin-muted"><span className="font-bold text-admin-warning">{loading ? <SkeletonText chars={3} /> : data.totalCount}</span> matching reviews</p></div><DataTable columns={columns} rows={data.reviews} loading={loading} emptyMessage="No reviews match these filters." caption="Customer reviews awaiting or past moderation" /></div>
       <Pagination page={page} totalPages={Math.ceil((data.totalCount || 0) / LIMIT)} onPageChange={setPage} />
     </div>
   );

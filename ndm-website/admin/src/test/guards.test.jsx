@@ -39,6 +39,7 @@ vi.mock('../api/client.js', () => ({
 
 const { AdminAuthProvider, useAdminAuth } = await import('../context/AdminAuthContext.jsx');
 const { default: ProtectedAdminRoute } = await import('../components/ProtectedAdminRoute.jsx');
+const { default: AdminDashboard } = await import('../pages/AdminDashboard.jsx');
 
 /**
  * Stands in for the Security page. Two things matter about it here: it calls
@@ -240,5 +241,52 @@ describe('a profile read that fails', () => {
     // The bearer is real, so the panel stays in; what it must not do is
     // fabricate a profile to render from.
     expect(await screen.findByText('DASHBOARD')).toBeInTheDocument();
+  });
+});
+
+describe('the dashboard while its numbers are on their way', () => {
+  it('draws outlines rather than claims, then the numbers', async () => {
+    refreshAdminToken.mockResolvedValue('a-bearer-token');
+    const answers = {};
+    get.mockImplementation((url) => {
+      if (url === '/admin/stats' || url === '/admin/health') {
+        return new Promise((resolve) => { answers[url] = resolve; });
+      }
+      return Promise.resolve(meAs());
+    });
+
+    render(
+      <MemoryRouter>
+        <AdminAuthProvider>
+          <AdminDashboard />
+        </AdminAuthProvider>
+      </MemoryRouter>
+    );
+
+    // While nothing has answered, nothing may be claimed: this screen used to
+    // say "No data", "No payments yet" and "checking" until the numbers came.
+    await waitFor(() => expect(answers['/admin/stats']).toBeTypeOf('function'));
+    expect(screen.queryByText('No data')).toBeNull();
+    expect(screen.queryByText(/no payments yet/i)).toBeNull();
+    expect(screen.queryByText(/checking/i)).toBeNull();
+    expect(screen.getByRole('region', { name: /recent payments/i })).toHaveAttribute('aria-busy', 'true');
+
+    answers['/admin/stats']({
+      data: {
+        ok: true,
+        data: {
+          totalUsers: 42, activeSubscriptions: 7, mrr: 35, pendingReviews: 2,
+          newSignups: [], revenueSeries: [], planDistribution: [], recentActivity: [], recentPayments: [],
+        },
+      },
+    });
+    answers['/admin/health']({
+      data: { ok: true, data: { database: 'ok', stripe: 'live', email: 'smtp', latencyMs: 12, uptimeSeconds: 600 } },
+    });
+
+    expect(await screen.findByText('42')).toBeInTheDocument();
+    // An empty list is a real answer once it has arrived, and is said as one.
+    expect(screen.getByText(/no payments yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: /recent payments/i })).not.toHaveAttribute('aria-busy');
   });
 });

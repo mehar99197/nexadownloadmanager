@@ -134,7 +134,8 @@ export default function DataTable({
               <tr
                 key={keyFor(row, i)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={onRowClick ? 'cursor-pointer' : undefined}
+                // row-in: each row fades up out of the stand-in it replaces.
+                className={onRowClick ? 'row-in cursor-pointer' : 'row-in'}
               >
                 {columns.map((col, c) => {
                   const content = col.render ? col.render(row, i) : row[col.key];
