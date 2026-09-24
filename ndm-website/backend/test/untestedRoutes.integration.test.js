@@ -189,10 +189,12 @@ test('the routes no test named', async (t) => {
     const staffId = await seedStaff(email);
     const token = await signInStaff(api, email);
 
+    // Two reviews need two authors: reviews.user_id is UNIQUE (one per account).
+    const secondId = await seedStaff('bulk-staff-2@example.test');
     await srv.query(
       `INSERT INTO reviews (user_id, user_name, rating, comment, status)
        VALUES (?, 'Staff', 5, 'Body one', 'pending'), (?, 'Staff', 4, 'Body two', 'pending')`,
-      [staffId, staffId]
+      [staffId, secondId]
     );
     const pending = await srv.query("SELECT id FROM reviews WHERE status = 'pending'");
     const ids = pending.map((r) => r.id);

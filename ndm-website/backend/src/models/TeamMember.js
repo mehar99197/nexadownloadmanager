@@ -1,6 +1,6 @@
 'use strict';
 
-const { query, queryOne, insert, execute } = require('../config/db');
+const { query, queryOne, execute, withTransaction } = require('../config/db');
 const config = require('../config/env');
 
 /**
@@ -58,12 +58,17 @@ const TeamMember = {
   /**
    * The team this user belongs to as a member (not owner), with the owner's
    * subscription attached so the caller can tell whether it is still usable.
+   *
+   * `owner_banned` rides along because a membership draws on the OWNER's
+   * plan: a banned owner's plan must not keep entitling their members. The
+   * licence-key path already answers `banned` for it; a member's device token
+   * reaches the plan through here instead (utils/accountPlan.js).
    */
   async findActiveByUserId(userId) {
     return queryOne(
       `SELECT m.*, s.plan AS owner_plan, s.status AS owner_status, s.license_key AS owner_license_key,
               s.expiry_date AS owner_expiry_date, s.seats AS owner_seats, s.user_id AS owner_user_id,
-              u.name AS owner_name, u.email AS owner_email
+              u.name AS owner_name, u.email AS owner_email, u.banned AS owner_banned
          FROM team_members m
          JOIN subscriptions s ON s.id = m.subscription_id
          JOIN users u ON u.id = s.user_id
@@ -92,13 +97,55 @@ const TeamMember = {
     return Date.now() - invitedAt > config.TEAM_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000;
   },
 
-  async create({ subscriptionId, email, tokenHash, invitedBy }) {
-    const id = await insert(
-      `INSERT INTO team_members (subscription_id, email, token_hash, status, invited_by)
-       VALUES (?, ?, ?, 'invited', ?)`,
-      [subscriptionId, String(email).toLowerCase(), tokenHash, invitedBy || null]
-    );
-    return TeamMember.findById(id);
+  /**
+   * Seats this roster holds, the owner included: every member plus every
+   * invitation that can still be accepted. An expired invitation holds nothing
+   * (AUDIT.md M-12). This is the ONE definition of "held" — the roster's
+   * `used`/`canInvite` and the invite route's TEAM_FULL both come from it, so
+   * the page can no longer offer a seat the route then refuses.
+   */
+  heldSeats(members) {
+    return members.filter((m) => !TeamMember.isExpired(m)).length + 1;
+  },
+
+  /**
+   * Add an invitation only if the plan still has a seat for it.
+   *
+   * Count and insert run in one transaction with the owner's subscription row
+   * locked FOR UPDATE (the lock Subscription.acquireSeat takes), so invitations
+   * sent at the same moment queue behind each other instead of all reading the
+   * same "room for one more". Seats are read from the locked row.
+   *
+   * → { ok: true, member }
+   *   | { ok: false, reason: 'team_full', seats }
+   *   | { ok: false, reason: 'already_invited' }
+   *   | { ok: false, reason: 'not_found' }
+   */
+  async createWithinSeats({ subscriptionId, email, tokenHash, invitedBy }) {
+    const address = String(email).toLowerCase();
+    // The member SELECT below is a plain read taken AFTER the lock is granted,
+    // so its snapshot already includes whatever the previous holder committed.
+    const outcome = await withTransaction(async (connection) => {
+      const [subs] = await connection.execute(
+        'SELECT seats FROM subscriptions WHERE id = ? FOR UPDATE', [subscriptionId]
+      );
+      if (!subs.length) return { ok: false, reason: 'not_found' };
+      const seats = Math.max(1, Number(subs[0].seats) || 1);
+      const [members] = await connection.execute(
+        'SELECT email, status, invited_at FROM team_members WHERE subscription_id = ?', [subscriptionId]
+      );
+      if (members.some((m) => String(m.email).toLowerCase() === address))
+        return { ok: false, reason: 'already_invited' };
+      if (TeamMember.heldSeats(members) >= seats) return { ok: false, reason: 'team_full', seats };
+      const [result] = await connection.execute(
+        `INSERT INTO team_members (subscription_id, email, token_hash, status, invited_by)
+         VALUES (?, ?, ?, 'invited', ?)`,
+        [subscriptionId, address, tokenHash, invitedBy || null]
+      );
+      return { ok: true, id: result.insertId };
+    });
+    if (!outcome.ok) return outcome;
+    return { ok: true, member: await TeamMember.findById(outcome.id) };
   },
 
   /** New token for a still-pending invite (resend). */

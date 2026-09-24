@@ -81,6 +81,7 @@ function subscriptionSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
 async function teamMembership(userId) {
   const m = await TeamMember.findActiveByUserId(userId);
   if (!m || m.owner_plan !== 'team' || m.owner_status !== 'active') return null;
+  if (Number(m.owner_banned)) return null; // same rule as accountPlan.teamPlanForUser
   if (m.owner_expiry_date && new Date(m.owner_expiry_date).getTime() < Date.now()) return null;
   return m;
 }
