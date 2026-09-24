@@ -37,7 +37,7 @@ export default function Docs() {
         <h2 className="text-lg font-bold text-white">Quick start</h2>
         <ol className="mt-4 grid gap-4 sm:grid-cols-3">
           {[
-            ['Install the app', 'Run the Windows installer or install the .deb on Ubuntu/Debian. yt-dlp, ffmpeg and aria2 come bundled.', '/docs/install'],
+            ['Install the app', 'Run the Windows installer or install the .deb on Ubuntu 24.04 or newer. yt-dlp and ffmpeg come bundled.', '/docs/install'],
             ['Add the extension', 'Load it in Chrome, Edge, Brave or Firefox. The app registers the native host bridge on every launch.', '/docs/extension'],
             ['Paste or click', 'Paste a URL, magnet link or .m3u8 into the app, or hit “Download with Nexa” in your browser.', '/docs/youtube'],
           ].map(([t, d, to], i) => (
