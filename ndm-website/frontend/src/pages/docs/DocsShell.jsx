@@ -61,9 +61,16 @@ export function Code({ children }) {
   );
 }
 
+// A long command scrolls sideways on a phone, and a scroll box only a pointer
+// can reach hides the end of it from a keyboard (axe:
+// scrollable-region-focusable). Focusable so the arrow keys scroll it; no
+// region role, which would add a landmark for every code block on the page.
 export function Pre({ children }) {
   return (
-    <pre className="surface-inset mt-3 overflow-x-auto rounded-xl p-4 font-mono text-xs leading-6 text-brand-100">
+    <pre
+      tabIndex={0}
+      className="surface-inset mt-3 overflow-x-auto rounded-xl p-4 font-mono text-xs leading-6 text-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-300)]"
+    >
       {children}
     </pre>
   );

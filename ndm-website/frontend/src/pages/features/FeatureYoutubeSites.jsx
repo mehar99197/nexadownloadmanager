@@ -170,7 +170,7 @@ export default function FeatureYoutubeSites() {
                 Sign in to it in your browser and start the download with the extension&apos;s Nexa
                 button so your cookies are attached. Without the extension, export a Netscape
                 <Code>cookies.txt</Code> and add it under Settings &rarr; Site logins. Full walkthrough
-                in the <Link to="/docs/youtube" className="text-brand-300 hover:underline">YouTube guide</Link>.
+                in the <Link to="/docs/youtube" className="text-brand-300 underline underline-offset-2">YouTube guide</Link>.
               </>
             ),
           },

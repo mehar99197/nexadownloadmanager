@@ -64,6 +64,17 @@ router.post(
   asyncHandler(async (req, res) => {
     if (config.isBillingDisabled) return billingUnavailable(res);
     const { plan, billingCycle, couponCode } = req.body;
+    // One account, one Stripe subscription. A second Checkout for a billed
+    // account made a second subscription that charged alongside the first —
+    // Pro and Team both, every month — and the webhooks could only ever track
+    // one of them. Changing plan is a change to the existing subscription,
+    // which is what the billing portal does (and Stripe prorates it there).
+    const subscription = await Subscription.current(
+      (await Subscription.findByUserId(req.user.id))[0] || null);
+    if (isBilled(subscription))
+      return fail(res, 'ALREADY_SUBSCRIBED',
+        'You already have an active subscription. To switch plans or billing cycle, use "Manage billing" on the Billing page.',
+        409);
     // Reject a bad code here rather than silently charging full price.
     if (couponCode) {
       const promo = await stripe.findPromotionCode(couponCode);
@@ -71,6 +82,10 @@ router.post(
     }
     const session = await stripe.createCheckoutSession({
       plan, billingCycle, user: req.user, couponCode,
+      // A customer who has paid before already has a Stripe Customer; naming
+      // it keeps their card, invoices and portal in one place instead of
+      // Stripe minting a fresh Customer from the email every time.
+      customerId: (subscription && subscription.stripe_customer_id) || null,
       successUrl: `${config.FRONTEND_URL}/billing`,
       cancelUrl: `${config.FRONTEND_URL}/pricing`,
     });
