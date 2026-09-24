@@ -1,5 +1,6 @@
 import Skeleton, { BAR_OUTLINE } from './Skeleton.jsx';
 import { IS_ROOT } from '../realm.js';
+import { readRail } from '../sidebarPreference.js';
 
 /**
  * The control panel before the session is known — what used to be the word
@@ -9,7 +10,9 @@ import { IS_ROOT } from '../realm.js';
  * It is the panel's own layout, drawn in outline: the sidebar with its
  * links, the topbar, and a screen of the dashboard's shape, because that is
  * where a sign-in lands. The real panel replaces it inside a dissolve
- * (AdminAuthContext), so what was a bar becomes a word in place.
+ * (AdminAuthContext), so what was a bar becomes a word in place. The sidebar
+ * is drawn folded if that is how it was left (sidebarPreference.js), so the
+ * panel does not arrive wide and then fold.
  *
  * `.panel-boot` holds it invisible for its first moments and then fades it
  * in (index.css): a visit with no session is sent to the sign-in screen
@@ -18,21 +21,24 @@ import { IS_ROOT } from '../realm.js';
  */
 export default function PanelSkeleton() {
   const links = IS_ROOT ? 12 : 9;
+  const rail = readRail();
   return (
     <div className="panel-boot flex min-h-screen bg-admin-bg" role="status" aria-label="Loading the control panel">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-admin-border bg-admin-sidebar md:flex">
-        <div className="flex h-16 items-center gap-2 border-b border-admin-border px-5">
-          <Skeleton className="h-9 w-9 rounded-xl" />
-          <div>
-            <Skeleton className="h-3.5 w-28 rounded" />
-            <Skeleton className="mt-1.5 h-3 w-20 rounded" />
-          </div>
+      <aside className={`hidden shrink-0 flex-col border-r border-admin-border bg-admin-sidebar md:flex ${rail ? 'w-16' : 'w-60'}`}>
+        <div className="flex h-16 items-center gap-2 border-b border-admin-border px-3.5">
+          <Skeleton className="h-9 w-9 shrink-0 rounded-xl" />
+          {!rail && (
+            <div>
+              <Skeleton className="h-3.5 w-28 rounded" />
+              <Skeleton className="mt-1.5 h-3 w-20 rounded" />
+            </div>
+          )}
         </div>
         <div className="flex-1 space-y-1 px-3 py-4">
           {Array.from({ length: links }, (_, i) => (
             <div key={i} className="flex h-10 items-center gap-3 px-3">
-              <Skeleton className="h-3.5 w-4 rounded" />
-              <Skeleton className={`h-3.5 rounded ${i % 3 === 1 ? 'w-28' : i % 3 === 2 ? 'w-20' : 'w-24'}`} />
+              <Skeleton className="h-3.5 w-4 shrink-0 rounded" />
+              {!rail && <Skeleton className={`h-3.5 rounded ${i % 3 === 1 ? 'w-28' : i % 3 === 2 ? 'w-20' : 'w-24'}`} />}
             </div>
           ))}
         </div>
@@ -41,7 +47,9 @@ export default function PanelSkeleton() {
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-16 items-center justify-between border-b border-admin-border bg-admin-surface/80 px-6">
           <div className="flex items-center gap-3">
-            <Skeleton className="h-11 w-11 rounded-lg md:hidden" />
+            {/* The navigation button: the drawer's on a phone, the fold's on
+                a desktop. */}
+            <Skeleton className="h-11 w-11 rounded-lg" />
             <div>
               <Skeleton className="h-3 w-36 rounded" />
               <Skeleton className="mt-1.5 h-3.5 w-44 rounded" />
@@ -102,4 +110,3 @@ export default function PanelSkeleton() {
     </div>
   );
 }
-

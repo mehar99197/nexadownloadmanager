@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 
 /**
  * The panel's half of the advanced pass.
@@ -304,4 +305,197 @@ test('a screen change is a dissolve you can see, and reduced motion keeps it wit
   const reduced = await change('Releases', '/releases');
   expect(rootFade(reduced.dissolves)?.duration, 'reduced motion should still dissolve, briefly').toBe(180);
   expect(reduced.settles, 'reduced motion should not move the screen').not.toContain('admin-screen-settle');
+});
+
+/**
+ * The sidebar folds to a rail of icons on a desktop — the ☰ in the topbar —
+ * and opens the way it was left. Asked for after the sidebar went sticky: it
+ * was always open.
+ *
+ * What jsdom cannot see is what matters here: that the rail is the width it
+ * claims and the screen gets the room back, that nothing in the sidebar's
+ * column moves while it folds, that each icon's name appears beside it and is
+ * reachable by the pointer and the keyboard, and that the panel opens folded
+ * from its outline on, instead of arriving wide and then folding.
+ */
+
+/** Where the logo, each icon and the logout mark are centred, across the sidebar. */
+const iconColumn = () => {
+  const aside = document.getElementById('admin-sidebar');
+  const marks = [aside.querySelector('img'), ...aside.querySelectorAll('a.nav-link > span[aria-hidden="true"], button > span[aria-hidden="true"]')];
+  return [...new Set(marks.map((el) => {
+    const r = el.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2);
+  }))];
+};
+
+const measureSidebar = async (page) => ({
+  ...(await page.evaluate(() => ({
+    aside: Math.round(document.getElementById('admin-sidebar').getBoundingClientRect().width),
+    main: Math.round(document.querySelector('main').getBoundingClientRect().width),
+  }))),
+  column: await page.evaluate(iconColumn),
+});
+
+test('the sidebar folds to a rail of icons and back, and its icons hold still while it does', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 800 });
+  await stubApi(page);
+  await page.goto('users', { waitUntil: 'load' });
+  await expect(page.getByText('customer12@example.test')).toBeVisible({ timeout: 15_000 });
+
+  const open = await measureSidebar(page);
+  expect(open.aside).toBe(240);
+  expect(open.column, 'the logo, every icon and the logout mark should share one column').toEqual([32]);
+
+  const toggle = page.getByRole('button', { name: 'Collapse sidebar' });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+  // Every frame of the fold: how wide, and where the first icon is.
+  await page.evaluate(() => {
+    const frames = [];
+    window.__fold = frames;
+    const t0 = performance.now();
+    const tick = () => {
+      const aside = document.getElementById('admin-sidebar');
+      const icon = aside.querySelector('a.nav-link > span[aria-hidden="true"]').getBoundingClientRect();
+      frames.push({
+        width: Math.round(aside.getBoundingClientRect().width),
+        icon: Math.round((icon.left + icon.width / 2) * 10) / 10,
+      });
+      if (performance.now() - t0 < 700) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForTimeout(800);
+  const fold = await page.evaluate(() => window.__fold);
+
+  const folded = await measureSidebar(page);
+  expect(folded.aside, 'the rail').toBe(64);
+  expect(folded.main - open.main, 'the screen should get the room back').toBe(176);
+  expect(folded.column).toEqual([32]);
+  expect(new Set(fold.map((f) => f.width)).size, 'the fold should be animated, not a cut').toBeGreaterThan(3);
+  expect([...new Set(fold.map((f) => f.icon))], 'an icon moved while the sidebar folded').toEqual([32]);
+
+  // Folded, every link still has its name — hidden from sight, not from the
+  // accessibility tree.
+  for (const name of ['Dashboard', 'Users', 'Reviews', 'Contact inbox', 'Security']) {
+    await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole('button', { name: 'Logout', exact: true })).toBeVisible();
+  const axe = await new AxeBuilder({ page })
+    .include('#admin-sidebar')
+    .include('header')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+  expect(axe.violations.map((v) => `${v.id}: ${v.help}`), 'the folded sidebar should pass axe').toEqual([]);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.waitForTimeout(600);
+  expect((await measureSidebar(page)).aside).toBe(240);
+
+  // Asked for less motion, it still folds — at once.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(
+    await page.evaluate(() => getComputedStyle(document.getElementById('admin-sidebar')).transitionProperty)
+  ).toBe('none');
+});
+
+test('the folded rail names each icon beside it, for a pointer and for the keyboard', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 800 });
+  await page.addInitScript(() => localStorage.setItem('nexa-admin-sidebar', 'rail'));
+  await stubApi(page);
+  await page.goto('users', { waitUntil: 'load' });
+  await expect(page.getByText('customer12@example.test')).toBeVisible({ timeout: 15_000 });
+  const tip = page.locator('.rail-tip');
+
+  await page.getByRole('link', { name: 'Reviews', exact: true }).hover();
+  await expect(tip).toHaveText('Reviews');
+  const placed = await page.evaluate(() => {
+    const t = document.querySelector('.rail-tip').getBoundingClientRect();
+    const link = [...document.querySelectorAll('#admin-sidebar a.nav-link')]
+      .find((a) => a.textContent.endsWith('Reviews'))
+      .getBoundingClientRect();
+    return {
+      left: Math.round(t.left),
+      mid: t.top + t.height / 2,
+      linkMid: link.top + link.height / 2,
+      rail: Math.round(document.getElementById('admin-sidebar').getBoundingClientRect().right),
+      onTop: document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2)?.classList.contains('rail-tip'),
+    };
+  });
+  expect(placed.left, 'the name should sit beside the rail, not under it').toBe(placed.rail + 8);
+  expect(Math.abs(placed.mid - placed.linkMid), 'the name should be level with its icon').toBeLessThan(1);
+  expect(placed.onTop, 'nothing should cover the name').toBe(true);
+
+  // WCAG 1.4.13: the pointer can move onto the name without losing it, and
+  // Escape puts it away.
+  await page.mouse.move(placed.left + 12, placed.mid, { steps: 5 });
+  await page.waitForTimeout(400);
+  await expect(tip).toHaveText('Reviews');
+  await page.keyboard.press('Escape');
+  await expect(tip).toHaveCount(0);
+
+  // The keyboard gets the same names, link by link.
+  await page.mouse.move(900, 500);
+  await page.getByRole('link', { name: 'Dashboard', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeFocused();
+  await expect(tip).toHaveText('Users');
+  await page.keyboard.press('Tab');
+  await expect(tip).toHaveText('Subscriptions');
+
+  // Following a link takes the name away with it.
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/subscriptions$/);
+  await expect(tip).toHaveCount(0);
+});
+
+test('the sidebar opens the way it was left, outline and all, and a phone keeps its drawer', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 800 });
+  await stubApi(page, { delayRefresh: 900 });
+  await page.addInitScript(() => {
+    const widths = [];
+    window.__asideWidths = widths;
+    const t0 = performance.now();
+    const tick = () => {
+      const aside = document.querySelector('aside');
+      if (aside) widths.push(Math.round(aside.getBoundingClientRect().width));
+      if (performance.now() - t0 < 2500) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await page.goto('users', { waitUntil: 'load' });
+  await expect(page.getByText('customer12@example.test')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await page.waitForTimeout(400);
+
+  // Opened again: a rail from the outline's first frame, never wide first.
+  await page.reload({ waitUntil: 'commit' });
+  await expect(page.getByRole('status', { name: /loading the control panel/i })).toBeAttached();
+  await expect(page.getByText('customer12@example.test')).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(300);
+  const widths = await page.evaluate(() => window.__asideWidths);
+  expect(widths.length).toBeGreaterThan(10);
+  expect([...new Set(widths)], 'the sidebar should be a rail from the first frame it is drawn').toEqual([64]);
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveAttribute('aria-pressed', 'true');
+
+  // A phone has no rail: its drawer carries the labels, whatever a desktop
+  // left behind.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeHidden();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await page.waitForTimeout(300);
+  const drawer = await page.evaluate(() => {
+    const aside = document.getElementById('admin-sidebar');
+    const label = [...aside.querySelectorAll('a.nav-link span')].find((s) => s.textContent === 'Reviews');
+    return {
+      width: Math.round(aside.getBoundingClientRect().width),
+      label: Math.round(label.getBoundingClientRect().width),
+    };
+  });
+  expect(drawer.width).toBe(288);
+  expect(drawer.label, 'the drawer should draw its labels').toBeGreaterThan(20);
 });

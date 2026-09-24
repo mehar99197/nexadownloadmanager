@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext.jsx';
 import Button from './Button.jsx';
+import { useRailTip } from './RailTip.jsx';
 import { IS_ROOT, PANEL_LABEL, PANEL_SUBTITLE, PANEL_HEADING } from '../realm.js';
+import { keepRail, readRail } from '../sidebarPreference.js';
 
 const STAFF_NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: '▣' },
@@ -37,6 +39,19 @@ export default function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Folded to a rail of icons — on a desktop only; the phone drawer always
+  // has its labels. Remembered, so the panel opens the way it was left.
+  const [rail, setRail] = useState(readRail);
+  const { tipFor, tip, hideTip } = useRailTip(rail);
+  // Folded, a label is still its link's name, just not drawn.
+  const label = rail ? 'md:sr-only' : undefined;
+
+  function toggleRail() {
+    const next = !rail;
+    hideTip();
+    setRail(next);
+    keepRail(next);
+  }
 
   async function handleLogout() {
     await logout();
@@ -48,11 +63,18 @@ export default function AdminLayout() {
       {mobileOpen && <button type="button" aria-label="Close navigation" className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} />}
       {/* Sidebar */}
       {/* Sticky on a desktop: moving between screens should never start with
-          scrolling back up a long list to find the navigation. */}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-admin-border bg-admin-sidebar transition-transform md:sticky md:top-0 md:bottom-auto md:z-auto md:h-screen md:w-60 md:shrink-0 md:self-start md:overflow-y-auto md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="flex h-16 items-center gap-2 border-b border-admin-border px-5">
-          <img src={LOGO} alt="" className="admin-brand-logo h-9 w-9 rounded-xl" aria-hidden="true" />
-          <div className="leading-tight">
+          scrolling back up a long list to find the navigation. It folds to a
+          rail of icons from the topbar, and the icons hold still while it
+          does: the logo, the icons and the logout mark all sit 32px from the
+          edge, and the rail is 64px, so only the width and the labels
+          change. */}
+      <aside
+        id="admin-sidebar"
+        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-admin-border bg-admin-sidebar transition-transform md:sticky md:top-0 md:bottom-auto md:z-auto md:h-screen ${rail ? 'md:w-16' : 'md:w-60'} md:shrink-0 md:self-start md:overflow-x-hidden md:overflow-y-auto md:whitespace-nowrap md:translate-x-0 md:transition-[width] md:duration-200 md:motion-reduce:transition-none ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
+        <div className="flex h-16 items-center gap-2 border-b border-admin-border px-3.5">
+          <img src={LOGO} alt="" className="admin-brand-logo h-9 w-9 shrink-0 rounded-xl" aria-hidden="true" />
+          <div className={`leading-tight ${rail ? 'md:hidden' : ''}`}>
             <p className="text-sm font-bold tracking-tight">Nexa<span className={`bg-clip-text text-transparent ${IS_ROOT ? 'bg-gradient-to-r from-admin-warning to-admin-danger' : 'bg-gradient-to-r from-accent-400 to-admin-cyan'}`}> {PANEL_LABEL}</span></p>
             <p className="text-xs text-admin-faint">{PANEL_SUBTITLE}</p>
           </div>
@@ -63,27 +85,33 @@ export default function AdminLayout() {
             <NavLink
               key={item.to}
               to={item.to}
-              onClick={() => setMobileOpen(false)}
+              onClick={() => {
+                setMobileOpen(false);
+                hideTip();
+              }}
               className={({ isActive }) =>
                 `nav-link ${isActive ? 'nav-link-active' : ''}`
               }
+              {...tipFor(item.label)}
             >
-              <span aria-hidden="true" className="w-4 text-center text-admin-muted">
+              <span aria-hidden="true" className="w-4 shrink-0 text-center text-admin-muted">
                 {item.icon}
               </span>
-              {item.label}
+              <span className={label}>{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
         <div className="border-t border-admin-border p-3">
+          {/* Spaced like a nav link, so its mark sits in the same column. */}
           <Button
             variant="ghost"
-            className="w-full justify-start"
+            className="w-full justify-start !gap-3 !px-3"
             onClick={handleLogout}
+            {...tipFor('Logout')}
           >
-            <span className="w-4 text-center">⎋</span>
-            Logout
+            <span aria-hidden="true" className="w-4 shrink-0 text-center">⎋</span>
+            <span className={label}>Logout</span>
           </Button>
         </div>
       </aside>
@@ -95,6 +123,20 @@ export default function AdminLayout() {
             {/* 44x44. At 36x42 this was the smallest control in the panel and
                 the only way to reach navigation on a phone. */}
             <button type="button" aria-label="Open navigation" className="flex h-11 w-11 items-center justify-center rounded-lg border border-admin-border bg-admin-surface-2 text-admin-muted md:hidden" onClick={() => setMobileOpen(true)}>☰</button>
+            {/* The same place on a desktop folds the sidebar to its rail and
+                back. A toggle rather than a disclosure: folded, every link is
+                still there and still named, so aria-pressed, not
+                aria-expanded. */}
+            <button
+              type="button"
+              aria-label="Collapse sidebar"
+              aria-pressed={rail}
+              aria-controls="admin-sidebar"
+              className="hidden h-11 w-11 items-center justify-center rounded-lg border border-admin-border bg-admin-surface-2 text-admin-muted transition-colors hover:text-admin-text md:flex"
+              onClick={toggleRail}
+            >
+              ☰
+            </button>
             <div>
             <p className="text-xs font-semibold tracking-wide text-admin-faint">NexaDownloadManager</p>
             <h1 className="mt-0.5 text-sm font-semibold text-admin-text">{PANEL_HEADING}</h1>
@@ -114,6 +156,7 @@ export default function AdminLayout() {
           </div>
         </main>
       </div>
+      {tip}
     </div>
   );
 }

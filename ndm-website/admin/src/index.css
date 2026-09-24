@@ -138,6 +138,14 @@ body::before {
     box-shadow: inset 3px 0 0 #9b75ff, inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
+  /* A link's name beside the folded sidebar (RailTip.jsx): fixed, on <body>,
+     level with the link it names. */
+  .rail-tip {
+    @apply fixed z-50 -translate-y-1/2 rounded-lg border border-admin-border bg-admin-surface-2 px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap text-admin-text;
+    box-shadow: 0 14px 30px -14px rgba(0, 0, 0, 0.9);
+    animation: admin-fade-in 120ms ease-out;
+  }
+
   /* min-h-11 carries every text field AND every <select> in the panel over the
      44px touch minimum in one line — they measured 42 and 43, close enough to
      look right on a desktop and to be missed on a phone. The filters at the top
