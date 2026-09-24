@@ -407,7 +407,7 @@ export default function Benchmarks() {
             <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" />
             <span>
               <strong className="text-slate-200">IDM.</strong> It is not installed on the test
-              machine and we hold no licence for it. Every IDM figure you have seen on a page like
+              machine and we hold no license for it. Every IDM figure you have seen on a page like
               this one, including the ones we nearly published, was copied from somewhere else.
               If you own IDM and run this method, <Link to="/contact" className="text-brand-300 hover:underline">send us the numbers</Link> and
               they go on this page with your name on them.

@@ -17,7 +17,7 @@ import Skeleton from '../components/Skeleton';
  * happens on the account that owns the invited address.
  */
 export default function TeamJoin() {
-  usePageMeta({ title: 'Join a team', description: 'Accept an invitation to a Nexa Download Manager Team licence.' });
+  usePageMeta({ title: 'Join a team', description: 'Accept an invitation to a Nexa Download Manager Team license.' });
 
   const [params] = useSearchParams();
   const token = params.get('token') || '';
@@ -55,7 +55,7 @@ export default function TeamJoin() {
     try {
       await api.post('/team/join', { token });
       await refreshMe();
-      toast.success(`You're on ${invite.ownerName}'s team. The licence key is on your dashboard.`);
+      toast.success(`You're on ${invite.ownerName}'s team. The license key is on your dashboard.`);
       navigate('/dashboard', { replace: true });
     } catch (err) {
       setError(err?.response?.data?.error?.message || 'Could not accept the invitation.');
@@ -101,7 +101,7 @@ export default function TeamJoin() {
               <p className="mt-3 text-sm leading-6 text-slate-400">
                 {invite.ownerName} invited <span className="font-semibold text-slate-200">{invite.email}</span> to
                 their Nexa <span className="capitalize">{invite.plan}</span> plan. Accepting puts the team&rsquo;s
-                licence key on your dashboard and unlocks Pro features in the app.
+                license key on your dashboard and unlocks Pro features in the app.
               </p>
 
               {error && (

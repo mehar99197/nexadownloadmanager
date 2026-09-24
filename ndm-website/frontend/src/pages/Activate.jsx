@@ -30,7 +30,7 @@ function minutesAgo(iso) {
  * The app shows a short code and opens this page with it filled in. The
  * person, signed in here, sees which machine is asking and approves or
  * denies it; the app, polling in the background, then receives a device
- * token bound to that machine. No licence key changes hands at any point.
+ * token bound to that machine. No license key changes hands at any point.
  */
 export default function Activate() {
   usePageMeta({ title: 'Connect a device', description: 'Approve the Nexa Download Manager app on a computer you are signing in on.' });

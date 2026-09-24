@@ -24,7 +24,7 @@ const PRODUCTS = [
    table that overstates a rival is as dishonest as one that understates it. */
 const GROUPS = [
   {
-    title: 'Platforms & licence',
+    title: 'Platforms & license',
     rows: [
       { label: 'Windows', values: [true, true, true, true, true, true, true, true] },
       { label: 'Linux', values: [true, false, true, true, false, true, true, true] },
@@ -49,7 +49,7 @@ const GROUPS = [
         label: 'Price',
         values: [
           'Free · Pro $5/mo',
-          'Paid licence',
+          'Paid license',
           'Free',
           'Free',
           'Free',

@@ -49,7 +49,7 @@ export default function DocsTorrents() {
       />
 
       <Note tone="warn" title="Only download what you may download">
-        BitTorrent is a transport, not a licence. Use it for Linux ISOs, open data, your own files,
+        BitTorrent is a transport, not a license. Use it for Linux ISOs, open data, your own files,
         and content whose owner distributes it this way. The <Link to="/terms" className="underline">terms</Link> spell this out.
       </Note>
     </DocsShell>

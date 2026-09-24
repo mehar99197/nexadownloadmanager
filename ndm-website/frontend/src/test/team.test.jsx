@@ -92,7 +92,7 @@ describe('Dashboard — a Team member', () => {
     expect(await screen.findByText(/you are on/i)).toHaveTextContent(/Ahmad/);
   });
 
-  it('shows the team licence key card, not the Free "no key needed" one', async () => {
+  it('shows the team license key card, not the Free "no key needed" one', async () => {
     renderDashboard();
     // The key is masked until "Show"; what matters here is which card renders.
     expect(await screen.findByRole('heading', { name: /license key/i })).toBeInTheDocument();

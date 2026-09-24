@@ -175,7 +175,7 @@ export default function Billing() {
     const sure = await confirm({
       title: 'End your Pro trial now?',
       message: 'Pro features stop immediately and the account returns to Free. '
-        + 'Your licence key and downloads are untouched, but the trial cannot be started again.',
+        + 'Your license key and downloads are untouched, but the trial cannot be started again.',
       confirmLabel: 'End trial now',
       cancelLabel: 'Keep my trial',
       danger: true,

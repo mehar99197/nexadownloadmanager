@@ -79,7 +79,7 @@ function DataCard({ user }) {
     <Card className="card-hover !p-7">
       <h3 className="text-lg font-bold text-white">Your data</h3>
       <p className="mt-2 text-sm leading-6 text-slate-400">
-        Download everything we hold about this account as one JSON file — profile, plans, licence keys,
+        Download everything we hold about this account as one JSON file — profile, plans, license keys,
         devices, payments and your review.
       </p>
       <div className="mt-4">
@@ -97,7 +97,7 @@ function DataCard({ user }) {
           </p>
         ) : (
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Permanently removes your account, licence keys, devices, payment history, review and team
+            Permanently removes your account, license keys, devices, payment history, review and team
             membership. A paid plan is cancelled first so nothing is charged afterwards. This cannot be undone.
           </p>
         )}

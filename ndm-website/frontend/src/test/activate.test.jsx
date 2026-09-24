@@ -111,7 +111,7 @@ describe('Dashboard — the Free plan has no key, devices sign out', () => {
 
     renderAt('/dashboard', <Dashboard />);
 
-    expect(await screen.findByTestId('account-signin-card')).toHaveTextContent(/no licence key needed/i);
+    expect(await screen.findByTestId('account-signin-card')).toHaveTextContent(/no license key needed/i);
     expect(screen.queryByText('NDM-AAAA-BBBB-CCCC')).toBeNull();
     expect(screen.queryByText(/•••/)).toBeNull();
 
@@ -119,7 +119,7 @@ describe('Dashboard — the Free plan has no key, devices sign out', () => {
     const rows = within(list).getAllByRole('listitem');
     expect(rows[0]).toHaveTextContent('Signed in');
     expect(rows[0]).toHaveTextContent('Nexa 0.3.0');
-    expect(rows[1]).toHaveTextContent(/activated with a licence key/i);
+    expect(rows[1]).toHaveTextContent(/activated with a license key/i);
     expect(screen.queryByText(/in use$/)).toBeNull();   // no seat badge on Free
 
     await userEvent.click(within(rows[0]).getByRole('button', { name: /sign out/i }));

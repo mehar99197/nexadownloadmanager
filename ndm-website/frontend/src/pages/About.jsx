@@ -6,7 +6,7 @@ import Button from '../components/Button';
 
 const FACTS = [
   { label: 'Platforms', value: 'Windows & Linux', note: 'macOS is building but not yet signed' },
-  { label: 'Licence', value: 'Free core', note: 'Pro removes the 3-download cap' },
+  { label: 'License', value: 'Free core', note: 'Pro removes the 3-download cap' },
   { label: 'Engine', value: 'C++ / Qt 6', note: 'native, no Electron' },
   { label: 'Status', value: 'Public beta', note: 'shipping openly, bugs and all' },
 ];

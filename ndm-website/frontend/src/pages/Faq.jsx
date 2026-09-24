@@ -43,7 +43,7 @@ const SECTIONS = [
       {
         q: 'Do I need to create an account?',
         keywords: 'account signup register login required',
-        a: <>No. The Free plan works with no account at all — install it and download. An account is only needed to start a Pro trial, to buy a plan, or to have your plan follow you to another computer. If you do sign in, the app picks the plan up by itself; there is no licence key to copy.</>,
+        a: <>No. The Free plan works with no account at all — install it and download. An account is only needed to start a Pro trial, to buy a plan, or to have your plan follow you to another computer. If you do sign in, the app picks the plan up by itself; there is no license key to copy.</>,
       },
       {
         q: 'How do I update Nexa?',
@@ -235,19 +235,19 @@ const SECTIONS = [
         a: <>Yes: within 14 days of any charge, email <a href="mailto:support@nexadownloadmanager.com" className="text-brand-300 hover:underline">support@nexadownloadmanager.com</a> and we refund it in full, no questions asked. After 14 days charges are not refundable, but we will still cancel immediately on request so you are not billed again. The details are in the <A to="/terms">terms</A>.</>,
       },
       {
-        q: 'How do I activate a licence key?',
-        keywords: 'activate licence key serial activation code',
+        q: 'How do I activate a license key?',
+        keywords: 'activate license licence key serial activation code',
         a: <>Easiest is not to: sign in to your account in Settings → Account and the plan follows you, with no key to copy. If you prefer a key, open Settings → Account → &ldquo;Use a license key instead&rdquo;, paste it and activate. The two are mutually exclusive on purpose — signing in clears a stored key, and activating a key signs you out. See <A to="/docs/license">signing in &amp; seats</A>.</>,
       },
       {
-        q: 'Can I move my licence to another computer?',
-        keywords: 'transfer move licence another computer new pc seat',
+        q: 'Can I move my license to another computer?',
+        keywords: 'transfer move license licence another computer new pc seat',
         a: <>Yes, and you do not need to ask us. A plan covers a number of machines <em>at a time</em>, not a fixed list: Pro is one, Team is five. Sign out on the old machine, or open your <A to="/dashboard">dashboard</A> and sign that device out remotely — the seat frees itself immediately and the new computer can take it. A machine that crashes frees its seat automatically when the lease lapses.</>,
       },
       {
         q: 'What happens if my payment fails?',
         keywords: 'payment failed declined card expired',
-        a: <>Nothing sudden. Stripe retries a failed payment over several days and emails you. Your plan keeps working throughout, and for a few days after, so a card that expired over a weekend does not interrupt anything. If it ultimately fails, the plan drops back to Free — the app keeps working, with the Free limits. Your licence key is never deleted, so paying again restores everything.</>,
+        a: <>Nothing sudden. Stripe retries a failed payment over several days and emails you. Your plan keeps working throughout, and for a few days after, so a card that expired over a weekend does not interrupt anything. If it ultimately fails, the plan drops back to Free — the app keeps working, with the Free limits. Your license key is never deleted, so paying again restores everything.</>,
       },
       {
         q: 'How do I update my payment method?',
@@ -318,7 +318,7 @@ const SECTIONS = [
       {
         q: 'How do I completely reset Nexa?',
         keywords: 'reset factory defaults clean wipe settings start over',
-        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your licence sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
+        a: <>Quit the app, then delete its data folder: <M>%APPDATA%\Nexa</M> on Windows or <M>~/.local/share/Nexa</M> on Linux. That removes settings, the queue, history and categories — your downloaded files are elsewhere and are not touched. Your license sits in the OS credential store, so sign out first if you also want that cleared. The app rebuilds everything from defaults on the next launch.</>,
       },
       {
         q: 'Where are Nexa’s settings and database stored?',

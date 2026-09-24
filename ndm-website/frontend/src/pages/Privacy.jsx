@@ -169,7 +169,7 @@ export default function Privacy() {
         <Block title="6. In-app promos on the Free plan">
           <p>
             The Free plan shows one promo strip inside the desktop app. To fetch it, Nexa asks our
-            own server for the current promo and sends the licence token it already holds — that is
+            own server for the current promo and sends the license token it already holds — that is
             the only thing sent, and it is what tells the server your plan. No profile, no browsing
             history, no download list, and no third-party ad network is involved: the promos are
             ours and they are served from our own API.
@@ -181,7 +181,7 @@ export default function Privacy() {
             site&apos;s own privacy policy applies.
           </p>
           <p>
-            Pro and Team are ad-free. The server refuses to return a promo for a paid licence, so
+            Pro and Team are ad-free. The server refuses to return a promo for a paid license, so
             no request for one is made and nothing is counted.
           </p>
         </Block>

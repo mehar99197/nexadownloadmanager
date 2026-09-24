@@ -33,7 +33,7 @@ function StatCard({ label, value, icon }) {
 }
 
 /**
- * The licence card and the devices card as they will land. These sit side by
+ * The license card and the devices card as they will land. These sit side by
  * side in one grid row, so the spinner that stood in for the first — 40% of
  * the window tall — set the height of the row, and the second arrived from
  * nothing a moment later.
@@ -112,7 +112,7 @@ function LicenseCard({ license, onRotated, className = '' }) {
       <Card className={`card-hover !p-6 ${className}`.trim()} data-testid="account-signin-card">
         <h3 className="font-semibold text-white">Use your account in the app</h3>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          No licence key needed. In Nexa Download Manager open{' '}
+          No license key needed. In Nexa Download Manager open{' '}
           <span className="font-medium text-slate-200">Settings &rarr; Account &rarr; Sign in with Nexa</span>, approve the
           code that opens here, and this account&rsquo;s plan follows you &mdash; a trial or an upgrade reaches the app on
           its own.
@@ -162,7 +162,7 @@ function LicenseCard({ license, onRotated, className = '' }) {
         )}
       </div>
       <p className="mt-3 text-xs text-slate-500">
-        Manual activation: Settings &rarr; Account &rarr; &ldquo;Use a licence key instead&rdquo;.{' '}
+        Manual activation: Settings &rarr; Account &rarr; &ldquo;Use a license key instead&rdquo;.{' '}
         <Link to="/docs/license" className="text-slate-300 hover:text-brand-300">How activation works</Link>
       </p>
       {canRotate && (
@@ -193,7 +193,7 @@ function timeAgo(iso) {
 }
 
 /**
- * Seats are concurrent: a licence covers N machines AT A TIME. This is where
+ * Seats are concurrent: a license covers N machines AT A TIME. This is where
  * a user frees one when the app on another machine is holding it.
  */
 function DevicesCard({ onChanged }) {
@@ -304,7 +304,7 @@ function DevicesCard({ onChanged }) {
                   )}
                 </p>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  {d.signedIn ? (d.appVersion ? `Nexa ${d.appVersion}` : 'Signed in with your account') : 'Activated with a licence key'}
+                  {d.signedIn ? (d.appVersion ? `Nexa ${d.appVersion}` : 'Signed in with your account') : 'Activated with a license key'}
                   {seatsEnforced ? (d.active ? ' · holding a seat' : ' · not holding a seat') : ''}
                   {d.lastSeenAt ? ` · last seen ${timeAgo(d.lastSeenAt)}` : ''}
                 </p>
@@ -386,8 +386,8 @@ function TeamCard({ onChanged }) {
         ? `${member.email} will no longer be able to accept.`
         // Deliberately blunt: this used to promise that their app "returns to
         // Free at its next check", which is not true. They were given the
-        // owner's real licence key and it keeps working until it is replaced.
-        : 'They stop appearing on your team, but the licence key they already have keeps working. '
+        // owner's real license key and it keeps working until it is replaced.
+        : 'They stop appearing on your team, but the license key they already have keeps working. '
           + 'To actually cut off their access, use “Replace key” on your License card afterwards.',
       confirmLabel: pending ? 'Withdraw' : 'Remove',
       danger: true,
@@ -409,7 +409,7 @@ function TeamCard({ onChanged }) {
   const leave = async () => {
     const sure = await confirm({
       title: `Leave ${team.owner.name}'s team?`,
-      message: 'The team licence key disappears from your dashboard and the app returns to your own plan.',
+      message: 'The team license key disappears from your dashboard and the app returns to your own plan.',
       confirmLabel: 'Leave team',
       danger: true,
     });
@@ -436,7 +436,7 @@ function TeamCard({ onChanged }) {
         <p className="mt-2 text-sm text-zinc-400">
           You are on <span className="font-semibold text-white">{team.owner.name}</span>&rsquo;s{' '}
           <span className="capitalize">{team.plan}</span> plan
-          {team.usable ? '. The team licence key is shown above.' : ', which is not active right now.'}
+          {team.usable ? '. The team license key is shown above.' : ', which is not active right now.'}
         </p>
         <div className="mt-4">
           <Button variant="ghost" onClick={leave} disabled={busyId === 'leave'}>
@@ -690,7 +690,7 @@ export default function Dashboard() {
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         {loadingLicense ? (
-          <CardSkeleton label="Loading your licence" />
+          <CardSkeleton label="Loading your license" />
         ) : (
           <LicenseCard license={license} onRotated={loadLicense} className={licenseArrives} />
         )}
