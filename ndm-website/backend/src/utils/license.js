@@ -126,8 +126,23 @@ function isPaidPlanLapsed(sub, now = new Date()) {
   return end + PAID_GRACE_DAYS * 24 * 60 * 60 * 1000 <= toTime(now);
 }
 
+/**
+ * A plan that renews — and so has a card, invoices and Stripe's portal behind
+ * it. Only a live Stripe subscription on a paid plan does. An admin-granted
+ * plan simply ends on its date and a trial is never charged; neither carries a
+ * Stripe id. The id alone is not enough, though: expireIfLapsed drops a lapsed
+ * plan to Free and leaves the old id on the row.
+ *
+ * The site reads this to choose between "Renews" and "Active until", and to
+ * decide whether "Cancel subscription" and "Manage billing" mean anything.
+ */
+function isBilled(sub) {
+  if (!sub || !sub.stripe_subscription_id || sub.status !== 'active') return false;
+  return sub.plan === 'pro' || sub.plan === 'team';
+}
+
 module.exports = {
   generateLicenseKey, planSeats, planExpiry, expiryForPlanChange, SEAT_LEASE_SECONDS,
   TRIAL_DAYS, TRIAL_PLAN, PAID_GRACE_DAYS,
-  trialEndsAt, isTrialActive, isTrialExpired, isPaidPlanLapsed,
+  trialEndsAt, isTrialActive, isTrialExpired, isPaidPlanLapsed, isBilled,
 };

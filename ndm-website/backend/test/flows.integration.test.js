@@ -384,6 +384,12 @@ test('backend flows', async (t) => {
       // A member is never shown the owner's cancellation state: it is not
       // theirs to read, and the billing page acts on it.
       assert.equal(status.cancelAtPeriodEnd, false);
+      // Nor is the plan billed to them — the owner pays, so the member gets no
+      // "Renews", no cancel button and no portal.
+      assert.equal(status.billed, false);
+      assert.equal(me.subscription.billed, false);
+      const ownerStatus = (await owner.get('/api/subscription/status', { token: o.token })).body.data;
+      assert.equal(ownerStatus.billed, true, 'the mock checkout stands in for a Stripe subscription');
 
       // …and the entitlement the desktop app receives agrees with all of it.
       const licence = (await member.get('/api/user/license', { token: m.token })).body.data;

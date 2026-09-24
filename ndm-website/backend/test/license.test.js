@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const {
   TRIAL_DAYS, TRIAL_PLAN, trialEndsAt, isTrialActive, isTrialExpired, planSeats,
-  planExpiry, expiryForPlanChange, isPaidPlanLapsed, PAID_GRACE_DAYS,
+  planExpiry, expiryForPlanChange, isPaidPlanLapsed, PAID_GRACE_DAYS, isBilled,
 } = require('../src/utils/license');
 
 const NOW = new Date('2026-08-30T10:00:00.000Z');
@@ -130,4 +130,20 @@ test('isPaidPlanLapsed only fires after the grace period, and never on a trial',
       stripe_subscription_id: null, expiry_date: new Date(NOW.getTime() - 30 * day) }, NOW), false);
   assert.equal(isPaidPlanLapsed(paid(0, { expiry_date: null }), NOW), false);
   assert.equal(isPaidPlanLapsed(null, NOW), false);
+});
+
+/* -------------------------------------------------------- billed plans ---- */
+
+test('isBilled: only a live Stripe subscription on a paid plan renews', () => {
+  const stripePaid = { plan: 'pro', status: 'active', trial_ends_at: null, stripe_subscription_id: 'sub_1' };
+  assert.equal(isBilled(stripePaid), true);
+  assert.equal(isBilled({ ...stripePaid, plan: 'team' }), true);
+
+  // An admin grant and a trial have no Stripe subscription behind them.
+  assert.equal(isBilled({ ...stripePaid, stripe_subscription_id: null }), false);
+  assert.equal(isBilled(sub()), false);
+  // expireIfLapsed moves a lapsed plan to Free and leaves the old id behind.
+  assert.equal(isBilled({ ...stripePaid, plan: 'free' }), false);
+  assert.equal(isBilled({ ...stripePaid, status: 'cancelled' }), false);
+  assert.equal(isBilled(null), false);
 });

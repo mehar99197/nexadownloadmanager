@@ -15,7 +15,7 @@ const { effectivePlanFor } = require('../utils/accountPlan');
 const Payment = require('../models/Payment');
 const AuditLog = require('../models/AuditLog');
 const {
-  generateLicenseKey, planSeats, planExpiry, TRIAL_DAYS, TRIAL_PLAN, isTrialActive,
+  generateLicenseKey, planSeats, planExpiry, TRIAL_DAYS, TRIAL_PLAN, isTrialActive, isBilled,
 } = require('../utils/license');
 
 function toIso(value) {
@@ -33,6 +33,10 @@ function statusSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
     // show — otherwise a cancellation looks like it did nothing. A member is
     // never shown the owner's cancellation state: it is not theirs to act on.
     cancelAtPeriodEnd: viaTeam ? false : Boolean(Number(sub.cancel_at_period_end)),
+    // Only a Stripe subscription renews or has invoices to manage. A plan an
+    // admin granted just ends on its date, and Billing showed it as "Renews"
+    // with "Cancel subscription" and a portal button that answered an error.
+    billed: viaTeam ? false : isBilled(sub),
     // Billing hides "cancel" and "manage billing" on a plan the account is a
     // guest on — a member can neither pay for nor stop the owner's plan.
     viaTeam, teamOwner,
@@ -114,12 +118,17 @@ router.post(
     const { plan, billingCycle } = req.body;
     const existing = (await Subscription.findByUserId(req.user.id))[0] || null;
     const mockPaymentId = `mock_${req.user.id}_${plan}_${billingCycle}`;
+    // A real checkout leaves a Stripe subscription id behind (webhooks.js), and
+    // that id is what marks a plan as billed. Without it a mock purchase would
+    // look like an admin grant, and Billing would hide the cancel flow the mock
+    // exists to exercise. The mock client accepts any id.
+    const stripeSubscriptionId = `sub_mock_${req.user.id}`;
     let subscription;
     if (existing) {
       await Subscription.update(existing.id, {
         plan, status: 'active', seats: planSeats(plan),
         expiryDate: planExpiry(plan, billingCycle), startDate: new Date(),
-        trialEndsAt: null,
+        trialEndsAt: null, stripeSubscriptionId,
       });
       subscription = await Subscription.findById(existing.id);
     } else {
@@ -127,6 +136,7 @@ router.post(
         userId: req.user.id, plan, status: 'active',
         licenseKey: generateLicenseKey(), seats: planSeats(plan),
         startDate: new Date(), expiryDate: planExpiry(plan, billingCycle),
+        stripeSubscriptionId,
       });
     }
     await Payment.create({

@@ -17,7 +17,7 @@ const Review = require('../models/Review');
 const TeamMember = require('../models/TeamMember');
 const AuditLog = require('../models/AuditLog');
 const stripe = require('../utils/stripe');
-const { isTrialActive } = require('../utils/license');
+const { isTrialActive, isBilled } = require('../utils/license');
 const { publicUser } = require('../utils/userView');
 const { issueSession, clearSessionCookies, REFRESH_COOKIE } = require('../utils/session');
 const DeviceAuth = require('../models/DeviceAuth');
@@ -69,6 +69,9 @@ function subscriptionSummary(sub, { viaTeam = false, teamOwner = null } = {}) {
     trial: viaTeam ? false : isTrialActive(sub),
     trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
     cancelAtPeriodEnd: viaTeam ? false : Boolean(Number(sub.cancel_at_period_end)),
+    // Same meaning as /subscription/status: a Stripe subscription renews, an
+    // admin-granted plan simply ends on its expiry date.
+    billed: viaTeam ? false : isBilled(sub),
     viaTeam, teamOwner,
   };
 }
@@ -210,6 +213,8 @@ router.get(
       licenseKey: sub.license_key, plan: sub.plan, status: sub.status, expiryDate: sub.expiry_date,
       trial: viaTeam ? false : isTrialActive(sub),
       trialEndsAt: viaTeam ? null : toIso(sub.trial_ends_at),
+      // The dashboard labels expiryDate "Renews" only for a billed plan.
+      billed: viaTeam ? false : isBilled(sub),
       viaTeam, ...(viaTeam ? { teamOwner } : {}),
     });
   })
