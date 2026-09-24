@@ -396,6 +396,11 @@ router.put(
     if (user.id === req.admin.id && banned === true)
       return fail(res, 'SELF_LOCKOUT', 'You cannot disable your own admin account', 400);
     if (Object.keys(updates).length) await User.update(user.id, updates);
+    // A ban ends every session, the desktop app's included — the same line
+    // root.js draws for staff. The ban flag alone is re-read on each request,
+    // but only while it stays set: lifting it again would otherwise hand back
+    // a live refresh cookie and a signed-in app nobody had used during the ban.
+    if (banned === true) await User.revokeSessions(user.id, { deviceReason: 'banned' });
 
     if (plan !== undefined) {
       const currentSubscription = (await Subscription.findByUserId(user.id))[0] || null;

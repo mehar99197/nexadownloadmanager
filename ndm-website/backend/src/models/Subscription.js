@@ -6,6 +6,50 @@ const {
   isPaidPlanLapsed, SEAT_LEASE_SECONDS,
 } = require('../utils/license');
 
+/**
+ * Revoke the seats on a subscription that were taken with its licence KEY,
+ * sparing the machines signed in with an ACCOUNT (a device token,
+ * models/DeviceAuth.js) that is entitled to this subscription.
+ *
+ * Used when the key is replaced. Replacing a key cuts loose whoever holds the
+ * old key; an account sign-in never held it — its app validates with its own
+ * device token and looks the plan up through the account
+ * (utils/accountPlan.js) — so it is not what a new key should end, and the
+ * dashboard promises as much ("machines signed in with an account are not
+ * affected"). Revoking every row regardless answered those machines
+ * `seat_revoked` on their next heartbeat and dropped them to Free.
+ *
+ * An activation row records the machine, not how it authenticated, so the
+ * test is: does this fingerprint have a LIVE device token belonging to an
+ * account that draws on this subscription — its owner, or an active member of
+ * its team roster — and is that account still one the licence endpoints serve
+ * (not banned, a customer)? routes/license.js refuses every other device token
+ * (wrong fingerprint, banned, staff) before it reaches a seat, so a row that
+ * fails this test can only have been taken with the key. Callers remove a
+ * departing member from team_members BEFORE calling this, which is what makes
+ * their machines lose the seat too.
+ */
+const REVOKE_KEY_SEATS_SQL = `
+  UPDATE license_activations a
+     SET a.lease_expires_at = NULL, a.revoked_at = NOW()
+   WHERE a.subscription_id = ?
+     AND NOT EXISTS (
+       SELECT 1
+         FROM device_tokens t
+         JOIN users u ON u.id = t.user_id
+        WHERE t.device_fingerprint = a.device_fingerprint
+          AND t.revoked_at IS NULL
+          AND u.banned = 0 AND u.role = 'user'
+          AND (
+            t.user_id = (SELECT s.user_id FROM subscriptions s WHERE s.id = a.subscription_id)
+            OR t.user_id IN (
+              SELECT m.user_id FROM team_members m
+               WHERE m.subscription_id = a.subscription_id
+                 AND m.status = 'active' AND m.user_id IS NOT NULL
+            )
+          )
+     )`;
+
 const Subscription = {
   async findById(id) {
     return queryOne('SELECT * FROM subscriptions WHERE id = ?', [id]);
@@ -121,12 +165,11 @@ const Subscription = {
       );
       // revoked_at, not a bare lease drop — same reason as releaseAllSeats: the
       // machines being cut off are still running, and a plain drop would be
-      // undone by their next heartbeat.
-      await connection.execute(
-        `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
-          WHERE subscription_id = ?`,
-        [id]
-      );
+      // undone by their next heartbeat. Only the machines on the KEY: the owner
+      // and the members still on the roster who signed in with their accounts
+      // are not holding the key that was withdrawn (REVOKE_KEY_SEATS_SQL). The
+      // banned member was deleted from the roster above, so theirs go too.
+      await connection.execute(REVOKE_KEY_SEATS_SQL, [id]);
       return { rotated: true, removed: count, licenseKey };
     });
   },
@@ -417,6 +460,11 @@ const Subscription = {
    * seat for as long as the plan lived. The same is true of a key that leaked
    * any other way.
    *
+   * "Every machine using the old one" is the machines that took their seat
+   * with the key. A machine signed in with the owner's account, or a current
+   * team member's, validates with its own device token and keeps working —
+   * see REVOKE_KEY_SEATS_SQL for how the two are told apart.
+   *
    * Both halves have to happen together. A new key alone leaves the old
    * devices holding live leases against this subscription until they lapse; a
    * seat sweep alone lets them re-activate with the key they still have.
@@ -449,11 +497,9 @@ const Subscription = {
       );
       // revoked_at, not just a cleared lease: a machine still running with the
       // old key would otherwise renew straight through its next heartbeat.
-      const [freed] = await connection.execute(
-        `UPDATE license_activations SET lease_expires_at = NULL, revoked_at = NOW()
-          WHERE subscription_id = ?`,
-        [id]
-      );
+      // Machines signed in with an account entitled to this plan keep their
+      // seat — they never held the key (REVOKE_KEY_SEATS_SQL).
+      const [freed] = await connection.execute(REVOKE_KEY_SEATS_SQL, [id]);
       return {
         ok: true,
         licenseKey,

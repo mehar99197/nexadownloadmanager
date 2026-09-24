@@ -161,6 +161,24 @@ async function listRecent({ hours = 24, kind, limit = 200 } = {}) {
   return { hours: safeHours, events, counts: counts.map((c) => ({ ...c, n: Number(c.n) })) };
 }
 
+/**
+ * Every event recorded about one account, for the self-service export: the
+ * rows carrying its id, plus — when the caller has proved it owns the
+ * address (`includeByEmail`) — rows recorded against the address alone
+ * (a failed sign-in names an email, not always an account).
+ */
+async function listForUser(userId, email, { includeByEmail = false } = {}) {
+  const byEmail = includeByEmail ? ' OR (user_id IS NULL AND email = ?)' : '';
+  const vals = includeByEmail ? [userId, String(email).toLowerCase()] : [userId];
+  return query(
+    `SELECT kind, severity, ip, user_agent, detail, created_at
+       FROM security_events
+      WHERE user_id = ?${byEmail}
+      ORDER BY id DESC`,
+    vals
+  );
+}
+
 /** Events older than `days` are dropped; run from the daily maintenance job. */
 async function prune(days = 90) {
   const result = await execute(
@@ -170,4 +188,4 @@ async function prune(days = 90) {
   return result.affectedRows || 0;
 }
 
-module.exports = { record, listRecent, prune, RULES, ALERT_COOLDOWN_MS, _lastAlertAt: lastAlertAt };
+module.exports = { record, listRecent, listForUser, prune, RULES, ALERT_COOLDOWN_MS, _lastAlertAt: lastAlertAt };

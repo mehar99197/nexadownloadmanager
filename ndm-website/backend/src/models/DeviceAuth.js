@@ -235,6 +235,33 @@ const DeviceAuth = {
     );
   },
 
+  /**
+   * For the self-service export (GET /user/export): every device token row
+   * still held for the account, revoked ones included, and the sign-in
+   * requests it approved. Never token_hash / device_code_hash, and never the
+   * user_code — only what describes the machine and when.
+   */
+  async listAllForExport(userId) {
+    return query(
+      `SELECT id, device_fingerprint, device_name, app_version, created_at, last_seen_at,
+              revoked_at, revoked_reason
+         FROM device_tokens
+        WHERE user_id = ?
+        ORDER BY created_at DESC`,
+      [userId]
+    );
+  },
+
+  async listCodesForExport(userId) {
+    return query(
+      `SELECT id, device_name, app_version, ip, status, created_at
+         FROM device_codes
+        WHERE user_id = ?
+        ORDER BY created_at DESC`,
+      [userId]
+    );
+  },
+
   /** Spent codes and long-revoked tokens; run from utils/housekeeping.js. */
   async prune() {
     const codes = await execute(

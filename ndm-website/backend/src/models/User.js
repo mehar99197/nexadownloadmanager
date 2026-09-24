@@ -63,8 +63,20 @@ const User = {
    * hashes at the same time is what stops a new token being minted from a
    * cookie; the bump is what kills the access tokens already out there.
    * Returns the new value.
+   *
+   * "Every session" includes the desktop app. A machine signed in with the
+   * account holds a device token (models/DeviceAuth.js) that token_version
+   * knows nothing about, so before the third statement below a password
+   * change or reset — what somebody does when they think another person is in
+   * their account — left every signed-in app running, while the profile page
+   * told them "any other devices have been signed out". It is revoked here
+   * rather than at each caller so no caller can forget it: the app's next
+   * validate/heartbeat finds no live token and is answered `signed_out`
+   * (routes/license.js), which makes it forget the token. No caller wants to
+   * keep a machine — the one browser session a password change keeps is
+   * re-issued by that route after this has run.
    */
-  async revokeSessions(id) {
+  async revokeSessions(id, { deviceReason = 'sessions_revoked' } = {}) {
     await execute(
       `UPDATE users
           SET token_version = token_version + 1,
@@ -79,6 +91,12 @@ const User = {
     await execute(
       'UPDATE user_sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL',
       [id]
+    );
+    // …and every desktop app signed in with the account.
+    await execute(
+      `UPDATE device_tokens SET revoked_at = NOW(), revoked_reason = ?
+        WHERE user_id = ? AND revoked_at IS NULL`,
+      [String(deviceReason).slice(0, 40), id]
     );
     const row = await queryOne('SELECT token_version FROM users WHERE id = ?', [id]);
     return row ? Number(row.token_version) || 0 : 0;
@@ -198,6 +216,18 @@ const User = {
     const sql = `SELECT COUNT(*) AS cnt FROM users${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
     const r = await queryOne(sql, vals);
     return r ? r.cnt : 0;
+  },
+
+  /**
+   * The public "registered users" figure (GET /api/stats): customers who
+   * finished signing up and are allowed in. count() with no filter is every
+   * row — staff and the creator, banned accounts, and sign-ups that never
+   * verified their address (including the squatted, never-verified ones
+   * routes/auth.js strips on a Google link) — which is the right number for
+   * the control panels' own tiles and the wrong one to show the public.
+   */
+  async countCustomers() {
+    return User.count({ role: 'user', emailVerified: true, banned: false });
   },
 
   async list({ page = 1, limit = 20, q, role, banned, emailVerified } = {}) {
