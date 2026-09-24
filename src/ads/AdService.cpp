@@ -78,6 +78,10 @@ AdService::AdService(LicenseManager *license, QObject *parent)
     if (m_license) {
         connect(m_license, &LicenseManager::entitlementChanged,
                 this, &AdService::applyPlan);
+        // A stored credential that turns out to be Free changes no plan, so
+        // entitlementChanged never fires for it; this is its go-ahead.
+        connect(m_license, &LicenseManager::planSettled,
+                this, &AdService::applyPlan);
     }
 }
 
@@ -120,7 +124,11 @@ void AdService::applyPlan(const QString &plan)
     }
 
     m_adFree = false;
-    if (!m_started)
+    // "free" is not an answer until the licence has given one: while the
+    // stored credential is read and validated, plan() reads it on a paid
+    // install too, and a fetch then carries no token, so the server serves —
+    // and counts — a promo for somebody who paid. planSettled() comes back here.
+    if (!m_started || (m_license && !m_license->isPlanSettled()))
         return;
     if (!m_refresh->isActive())
         m_refresh->start();

@@ -636,6 +636,26 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_reverify_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
+    # The ad strip against the licence, in main.cpp's order: a stored credential
+    # asks for no promo until its validation has answered, and a paid answer
+    # never asks at all. The real LicenseManager, AdService and AdBanner against
+    # one fake server that holds the validation back; built like the tests above.
+    add_executable(nexa_ad_service_test
+        tests/AdServiceTest.cpp
+        src/ads/AdService.cpp
+        src/ui/AdBanner.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_ad_service_test PRIVATE src)
+    target_compile_definitions(nexa_ad_service_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
+    target_link_libraries(nexa_ad_service_test PRIVATE
+        Qt6::Core Qt6::Network Qt6::Widgets OpenSSL::Crypto)
+
     # The licence guard, compiled BOTH ways from the same source, each asserting
     # the same results. No Qt: the guard depends only on the standard library.
     #   nexa_guard_test      — the plain, debuggable path (what dev/test builds use)
@@ -673,6 +693,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
     add_test(NAME account_signin COMMAND nexa_account_signin_test)
     add_test(NAME reverify COMMAND nexa_reverify_test)
+    add_test(NAME ad_service COMMAND nexa_ad_service_test)
     add_test(NAME guard COMMAND nexa_guard_test)
     add_test(NAME guard_obfuscated COMMAND nexa_guard_obf_test)
 endif()

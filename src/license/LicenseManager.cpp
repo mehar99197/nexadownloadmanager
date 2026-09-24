@@ -298,7 +298,9 @@ void LicenseManager::start()
     //
     // Defer to the event loop instead. Nothing is lost by waiting one turn: the
     // pre-answer state is already Free (Entitlements defaults to the Free set),
-    // so the app gates rather than leaks while the key is being read.
+    // so the app gates rather than leaks while the key is being read. That Free
+    // is a gate, not an answer: anything that acts on "free" itself — the ad
+    // strip — waits for isPlanSettled().
     QTimer::singleShot(0, this, [this]() {
         // The account token is read first: it is how a current install is
         // meant to be licensed, and a machine somebody signed in should not be
@@ -1252,11 +1254,17 @@ void LicenseManager::clearCache()
 void LicenseManager::setPlan(const QString &plan, const QString &status)
 {
     const bool planChanged = m_plan != plan;
+    // Every outcome of a validation ends here, and so does start() finding
+    // nothing stored, so the first call is this launch's answer.
+    const bool firstAnswer = !m_planSettled;
     m_plan = plan;
     m_status = status;
+    m_planSettled = true;
     if (planChanged)
         emit entitlementChanged(m_plan);
     emit statusChanged(m_status);
+    if (firstAnswer)
+        emit planSettled(m_plan);
 }
 
 // --- Account sign-in --------------------------------------------------------

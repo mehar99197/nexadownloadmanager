@@ -40,7 +40,8 @@ class AdService : public QObject {
 public:
     explicit AdService(LicenseManager *license, QObject *parent = nullptr);
 
-    // Begin fetching (no-op on a paid plan). Safe to call more than once.
+    // Begin fetching once this launch's plan is known (no-op on a paid plan).
+    // Safe to call more than once.
     void start();
 
     bool hasAd() const { return !m_ads.isEmpty(); }
