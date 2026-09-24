@@ -1217,10 +1217,24 @@ void LicenseManager::deactivate()
         emit activationFinished(true, QStringLiteral("License key removed"));
         return;
     }
+    // Stop the checks still in flight, detaching each handler first as
+    // validate() does: abort() emits finished() synchronously. Attached, the
+    // validation's handler ran in here — it took m_reply, set it to null and
+    // handled the cancellation as an outage, whose offline-grace path can put
+    // the cached paid plan back — and deleteLater() then ran on null. A
+    // heartbeat left running answers after the key is gone, with a token no
+    // key is left to be checked against, and the plan comes back.
     if (m_reply) {
+        m_reply->disconnect(this);
         m_reply->abort();
         m_reply->deleteLater();
         m_reply = nullptr;
+    }
+    if (m_heartbeatReply) {
+        m_heartbeatReply->disconnect(this);
+        m_heartbeatReply->abort();
+        m_heartbeatReply->deleteLater();
+        m_heartbeatReply = nullptr;
     }
     // Give the seat back before forgetting the key, or it would sit occupied
     // until the lease expired even though this machine is no longer licensed.
