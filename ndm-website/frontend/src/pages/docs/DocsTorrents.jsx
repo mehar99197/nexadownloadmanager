@@ -11,13 +11,13 @@ export default function DocsTorrents() {
   return (
     <DocsShell
       title="Torrents"
-      intro="BitTorrent is built into the app (libtorrent), so a magnet link sits in the same queue as an HTTP file, with the same pause, resume and speed controls."
+      intro="BitTorrent is built into the app (libtorrent), so a magnet link sits in the same queue as an HTTP file, with the same pause and resume controls. Torrents have their own speed limits."
     >
       <H2 id="adding">Adding a torrent</H2>
       <Bullets
         items={[
-          <><strong className="text-white">Magnet link:</strong> paste it into the app, or click it in the browser — with the extension installed, <Code>magnet:</Code> links are handed to Nexa. Metadata is fetched from the swarm before the row shows a size.</>,
-          <><strong className="text-white">.torrent file:</strong> open it with Nexa, drag it onto the window, or download it normally — the extension recognises the file type and passes it to the app.</>,
+          <><strong className="text-white">Magnet link:</strong> paste it into New download (<Code>Ctrl+N</Code>), drag it onto the window, or right-click it in the browser and choose <strong className="text-white">Download with Nexa</strong> (needs the extension). Clicking a <Code>magnet:</Code> link does not open Nexa. Metadata is fetched from the swarm before the row shows a size.</>,
+          <><strong className="text-white">.torrent file:</strong> drag it onto the window. In the browser, clicking a link whose address ends in <Code>.torrent</Code> hands it to Nexa through the extension, and the torrent starts; other <Code>.torrent</Code> links download as an ordinary file, which you can then drag onto the window.</>,
           <>A torrent downloads in full: choosing individual files from a multi-file torrent is not supported yet.</>,
         ]}
       />
@@ -35,9 +35,9 @@ export default function DocsTorrents() {
       <H2 id="limits">Speed limits</H2>
       <P>
         Separate download and upload caps for the whole torrent session live under Settings &rarr;
-        BitTorrent, where <Code>0</Code> shows as Unlimited. These are independent of the HTTP speed limit and of the
-        global &ldquo;quiet hours&rdquo; scheduler, which pauses everything. On a shared connection an
-        upload cap around 80% of your uplink keeps the rest of the house happy.
+        BitTorrent, where <Code>0</Code> shows as Unlimited. These are independent of the HTTP
+        speed limit. On a shared connection an upload cap around 80% of your uplink keeps the rest
+        of the house happy.
       </P>
 
       <H2 id="network">Peers, DHT and ports</H2>
