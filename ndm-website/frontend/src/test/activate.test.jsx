@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -91,6 +91,55 @@ describe('/activate — connecting the desktop app', () => {
     await userEvent.click(screen.getByRole('button', { name: /^deny$/i }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/device/deny', { user_code: 'ABCD-1234' }));
     expect(await screen.findByTestId('activate-denied')).toBeInTheDocument();
+  });
+});
+
+describe('/activate — the computer on screen is the one Approve approves', () => {
+  const device = (userCode, deviceName) => ({ data: { ok: true, data: {
+    userCode, deviceName, appVersion: null, requestedAt: new Date().toISOString(),
+  } } });
+
+  it('ignores a slower reply for a code that has since been replaced', async () => {
+    // The first code's lookup is held; a second code pasted over it answers
+    // at once. The held reply then lands last and must not repaint the card.
+    let releaseFirst;
+    api.get.mockImplementation((path) => {
+      if (path === '/device/code/AAAA-1111')
+        return new Promise((resolve) => { releaseFirst = () => resolve(device('AAAA-1111', 'Stranger PC')); });
+      if (path === '/device/code/BBBB-2222') return Promise.resolve(device('BBBB-2222', 'My laptop'));
+      return failure(404, 'NOT_FOUND', 'no');
+    });
+    api.post.mockImplementation(() => envelope({ approved: true }));
+
+    renderAt('/activate?code=AAAA1111', <Activate />);
+    await waitFor(() => expect(releaseFirst).toBeTypeOf('function'));
+
+    const input = screen.getByLabelText(/code shown in the app/i);
+    await userEvent.clear(input);
+    await userEvent.paste('BBBB2222');
+    expect(await screen.findByTestId('activate-device')).toHaveTextContent('My laptop');
+
+    await act(async () => { releaseFirst(); });
+
+    expect(screen.getByTestId('activate-device')).toHaveTextContent('My laptop');
+    expect(screen.queryByText('Stranger PC')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /approve this computer/i }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/device/approve', { user_code: 'BBBB-2222' }));
+  });
+
+  it('an incomplete code shows no computer, and nothing can be approved', async () => {
+    api.get.mockImplementation((path) => (path === '/device/code/ABCD-1234'
+      ? Promise.resolve(device('ABCD-1234', 'Office laptop'))
+      : failure(404, 'NOT_FOUND', 'no')));
+
+    renderAt('/activate?code=ABCD1234', <Activate />);
+    expect(await screen.findByTestId('activate-device')).toHaveTextContent('Office laptop');
+
+    await userEvent.type(screen.getByLabelText(/code shown in the app/i), '{Backspace}');
+
+    expect(screen.queryByTestId('activate-device')).toBeNull();
+    expect(screen.getByRole('button', { name: /approve this computer/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^deny$/i })).toBeDisabled();
   });
 });
 

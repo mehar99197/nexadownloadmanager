@@ -79,14 +79,20 @@ export default function Subscriptions() {
     setSaving(true);
     setError('');
     try {
+      // Only what the admin changed. Sending every field on every save ended a
+      // trial when just its expiry was corrected, and left a Pro -> Team
+      // change on Pro's one seat because the seat count was always "set".
+      const changes = {};
+      if (form.plan !== editing.plan) changes.plan = form.plan;
+      if (form.status !== editing.status) changes.status = form.status;
+      if (Number(form.seats) !== Number(editing.seats || 1)) changes.seats = Number(form.seats);
+      // Absent leaves the date to the server; present overrides everything,
+      // including the date a plan change would otherwise imply.
       const changedExpiry = form.expiryDate !== toLocalInput(editing.expiry_date)
         ? fromLocalInput(form.expiryDate) : null;
-      await unwrap(api.put(`/admin/subscriptions/${editing.id}`, {
-        plan: form.plan, status: form.status, seats: Number(form.seats),
-        // Absent leaves the date to the server; present overrides everything,
-        // including the date a plan change would otherwise imply.
-        ...(changedExpiry ? { expiryDate: changedExpiry } : {}),
-      }));
+      if (changedExpiry) changes.expiryDate = changedExpiry;
+      // Nothing changed is nothing to send (the API refuses an empty edit).
+      if (Object.keys(changes).length) await unwrap(api.put(`/admin/subscriptions/${editing.id}`, changes));
       setEditing(null);
       await loadSubscriptions();
     } catch (err) {
