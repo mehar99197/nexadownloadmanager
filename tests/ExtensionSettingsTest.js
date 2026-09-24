@@ -4,7 +4,7 @@
 // Loads each background.js in a vm sandbox with a stub browser API and reaches
 // into its pure helpers (disabled-host matching, size gating, intercept-type
 // matching, links payload building) plus the native-message plumbing for
-// `ping` and `links`.
+// `ping` and `links`, and the right-click menu it installs.
 
 "use strict";
 
@@ -25,20 +25,24 @@ function listener() {
   return { addListener() {} };
 }
 
-// Records every native message and answers with a canned reply.
+// Records every native message and answers with a canned reply. Context-menu
+// items and the install / menu-click listeners are kept so tests can fire them.
 function browserApi(native) {
   const noOp = listener();
   return {
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
     commands: { onCommand: noOp },
-    contextMenus: { create() {}, onClicked: noOp },
+    contextMenus: {
+      create(item) { native.menus.push(item); },
+      onClicked: { addListener(fn) { native.menuClicked.push(fn); } },
+    },
     cookies: { getAll: async () => [] },
     downloads: { onCreated: noOp, cancel: async () => {}, erase: async () => {} },
     notifications: { create: async () => "id" },
     runtime: {
       id: "test-extension",
       lastError: null,
-      onInstalled: noOp,
+      onInstalled: { addListener(fn) { native.installed.push(fn); } },
       onStartup: noOp,
       onMessage: noOp,
       getURL: (p) => "chrome-extension://test-extension/" + p,
@@ -319,12 +323,31 @@ async function testNativeMessages(api, native, tag) {
   assert.equal(native.sent.length, 0, `${tag}: no native message for an empty page`);
 }
 
+// The right-click menu offers only handoffs that can work. There is no "whole
+// course" entry: yt-dlp cannot read a whole Udemy course (the app reports
+// "Udemy course download is not supported"), so that job always failed — and
+// the entry sat on every page and every link, not only on Udemy.
+async function testContextMenus(native, tag) {
+  for (const onInstalled of native.installed) await onInstalled({ reason: "install" });
+  deepEq(native.menus.map((m) => m.id), ["nexa-link", "nexa-media", "nexa-page"],
+         `${tag}: context menu entries`);
+  assert.ok(!native.menus.some((m) => /course/i.test(m.title)), `${tag}: no whole-course entry`);
+
+  // Nor is anything left behind that would still start one as a playlist job.
+  native.sent.length = 0;
+  const lecture = "https://www.udemy.com/course/python-basics/learn/lecture/123456";
+  for (const onClicked of native.menuClicked)
+    await onClicked({ menuItemId: "nexa-course", pageUrl: lecture }, { id: 7, url: lecture });
+  assert.equal(native.sent.length, 0, `${tag}: a "nexa-course" click sends nothing`);
+}
+
 (async () => {
   for (const relativePath of [
     "extension-chromium/background.js",
     "extension-firefox/background.js",
   ]) {
-    const native = { sent: [], local: {}, reply: () => ({ ok: true }), content: async () => null };
+    const native = { sent: [], local: {}, reply: () => ({ ok: true }), content: async () => null,
+                     menus: [], installed: [], menuClicked: [] };
     const api = loadExtension(relativePath, native);
     testDisabledHosts(api, relativePath);
     testMinSize(api, relativePath);
@@ -332,6 +355,7 @@ async function testNativeMessages(api, native, tag) {
     testNormalizeSettings(api, relativePath);
     testLinksPayload(api, relativePath);
     await testNativeMessages(api, native, relativePath);
+    await testContextMenus(native, relativePath);
   }
   console.log("Extension settings tests passed");
 })().catch((err) => {
