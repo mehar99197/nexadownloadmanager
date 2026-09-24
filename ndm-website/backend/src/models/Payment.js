@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, queryOne, insert, execute } = require('../config/db');
+const { lastMonths } = require('../utils/revenue');
 
 const Payment = {
   async findByUserId(userId, { page = 1, limit = 20 } = {}) {
@@ -49,18 +50,38 @@ const Payment = {
     );
   },
 
-  async revenueByMonth(months = 6) {
+  /**
+   * Paid revenue for exactly the last `months` calendar months, the current one
+   * included, oldest first — one bucket per month, zero-filled.
+   *
+   * The window used to start `months` months before TODAY, which is partway
+   * through a month: six months asked for came back as up to seven buckets,
+   * the first holding only the tail end of its month, and a month with no
+   * payments had no bucket at all, so the bars no longer lined up with months.
+   */
+  async revenueByMonth(months = 6, now = new Date()) {
     const safeMonths = Math.min(24, Math.max(1, Number(months) || 6));
-    return query(
+    const keys = lastMonths(safeMonths, now);
+    const rows = await query(
       `SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
               COALESCE(SUM(amount), 0) AS revenue,
               COUNT(*) AS payments
        FROM payments
        WHERE status = 'paid'
-         AND created_at >= DATE_SUB(CURRENT_DATE, INTERVAL ${safeMonths} MONTH)
+         AND created_at >= ?
        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-       ORDER BY month`
+       ORDER BY month`,
+      [`${keys[0]}-01 00:00:00`]
     );
+    const byMonth = new Map(rows.map((r) => [r.month, r]));
+    return keys.map((month) => {
+      const row = byMonth.get(month);
+      return {
+        month,
+        revenue: row ? Number(row.revenue) || 0 : 0,
+        payments: row ? Number(row.payments) || 0 : 0,
+      };
+    });
   },
 };
 

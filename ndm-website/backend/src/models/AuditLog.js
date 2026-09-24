@@ -20,6 +20,8 @@ function clamp(value, max) {
 }
 
 const AuditLog = {
+  MAX_LIMIT: 200,
+
   async create({ adminUserId, action, entityType, entityId = null, summary, metadata = null }) {
     const id = await insert(
       `INSERT INTO audit_logs (admin_user_id, action, entity_type, entity_id, summary, metadata)
@@ -30,8 +32,12 @@ const AuditLog = {
     return id;
   },
 
+  // The ceiling matches the schemas in front of it (limitQuerySchema and the
+  // root auditQuerySchema both allow 200, and the creator's audit screen asks
+  // for 200). It used to be 100 here, so that screen promised 200 rows and
+  // quietly received half.
   async listRecent(limit = 25) {
-    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 25));
+    const safeLimit = Math.min(AuditLog.MAX_LIMIT, Math.max(1, Number(limit) || 25));
     const rows = await query(
       `SELECT a.*, u.name AS admin_name, u.email AS admin_email
        FROM audit_logs a

@@ -19,12 +19,30 @@ const { z } = require('zod');
 // 500 is not arbitrary: releases.windows_url / linux_url and ads.image_url /
 // target_url are all VARCHAR(500), and a value that passes validation only to
 // overflow its column turns a rejected form into a 500 after the fact.
+function isHttps(value) {
+  try { return new URL(value).protocol === 'https:'; } catch { return false; }
+}
+
 const httpsUrl = z
   .string()
   .trim()
   .max(500)
-  .refine((value) => {
-    try { return new URL(value).protocol === 'https:'; } catch { return false; }
-  }, 'Must be an https:// URL');
+  .refine(isHttps, 'Must be an https:// URL');
 
-module.exports = { httpsUrl };
+/**
+ * An https:// URL, or an explicit "none": '' (after trimming) or null both
+ * mean "clear the stored value" and come out as ''. For a stored link an admin
+ * must be able to remove — the release external-download URLs, whose column
+ * defaults to '' and whose readers all test it for truthiness. Without this a
+ * URL, once saved, could never be taken off a release, and a form that sent an
+ * untouched empty field was refused outright.
+ */
+const clearableHttpsUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .nullable()
+  .transform((value) => value || '')
+  .refine((value) => value === '' || isHttps(value), 'Must be an https:// URL, or empty to clear it');
+
+module.exports = { httpsUrl, clearableHttpsUrl };
