@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -538,5 +538,22 @@ describe('Home — reviews wait until there are enough of them', () => {
     renderPage(<Home />);
     expect(await screen.findByText(/what users say/i)).toBeInTheDocument();
     expect(screen.getByText(/from 5 reviews/i)).toBeInTheDocument();
+  });
+});
+
+describe('FAQ — section shortcuts', () => {
+  it('links every section from the top, and steps aside while searching', async () => {
+    renderPage(<Faq />);
+    const nav = screen.getByRole('navigation', { name: /faq sections/i });
+    const links = within(nav).getAllByRole('link');
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      expect(href).toMatch(/^#/);
+      expect(document.getElementById(href.slice(1))).not.toBeNull();
+    }
+
+    await userEvent.type(screen.getByLabelText(/search the faq/i), 'magnet');
+    expect(screen.queryByRole('navigation', { name: /faq sections/i })).toBeNull();
   });
 });

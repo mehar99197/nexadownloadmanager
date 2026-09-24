@@ -150,8 +150,12 @@ export default function Contact() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            <label className="block" htmlFor="topic">
-              <span className="mb-2 block text-xs font-bold uppercase tracking-[0.12em] text-slate-300">Topic</span>
+            {/* Labelled exactly as <Input> labels its fields; this one was set in
+                spaced capitals and read as a different kind of thing. */}
+            <div className="block">
+              <label htmlFor="topic" className="mb-2 block text-xs font-semibold tracking-wide text-slate-300">
+                Topic
+              </label>
               <select
                 id="topic"
                 name="topic"
@@ -163,7 +167,7 @@ export default function Contact() {
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
               </select>
-            </label>
+            </div>
             <Input
               label="Message"
               name="message"

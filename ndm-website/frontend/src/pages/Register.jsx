@@ -140,7 +140,7 @@ export default function Register() {
           <span className="eyebrow"><span className="eyebrow-dot" />{wantsTrial ? '7-day Pro trial · no card needed' : 'Start moving faster'}</span>
         </div>
         <Card className="auth-card !p-8 sm:!p-9">
-          <h1 className="text-3xl font-extrabold tracking-tight text-white">Create your <span className="text-gradient">flow.</span></h1>
+          <h1 className="text-3xl font-extrabold tracking-tight text-white">Create your <span className="text-gradient">account.</span></h1>
           <p className="mt-2 text-sm leading-6 text-slate-400">
             {wantsTrial
               ? 'Your Pro trial starts the moment you sign in. No card, no auto-charge.'

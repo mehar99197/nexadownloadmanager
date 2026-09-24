@@ -35,9 +35,12 @@ export default function Features() {
         </p>
       </div>
 
-      <div className="mt-12 grid gap-4 md:grid-cols-2">
+      {/* Wrapped and centred rather than a two-column grid, as the docs hub
+          does it: with an odd number of pages the grid left the last card
+          stranded in the left column beside an empty cell. */}
+      <div className="mt-12 flex flex-wrap justify-center gap-4">
         {FEATURE_NAV.map((f, i) => (
-          <Card key={f.to} as={Link} to={f.to} className="group transition hover:border-brand-400/30">
+          <Card key={f.to} as={Link} to={f.to} className="group block w-full transition hover:border-brand-400/30 md:w-[calc(50%-0.5rem)]">
             <span className="text-xs font-bold uppercase tracking-[0.18em] text-brand-300">
               {String(i + 1).padStart(2, '0')}
             </span>

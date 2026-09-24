@@ -473,6 +473,26 @@ export default function Faq() {
               : `${results.length} of ${ALL.length} answers match.`}
           </p>
         )}
+        {/* Fifty-five rows in six groups, and the only way to the last group
+            was to scroll past the first five. Plain fragment links: the
+            sections already carry these ids and scroll-mt for the header. */}
+        {!results && (
+          <nav aria-label="FAQ sections" className="mt-4 flex flex-wrap gap-2">
+            {SECTIONS.map((section) => (
+              <a
+                key={section.id}
+                href={`#${section.id}`}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-white/5 bg-surface-2 px-3 text-xs font-medium text-slate-300 transition hover:text-white"
+              >
+                {section.label}
+                <span className="text-slate-500">
+                  {section.items.length}
+                  <span className="sr-only"> questions</span>
+                </span>
+              </a>
+            ))}
+          </nav>
+        )}
       </div>
 
       {results ? (

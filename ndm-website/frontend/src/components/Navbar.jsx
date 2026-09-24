@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import useTheme from '../hooks/useTheme';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -39,8 +39,96 @@ function ThemeToggle({ resolved, onToggle }) {
   );
 }
 
+const MENU_ITEM =
+  'flex min-h-11 w-full items-center rounded-lg px-3 text-left text-sm font-medium text-slate-300 transition hover:bg-[var(--color-surface-2)] hover:text-white';
+
+/**
+ * The signed-in account's own pages, and signing out, behind one button.
+ *
+ * "Logout" used to be a full-size button in the header, beside Dashboard, on
+ * every page — the most prominent control a signed-in visitor had, one
+ * mis-click from ending the session. A disclosure rather than an ARIA menu:
+ * the items are ordinary links reached with Tab, which is what they are.
+ */
+function AccountMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef(null);
+  const trigger = useRef(null);
+  const close = () => setOpen(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (e) => {
+      if (!wrap.current?.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      trigger.current?.focus();
+    };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  // Tabbing past the last item closes it. A null relatedTarget is a click on
+  // something unfocusable, which the pointer handler already judges.
+  const onBlur = (e) => {
+    if (e.relatedTarget && !wrap.current?.contains(e.relatedTarget)) setOpen(false);
+  };
+
+  const initial = (user?.name || user?.email || '?').trim().charAt(0).toUpperCase();
+
+  return (
+    <div ref={wrap} className="relative" onBlur={onBlur}>
+      <button
+        ref={trigger}
+        type="button"
+        className="btn btn-ghost gap-2 !pl-2.5"
+        aria-expanded={open}
+        aria-controls="account-menu"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {/* -my-1: the 24px avatar sits in the button's padding rather than
+            adding to it, so the trigger is the same 44px as Dashboard beside it. */}
+        <span aria-hidden="true" className="-my-1 grid h-6 w-6 place-items-center rounded-full bg-brand-400/15 text-xs font-bold text-brand-300">
+          {initial}
+        </span>
+        Account
+        <svg
+          width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+          className={`transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          id="account-menu"
+          className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-[var(--color-surface-border)] bg-[var(--color-surface-1)] p-1.5 shadow-[0_24px_48px_-24px_rgba(0,0,0,0.6)]"
+        >
+          {user?.email && (
+            <p className="truncate px-3 pb-1.5 pt-2 text-xs text-slate-500" title={user.email}>{user.email}</p>
+          )}
+          <ul>
+            <li><Link to="/billing" className={MENU_ITEM} onClick={close}>Billing</Link></li>
+            <li><Link to="/profile" className={MENU_ITEM} onClick={close}>Profile</Link></li>
+            <li className="mt-1 border-t border-[var(--color-surface-border)] pt-1">
+              <button type="button" className={MENU_ITEM} onClick={onLogout}>Log out</button>
+            </li>
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Navbar() {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, user, logout } = useAuth();
   const { resolved, toggle } = useTheme();
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
@@ -81,9 +169,7 @@ export default function Navbar() {
               <Link to="/dashboard" className="btn btn-soft">
                 Dashboard
               </Link>
-              <button type="button" className="btn btn-ghost" onClick={onLogout}>
-                Logout
-              </button>
+              <AccountMenu user={user} onLogout={onLogout} />
             </>
           ) : (
             <>
@@ -149,7 +235,7 @@ export default function Navbar() {
                     Dashboard
                   </Link>
                   <button type="button" className="btn btn-ghost" onClick={onLogout}>
-                    Logout
+                    Log out
                   </button>
                 </>
               ) : (
