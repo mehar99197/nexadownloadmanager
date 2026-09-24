@@ -93,6 +93,23 @@ describe('folding the sidebar', () => {
     expect(folded).toBe(1 + NAMES.length);
   });
 
+  it('folds with Ctrl+B on a desktop, but not while typing', async () => {
+    onADesktop();
+    const user = userEvent.setup();
+    renderPanel();
+    await user.keyboard('{Control>}b{/Control}');
+    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
+    await user.keyboard('{Meta>}b{/Meta}');
+    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
+
+    const field = document.createElement('input');
+    document.body.appendChild(field);
+    field.focus();
+    await user.keyboard('{Control>}b{/Control}');
+    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
+    field.remove();
+  });
+
   it('still folds when storage refuses, for the visit', async () => {
     vi.spyOn(window.Storage.prototype, 'getItem').mockImplementation(() => {
       throw new Error('denied');
@@ -151,6 +168,10 @@ describe('the rail names its icons', () => {
     const user = userEvent.setup();
     renderPanel();
 
+    // The fold comes first: it sits in the brand row, above the links.
+    await user.tab();
+    expect(toggle()).toHaveFocus();
+    expect(tipText()).toBe('Expand sidebar · Ctrl+B');
     await user.tab();
     expect(link('Dashboard')).toHaveFocus();
     expect(tipText()).toBe('Dashboard');
