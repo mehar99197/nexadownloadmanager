@@ -7,7 +7,7 @@ export default function FeatureScheduler() {
   usePageMeta({
     title: 'Scheduler & speed limits',
     description:
-      'Start downloads at a chosen time, cap bandwidth globally or per download, and have Nexa sleep or shut the machine down when the queue is empty.',
+      'Start downloads at a chosen time, cap the speed of direct downloads globally or per download, and have Nexa sleep or shut the machine down when the queue is empty.',
   });
 
   return (
@@ -30,8 +30,8 @@ export default function FeatureScheduler() {
       <Bullets
         items={[
           <><strong className="text-white">Start later.</strong> Queue something now and have it begin at a time you choose. The app does not need to stay open in a particular state — scheduled jobs survive a restart and re-arm themselves.</>,
-          <><strong className="text-white">Speed limits.</strong> A global cap across everything, and a per-download cap on top of it. Both are live: change them mid-transfer and the running downloads adjust immediately.</>,
-          <><strong className="text-white">When everything is done.</strong> Open the folder, put the machine to sleep, or shut it down — with a countdown you can cancel.</>,
+          <><strong className="text-white">Speed limits.</strong> A global cap on direct downloads, and a per-download cap on top of it. Both are live: change them mid-transfer and the running downloads adjust immediately. Video-site, stream and MEGA downloads are not capped; torrents have limits of their own.</>,
+          <><strong className="text-white">When all downloads finish.</strong> Open the folder, put the machine to sleep, or shut it down — sleep and shutdown with a countdown you can cancel.</>,
         ]}
       />
       <P>
@@ -57,20 +57,21 @@ export default function FeatureScheduler() {
       </Note>
       <P>
         <strong className="text-white">Speed limits</strong> are enforced with a token bucket shared
-        by every active HTTP transfer. Tokens accrue at the configured rate; a connection that wants
-        to read waits until its bytes are covered. Because the bucket is shared, sixteen connections
-        on one file and three separate files all draw from the same budget — the cap is a real
-        ceiling on the app, not a per-connection number that quietly multiplies. A per-download cap
-        is a second, smaller bucket layered on top.
+        by every direct download. Tokens accrue at the configured rate; a connection that
+        wants to read waits until its bytes are covered. Because the bucket is shared, sixteen
+        connections on one file and three separate files all draw from the same budget — the cap is
+        a real ceiling on direct downloads, not a per-connection number that quietly multiplies. A
+        per-download cap is a second, smaller bucket layered on top. Video-site grabs, streams and
+        MEGA downloads do not draw from the bucket, so the cap does not slow them.
       </P>
       <P>
         BitTorrent has its own pair of limits, separate on purpose: torrent upload needs different
         headroom from HTTP download, and sharing one number would force a bad compromise.
       </P>
       <P>
-        <strong className="text-white">Post-download actions</strong> fire when the queue reaches a
-        terminal state — everything finished, failed or paused, with nothing left running. Sleep and
-        shutdown both show a 60-second countdown first, cancellable from the dialog or the tray,
+        <strong className="text-white">Post-download actions</strong> run once, after a download
+        completes and nothing else is left running, queued, paused or scheduled. Sleep and shutdown
+        both show a 60-second countdown first, with a Cancel button in the countdown window,
         because an unattended shutdown that you did not mean is a much worse outcome than a machine
         left running.
       </P>
@@ -82,13 +83,13 @@ export default function FeatureScheduler() {
         rows={[
           ['Start at a time', 'Any future date and time, per download, set in the new-download dialog'],
           ['Survives restart', <>Yes — re-armed from the database on launch. The app must be running at the scheduled time.</>],
-          ['Global speed cap', <>KB/s across all HTTP downloads. <Code>0</Code> = unlimited. Applies live.</>],
+          ['Global speed cap', <>KB/s across all direct downloads; video-site, stream and MEGA downloads are not capped. <Code>0</Code> = unlimited. Applies live.</>],
           ['Per-download cap', 'KB/s for one row, from its right-click menu, layered under the global cap'],
           ['Torrent limits', 'Separate download and upload caps, plus the seed-ratio target'],
-          ['Concurrency', 'How many files run at once — 3 on Free, unlimited on Pro'],
-          ['Connections per file', 'Up to 16 on Free, 32 on Pro; interacts with the speed cap rather than overriding it'],
-          ['When everything is done', 'Nothing, open the folder, sleep, or shut down — with a cancellable countdown'],
-          ['Queue reordering', 'Drag rows, or move the selection with the Downloads menu'],
+          ['Concurrency', 'How many direct downloads run at once — up to 3 on Free, up to 32 on Pro. Video-site, stream, MEGA and torrent jobs are not counted.'],
+          ['Connections per file', 'Not a setting: Nexa picks it from the file size, up to 16 on Free and 32 on Pro. The speed cap still applies to all of them.'],
+          ['When all downloads finish', 'Do nothing, open the download folder, sleep, or shut down — sleep and shutdown after a 60-second countdown you can cancel'],
+          ['Queue reordering', 'Drag rows, or use Move to top, Move up and Move down in a row’s right-click menu'],
           ['Clipboard monitoring', <>Optional: copy a link anywhere and Nexa offers to queue it</>],
           ['Recurring schedules', <>Not yet — each job is a single start time. <span className="text-amber-300">Planned.</span></>],
           ['Bandwidth by time of day', <>Not automatic yet; set the cap by hand or schedule the downloads instead. <span className="text-amber-300">Planned.</span></>],
@@ -108,7 +109,7 @@ export default function FeatureScheduler() {
       <P className="mt-4"><strong className="text-white">Cap the speed</strong></P>
       <Steps
         items={[
-          <>For everything: <strong className="text-white">Settings &rarr; Downloads &rarr; Speed limit</strong>, in KB/s. Zero means unlimited.</>,
+          <>For all direct downloads: <strong className="text-white">Settings &rarr; Downloads &rarr; Global speed limit</strong>, in KB/s. Zero means unlimited.</>,
           <>For one download: right-click its row &rarr; <strong className="text-white">Limit speed&hellip;</strong></>,
           <>Both take effect immediately on running transfers — no pause and resume needed.</>,
         ]}
@@ -116,7 +117,7 @@ export default function FeatureScheduler() {
       <P className="mt-4"><strong className="text-white">Do something when it finishes</strong></P>
       <Steps
         items={[
-          <><strong className="text-white">Settings &rarr; General &rarr; When everything is done</strong>, and pick the action.</>,
+          <><strong className="text-white">Settings &rarr; General &rarr; When all downloads finish</strong>, and pick the action.</>,
           <>For one session only, use <strong className="text-white">Downloads &rarr; Shut down computer when done (this session)</strong> — it clears itself afterwards so it cannot surprise you tomorrow.</>,
         ]}
       />
@@ -128,7 +129,7 @@ export default function FeatureScheduler() {
         rows={[
           [
             'A huge file overnight, machine off afterwards',
-            'Schedule for 02:00, no speed cap, "When everything is done → Shut down the computer".',
+            'Schedule for 02:00, no speed cap, "When all downloads finish → Shut down the computer".',
           ],
           [
             'Downloads that never disturb a work call',
@@ -157,8 +158,8 @@ export default function FeatureScheduler() {
           'A global cap slightly below your real line speed keeps interactive traffic snappy; at 100% of the line, everything else stutters.',
           'Check the scheduled list before closing the app for the night, so a 2am job is not waiting on a program that is not there.',
           'Sleep and shutdown both give you 60 seconds to cancel — but if you are away from the keyboard, they will happen.',
-          <>Clipboard monitoring pairs well with scheduling: copy links all afternoon, then set them all to start at night.</>,
-          'Speed limits apply to HTTP; torrents have their own pair. Setting one and wondering why the other is unaffected is the usual confusion.',
+          <>Clipboard monitoring does not schedule anything: a copied link you accept starts right away. To start downloads at night, add each one with New download and tick Start later.</>,
+          'The speed limits cover direct downloads. Torrents have their own pair, and video-site, stream and MEGA downloads are not capped at all — setting one and wondering why another is unaffected is the usual confusion.',
         ]}
       />
 
@@ -171,7 +172,9 @@ export default function FeatureScheduler() {
               <>
                 Nexa was not running at that moment. Scheduled jobs re-arm on launch, so it will
                 start as soon as you next open the app if the time has passed — but the app cannot
-                wake itself. Leave it in the tray, or enable start-with-system.
+                wake itself. Leave it in the tray. On Windows the installer already starts Nexa in
+                the background each time you sign in; on Linux, add it to your desktop&apos;s
+                startup applications.
               </>
             ),
           },
@@ -188,8 +191,9 @@ export default function FeatureScheduler() {
             symptom: 'The speed limit seems to be ignored',
             fix: (
               <>
-                Check which limit you set. The global cap covers HTTP downloads; torrents obey the
-                BitTorrent limits, and a per-download cap can only slow a row further, never speed it
+                Check which limit you set. The global cap covers direct downloads; torrents
+                obey the BitTorrent limits, video-site, stream and MEGA downloads are not capped at
+                all, and a per-download cap can only slow a row further, never speed it
                 past the global one. If a single row is slow for another reason, the cap is not
                 what is holding it.
               </>
@@ -199,9 +203,10 @@ export default function FeatureScheduler() {
             symptom: 'The computer shut down unexpectedly',
             fix: (
               <>
-                &ldquo;When everything is done&rdquo; is set to shut down, and the queue emptied. The
-                session-only version under the Downloads menu is safer for one-off use because it
-                clears itself. Set the persistent one back to &ldquo;Nothing&rdquo; in Settings.
+                &ldquo;When all downloads finish&rdquo; is set to shut down, and the last download
+                finished. The session-only version under the Downloads menu is safer for one-off use
+                because it clears itself. Set the persistent one back to &ldquo;Do nothing&rdquo; in
+                Settings.
               </>
             ),
           },

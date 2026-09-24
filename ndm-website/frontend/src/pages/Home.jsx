@@ -56,7 +56,7 @@ const FEATURES = [
       </svg>
     ),
     title: 'Real-time control',
-    desc: 'Watch speed, progress, and ETA at a glance. Pause, resume, reorder, or inspect any transfer instantly.',
+    desc: 'Watch speed and progress in the list, with time left in each download’s details window. Pause, resume, reorder, or inspect any transfer instantly.',
   },
   {
     icon: (
@@ -65,8 +65,8 @@ const FEATURES = [
         <path d="M21 3v5h-5" />
       </svg>
     ),
-    title: 'Resume anywhere',
-    desc: 'Progress is persisted locally, so a reboot or a bad connection never means starting over again.',
+    title: 'Resume where it stopped',
+    desc: 'Direct downloads save their progress as they go, so after a reboot or a dropped connection they carry on from there, on any server that supports resuming.',
   },
   {
     icon: (
@@ -76,7 +76,7 @@ const FEATURES = [
       </svg>
     ),
     title: 'Smart scheduling',
-    desc: 'Set global and per-download speed limits, schedule a start time, and pick how many transfers run at once.',
+    desc: 'Cap the speed of direct downloads, globally or per download, schedule a start time, and pick how many of them run at once.',
   },
 ];
 
@@ -136,7 +136,7 @@ export default function Home() {
   usePageMeta({
     title: 'Fast downloads for Windows and Linux',
     description:
-      'Nexa Download Manager accelerates HTTP downloads with up to 32 connections per file and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
+      'Nexa Download Manager accelerates HTTP downloads with up to 32 connections per file on Pro (16 on Free) and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
   });
 
   // A revisit starts from the last answers (api/reads.js), so the numbers and
@@ -177,7 +177,8 @@ export default function Home() {
   if (release?.version) {
     tiles.push({ value: `v${release.version}`, label: 'latest version' });
   }
-  tiles.push({ value: 'Up to 32', label: 'connections per file' });
+  // The Pro ceiling, and labeled as one: Free stops at 16 connections a file.
+  tiles.push({ value: '32 on Pro', label: 'connections per file' });
   if (tiles.length < 3) tiles.push({ value: 'Win + Linux', label: 'native desktop app' });
 
   return (
