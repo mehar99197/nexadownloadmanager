@@ -26,8 +26,12 @@ export default function DocsLicense() {
         anywhere else, which is why an account can never be &ldquo;shared&rdquo; the way a key
         could. The token asks <Code>POST /api/license/validate</Code> for the plan on
         your account (or the Team you were invited onto) and receives a signed entitlement.
-        Nothing about the machine leaves it except a hashed fingerprint used to count seats
-        (see <Link to="/privacy" className="text-brand-300 hover:underline">privacy</Link>).
+        Along with the token the app sends a hashed fingerprint of the computer (used to count
+        seats), the computer&rsquo;s name and operating system, and the app version. The server keeps
+        the name and version, which label the computer under Your devices, and the IP address each
+        sign-in came from (see <Link to="/privacy" className="text-brand-300 hover:underline">privacy</Link>).
+        A signed-in app checks in when it starts, every 6 hours, every 5 minutes while it holds a
+        seat (sooner after every tenth completed download) and when you quit.
       </P>
       <Note>
         The Free plan needs no sign-in at all: the app starts on Free by itself. Signing in is
@@ -40,8 +44,8 @@ export default function DocsLicense() {
       <H2 id="seats">Seats</H2>
       <Bullets
         items={[
-          <><strong className="text-white">Pro</strong> includes 1 seat, <strong className="text-white">Team</strong> 5. A seat is one computer running the app at a time; it frees itself 15 minutes after the app closes. The Free plan has no seat limit.</>,
-          <>Signing in on more computers than you have seats returns <Code>seat_limit</Code> and that computer stays on Free until one is free. Close the app elsewhere, or free the seat from your dashboard.</>,
+          <><strong className="text-white">Pro</strong> includes 1 seat, <strong className="text-white">Team</strong> 5. A seat is one computer running the app at a time. Quitting Nexa (<strong className="text-white">File &rarr; Quit Nexa</strong>, or <strong className="text-white">Quit Nexa</strong> in the tray menu) gives the seat back right away. Where there is a system tray, closing the window does not quit: Nexa keeps running there and keeps the seat. If the app crashes or loses its connection, the seat frees itself 15 minutes after the app last checked in. The Free plan has no seat limit.</>,
+          <>When every seat is in use, any other computer that asks for one gets <Code>seat_limit</Code> and runs on Free. To free a seat, quit Nexa on another computer, or sign that computer out (or free its seat) from your dashboard. The refused computer does not ask again on its own until its next full check, up to 6 hours later; to retry sooner, restart Nexa on it if it is signed in, or enter the key and click Activate again if you used one.</>,
           <>To move to a new computer: sign out on the old one (Settings &rarr; Account &rarr; <strong className="text-white">Sign out</strong>, which releases its seat) or sign it out from the dashboard, then sign in on the new one.</>,
           <>Team members sign in with their <em>own</em> account after accepting the invitation; the team&rsquo;s plan applies to them without anybody sharing a key.</>,
         ]}
@@ -78,10 +82,10 @@ export default function DocsLicense() {
       <Bullets
         items={[
           <><Code>signed_out</Code> &mdash; this computer was signed out from the dashboard, or the token was used elsewhere and revoked. Sign in again.</>,
-          <><Code>seat_limit</Code> &mdash; no free seat for this computer right now.</>,
-          <><Code>expired</Code> / <Code>cancelled</Code> &mdash; the paid plan or trial ended; the app is on Free until it is renewed.</>,
+          <><Code>seat_limit</Code> &mdash; every seat is in use on other computers right now. A license suspended for being used on far more computers than it has seats answers the same way; if Nexa is not running anywhere else, <Link to="/contact?topic=license" className="text-brand-300 hover:underline">contact us</Link>.</>,
+          <><Code>expired</Code> / <Code>cancelled</Code> &mdash; we stopped this license by hand. A plan or trial that ends, including one you cancelled, shows neither; it just returns to Free. A signed-in computer stays signed in on Free, and a license key is removed from the app.</>,
           <><Code>not_found</Code> &mdash; a typed key does not exist, or belongs to a deleted account.</>,
-          <><Code>invalid</Code> &mdash; the key format is wrong.</>,
+          <><Code>invalid</Code> &mdash; the license was refused without a more specific reason; <Link to="/contact?topic=license" className="text-brand-300 hover:underline">contact us</Link>. A key typed in the wrong format never gets this far: the app rejects it with <Code>Invalid license key format</Code> before asking the server.</>,
         ]}
       />
     </DocsShell>
