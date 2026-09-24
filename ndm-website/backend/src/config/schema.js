@@ -384,12 +384,34 @@ async function initSchema() {
       status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_user_id (user_id),
+      UNIQUE KEY uq_reviews_user (user_id),
       INDEX idx_status (status),
       INDEX idx_rating (rating),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // One review per account. Review.upsertByUserId used to find-then-insert
+  // over a plain index, so two POSTs in flight together left two rows and the
+  // public average counted that person twice. A database from before this
+  // index may hold such pairs: keep each account's NEWEST review (latest
+  // updated_at, then highest id) and drop the rest, then enforce it. Both steps
+  // are skipped once the index exists, so a normal boot does neither.
+  if (!(await indexExists('reviews', 'uq_reviews_user'))) {
+    await execute(`
+      DELETE r1 FROM reviews r1
+      JOIN reviews r2
+        ON r1.user_id = r2.user_id AND r1.id <> r2.id
+       AND (r2.updated_at > r1.updated_at
+            OR (r2.updated_at = r1.updated_at AND r2.id > r1.id))
+    `);
+    await addUniqueIndexIfMissing('reviews', 'uq_reviews_user (user_id)');
+  }
+  // The plain index the unique one replaces. Dropped only once the unique
+  // index exists, which also covers the user_id foreign key.
+  if ((await indexExists('reviews', 'idx_user_id')) && (await indexExists('reviews', 'uq_reviews_user'))) {
+    await execute('ALTER TABLE reviews DROP INDEX idx_user_id');
+  }
 
   await execute(`
     CREATE TABLE IF NOT EXISTS releases (
