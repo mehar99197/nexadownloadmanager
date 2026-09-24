@@ -601,6 +601,24 @@ if(NEXA_BUILD_TESTS)
     target_link_libraries(nexa_offline_grace_test PRIVATE
         Qt6::Core Qt6::Network OpenSSL::Crypto)
 
+    # "Remove license", or signing out, while a check is still out, against a
+    # fake server that holds /validate or /heartbeat open: the app survives,
+    # ends on Free with the credential and the cached token gone, and nothing
+    # in flight answers for them afterwards. Built like the tests around it.
+    add_executable(nexa_license_remove_test
+        tests/LicenseRemoveTest.cpp
+        src/license/LicenseManager.cpp
+        src/license/LicenseToken.cpp
+        src/license/KeyIntegrity.cpp
+        src/license/Guard.cpp
+        src/license/CredentialStore.cpp
+    )
+    target_include_directories(nexa_license_remove_test PRIVATE src)
+    target_compile_definitions(nexa_license_remove_test PRIVATE
+        NEXA_DEV_BUILD NEXA_TEST_CREDENTIAL_STORE)
+    target_link_libraries(nexa_license_remove_test PRIVATE
+        Qt6::Core Qt6::Network OpenSSL::Crypto)
+
     # Account sign-in (the device-authorization flow) against a real socket:
     # the code, the approval, which credential goes on the wire, and the
     # asymmetry between `signed_out` (forget the token) and a lapsed plan
@@ -671,6 +689,7 @@ if(NEXA_BUILD_TESTS)
     add_test(NAME download_core COMMAND nexa_download_core_test)
     add_test(NAME license_token COMMAND nexa_license_token_test)
     add_test(NAME offline_grace COMMAND nexa_offline_grace_test)
+    add_test(NAME license_remove COMMAND nexa_license_remove_test)
     add_test(NAME account_signin COMMAND nexa_account_signin_test)
     add_test(NAME reverify COMMAND nexa_reverify_test)
     add_test(NAME guard COMMAND nexa_guard_test)

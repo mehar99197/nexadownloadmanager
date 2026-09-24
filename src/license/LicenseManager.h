@@ -168,6 +168,9 @@ signals:
 
 private:
     void validate(const QString &licenseKey, bool userInitiated);
+    // Abort the validation and the heartbeat still in flight, each handler
+    // detached first. For when the credential they answer for is going.
+    void cancelInFlightChecks();
     void setPlan(const QString &plan, const QString &status);
     void clearCache();
     // One poll of /api/device/token while a sign-in is waiting for approval.
@@ -175,9 +178,9 @@ private:
     // Stop polling and report how the attempt ended.
     void endSignIn(bool ok, const QString &message);
     // Drop this machine's account credential locally — the credential store,
-    // the cached entitlement and the in-memory account. Does not call the
-    // server; signOut() does that first, and a server-ordered `signed_out`
-    // has already done it by definition.
+    // the cached entitlement, the in-memory account and the checks still out
+    // for it. Does not call the server; signOut() does that first, and a
+    // server-ordered `signed_out` has already done it by definition.
     void forgetAccount();
     // Remember the server's signed token so a network outage doesn't drop a
     // paying user to Free; applyCachedEntitlement() replays it within the grace

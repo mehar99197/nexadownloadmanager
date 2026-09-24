@@ -1207,6 +1207,28 @@ void LicenseManager::applyCachedEntitlement(const QString &offlineReason, bool u
         emit activationFinished(false, offlineReason);
 }
 
+// Stop the licence requests still in flight — the validation and the heartbeat
+// — when the credential they answer for is going: Remove, or the end of a
+// sign-in. Each handler is detached first, as validate() does, because abort()
+// emits finished() synchronously: attached, it would run inside the caller.
+// And a request left running answers later with a token there is no key or
+// account left to check against, and the plan comes back.
+void LicenseManager::cancelInFlightChecks()
+{
+    if (m_reply) {
+        m_reply->disconnect(this);
+        m_reply->abort();
+        m_reply->deleteLater();
+        m_reply = nullptr;
+    }
+    if (m_heartbeatReply) {
+        m_heartbeatReply->disconnect(this);
+        m_heartbeatReply->abort();
+        m_heartbeatReply->deleteLater();
+        m_heartbeatReply = nullptr;
+    }
+}
+
 void LicenseManager::deactivate()
 {
     // Signed in: no key is in play, so this can only be clearing one left over
@@ -1217,11 +1239,12 @@ void LicenseManager::deactivate()
         emit activationFinished(true, QStringLiteral("License key removed"));
         return;
     }
-    if (m_reply) {
-        m_reply->abort();
-        m_reply->deleteLater();
-        m_reply = nullptr;
-    }
+    // Stop the checks still in flight before the key goes. Aborted with its
+    // handler attached, the validation's ran in here: it took m_reply, set it
+    // to null and handled the cancellation as an outage, whose offline-grace
+    // path can put the cached paid plan back, and deleteLater() then ran on
+    // null.
+    cancelInFlightChecks();
     // Give the seat back before forgetting the key, or it would sit occupied
     // until the lease expired even though this machine is no longer licensed.
     releaseSeat();
@@ -1476,6 +1499,12 @@ void LicenseManager::signOut()
 
 void LicenseManager::forgetAccount()
 {
+    // Every sign-in ends here — signOut(), or the server answering
+    // `signed_out` to a validation or a heartbeat — so the other checks out
+    // for this account stop here too. Left running, an answer landing after
+    // the account id and token are cleared below had nothing to be checked
+    // against: it put the plan back and cached its token for offline grace.
+    cancelInFlightChecks();
     credentialstore::removeAccountToken();
     QSettings settings;
     settings.remove(QLatin1String(kAccountEmail));
