@@ -3,6 +3,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import ScrollRegion from '../components/ScrollRegion';
 import { SOURCE_URL } from '../components/Footer';
 
 /* Every claim on this page was checked against the source before it was
@@ -166,7 +167,7 @@ export default function Security() {
           One row per thing the app handles. Three of them reach us and two of those deserve the
           amber mark; the rest never leave your computer.
         </p>
-        <div className="mt-5 overflow-x-auto">
+        <ScrollRegion className="mt-5" label="Where each kind of data travels — scrolls sideways">
           <table className="w-full min-w-[720px] text-left text-sm">
             <caption className="sr-only">
               What each kind of data is, where it travels, and what reaches Nexa&apos;s servers
@@ -195,7 +196,7 @@ export default function Security() {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       </Card>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
@@ -245,7 +246,7 @@ export default function Security() {
           most extensions never explain it. Here is every permission Nexa asks for and what it is
           actually used for.
         </p>
-        <div className="mt-5 overflow-x-auto">
+        <ScrollRegion className="mt-5" label="Browser permissions requested by the extension — scrolls sideways">
           <table className="w-full min-w-[620px] text-left text-sm">
             <caption className="sr-only">Browser permissions requested by the Nexa extension</caption>
             <thead>
@@ -263,7 +264,7 @@ export default function Security() {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollRegion>
       </Card>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">

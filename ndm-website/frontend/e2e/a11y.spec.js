@@ -50,9 +50,21 @@ async function withData(page) {
   });
 }
 
+// Every public page, not a sample. The list used to stop at the first thirteen,
+// and the tables on /benchmarks, /security and all seven feature pages — which
+// scroll sideways on a phone and could not be reached from a keyboard — were
+// on none of them.
 const PAGES = [
   '/', '/download', '/pricing', '/features', '/compare', '/faq', '/docs',
   '/about', '/contact', '/changelog', '/reviews', '/login', '/register',
+  '/benchmarks', '/tutorials', '/security', '/privacy', '/terms',
+  '/features/acceleration', '/features/video-grabber', '/features/youtube-sites',
+  '/features/bittorrent', '/features/browser-extension', '/features/scheduler',
+  '/features/remote-dashboard',
+  '/docs/install', '/docs/extension', '/docs/youtube', '/docs/courses',
+  '/docs/torrents', '/docs/remote', '/docs/license',
+  '/forgot-password', '/reset-password?token=e2e', '/verify-email?token=e2e',
+  '/team/join?token=e2e', '/no-such-page',
 ];
 
 const PHONE = { width: 390, height: 844 };

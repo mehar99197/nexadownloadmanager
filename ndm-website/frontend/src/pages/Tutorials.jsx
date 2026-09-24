@@ -169,7 +169,7 @@ export default function Tutorials() {
             aria-selected={active === c.id}
             aria-controls={`panel-${c.id}`}
             onClick={() => setActive(c.id)}
-            className={`rounded-[var(--radius-pill)] px-4 py-2 text-sm font-semibold transition ${
+            className={`inline-flex min-h-11 items-center rounded-[var(--radius-pill)] px-4 py-2 text-sm font-semibold transition ${
               active === c.id
                 ? 'on-brand'
                 : 'surface-panel text-slate-400 hover:text-white'

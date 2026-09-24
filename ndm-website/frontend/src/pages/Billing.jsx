@@ -7,6 +7,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import ScrollRegion from '../components/ScrollRegion';
 import Skeleton, { useArrival } from '../components/Skeleton';
 import usePageMeta from '../hooks/usePageMeta';
 
@@ -389,7 +390,7 @@ export default function Billing() {
               </p>
             </div>
           ) : (
-            <div className={`mt-4 overflow-x-auto ${arrive}`.trim()}>
+            <ScrollRegion className={`mt-4 ${arrive}`.trim()} label="Payment history — scrolls sideways">
               <table className="w-full text-left">
                 <thead>
                   <tr className="border-b border-[var(--color-surface-border)] text-xs text-zinc-500 uppercase">
@@ -405,7 +406,7 @@ export default function Billing() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollRegion>
           )}
         </Card>
       </div>

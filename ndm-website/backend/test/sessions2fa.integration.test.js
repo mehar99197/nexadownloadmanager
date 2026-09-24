@@ -192,9 +192,9 @@ test('customer two-factor authentication', async (t) => {
     const [row] = await srv.query("SELECT totp_secret FROM users WHERE email = 'totp@example.test'");
     assert.notEqual(row.totp_secret, secret, 'the secret is encrypted at rest');
 
-    const bad = await api.post('/api/auth/2fa/enable', { code: '000000' }, { token });
+    const bad = await api.post('/api/auth/2fa/enable', { password: PASS, code: '000000' }, { token });
     assert.equal(bad.status, 400);
-    const enable = await api.post('/api/auth/2fa/enable', { code: totp.totpAt(secret) }, { token });
+    const enable = await api.post('/api/auth/2fa/enable', { password: PASS, code: totp.totpAt(secret) }, { token });
     assert.equal(enable.status, 200, JSON.stringify(enable.body));
     assert.equal(enable.body.data.recoveryCodes.length, totp.RECOVERY_COUNT);
     const recovery = enable.body.data.recoveryCodes[0];
@@ -263,6 +263,131 @@ test('customer two-factor authentication', async (t) => {
     assert.equal((await fresh.get('/api/auth/2fa', { token: t2 })).body.data.enabled, false);
   });
 
+  await t.test('turning 2FA on needs the password, so a stolen access token alone cannot enrol it', async () => {
+    await srv.reset();
+    const api = srv.client();
+    await signUp(api, 'enrol@example.test');
+    const token = (await login(api, 'enrol@example.test')).body.data.token;
+    const secret = (await api.post('/api/auth/2fa/setup', {}, { token })).body.data.secret;
+
+    const missing = await api.post('/api/auth/2fa/enable', { code: totp.totpAt(secret) }, { token });
+    assert.equal(missing.status, 400, JSON.stringify(missing.body));
+    assert.equal(missing.body.error.code, 'INVALID_PASSWORD');
+    const wrong = await api.post('/api/auth/2fa/enable',
+      { password: 'not-the-password-1', code: totp.totpAt(secret) }, { token });
+    assert.equal(wrong.status, 400);
+    assert.equal(wrong.body.error.code, 'INVALID_PASSWORD');
+    assert.equal((await api.get('/api/auth/2fa', { token })).body.data.enabled, false,
+      'nothing was switched on by a request without the password');
+
+    // The refused attempts did not spend the code: the owner's own attempt with
+    // the same digits and the password goes straight through.
+    const right = await api.post('/api/auth/2fa/enable', { password: PASS, code: totp.totpAt(secret) }, { token });
+    assert.equal(right.status, 200, JSON.stringify(right.body));
+    assert.equal(right.body.data.recoveryCodes.length, totp.RECOVERY_COUNT);
+
+    // The staff panels mount the same routes, so they need it too.
+    const { admin, auth } = await makeAdmin();
+    const adminSecret = (await admin.post('/api/admin/2fa/setup', {}, auth)).body.data.secret;
+    const bare = await admin.post('/api/admin/2fa/enable', { code: totp.totpAt(adminSecret) }, auth);
+    assert.equal(bare.status, 400);
+    assert.equal(bare.body.error.code, 'INVALID_PASSWORD');
+    const proved = await admin.post('/api/admin/2fa/enable',
+      { password: 'admin-password-123', code: totp.totpAt(adminSecret) }, auth);
+    assert.equal(proved.status, 200, JSON.stringify(proved.body));
+  });
+
+  await t.test('wrong second-factor codes lock the code step for that account, and a correct code clears it', async () => {
+    await srv.reset();
+    const api = srv.client();
+    const email = 'guessed@example.test';
+    await signUp(api, email);
+    // Enrolled directly, so this test depends on nothing but the login route.
+    const secret = totp.generateSecret();
+    const recovery = 'k7f3q-9x2mp';
+    await srv.query(
+      'UPDATE users SET totp_secret = ?, totp_enabled = 1, totp_recovery = ? WHERE email = ?',
+      [totp.encryptSecret(secret), JSON.stringify([await totp.hashRecoveryCode(recovery)]), email]
+    );
+    const challenge = async () => {
+      const res = await login(srv.client(), email);
+      assert.equal(res.body.data.requiresTwoFactor, true, JSON.stringify(res.body));
+      return res.body.data.challenge;
+    };
+    const liveCodes = () => [-1, 0, 1].map((s) => totp.totpAt(secret, Date.now() + s * totp.STEP_SECONDS * 1000));
+    const wrongCode = () => {
+      for (let n = 0; ; n += 1) {
+        const guess = String(n).padStart(6, '0');
+        if (!liveCodes().includes(guess)) return guess;
+      }
+    };
+    const guess = async (code) => api.post('/api/auth/login/2fa', { challenge: await challenge(), code });
+    const unspend = () => srv.query('UPDATE users SET totp_last_step = NULL WHERE email = ?', [email]);
+
+    // Four wrong codes and then the right one: an honest typo streak signs in,
+    // and the success wipes the count.
+    for (let i = 0; i < 4; i += 1) assert.equal((await guess(wrongCode())).status, 401);
+    assert.equal((await guess(totp.totpAt(secret))).status, 200);
+    await unspend();
+    for (let i = 0; i < 4; i += 1) assert.equal((await guess(wrongCode())).status, 401);
+    assert.equal((await guess(totp.totpAt(secret))).status, 200, 'the earlier streak was cleared by the success');
+    await unspend();
+
+    // Five in a row — each from a FRESH challenge, since whoever holds the
+    // password can mint as many as they like — and the code step locks.
+    const streak = [];
+    for (let i = 0; i < 5; i += 1) streak.push(await guess(wrongCode()));
+    assert.deepEqual(streak.slice(0, 4).map((r) => r.status), [401, 401, 401, 401]);
+    assert.equal(streak[4].status, 429);
+    assert.equal(streak[4].body.error.code, 'TWO_FACTOR_LOCKED');
+
+    // Now even the right authenticator code is refused: that is the lock.
+    const blocked = await guess(totp.totpAt(secret));
+    assert.equal(blocked.status, 429, JSON.stringify(blocked.body));
+    assert.equal(blocked.body.error.code, 'TWO_FACTOR_LOCKED');
+    const [row] = await srv.query('SELECT totp_last_step, failed_logins, locked_until FROM users WHERE email = ?', [email]);
+    assert.equal(row.totp_last_step, null, 'a refused code is not spent');
+    // The password gate is a different lock and is untouched by code guesses.
+    assert.equal(Number(row.failed_logins), 0);
+    assert.equal(row.locked_until, null);
+
+    // The owner is not stranded: a recovery code (52 bits, not guessable)
+    // still gets through, and it clears the lock.
+    const rescued = await guess(recovery);
+    assert.equal(rescued.status, 200, JSON.stringify(rescued.body));
+    assert.equal((await guess(totp.totpAt(secret))).status, 200, 'the authenticator works again');
+
+    const kinds = (await srv.query("SELECT kind FROM security_events WHERE kind = '2fa.locked'")).map((r) => r.kind);
+    assert.deepEqual(kinds, ['2fa.locked']);
+  });
+
+  await t.test('the code-step lock ends on its own, and only counts accounts that have 2FA', async () => {
+    await srv.reset();
+    const api = srv.client();
+    await signUp(api, 'plain@example.test');
+    // An account without two-factor has no code step: sign-in is unaffected.
+    const plain = await login(api, 'plain@example.test');
+    assert.ok(plain.body.data.token);
+    const [row] = await srv.query("SELECT totp_failures, totp_locked_until FROM users WHERE email = 'plain@example.test'");
+    assert.equal(Number(row.totp_failures), 0);
+    assert.equal(row.totp_locked_until, null);
+
+    // A lock whose time has passed lets the right code straight back in.
+    const secret = totp.generateSecret();
+    await srv.query(
+      `UPDATE users SET totp_secret = ?, totp_enabled = 1,
+         totp_locked_until = DATE_SUB(NOW(), INTERVAL 1 MINUTE), totp_lock_level = 1
+       WHERE email = 'plain@example.test'`,
+      [totp.encryptSecret(secret)]
+    );
+    const step1 = await login(srv.client(), 'plain@example.test');
+    const done = await api.post('/api/auth/login/2fa', { challenge: step1.body.data.challenge, code: totp.totpAt(secret) });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const [after] = await srv.query("SELECT totp_lock_level, totp_locked_until FROM users WHERE email = 'plain@example.test'");
+    assert.equal(Number(after.totp_lock_level), 0, 'a correct code resets the escalation too');
+    assert.equal(after.totp_locked_until, null);
+  });
+
   await t.test('the control panel refuses everything but enrolment until TOTP is on', async () => {
     await srv.reset();
     const was = config.ADMIN_2FA_REQUIRED;
@@ -279,7 +404,8 @@ test('customer two-factor authentication', async (t) => {
       assert.equal(me.body.data.twoFactorEnabled, false);
       const setup = await admin.post('/api/admin/2fa/setup', {}, auth);
       assert.equal(setup.status, 200, JSON.stringify(setup.body));
-      const enable = await admin.post('/api/admin/2fa/enable', { code: totp.totpAt(setup.body.data.secret) }, auth);
+      const enable = await admin.post('/api/admin/2fa/enable',
+        { password: 'admin-password-123', code: totp.totpAt(setup.body.data.secret) }, auth);
       assert.equal(enable.status, 200, JSON.stringify(enable.body));
       assert.equal((await admin.get('/api/admin/stats', auth)).status, 200, 'enrolled: the panel opens');
       assert.equal((await admin.get('/api/admin/me', auth)).body.data.twoFactorEnabled, true);

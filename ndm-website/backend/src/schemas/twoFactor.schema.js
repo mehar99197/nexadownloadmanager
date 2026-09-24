@@ -14,7 +14,13 @@ const twoFactorLoginSchema = {
 };
 
 const twoFactorEnableSchema = {
-  body: z.object({ code: totpCode }).strict(),
+  body: z.object({
+    // Optional in the schema only, as for disable: the route insists on it for
+    // every account that has a password, so an access token alone cannot
+    // switch two-factor on (a Google-created customer has none).
+    password: z.string().min(1).max(128).optional(),
+    code: totpCode,
+  }).strict(),
 };
 
 const twoFactorDisableSchema = {
