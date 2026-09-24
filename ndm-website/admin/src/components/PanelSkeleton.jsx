@@ -47,9 +47,9 @@ export default function PanelSkeleton() {
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-16 items-center justify-between border-b border-admin-border bg-admin-surface/80 px-6">
           <div className="flex items-center gap-3">
-            {/* The navigation button: the drawer's on a phone, the fold's on
-                a desktop. */}
-            <Skeleton className="h-11 w-11 rounded-lg" />
+            {/* The drawer's button, on a phone. A desktop folds the sidebar
+                from the sidebar itself. */}
+            <Skeleton className="h-11 w-11 rounded-lg md:hidden" />
             <div>
               <Skeleton className="h-3 w-36 rounded" />
               <Skeleton className="mt-1.5 h-3.5 w-44 rounded" />

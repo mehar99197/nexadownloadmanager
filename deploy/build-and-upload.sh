@@ -56,6 +56,14 @@
 #                            the source of truth. An override that differs is refused.
 #   RESTART_BACKEND=0        skip restarting the remote node process after upload
 #   SKIP_FRONTEND=1 / SKIP_ADMIN=1 / SKIP_BACKEND=1   deploy a subset
+#   DEPLOY_BRANCH            the shared branch that deploys (default main). HEAD
+#                            must BE origin/<branch>: clean, pushed, up to date.
+#   DEPLOY_CHECK_ONLY=1      run the deploy guard's checks and stop
+#   DEPLOY_ADOPT=1 / DEPLOY_BREAK_LOCK=1   see deploy/deploy-guard.sh
+#
+# The deploy guard (deploy/deploy-guard.sh) refuses any deploy that would take
+# something off the live site: the server records which commit each of
+# frontend/admin/backend is at, and a deploy must contain that commit.
 #   DEPLOY_HTACCESS=1        also upload deploy/hostinger/public_html.htaccess (the
 #                            server copy is backed up OUTSIDE public_html first)
 #                            and public_html.user.ini beside it.
@@ -120,8 +128,12 @@ SKIP_BACKEND="${SKIP_BACKEND:-0}"
 phase() { printf '\n==> %s\n' "$*"; }
 die()   { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+# shellcheck source=deploy-guard.sh
+source "${REPO_ROOT}/deploy/deploy-guard.sh"
+
 STAGE=""
 cleanup() {
+  guard_unlock
   if [[ -n "${STAGE}" && -d "${STAGE}" ]]; then rm -rf "${STAGE}"; fi
   return 0
 }
@@ -189,6 +201,8 @@ ssh -p "${SSH_PORT}" -o BatchMode=yes -o ConnectTimeout=15 "${REMOTE}" \
   "command -v rsync >/dev/null" \
   || die "cannot reach ${REMOTE}:${SSH_PORT} with key auth (or rsync missing on the host)"
 echo "SSH OK. Site origin: ${VITE_SITE_URL}"
+
+guard_preflight
 
 # "Continue with Google": the button renders only when the frontend is built
 # with a client ID, and the backend accepts only tokens minted for ITS client
@@ -402,6 +416,7 @@ if [[ "${SKIP_FRONTEND}" != "1" ]]; then
     -e "${RSH}" \
     "$(local_path "${FRONTEND}/dist")/" "${REMOTE}:${WEBROOT}/"
   echo "Frontend uploaded."
+  guard_record frontend
 else
   phase "Phase 5: SKIPPED (frontend upload)"
 fi
@@ -416,6 +431,7 @@ if [[ "${SKIP_ADMIN}" != "1" ]]; then
     -e "${RSH}" \
     "$(local_path "${ADMIN}/dist")/" "${REMOTE}:${WEBROOT}/admin/"
   echo "Admin uploaded (serves both /admin and /root via .htaccess)."
+  guard_record admin
 else
   phase "Phase 6: SKIPPED (admin upload)"
 fi
@@ -451,6 +467,7 @@ if [[ "${SKIP_BACKEND}" != "1" ]]; then
     -e "${RSH}" \
     "$(local_path "${STAGE}")/" "${REMOTE}:${API_DIR}/"
   echo "Backend uploaded."
+  guard_record backend
 
   if [[ "${RESTART_BACKEND}" == "1" ]]; then
     phase "Phase 7b: restarting backend process"

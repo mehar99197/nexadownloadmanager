@@ -296,9 +296,28 @@ and `unzip` must be installed on the machine that deploys.
 ## Updating
 
 ```bash
-git pull
+git checkout main && git pull origin main   # everyone's pushed work
+# ...your change, committed...
+git push origin main                        # it has to be on GitHub first
 ./deploy/build-and-upload.sh
 ```
+
+More than one person deploys this site, so the script refuses any deploy that
+would take something off it (`deploy/deploy-guard.sh`):
+
+- **Only `origin/main` deploys** — a clean checkout, pushed, up to date. Not
+  pushed, behind, or uncommitted files: refused, with the command to run.
+- **Only forward.** The server keeps the commit each of frontend / admin /
+  backend is at (`domains/nexadownloadmanager.com/.deploy/`). A deploy that
+  does not contain it is refused and lists the commits it would remove.
+- **A deploy made without the script is noticed** (the live files no longer
+  match the record) and the next deploy stops until someone has looked.
+- **One at a time** — a server-side lock names who is deploying.
+
+`DEPLOY_CHECK_ONLY=1` runs the checks and stops. `DEPLOY_ADOPT=1` is for the
+first guarded deploy, and for after a hand-made deploy has been checked;
+`DEPLOY_BREAK_LOCK=1` clears a lock left by a killed deploy.
+`bash tests/DeployGuardTest.sh` exercises every refusal.
 
 `build-and-upload.sh` restarts the API for you (via `nexa-api/.api.pid`) once
 the new backend files land. `SKIP_FRONTEND=1` / `SKIP_ADMIN=1` /
