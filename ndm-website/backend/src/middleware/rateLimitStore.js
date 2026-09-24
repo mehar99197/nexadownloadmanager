@@ -19,6 +19,7 @@
  * must never be the reason a request fails.
  */
 
+const crypto = require('crypto');
 const { query, execute } = require('../config/db');
 
 const TABLE = 'rate_limits';
@@ -36,8 +37,24 @@ class MySqlRateLimitStore {
     this.windowMs = options.windowMs;
   }
 
+  /**
+   * The row id: the limiter's prefix, then a SHA-256 of the caller's key.
+   *
+   * The key used to be stored as it came, but rate_limits.id is VARCHAR(191)
+   * and a sign-in key is "<ip>|<email>" with up to 190 characters of email. A
+   * long address overflowed the column, the INSERT failed (ER_DATA_TOO_LONG in
+   * strict mode — silent truncation, so two accounts sharing one count,
+   * outside it) and the limiter fell back to process memory, where a restart
+   * handed out a fresh budget. A digest is 64 characters whatever the key, and
+   * it keeps raw emails, addresses and licence keys out of the table as well.
+   *
+   * Rows written under the old scheme are never looked up again; they age out
+   * through the ordinary expires_at sweep, so a deploy costs at most one
+   * window's worth of counts and needs no schema change.
+   */
   key(key) {
-    return `${this.prefix}:${key}`;
+    const digest = crypto.createHash('sha256').update(String(key)).digest('hex');
+    return `${this.prefix}:${digest}`;
   }
 
   memoryHit(key) {

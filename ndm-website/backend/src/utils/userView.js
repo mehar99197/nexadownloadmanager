@@ -23,7 +23,8 @@
  *
  * Not here, and never to be added: any `*_hash`, `totp_secret`,
  * `totp_recovery`, `token_version`, `google_id`, or the lockout bookkeeping
- * (`failed_logins`, `locked_until`, `lock_level`, `lock_notified_at`) — the
+ * (`failed_logins`, `locked_until`, `lock_level`, `lock_notified_at`, and the
+ * second-factor `totp_failures`, `totp_locked_until`, `totp_lock_level`) — the
  * sign-in form is deliberately told nothing about locks, so the profile must
  * not become the place that leaks from.
  */

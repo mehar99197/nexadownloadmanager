@@ -19,6 +19,7 @@ const SECRET_COLUMNS = [
   'root_refresh_token_hash', 'totp_secret', 'totp_recovery', 'google_id',
   'token_version', 'totp_last_step',
   'failed_logins', 'locked_until', 'lock_level', 'lock_notified_at',
+  'totp_failures', 'totp_locked_until', 'totp_lock_level',
 ];
 
 const fullRow = Object.freeze({
@@ -46,6 +47,9 @@ const fullRow = Object.freeze({
   locked_until: new Date('2024-06-07T09:00:00Z'),
   lock_level: 2,
   lock_notified_at: new Date('2024-06-07T08:30:00Z'),
+  totp_failures: 4,
+  totp_locked_until: new Date('2024-06-07T09:15:00Z'),
+  totp_lock_level: 1,
 });
 
 test('no credential, second-factor or lockout column survives the projection', () => {

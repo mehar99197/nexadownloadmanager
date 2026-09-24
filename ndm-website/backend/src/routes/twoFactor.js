@@ -13,7 +13,7 @@
  * Enrolment (behind the realm's bearer gate):
  *   GET  <realm>/2fa             → { enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }
  *   POST <realm>/2fa/setup       → { secret, otpauthUrl }   secret stored, NOT yet enabled
- *   POST <realm>/2fa/enable      { code } → { enabled:true, recoveryCodes:[…] }  shown once
+ *   POST <realm>/2fa/enable      { password, code } → { enabled:true, recoveryCodes:[…] }  shown once
  *   POST <realm>/2fa/recovery-codes { password, code } → { recoveryCodes:[…] }  fresh set, shown once
  *   POST <realm>/2fa/disable     { password, code } → { enabled:false }
  *
@@ -63,6 +63,9 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, fail } = require('../utils/respond');
 const { twoFactorLimiter } = require('../middleware/rateLimiter');
 const totp = require('../utils/totp');
+// Required as the module object, not destructured, so the unit tests can stand
+// in for its database writes (test/totp.test.js withUserRow).
+const twoFactorLockout = require('../utils/twoFactorLockout');
 const {
   twoFactorLoginSchema, twoFactorEnableSchema, twoFactorDisableSchema,
 } = require('../schemas/twoFactor.schema');
@@ -71,6 +74,17 @@ const CHALLENGE_TTL = '5m';
 
 const INVALID_CODE_MESSAGE = 'That code is not valid';
 const REPLAYED_MESSAGE = 'That code has already been used. Wait for your app to show the next one.';
+
+/** The answer while the code step is locked (utils/twoFactorLockout.js). */
+function lockedAnswer(minutes) {
+  const m = Math.max(1, Number(minutes) || 1);
+  return {
+    code: 'TWO_FACTOR_LOCKED',
+    status: 429,
+    message: `Too many wrong codes. Authenticator codes are paused for ${m} minute${m === 1 ? '' : 's'} — `
+      + 'sign in with one of your recovery codes, or try again later.',
+  };
+}
 
 function parseRecovery(value) {
   if (!value) return [];
@@ -120,8 +134,10 @@ function lastUsedStep(user) {
  * refuses an obviously stale code without paying for a write, NOT the guard.
  * spendCode() is the guard.
  */
-async function checkCode(user, code) {
-  const secret = totp.decryptSecret(user.totp_secret);
+async function checkCode(user, code, { recoveryOnly = false } = {}) {
+  // recoveryOnly: the code step is locked (utils/twoFactorLockout.js), so an
+  // authenticator code is not even compared — only a recovery code can pass.
+  const secret = recoveryOnly ? null : totp.decryptSecret(user.totp_secret);
   const attempt = secret ? totp.matchTotp(secret, code) : { ok: false };
   if (attempt.ok) {
     const last = lastUsedStep(user);
@@ -167,14 +183,17 @@ async function spendCode(user, result) {
  * answered: a replay — refused by the pre-check or by losing the race for the
  * spend — is CODE_ALREADY_USED, anything else INVALID_CODE. `status` is the
  * route's own (401 on a login, 400 on an enrolment change), and `refused` is
- * told which of the two it was so the realm can record the event.
+ * told which of the two it was so the realm can record the event. `refused`
+ * may resolve to { code, message, status } to answer something else instead
+ * (the login uses it for TWO_FACTOR_LOCKED).
  */
-async function acceptCode(res, user, code, { status, refused = async () => {} }) {
-  const result = await checkCode(user, code);
+async function acceptCode(res, user, code, { status, refused = async () => {}, recoveryOnly = false }) {
+  const result = await checkCode(user, code, { recoveryOnly });
   if (result.ok && await spendCode(user, result)) return result;
   const replayed = Boolean(result.replayed) || result.ok;
-  await refused(replayed ? 'replayed' : 'failed');
-  if (replayed) fail(res, 'CODE_ALREADY_USED', REPLAYED_MESSAGE, status);
+  const answer = await refused(replayed ? 'replayed' : 'failed');
+  if (answer && answer.code) fail(res, answer.code, answer.message, answer.status || status);
+  else if (replayed) fail(res, 'CODE_ALREADY_USED', REPLAYED_MESSAGE, status);
   else fail(res, 'INVALID_CODE', INVALID_CODE_MESSAGE, status);
   return null;
 }
@@ -278,17 +297,38 @@ function mountTwoFactor(router, {
       // the remaining set, keeping whatever is left, legacy or not, because a
       // recovery sign-in says nothing about whether the authenticator still
       // exists and taking the rest away could lock the account out.
+      //
+      // Wrong codes are also counted against the ACCOUNT (utils/
+      // twoFactorLockout.js): twoFactorLimiter is per address, and whoever
+      // holds the password can mint a fresh challenge per guess from as many
+      // addresses as they like. Past the threshold the code step locks: while
+      // it holds, authenticator codes are not compared at all and only a
+      // recovery code gets through — so the owner is never stranded, and
+      // guessing the six digits stops paying.
+      const locked = twoFactorLockout.isLocked(user);
       const result = await acceptCode(res, user, req.body.code, {
         status: 401,
+        recoveryOnly: locked,
         refused: async (what) => {
           if (what === 'replayed') {
             await audit(req, `${realm}.code_replayed`, user,
               `${user.email} presented an already-used two-factor code`);
           }
           await onEvent(req, user, what);
+          if (locked) return lockedAnswer(twoFactorLockout.minutesLeft(user));
+          // A replay is the owner's own digits arriving twice (a double
+          // submit, or a relay racing them) — not a guess, so not counted.
+          if (what !== 'failed') return null;
+          const outcome = await twoFactorLockout.recordFailure(user);
+          if (!outcome.locked) return null;
+          await audit(req, `${realm}.2fa_locked`, user,
+            `${user.email}: authenticator codes refused for ${outcome.minutes} min after repeated wrong codes`);
+          await onEvent(req, user, 'locked');
+          return lockedAnswer(outcome.minutes);
         },
       });
       if (!result) return undefined;
+      await twoFactorLockout.recordSuccess(user);
       if (result.usedRecovery) {
         await audit(req, `${realm}.recovery_code_used`, user,
           `${user.email} signed in with a recovery code (${result.remaining.length} left)`);
@@ -340,6 +380,15 @@ function mountTwoFactor(router, {
         return fail(res, 'ALREADY_ENABLED', 'Two-factor authentication is already on', 400);
       const secret = totp.decryptSecret(me.totp_secret);
       if (!secret) return fail(res, 'NOT_SET_UP', 'Start the setup first', 400);
+      // The same proof as turning it off. Without it, an access token alone —
+      // leaked from a log, a shared machine, an XSS — could run /setup, scan
+      // its own QR code and switch 2FA on: the owner's next sign-in would then
+      // ask for a code from an authenticator only the attacker holds, and
+      // /disable would need that code too. Checked before the code, so a
+      // refused attempt spends nothing and the owner's own retry still works.
+      // A Google-created account has no password; like /disable, the code
+      // from the authenticator being enrolled is the proof it can give.
+      if (!await provedPassword(req, res, me)) return undefined;
       // Straight to totp.matchTotp rather than checkCode: there is no
       // recovery set to fall back on yet. The step is still spent, because
       // the code that turns 2FA on stays live for another minute and must not
@@ -355,6 +404,8 @@ function mountTwoFactor(router, {
         return fail(res, 'INVALID_CODE', 'That code is not valid — check the time on your phone and try again', 400);
       const { codes, hashes } = await totp.generateRecoveryCodes();
       await User.update(me.id, { totpEnabled: 1, totpRecovery: JSON.stringify(hashes) });
+      // A code-step lock left from an earlier enrolment belongs to that one.
+      await twoFactorLockout.recordSuccess(me);
       await audit(req, `${realm}.2fa_enabled`, me, `${me.email} turned on two-factor authentication`);
       await onEvent(req, me, 'enabled');
       return ok(res, { enabled: true, recoveryCodes: codes });

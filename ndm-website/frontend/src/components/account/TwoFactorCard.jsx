@@ -14,8 +14,9 @@ const errorMessage = (err, fallback) => err?.response?.data?.error?.message || e
  *
  * Off → "Turn on" fetches a fresh secret, renders it as a QR code (and as text
  * for people who cannot scan), and one correct code from the app switches it
- * on. The recovery codes come back exactly once, so they are shown until the
- * person dismisses them. On → the account shows how many recovery codes are
+ * on — together with the password, when the account has one, so a stolen
+ * session cannot enrol an authenticator of its own. The recovery codes come
+ * back exactly once, so they are shown until the person dismisses them. On → the account shows how many recovery codes are
  * left and a "Turn off" form that wants the password (when the account has
  * one — a Google-created account does not) plus a current code.
  */
@@ -27,6 +28,7 @@ export default function TwoFactorCard({ user }) {
 
   const [setup, setSetup] = useState(null);          // { secret, otpauthUrl, qr }
   const [code, setCode] = useState('');
+  const [enablePassword, setEnablePassword] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState(null);
 
   const [disableOpen, setDisableOpen] = useState(false);
@@ -51,6 +53,7 @@ export default function TwoFactorCard({ user }) {
       const qr = await QRCode.toDataURL(data.otpauthUrl, { margin: 1, width: 196, errorCorrectionLevel: 'M' });
       setSetup({ ...data, qr });
       setCode('');
+      setEnablePassword('');
     } catch (err) {
       setError(errorMessage(err, 'Could not start the setup.'));
     } finally {
@@ -63,10 +66,16 @@ export default function TwoFactorCard({ user }) {
     setBusy(true);
     setError('');
     try {
-      const data = unwrap(await api.post('/auth/2fa/enable', { code: code.trim() }));
+      // The password is what stops a stolen session from enrolling its own
+      // authenticator and locking the owner out. A Google-created account has
+      // none, and the server accepts the code alone for it.
+      const body = { code: code.trim() };
+      if (user.hasPassword) body.password = enablePassword;
+      const data = unwrap(await api.post('/auth/2fa/enable', body));
       setRecoveryCodes(data.recoveryCodes || []);
       setSetup(null);
       setCode('');
+      setEnablePassword('');
       toast.success('Two-factor authentication is on.');
       await load();
     } catch (err) {
@@ -198,8 +207,20 @@ export default function TwoFactorCard({ user }) {
             value={code}
             onChange={(e) => setCode(e.target.value)}
           />
+          {user.hasPassword && (
+            <Input
+              label="Password"
+              name="enablePassword"
+              placeholder="Enter your password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={enablePassword}
+              onChange={(e) => setEnablePassword(e.target.value)}
+            />
+          )}
           <div className="flex flex-wrap gap-3">
-            <Button type="submit" disabled={busy || code.trim().length !== 6}>
+            <Button type="submit" disabled={busy || code.trim().length !== 6 || (user.hasPassword && !enablePassword)}>
               {busy ? 'Checking…' : 'Verify and turn on'}
             </Button>
             <Button variant="ghost" onClick={() => { setSetup(null); setError(''); }} disabled={busy}>Cancel</Button>

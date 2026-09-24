@@ -344,23 +344,34 @@ All paths below are **relative to the mount** shown in the header, e.g. in
 ### `routes/auth.js` → `/api/auth`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/register` | `authLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
+| POST | `/register` | `registerLimiter`, `requireTurnstile`, `validate(registerSchema)` | create user (bcrypt cost 12), free Subscription + license, send verify email. **Non-enumerable:** an address that already has an account gets the SAME `201 {ok:true}` and no second account — the existing owner is told by email instead. The password is hashed before the lookup so the two branches take the same time |
 | POST | `/login` | `authIpLimiter`, `loginLimiter`, `validate(loginSchema)` | check `EMAIL_VERIFICATION_REQUIRED`; return access token + set `ndm_refresh` cookie. **Refuses a control-panel account with the ordinary `401 INVALID_CREDENTIALS`** — identical body to a wrong password, to a right password on a staff row, and to an address with no account at all. Every branch runs a real cost-12 bcrypt, including the unknown-address one, so neither the code nor the clock answers "does this address have an account?" or "is this one the administrator?". The owner is told in their own inbox (`sendControlPanelSignInAttemptEmail`), never on the wire *(ADDED)* |
 | POST | `/verify-email` | `validate(verifyEmailSchema)` | `verifyEmailToken(token)` → set `emailVerified=true` |
-| POST | `/forgot-password` | `authLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
-| POST | `/reset-password` | `authLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash; **clears a sign-in lockout** (proof of the inbox is the way out of it) *(ADDED)* |
+| POST | `/forgot-password` | `forgotPasswordLimiter`, `requireTurnstile`, `validate(forgotPasswordSchema)` | always 200 (no user enumeration); send reset email. **Never mints a link for a control-panel account** — see below |
+| POST | `/reset-password` | `resetPasswordLimiter`, `validate(resetPasswordSchema)` | `verifyResetToken` → set new passwordHash; **clears a sign-in lockout** (proof of the inbox is the way out of it) and the second-factor lock's count and timer (its escalation level stays) *(ADDED)* |
 | POST | `/refresh` | — | read `ndm_refresh` cookie, find the live `user_sessions` row, **rotate** it (§3), return a new 15-minute access token. A hash matching only `prev_token_hash` is a replay: re-sent within the 30-s grace, otherwise the family is revoked and `401 INVALID_REFRESH_TOKEN`. Applies the same ban / verification / **control-panel** gates as `/login`; a control-panel row has its session revoked and both cookies cleared, and answers the same `401 INVALID_REFRESH_TOKEN` as a cookie nobody ever issued *(CHANGED)* |
 | POST | `/logout` | — | revoke this browser's session family + clear `ndm_refresh` / `ndm_session` *(CHANGED)* |
-| POST | `/login/2fa` | `twoFactorLimiter`, `validate(twoFactorLoginSchema)` | `{ challenge, code }` → the normal `{ token, user }` + cookie, for an account whose `/login` (or `/google`) answered `{ requiresTwoFactor:true, challenge }`. Challenge is a 5-min JWT `typ:"2fa-user"` under `JWT_SECRET` (`routes/twoFactor.js`, realm `user`) *(ADDED)* |
+| POST | `/login/2fa` | `twoFactorLimiter`, `validate(twoFactorLoginSchema)` | `{ challenge, code }` → the normal `{ token, user }` + cookie, for an account whose `/login` (or `/google`) answered `{ requiresTwoFactor:true, challenge }`. Challenge is a 5-min JWT `typ:"2fa-user"` under `JWT_SECRET` (`routes/twoFactor.js`, realm `user`). After `TWO_FACTOR_LOCKOUT_THRESHOLD` (5) wrong codes in a row the code step locks: `429 TWO_FACTOR_LOCKED`, authenticator codes refused, recovery codes still accepted — see **Second-factor lockout** below *(ADDED)* |
 | GET | `/2fa` | `requireAuth` | `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }` *(ADDED)* |
 | POST | `/2fa/setup` | `requireAuth` | `{ secret, otpauthUrl }` — stored encrypted, not yet enabled *(ADDED)* |
-| POST | `/2fa/enable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorEnableSchema)` | `{ code }` → `{ enabled:true, recoveryCodes[8] }` shown once *(ADDED)* |
+| POST | `/2fa/enable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorEnableSchema)` | `{ password?, code }` → `{ enabled:true, recoveryCodes[8] }` shown once. Same password rule as `/2fa/disable` (`400 INVALID_PASSWORD`, checked before the code, so nothing is spent) — an access token alone cannot enrol an authenticator and lock the owner out *(CHANGED)* |
 | POST | `/2fa/recovery-codes` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` → `{ recoveryCodes[8] }` — a fresh set, shown once; same proof rules as `/2fa/disable` *(ADDED)* |
 | POST | `/2fa/disable` | `requireAuth`, `twoFactorLimiter`, `validate(twoFactorDisableSchema)` | `{ password?, code }` — the password is mandatory for every account that has one (`400 INVALID_PASSWORD`); a Google-created account (no `password_hash`) turns it off with the code alone, the same allowance `DELETE /user/account` makes *(ADDED)* |
 | GET | `/google/nonce` | — | `{ nonce, expiresInSeconds }` — the OIDC nonce for "Continue with Google", also kept in the httpOnly cookie `ndm_gnonce` (path `/api/auth/google`, 30 min, Strict). Signed (`random.exp.hmac`), so nothing is stored *(ADDED)* |
-| POST | `/google` | `authLimiter`, `validate(googleSchema)` | `{ credential, nonce? }`. The ID token must carry the nonce this server issued to **this browser** (cookie), else `401 GOOGLE_NONCE_INVALID` — the page fetches a fresh nonce and re-initialises Google. One token opens one session: its `jti` goes in `used_id_tokens` until the token's own `exp`; a second presentation is `401 GOOGLE_AUTH_FAILED` + a `google.token_replayed` critical event. A 2FA account gets `{ requiresTwoFactor, challenge, created }` instead of a session *(CHANGED)* |
+| POST | `/google` | `googleLimiter` (100/15 min per address), `validate(googleSchema)` | `{ credential, nonce? }`. The ID token must carry the nonce this server issued to **this browser** (cookie), else `401 GOOGLE_NONCE_INVALID` — the page fetches a fresh nonce and re-initialises Google. One token opens one session: its `jti` goes in `used_id_tokens` until the token's own `exp`; a second presentation is `401 GOOGLE_AUTH_FAILED` + a `google.token_replayed` critical event. A 2FA account gets `{ requiresTwoFactor, challenge, created }` instead of a session *(CHANGED)* |
 
 `POST /reset-password` also nulls `adminRefreshTokenHash`.
+
+**Second-factor lockout** (`utils/twoFactorLockout.js`) *(ADDED)*: `/login/2fa`
+counts wrong codes per account in `users.totp_failures` — not in the password
+lockout's counter, which a correct password clears, and whoever reaches the code
+step has just given one. `TWO_FACTOR_LOCKOUT_THRESHOLD` (5) in a row set
+`users.totp_locked_until` for the same escalating `LOGIN_LOCKOUT_MINUTES`
+(`users.totp_lock_level`, capped at four times the base). While locked,
+authenticator codes are not compared and the answer is `429 TWO_FACTOR_LOCKED`
+with a message pointing at recovery codes, which still work. A correct code
+(either kind) clears it; so does `POST /admin/users/:id/unlock`. Replays are not
+counted. Nobody can trip it without the account's password (or Google login).
 
 **Sign-in lockout** (`utils/loginLockout.js`) *(ADDED)*: the login limiter is
 keyed per (IP, email) and cannot see many addresses guessing at one account,
@@ -424,7 +435,7 @@ successful login, so raising the cost later needs no migration.
 ### `routes/license.js` → `/api/license`
 | Method | Path | Middleware | Notes |
 |--------|------|-----------|-------|
-| POST | `/validate` | `licenseLimiter`, `validate(validateLicenseSchema)` | **LITERAL response** (see §2). `expireTrialIfNeeded` first; bind device on first activation; check expiry/status; `signLicenseToken`; always includes `trial` |
+| POST | `/validate` | `licenseLimiter` (10/h per address + credential, 120/h per address), `validate(validateLicenseSchema)` | **LITERAL response** (see §2). `expireTrialIfNeeded` first; bind device on first activation; check expiry/status; `signLicenseToken`; always includes `trial` |
 
 ### `routes/device.js` → `/api/device` — account sign-in for the desktop app *(ADDED)*
 
@@ -863,8 +874,8 @@ answers `403 TWO_FACTOR_REQUIRED` to everything but `/me`, `/logout`, `/2fa`,
 `/2fa/setup`, `/2fa/enable` until `totp_enabled` is set.
 
 - `POST <realm>/login` with 2FA on → `{ requiresTwoFactor:true, challenge }` (5-min JWT `typ:"2fa-<realm>"`), NO session/cookie.
-- `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
-- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable {code}` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/recovery-codes { password, code }` → `{ recoveryCodes[8] }` — a fresh set behind the same proof as disabling (the offered code is spent first, so it cannot go on to complete a login), audit `<realm>.recovery_codes_regenerated`; `POST <realm>/2fa/disable { password, code }`.
+- `POST <realm>/login/2fa` `{ challenge, code }` (`twoFactorLimiter` 10/15min, plus the per-account second-factor lockout) → the normal `{ token, admin }`; accepts a TOTP (±1 step) or a recovery code. A staff challenge never verifies under the root secret and vice versa.
+- Behind the realm gate: `GET <realm>/2fa` → `{ enabled, pending, recoveryCodesLeft, recoveryCodesLegacy }`; `POST <realm>/2fa/setup` → `{ secret, otpauthUrl }` (stored, not yet enabled); `POST <realm>/2fa/enable { password, code }` → `{ enabled:true, recoveryCodes[8] }` shown once; `POST <realm>/2fa/recovery-codes { password, code }` → `{ recoveryCodes[8] }` — a fresh set behind the same proof as disabling (the offered code is spent first, so it cannot go on to complete a login), audit `<realm>.recovery_codes_regenerated`; `POST <realm>/2fa/disable { password, code }`.
 - **A panel bearer carries `tv` and the gate checks it**, exactly as the customer gate does: `User.revokeSessions` bumps `users.token_version`, so revoking a staff admin's sessions — or demoting them, which calls the same method — answers `401 SESSION_REVOKED` on the next request instead of leaving the token in their tab alive for its full 8h (4h for root).
 - `GET <realm>/me` adds `twoFactorEnabled`; `User.listStaff` includes `totp_enabled`; root `POST /api/root/admins/:id/reset-2fa` clears a staff admin's second factor and revokes sessions.
 - **A code is spent once.** `users.totp_last_step` is a monotonic high-water mark
@@ -1011,7 +1022,7 @@ const validate = require('../middleware/validate');
 const asyncHandler = require('../utils/asyncHandler');
 const { requireAuth } = require('../middleware/auth');
 const { requireAdmin, requireRoot, ipWhitelist, rootIpWhitelist, isRootUser } = require('../middleware/adminAuth');
-const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('../middleware/rateLimiter');
+const { registerLimiter, googleLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('../middleware/rateLimiter');
 ```
 
 - `requireAuth` — verifies user access token, rejects banned (403), attaches `req.user`.
@@ -1024,7 +1035,10 @@ const { authLimiter, licenseLimiter, adminLoginLimiter, adsLimiter } = require('
   `ROOT_ALLOWED_IPS` is empty, so the creator console is never *less* restricted.
 - `isRootUser(user)` — the creator predicate: `role === 'root'` **and** the email matches
   `ROOT_ADMIN_EMAIL`. Use it instead of comparing `role` directly.
-**Durable counters.** `authLimiter`, `loginLimiter`, `authIpLimiter`,
+**Durable counters.** the per-route auth limiters (`registerLimiter`,
+`verifyEmailLimiter`, `resendVerificationLimiter`, `forgotPasswordLimiter`,
+`resetPasswordLimiter`, `googleLimiter` — each its own budget, so one route
+cannot spend another's behind a shared NAT), `loginLimiter`, `authIpLimiter`,
 `licenseLimiter`, `adminLoginLimiter`, `contactLimiter`, `faqVoteLimiter`,
 `twoFactorLimiter` and `teamInviteLimiter` count in MySQL (`rate_limits`, `middleware/rateLimitStore.js`)
 so a restart — which the keepalive cron performs whenever the API looks hung — does
