@@ -113,6 +113,33 @@ const ContactMessage = {
     };
   },
 
+  /**
+   * Messages this person sent through the contact form, for the self-service
+   * export. Matched by account, and by address only when the caller has
+   * proved it owns that address (`includeByEmail`) — otherwise an unverified
+   * sign-up could read what somebody else wrote from that address.
+   */
+  async listForExport(userId, email, { includeByEmail = false } = {}) {
+    const byEmail = includeByEmail ? ' OR (user_id IS NULL AND email = ?)' : '';
+    const vals = includeByEmail ? [userId, String(email).toLowerCase()] : [userId];
+    const messages = await query(
+      `SELECT id, name, email, topic, message, status, ip, user_agent, created_at, replied_at
+         FROM contact_messages
+        WHERE user_id = ?${byEmail}
+        ORDER BY created_at DESC`,
+      vals
+    );
+    if (!messages.length) return [];
+    const ids = messages.map((m) => m.id);
+    const replies = await query(
+      `SELECT message_id, body, created_at FROM contact_replies
+        WHERE message_id IN (${ids.map(() => '?').join(', ')})
+        ORDER BY created_at ASC`,
+      ids
+    );
+    return messages.map((m) => ({ ...m, replies: replies.filter((r) => r.message_id === m.id) }));
+  },
+
   async listReplies(messageId) {
     return query(
       `SELECT id, message_id, admin_user_id, admin_name, body, delivered, delivery_error, created_at

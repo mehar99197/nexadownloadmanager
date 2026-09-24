@@ -2,6 +2,22 @@
 
 // Plan catalog — single source of truth for pricing + features.
 // Feature arrays mirror the pricing table in ndm-website/CONTRACT.md §9 (PLANS catalog).
+//
+// Every line on a card is a promise the product has to keep, so each one is
+// written against what the app actually does (test/planCards.test.js pins it):
+//  - The concurrency cap (ENTITLEMENTS.maxConcurrentDownloads, enforced by the
+//    app's DownloadEngine::schedule) counts direct file downloads (HTTP/FTP)
+//    only — video grabs, MEGA and torrents start beside them — and the app's
+//    own "max downloads" setting stops at 32, so a paid plan is "up to 32",
+//    never "unlimited".
+//  - The Pro-only sites are exactly the providers marked `proOnly` in the
+//    app's resources/cloud_providers.json (tests/CloudProvidersTest.cpp pins
+//    the same five), which is what `authSiteDownloads` unlocks.
+//  - Nothing gives a paid plan's contact messages any priority, so no card
+//    offers "priority support".
+//  - A Team is people, not a shared key: the roster holds `seats` people with
+//    the owner counted (routes/team.js), each signing in with their own
+//    account, and the seat limit is machines running at the same time.
 
 const { isAdFreePlan } = require('../utils/ads');
 
@@ -11,7 +27,7 @@ const PLANS = {
     name: 'Free',
     price: 0,
     features: [
-      '3 concurrent downloads',
+      '3 direct downloads at once (videos and torrents not counted)',
       'Up to 16 connections per file',
       'Browser extension, video grabber, torrents',
       '2 core themes',
@@ -25,13 +41,12 @@ const PLANS = {
     yearly: 45,
     features: [
       'Everything in Free',
-      'Unlimited concurrent downloads',
+      'Up to 32 downloads at once',
       '32 connections per file — double the Free limit',
       'No ads',
       'All 64 themes',
-      'Udemy, Coursera & other login-gated sites',
+      'Course sites: Udemy, Coursera, Skillshare, Pluralsight, LinkedIn Learning',
       'AI smart rename',
-      'Priority support',
     ],
   },
   team: {
@@ -42,7 +57,8 @@ const PLANS = {
     seats: 5,
     features: [
       'Everything in Pro',
-      '5 seats — five machines at a time on one key',
+      '5 seats — you plus four teammates, each signing in with their own account',
+      'Up to five machines running at once across the team',
       'Free a seat from the website any time',
       'Ad-free for the whole team',
     ],

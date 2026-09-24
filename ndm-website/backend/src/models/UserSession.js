@@ -134,6 +134,22 @@ const UserSession = {
     );
   },
 
+  /**
+   * Every session row still held for the account — live, expired and revoked —
+   * for the self-service export (GET /user/export). Deliberately no
+   * token_hash, prev_token_hash or family: the export describes a session, it
+   * never carries anything that could stand in for one.
+   */
+  async listAllForExport(userId) {
+    return query(
+      `SELECT id, user_agent, ip, created_at, last_used_at, rotated_at, expires_at, revoked_at
+         FROM user_sessions
+        WHERE user_id = ?
+        ORDER BY created_at DESC`,
+      [userId]
+    );
+  },
+
   /** Rows nobody can use any more; run from the daily maintenance job. */
   async pruneDead() {
     const result = await execute(

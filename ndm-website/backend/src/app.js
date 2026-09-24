@@ -93,9 +93,10 @@ app.get('/api/health', (req, res) => ok(res, { status: 'up', billing: config.str
 app.get(
   '/api/stats',
   asyncHandler(async (req, res) => {
-    // Real numbers only: registered users + SUM(releases.download_count),
-    // which the counting redirect (GET /api/releases/download/:os) increments.
-    const [users, downloads] = await Promise.all([User.count(), Release.sumDownloadCount()]);
+    // Real numbers only: registered customers (verified, not banned, not
+    // staff — User.countCustomers) + SUM(releases.download_count), which the
+    // counting redirect (GET /api/releases/download/:os) increments.
+    const [users, downloads] = await Promise.all([User.countCustomers(), Release.sumDownloadCount()]);
     // Below the configured floor a figure is omitted, never rounded up.
     return ok(res, publicStats({ users, downloads }, {
       minUsers: config.STATS_MIN_USERS, minDownloads: config.STATS_MIN_DOWNLOADS,

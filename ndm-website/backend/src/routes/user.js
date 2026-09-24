@@ -15,6 +15,7 @@ const Subscription = require('../models/Subscription');
 const Payment = require('../models/Payment');
 const Review = require('../models/Review');
 const TeamMember = require('../models/TeamMember');
+const ContactMessage = require('../models/ContactMessage');
 const AuditLog = require('../models/AuditLog');
 const { stopBillingBeforeDelete, BILLING_CANCEL_FAILED } = require('../utils/accountDeletion');
 const { isTrialActive, isBilled } = require('../utils/license');
@@ -390,26 +391,56 @@ router.delete(
 /**
  * Everything we hold about this account, as one JSON document. This is the
  * self-service side of a data-access request; no admin has to be involved.
+ *
+ * "Everything" is the promise, so every table that keeps rows about the
+ * person is here: the account, subscriptions and their machines, payments,
+ * the review, team rows (as a member or invitee, and the roster of a team
+ * they own), browser sessions, desktop sign-ins, security events and contact
+ * messages. What is NEVER here is anything that works as a credential or
+ * derives from one: no password / refresh / device-token / invite hashes, no
+ * TOTP secret or recovery codes, no Google subject id, no device or user
+ * codes, and device fingerprints only as the same 8-character prefix the
+ * dashboard shows. Keys are only ever added to this document, never renamed,
+ * so a script written against an older export still reads a newer one.
  */
 router.get(
   '/export', requireAuth,
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
     const subs = await Subscription.findByUserId(userId);
-    const [payments, review, devicesBySub, team] = await Promise.all([
+    const u = req.user;
+    // Rows filed under the ADDRESS rather than the account (a contact message
+    // sent while signed out, a failed sign-in) only belong in this file once
+    // the address is proven to be this person's.
+    const byEmail = { includeByEmail: Boolean(u.email_verified) };
+    const [payments, review, devicesBySub, team, rostersBySub, teamRows,
+           sessions, deviceTokens, deviceCodes, securityEvents, contactMessages] = await Promise.all([
       Payment.findByUserId(userId, { page: 1, limit: 500 }),
       Review.findByUserId(userId),
       Promise.all(subs.map((s) => Subscription.listActivations(s.id))),
       TeamMember.findActiveByUserId(userId),
+      Promise.all(subs.map((s) => TeamMember.listBySubscription(s.id))),
+      TeamMember.listForExport(userId, u.email),
+      UserSession.listAllForExport(userId),
+      DeviceAuth.listAllForExport(userId),
+      DeviceAuth.listCodesForExport(userId),
+      security.listForUser(userId, u.email, byEmail),
+      ContactMessage.listForExport(userId, u.email, byEmail),
     ]);
-    const u = req.user;
     const document = {
       exportedAt: new Date().toISOString(),
       account: {
         id: u.id, name: u.name, email: u.email, role: u.role,
         emailVerified: Boolean(u.email_verified), trialUsed: Boolean(u.trial_used),
         createdAt: toIso(u.created_at), updatedAt: toIso(u.updated_at),
+        // Presence, never the value: the Google subject id is an identifier
+        // for the account at Google, and a password is a hash.
+        hasPassword: Boolean(u.password_hash),
+        googleLinked: Boolean(u.google_id),
+        avatarUrl: u.avatar_url || null,
       },
+      // On or off only — the shared secret and the recovery codes stay here.
+      twoFactor: { enabled: Boolean(Number(u.totp_enabled)) },
       subscriptions: subs.map((s, i) => ({
         id: s.id, plan: s.plan, status: s.status, licenseKey: s.license_key, seats: s.seats,
         startDate: toIso(s.start_date), expiryDate: toIso(s.expiry_date),
@@ -428,6 +459,45 @@ router.get(
         createdAt: toIso(review.created_at), updatedAt: toIso(review.updated_at),
       } : null,
       team: team ? { ownerName: team.owner_name, joinedAt: toIso(team.accepted_at) } : null,
+      // Every team row about this person — accepted, or an invitation still
+      // waiting — whoever's team it is.
+      teamMemberships: teamRows.map((m) => ({
+        ownerName: m.owner_name, email: m.email, status: m.status,
+        invitedAt: toIso(m.invited_at), acceptedAt: toIso(m.accepted_at),
+      })),
+      // The roster of a team this person owns: whom they invited.
+      teamInvitesSent: subs.flatMap((s, i) => (rostersBySub[i] || []).map((m) => ({
+        subscriptionId: s.id, email: m.email, name: m.user_name || null, status: m.status,
+        invitedAt: toIso(m.invited_at), acceptedAt: toIso(m.accepted_at),
+      }))),
+      sessions: sessions.map((x) => ({
+        id: x.id, ip: x.ip || null, userAgent: x.user_agent || null,
+        createdAt: toIso(x.created_at), lastUsedAt: toIso(x.last_used_at),
+        rotatedAt: toIso(x.rotated_at), expiresAt: toIso(x.expires_at),
+        revokedAt: toIso(x.revoked_at),
+      })),
+      // Machines signed in to the account with the desktop app, and the
+      // sign-in requests approved for them.
+      deviceSignIns: deviceTokens.map((d) => ({
+        id: d.id, name: d.device_name || null, appVersion: d.app_version || null,
+        fingerprintPrefix: String(d.device_fingerprint).slice(0, 8),
+        createdAt: toIso(d.created_at), lastUsedAt: toIso(d.last_seen_at),
+        revokedAt: toIso(d.revoked_at), revokedReason: d.revoked_reason || null,
+      })),
+      deviceSignInRequests: deviceCodes.map((c) => ({
+        id: c.id, deviceName: c.device_name || null, appVersion: c.app_version || null,
+        ip: c.ip || null, status: c.status, createdAt: toIso(c.created_at),
+      })),
+      securityEvents: securityEvents.map((e) => ({
+        kind: e.kind, severity: e.severity, ip: e.ip || null, userAgent: e.user_agent || null,
+        detail: e.detail || null, createdAt: toIso(e.created_at),
+      })),
+      contactMessages: contactMessages.map((m) => ({
+        id: m.id, name: m.name, email: m.email, topic: m.topic, message: m.message,
+        status: m.status, ip: m.ip || null, userAgent: m.user_agent || null,
+        createdAt: toIso(m.created_at), repliedAt: toIso(m.replied_at),
+        replies: m.replies.map((r) => ({ body: r.body, sentAt: toIso(r.created_at) })),
+      })),
     };
     // Sent bare, NOT through ok() (AUDIT.md L-03). This response is a file the
     // person downloads and keeps: wrapping it in {"ok":true,"data":{…}} means
