@@ -223,8 +223,10 @@ bool CloudProviders::isDirectFileUrl(const QUrl &url) const
             }
         }
 
-        if (p.id == QStringLiteral("mega"))
-            return true;
+        // MEGA is deliberately not a direct file. Its files are AES-encrypted
+        // with a key that only exists in the link's fragment, and MegaGrabber
+        // is what decrypts them and checks their MAC. Answering true here sent
+        // every MEGA link to yt-dlp whenever yt-dlp was installed.
     }
 
     return false;

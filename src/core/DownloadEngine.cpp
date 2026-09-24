@@ -747,6 +747,27 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         return id;
     }
 
+    // MEGA first, ahead of every yt-dlp route. Its files are AES-128-CTR
+    // encrypted with a key that exists only in the link's fragment; MegaGrabber
+    // decrypts them as they stream in and verifies MEGA's chunked CBC-MAC before
+    // calling the download done. yt-dlp can do neither, and it used to be handed
+    // these links whenever it was installed.
+    if (MegaGrabber::isMegaUrl(url)) {
+        QString out = savePath;
+        if (out.isEmpty())
+            out = pathForName(QStringLiteral("mega-download.bin"), url);
+        QDir().mkpath(QFileInfo(out).absolutePath());
+        auto *g = new MegaGrabber(id, url, QFileInfo(out).absolutePath(), m_nam, this);
+        m_megaGrabbers.insert(id, g);
+        connect(g, &MegaGrabber::progress,     this, &DownloadEngine::taskProgress);
+        connect(g, &MegaGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
+        connect(g, &MegaGrabber::finished,     this, &DownloadEngine::taskFinished);
+        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
+        emit taskAdded(id);
+        g->start();
+        return id;
+    }
+
     // Google Drive file links use the native HTTP task when the extension (or a
     // cookies.txt credential) supplied request cookies. That path understands
     // Drive's confirm page, adopts Content-Disposition's real filename, and
@@ -802,24 +823,6 @@ int DownloadEngine::addDownload(const QUrl &url, const QString &savePath,
         connect(g, &YtDlpGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
         connect(g, &YtDlpGrabber::finished,     this, &DownloadEngine::taskFinished);
         connect(g, &YtDlpGrabber::renamed,      this, &DownloadEngine::taskRenamed);
-        if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
-        emit taskAdded(id);
-        g->start();
-        return id;
-    }
-
-    // MEGA.nz encrypted cloud storage: route through MegaGrabber, which handles
-    // the MEGA API protocol + AES-128-CBC decryption.
-    if (MegaGrabber::isMegaUrl(url)) {
-        QString out = savePath;
-        if (out.isEmpty())
-            out = pathForName(QStringLiteral("mega-download.bin"), url);
-        QDir().mkpath(QFileInfo(out).absolutePath());
-        auto *g = new MegaGrabber(id, url, QFileInfo(out).absolutePath(), m_nam, this);
-        m_megaGrabbers.insert(id, g);
-        connect(g, &MegaGrabber::progress,     this, &DownloadEngine::taskProgress);
-        connect(g, &MegaGrabber::stateChanged, this, &DownloadEngine::taskStateChanged);
-        connect(g, &MegaGrabber::finished,     this, &DownloadEngine::taskFinished);
         if (hold) { m_held.insert(id); emit confirmRequested(id); return id; }
         emit taskAdded(id);
         g->start();

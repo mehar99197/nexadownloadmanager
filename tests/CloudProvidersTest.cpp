@@ -97,5 +97,14 @@ int main(int argc, char **argv)
                                 QStringLiteral("pluralsight"), QStringLiteral("skillshare"),
                                 QStringLiteral("udemy")}));
 
+    // MEGA belongs to MegaGrabber, the only thing that can decrypt its files.
+    // Calling it a direct file sent it to yt-dlp whenever yt-dlp was installed;
+    // it must match no yt-dlp route at all. Drive file links stay direct files.
+    const QUrl mega(QStringLiteral("https://mega.nz/file/AbCdEfGh#0123456789abcdefghijklmnopqrstuvwxyzABCDEF"));
+    CHECK(!providers.isDirectFileUrl(mega));
+    CHECK(!providers.isSiteVideoUrl(mega));
+    CHECK(!pro("https://mega.nz/file/AbCdEfGh#key"));
+    CHECK(providers.isDirectFileUrl(QUrl(QStringLiteral("https://drive.google.com/file/d/1AbCdEfGh/view"))));
+
     return failures == 0 ? 0 : 1;
 }
