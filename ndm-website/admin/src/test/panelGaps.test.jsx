@@ -183,8 +183,11 @@ describe('errors raised inside a dialog are shown inside it', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Manage' }));
     const dialog = await screen.findByRole('dialog');
+    // A save with nothing changed sends nothing, so change something.
+    await user.selectOptions(within(dialog).getByLabelText('Subscription plan'), 'pro');
     await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('Only the creator can modify a control-panel account');
+    expect(put).toHaveBeenCalledWith('/admin/users/3', { plan: 'pro' });
   });
 
   it('a failed save on the Subscriptions edit dialog says why inside the dialog', async () => {
@@ -198,8 +201,13 @@ describe('errors raised inside a dialog are shown inside it', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Manage' }));
     const dialog = await screen.findByRole('dialog');
+    // A save with nothing changed sends nothing, so change something.
+    const seats = within(dialog).getByLabelText('Seats');
+    await user.clear(seats);
+    await user.type(seats, '3');
     await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('Seats must be at least 1');
+    expect(put).toHaveBeenCalledWith('/admin/subscriptions/4', { seats: 3 });
   });
 });
 
