@@ -2392,6 +2392,81 @@ and stats as the live API returns them, reviews synthetic, so no real person's
 name sits in the repository. Run against the old live controls it named
 exactly the twelve; against this build, 30/30.
 
+# Page changes that read as page changes — 2026-09-23
+
+Reported after the jolt fix went live: "moving from one section to another
+shifts all at once, and no skeleton shows; in the admin dashboard a page
+still appears all at once, with only 'Loading' written on it." All three were
+accurate, and the first was a consequence of the jolt fix itself.
+
+### What the reader saw
+
+- **Site.** A click on a page whose code had not arrived left the old page
+  exactly as it was, under a 2px hairline, for as long as the download took,
+  and then cut to the new page under a 200ms dissolve. Under
+  `prefers-reduced-motion` there was no dissolve at all: a literal cut. Data
+  still arrived as a pop. `/download`, `/changelog`, `/billing` and the
+  licence card showed a spinner where the content would be; the eyebrow on
+  `/download` said "Version not published yet" for as long as the release was
+  loading, which is a wrong answer, not a placeholder; `/pricing` drew one
+  frame with neither its outline nor its plans; and on the home page the
+  release pill arrived above the headline and pushed the whole hero down.
+- **Panel.** Opening it showed the word "Loading…" alone on an empty screen
+  while the session was checked, then the whole panel at once. The dashboard
+  then rendered "-", "checking", "No data" and "No payments yet" until its
+  numbers arrived, and swapped them in. A change of screen was a 160ms
+  dissolve, and none under reduced motion.
+
+### What changed
+
+| | |
+|---|---|
+| Site: the next page's outline | If a page's code is not here 150ms after the tap, its **outline** is swapped in (`PageSkeleton.jsx` — four shapes: a centred intro over cards, an account page, a docs article, a sign-in card), and the page replaces it the moment the code lands. The grace period is so a fast page never flashes an outline for two frames. |
+| Site: fewer waits at all | A page's code is fetched at the first sign of intent — a pointer over a link, a finger on it, keyboard focus — and the header's pages once the first page has loaded and the browser is idle (not on Save-Data or 2G). A failed fetch is forgotten, so it is retried rather than remembered. |
+| Both: the change itself | The root dissolve is 340ms on the site and 300ms in the panel (was 200 and 160), with its timing set identically on both halves so the browser's plus-lighter blend keeps the header and sidebar perfectly still. The arriving page settles 14px (panel: 10px) up into place. Reduced motion keeps a shorter dissolve (200/180ms) and loses the movement — a cut is not less motion, it is the jolt with the animation removed. |
+| Site: data | Every page that loads data draws that data's outline until it arrives, and the content fades up into it. Outlines are built from the real components — `SkeletonText` is a run of figure spaces laid out in the real text's font and line box — and what does not depend on the data (the Download page's cards, its extension section and notes) is drawn at once instead of waiting behind a spinner. |
+| Site: revisits | `api/reads.js` keeps the last answer to each public read — plans, releases, reviews, stats — for the life of the tab. A revisit draws its content in its first frame and asks again underneath, which also lets Back return to the exact place on a page of data. Nothing that belongs to an account is kept. |
+| Panel: opening | `PanelSkeleton` — the panel's own layout in outline. It stays invisible for its first 140ms, so a visit with no session goes to sign-in without flashing a panel it was never going to see, and the real panel replaces it inside a dissolve. |
+| Panel: the dashboard | The stats, service health, both charts, plan mix, activity, payments and moderation counts are outlines on the first load; a Refresh keeps the numbers on screen until new ones replace them. A chart's outline and its "No data" state both take a full chart's height, so an empty series no longer shrinks the card. |
+| Panel: everything else | The "N matching" lines and the Contact and Ads stat cards are outlines while their lists load; table rows fade up out of the stand-ins they replace; the account-history modal has an outline instead of "Loading account history...". The sidebar is sticky on a desktop, so moving between screens never starts with scrolling back up a long list. |
+| Skeleton tone | A translucent tint of the ink instead of a surface colour. On the light theme the old bars were white on white cards; on the dark theme they faded out across a card's own gradient. Found in screenshots, not by a test. |
+
+### Held by tests
+
+- `frontend/e2e/steady.spec.js` (7): a page whose code is held back until
+  1.5s after the tap shows its outline long before that, and then the page; a
+  release held for 2.5s shows its outline and moves nothing when it lands;
+  the dissolve is 340ms and the page settles, and under reduced motion it is
+  200ms and nothing moves. A heading may now only *settle* — upward, never
+  faster than the settle itself moves, then still — judged by each frame's
+  own timestamp, so one slow frame on a busy machine is not mistaken for a
+  jump. These run one at a time: seven pages animating at once measured the
+  machine, not the page.
+- `frontend/src/test/pages.test.jsx` (+4): Download claims nothing while it
+  loads and draws its cards at once; a revisit draws the last answer
+  synchronously while the second request is still in flight; Home's numbers
+  are outlines until they arrive; Changelog draws release outlines, not a
+  spinner.
+- `admin/e2e/advanced.spec.js` (+2): the panel opens in outline and never as
+  the lone word "Loading…"; its dashboard is outlines while the numbers load
+  and **nothing above the fold moves when they land**; a screen change
+  dissolves over 300ms and settles, and over 180ms without settling under
+  reduced motion.
+- `admin/src/test/guards.test.jsx` (+1): the dashboard claims nothing — no
+  "No data", "No payments yet" or "checking" — until it has an answer, and
+  then says "No payments yet" when that is the answer.
+
+**Each new test was run against the live site before this deploy, and each
+failed for the thing it names:** no outline while a page's code loaded (0
+frames), a spinner in place of the data (0 frames of outline), a 200ms
+dissolve on the site and a 160ms one in the panel, and no panel outline.
+
+Measuring the dashboard outline against the real layout, before that test
+was written, found two mistakes in the outline itself: the chart's label row
+and the plan-mix rows were each 4px short of the real ones, which would have
+stepped the lower half of the dashboard by 4–12px as the numbers landed. Both
+were fixed, and the test now holds them.
+
 # Fix plan
 
 **The original plan had six phases, and this one has five.** That is worth
