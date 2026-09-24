@@ -102,7 +102,11 @@ export default function Releases() {
       const payload = {
         version: form.version.trim(),
         changelog: form.changelog,
-        isLatest: Boolean(form.isLatest),
+        // An edit sends isLatest only when the box was actually toggled, so a
+        // plain save never re-promotes or demotes anything. (The server refuses
+        // un-ticking the current latest: the update feed would have none.)
+        ...((editing === 'new' || Boolean(form.isLatest) !== Boolean(editing.is_latest ?? editing.isLatest))
+          ? { isLatest: Boolean(form.isLatest) } : {}),
       };
       // Only send the legacy URLs when the operator actually opened that section
       // — otherwise editing a file-backed release would blank its own fields —

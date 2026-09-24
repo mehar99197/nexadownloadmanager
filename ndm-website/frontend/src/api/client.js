@@ -29,6 +29,26 @@ function sessionEnded() {
   }
 }
 
+/**
+ * A 401 is worth a refresh-and-retry only when it is about the access token.
+ *
+ * /auth/google answers 401 for its own reasons: Google's sign-in did not
+ * verify (GOOGLE_AUTH_FAILED) or its nonce expired while the page sat open
+ * (GOOGLE_NONCE_INVALID). Taken for an expired session, a signed-out visitor's
+ * failed Google sign-in went to /auth/refresh instead, and the page showed the
+ * refresh's "Missing refresh token" — and never saw the GOOGLE_NONCE_INVALID
+ * it recovers from by minting a new nonce. These are the codes requireAuth and
+ * the JWT error handler send; a 401 with no code at all (a proxy's) still gets
+ * the refresh, as before.
+ */
+const SESSION_CODES = new Set(['UNAUTHORIZED', 'TOKEN_EXPIRED', 'INVALID_TOKEN', 'SESSION_REVOKED']);
+
+function isSessionError(error) {
+  if (error?.response?.status !== 401) return false;
+  const code = error.response.data?.error?.code;
+  return !code || SESSION_CODES.has(code);
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   withCredentials: true,
@@ -49,7 +69,7 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error?.config;
-    if (error?.response?.status !== 401 || !original || original._retry ||
+    if (!isSessionError(error) || !original || original._retry ||
         original.url?.includes('/auth/refresh') || original.url?.includes('/auth/login')) {
       return Promise.reject(error);
     }
