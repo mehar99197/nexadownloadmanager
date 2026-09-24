@@ -352,9 +352,20 @@ body::before {
      single centred card it only pushed the form off-screen and put a
      scrollbar on a page that has nothing to scroll to. */
   .auth-main > .auth-section,
-  .auth-main > .page-enter > .auth-section {
+  .auth-main > .page-enter > .auth-section,
+  .auth-main .route-skeleton > .auth-section {
     flex: 1;
     padding-block: 2.5rem;
+  }
+
+  /* The outline of a sign-in page stands where the page will: it takes the
+     same column the card is centred in, whether it is the Suspense fallback
+     or the stand-in navigation shows while the page's code is on its way. */
+  .auth-main > .route-skeleton,
+  .auth-main > .page-enter > .route-skeleton {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
   }
 
   .brand-lockup {
@@ -1200,7 +1211,7 @@ h2 {
 
 @media (prefers-reduced-motion: no-preference) {
   .page-enter {
-    animation: page-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: page-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
   }
 
   .rise {
@@ -1445,56 +1456,94 @@ h2 {
   }
 }
 
-/* 4. View transitions between pages ----------------------------------
-   navigation.jsx swaps the page inside document.startViewTransition, and
-   this is the whole of the animation: the browser's own cross-fade of the
-   ROOT snapshot, made a little quicker.
+/* 4. Moving between pages --------------------------------------------
+   navigation.jsx swaps the page inside document.startViewTransition. Two
+   things move, and nothing else does:
 
-   It used to be a named element ("ndm-page", from React's <ViewTransition>)
-   with its own slide and fade. A named element is animated from its old box
-   to its new box — and resetting the scroll to the top of the new page moves
-   the page's box by however far down the reader was, so the old page slid
-   hundreds of pixels while it faded. The custom keyframes had also replaced
-   the browser's plus-lighter blend, so the two half-faded pages dipped
-   towards the background in the middle. The root snapshot is the viewport
-   itself: nothing in it moves, and the default blend is kept because only
-   the duration is overridden here. */
+   The window dissolves — the browser's own cross-fade of the ROOT snapshot.
+   Only its timing is set here, and set identically on both halves, which
+   keeps the browser's plus-lighter blend: the two half-faded pages always
+   add up to one, so whatever is the same on both (the header, the footer,
+   the star field) holds perfectly still while the page between them
+   changes. (Replacing the keyframes outright drops that blend, and the
+   pages dip towards the background mid-fade.)
+
+   The arriving page settles — a 14px rise on the page wrapper, easing out
+   hard, so most of it has happened by the time the dissolve completes. It
+   is a transform, so nothing around the page reflows, and it is the page's
+   own box inside the new snapshot rather than a named element: a named
+   element is animated from its old box to its new one, and resetting the
+   scroll moves a page's box by however far down the reader was.
+
+   It was a 200ms dissolve alone, which read as the page changing "all at
+   once" — and none at all under reduced motion, which was a literal cut. */
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: 200ms;
+  animation-duration: 340ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @supports (view-transition-name: none) {
-  /* Otherwise the keyframe fallback and the view transition both play and
-     the page drifts in twice. */
+  /* The dissolve supplies the fade, so the page keyframe keeps only the
+     rise — otherwise the page fades in twice and arrives late. */
   .page-enter {
     animation: none;
   }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .page-enter {
+      animation: page-settle 560ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    }
+  }
 }
 
-/* A view transition is motion like any other. */
+@keyframes page-settle {
+  from {
+    transform: translateY(14px);
+  }
+}
+
+/* Reduced motion keeps the dissolve and loses the movement. A cross-fade is
+   what the platforms themselves substitute for a slide when a reader asks
+   for less motion; a cut from one page to the next is not "less motion", it
+   is the jolt with the animation removed. Shorter, and nothing rises. */
 @media (prefers-reduced-motion: reduce) {
-  ::view-transition-group(*),
-  ::view-transition-old(*),
-  ::view-transition-new(*) {
-    animation: none !important;
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 200ms;
   }
 }
 
 /* 5. Stand-ins that hold the layout ----------------------------------
    Sized by whoever uses it (components/Skeleton.jsx); all this supplies is
-   the surface and the sweep. The gradient is drawn from the same two
-   surface tokens as the cards it stands in for, so it reads as the page
-   waiting rather than as a grey box pasted over it. */
+   the tone and the sweep.
+
+   The tone is a tint of the ink, laid OVER whatever is behind it, not a
+   surface colour of its own. It used to be drawn from the two surface
+   tokens, and a stand-in sits on every surface there is: on the light
+   theme --color-surface-2 is white, so on a white card the bars were white
+   on white and only the sweep showed — outlines of nothing; on the dark
+   theme the card's own gradient passes through the same colour, so they
+   faded out across the card. A translucent tint is the same step darker
+   (or lighter) than the page, a card, a pill or a table, whichever it is
+   on. */
 .skeleton {
+  --skeleton-base: rgba(150, 172, 232, 0.11);
+  --skeleton-shine: rgba(150, 172, 232, 0.22);
   background-image: linear-gradient(
     100deg,
-    var(--color-surface-2) 28%,
-    var(--color-surface-3) 50%,
-    var(--color-surface-2) 72%
+    var(--skeleton-base) 28%,
+    var(--skeleton-shine) 50%,
+    var(--skeleton-base) 72%
   );
   background-size: 220% 100%;
   background-position: 180% 0;
+}
+
+/* Ink on white: the base a step darker than the page, the sweep lighter. */
+:root[data-theme='light'] .skeleton {
+  --skeleton-base: rgba(36, 50, 96, 0.09);
+  --skeleton-shine: rgba(36, 50, 96, 0.035);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1509,11 +1558,53 @@ h2 {
   }
 }
 
+/* A stand-in for a run of text that is on its way, drawn by the text
+   itself: the placeholder words are laid out exactly as the real ones will
+   be — same font, same line box — and only painted as a bar. Where a
+   skeleton block would be a guess at a height, this is the height. */
+.skeleton-text {
+  color: transparent !important;
+  border-radius: 0.35em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  user-select: none;
+}
+
+/* Content arriving where its skeleton was. It fades up into the place the
+   skeleton held — the skeleton was built to the content's size, so this is
+   the only movement, and it is 6px. Reduced motion keeps the fade (a change
+   of opacity is not motion) and drops the rise.
+
+   Backwards, not both: an animation still filling after it ends keeps the
+   element in a stacking context of its own for as long as the page is up. */
+.fade-in {
+  animation: ndm-fade-in 240ms ease-out backwards;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fade-in {
+    animation: ndm-fade-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+}
+
+@keyframes ndm-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ndm-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
 /* 6. Waiting for a route ---------------------------------------------
-   Deferring the swap means a tap on a link whose chunk is not cached shows
-   the OLD page for as long as the download takes — correct, and silent.
-   This is the acknowledgement: a hairline at the top of the window, which
-   costs one class and never moves the layout. */
+   A tap on a link whose code is not here yet keeps the old page for up to
+   150ms (navigation.jsx), then shows the new page's skeleton until the code
+   lands. This hairline is the acknowledgement for that whole stretch, from
+   the first frame: one class, and it never moves the layout. */
 .route-progress {
   position: fixed;
   inset-block-start: 0;

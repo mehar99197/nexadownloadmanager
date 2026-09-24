@@ -11,10 +11,17 @@ import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import WarpField from './components/WarpField';
 import ProtectedRoute from './components/ProtectedRoute';
-import Spinner from './components/Spinner';
+import RouteSkeleton from './components/PageSkeleton';
 import { ToastProvider } from './components/Toast';
 import { ConfirmProvider } from './components/ConfirmDialog';
-import { lazyPage, useSwappedLocation, BootDone } from './navigation';
+import {
+  lazyPage,
+  useSwappedLocation,
+  useRouteWaiting,
+  usePrefetch,
+  WaitingProvider,
+  BootDone,
+} from './navigation';
 
 import Home from './pages/Home';
 import NotFound from './pages/NotFound';
@@ -89,11 +96,22 @@ const DocsLicense = lazyPage(() => import('./pages/docs/DocsLicense'));
  * spinner on every first visit to a route, the scroll clamped to the top of a
  * suddenly short page, and the scrollbar vanished and came back. Keyed in
  * here, the boundary persists; the key still remounts the page itself, so
- * each one starts from fresh state and the .page-enter keyframes replay on a
- * browser without view transitions.
+ * each one starts from fresh state and its .page-enter settle plays.
+ *
+ * While the page's code is still on its way (navigation.jsx), its skeleton
+ * stands in — keyed apart from the page, so the page arriving is a new
+ * element and settles into place in turn instead of silently replacing it.
  */
 function RoutedPage() {
   const location = useLocation();
+  const waiting = useRouteWaiting();
+  if (waiting) {
+    return (
+      <div key={`${location.pathname}#skeleton`} className="page-enter">
+        <RouteSkeleton />
+      </div>
+    );
+  }
   return (
     <div key={location.pathname} className="page-enter">
       <Outlet />
@@ -112,8 +130,9 @@ function Layout() {
         {/* Inside the shell, not around the whole router: the navbar and
             footer stay on screen whatever the page is doing. The fallback is
             only ever seen on the first page of a visit, under the boot
-            screen — every later page is fetched before it is swapped in. */}
-        <Suspense fallback={<Spinner center />}>
+            screen — a later page whose code is slow shows the same outline
+            through RoutedPage instead. */}
+        <Suspense fallback={<RouteSkeleton />}>
           <RoutedPage />
         </Suspense>
       </main>
@@ -135,7 +154,7 @@ function AuthLayout() {
       <WarpField mode="ambient" />
       <Navbar />
       <main className="auth-main">
-        <Suspense fallback={<Spinner center />}>
+        <Suspense fallback={<RouteSkeleton />}>
           <RoutedPage />
         </Suspense>
       </main>
@@ -258,19 +277,28 @@ function preloadFor(pathname) {
   return pending.length ? Promise.all(pending) : null;
 }
 
+/**
+ * The header's own pages, fetched once the first page has settled and the
+ * browser is idle, so the likeliest next click finds its code already here.
+ * Home is in the entry bundle; the rest are fetched on a hover or a focus.
+ */
+const WARM_PATHS = ['/download', '/features', '/pricing', '/docs', '/faq', '/reviews', '/login', '/register'];
+
 export default function App() {
-  const [shown, routePending] = useSwappedLocation(preloadFor);
+  const [shown, waiting, routePending] = useSwappedLocation(preloadFor);
+  usePrefetch(preloadFor, WARM_PATHS);
 
   return (
     <ToastProvider>
       <ConfirmProvider>
-        {/* While the next page's code downloads, the page being left stays
-            exactly where it is — correct, and otherwise completely silent. A
-            hairline at the top of the window is the acknowledgement; it is
-            decoration over a state the content already conveys, so it stays
+        {/* The acknowledgement that a tap landed, from the first frame until
+            the page — or, after a moment, its skeleton — is on screen. It is
+            decoration over a state the content itself conveys, so it stays
             out of the accessibility tree. */}
         {routePending && <div className="route-progress" aria-hidden="true" />}
-        <Routes location={shown}>{ROUTES}</Routes>
+        <WaitingProvider value={waiting}>
+          <Routes location={shown}>{ROUTES}</Routes>
+        </WaitingProvider>
       </ConfirmProvider>
     </ToastProvider>
   );

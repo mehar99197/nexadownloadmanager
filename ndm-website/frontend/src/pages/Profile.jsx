@@ -8,7 +8,7 @@ import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import Spinner from '../components/Spinner';
+import RouteSkeleton from '../components/PageSkeleton';
 import usePageMeta from '../hooks/usePageMeta';
 import { formatDate } from '../utils/formatDate';
 import TwoFactorCard from '../components/account/TwoFactorCard';
@@ -190,7 +190,7 @@ export default function Profile() {
   const [changingPassword, setChangingPassword] = useState(false);
   const [pwError, setPwError] = useState('');
 
-  if (!user) return <Spinner center />;
+  if (!user) return <RouteSkeleton />;
 
   const handleSaveName = async (e) => {
     e.preventDefault();
