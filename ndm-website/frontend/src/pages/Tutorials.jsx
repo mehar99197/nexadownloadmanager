@@ -127,7 +127,11 @@ export default function Tutorials() {
   usePageMeta({
     title: 'Tutorials',
     description:
-      'Short video guides for Nexa Download Manager — installing, the browser extension, YouTube and playlists, torrents, scheduling and the remote dashboard. Written guides are available for every topic today.',
+      'Video guides planned for Nexa Download Manager. None are recorded yet; every topic has a written guide today.',
+    // Every card still reads "video to be created". Off the footer and out of
+    // search results until there are videos to show; the route stays so old
+    // links still land somewhere honest.
+    noindex: true,
   });
 
   const [active, setActive] = useState(CATEGORIES[0].id);

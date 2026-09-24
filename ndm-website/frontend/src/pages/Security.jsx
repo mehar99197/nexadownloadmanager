@@ -3,6 +3,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
+import { SOURCE_URL } from '../components/Footer';
 
 /* Every claim on this page was checked against the source before it was
    written. Some of them are uncomfortable and are stated anyway: AI rename
@@ -22,7 +23,14 @@ const PRINCIPLES = [
   },
   {
     title: 'You can check all of this',
-    body: 'The app, the browser extension and the native-messaging bridge are open source. Everything on this page is a claim you can verify by reading the code rather than trusting us.',
+    body: (
+      <>
+        The app, the browser extension and the native-messaging bridge are open source. Everything
+        on this page is a claim you can verify by{' '}
+        <a href={SOURCE_URL} className="text-brand-300 hover:underline">reading the code</a>{' '}
+        rather than trusting us.
+      </>
+    ),
   },
 ];
 
@@ -315,6 +323,7 @@ export default function Security() {
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
           <Button to="/privacy">Privacy policy</Button>
+          <Button href={SOURCE_URL} variant="ghost">Source on GitHub</Button>
           <Button to="/contact" variant="ghost">Ask us a privacy question</Button>
         </div>
       </div>

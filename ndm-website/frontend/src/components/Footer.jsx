@@ -3,6 +3,13 @@ import Brand from './Brand';
 
 export const SUPPORT_EMAIL = 'support@nexadownloadmanager.com';
 
+/**
+ * The public repository. The site tells readers they can check its claims by
+ * reading the code (About, Security, the extension pages) and used to give
+ * them no way to find it.
+ */
+export const SOURCE_URL = 'https://github.com/mehar99197/nexadownloadmanager';
+
 const COLS = [
   {
     title: 'Product',
@@ -17,11 +24,13 @@ const COLS = [
   },
   {
     title: 'Resources',
+    // /tutorials is left out until it has videos to show: every card on it
+    // still reads "video to be created". The route stays for old links.
     links: [
       { to: '/docs', label: 'Docs' },
-      { to: '/tutorials', label: 'Tutorials' },
       { to: '/faq', label: 'FAQ' },
       { to: '/security', label: 'Security' },
+      { href: SOURCE_URL, label: 'Source code' },
       { to: '/about', label: 'About' },
       { to: '/contact', label: 'Contact' },
     ],
@@ -69,22 +78,24 @@ export default function Footer() {
               {col.title}
             </h2>
             <ul className="-my-2" aria-labelledby={`footer-${col.title.toLowerCase()}`}>
-              {col.links.map((l) => (
-                <li key={l.label}>
-                  <Link
-                    to={l.to}
-                    /* 18px tall was under even WCAG 2.2 AA's 24px minimum
-                       (2.5.8). `block py-2` makes each row ~34px and widens the
-                       hit area to the whole column, which is what actually
-                       makes a dense link list tappable. Not 44px: that is the
-                       AAA/HIG bar, and paying 26px twelve times over would put
-                       back most of the footer height just saved. */
-                    className="block py-2 text-sm text-slate-400 transition hover:text-brand-300"
-                  >
-                    {l.label}
-                  </Link>
-                </li>
-              ))}
+              {col.links.map((l) => {
+                /* 18px tall was under even WCAG 2.2 AA's 24px minimum
+                   (2.5.8). `block py-2` makes each row ~34px and widens the
+                   hit area to the whole column, which is what actually makes a
+                   dense link list tappable. Not 44px: that is the AAA/HIG bar,
+                   and paying 26px twelve times over would put back most of the
+                   footer height just saved. */
+                const cls = 'block py-2 text-sm text-slate-400 transition hover:text-brand-300';
+                return (
+                  <li key={l.label}>
+                    {l.href ? (
+                      <a href={l.href} className={cls}>{l.label}</a>
+                    ) : (
+                      <Link to={l.to} className={cls}>{l.label}</Link>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ))}

@@ -234,6 +234,18 @@ describe('usePageMeta', () => {
     await waitFor(() => expect(document.title).toMatch(/Nexa Download Manager/));
     expect(document.title).toMatch(/Download/);
   });
+
+  it('keeps a noindex page out of search results only while it is shown', async () => {
+    const usePageMeta = (await import('../hooks/usePageMeta')).default;
+    function Unfinished() {
+      usePageMeta({ title: 'Unfinished', noindex: true });
+      return null;
+    }
+    const { unmount } = renderPage(<Unfinished />);
+    expect(document.head.querySelector('meta[name="robots"]')).toHaveAttribute('content', 'noindex, follow');
+    unmount();
+    expect(document.head.querySelector('meta[name="robots"]')).toBeNull();
+  });
 });
 
 describe('trial helper', () => {
@@ -555,5 +567,15 @@ describe('FAQ — section shortcuts', () => {
 
     await userEvent.type(screen.getByLabelText(/search the faq/i), 'magnet');
     expect(screen.queryByRole('navigation', { name: /faq sections/i })).toBeNull();
+  });
+});
+
+describe('Footer', () => {
+  it('links the public source code, and not the tutorials page that has no videos yet', async () => {
+    const { default: Footer, SOURCE_URL } = await import('../components/Footer');
+    renderPage(<Footer />);
+    expect(SOURCE_URL).toMatch(/^https:\/\/github\.com\//);
+    expect(screen.getByRole('link', { name: /source code/i })).toHaveAttribute('href', SOURCE_URL);
+    expect(screen.queryByRole('link', { name: /tutorials/i })).toBeNull();
   });
 });

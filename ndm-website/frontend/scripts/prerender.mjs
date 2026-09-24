@@ -23,6 +23,8 @@ const SITE_NAME = 'Nexa Download Manager';
 const SITE_URL = (process.env.VITE_SITE_URL || 'https://nexadownloadmanager.com').replace(/\/$/, '');
 
 // Public routes only: anything behind auth must not be indexed or shared.
+// [route, title, description, options?] — `{ noindex: true }` serves the page
+// but keeps it out of search results (a page that is live but not ready).
 const ROUTES = [
   ['/', null, 'A free, open desktop download manager for Windows and Linux. Multi-connection HTTP, HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue.'],
   ['/download', 'Download', 'Download Nexa Download Manager for Windows or Linux, with SHA-256 checksums and the browser extension.'],
@@ -37,7 +39,7 @@ const ROUTES = [
   ['/features/scheduler', 'Scheduler & speed limits', 'Start downloads at a chosen time, cap bandwidth globally or per download, and shut the machine down when the queue is empty.'],
   ['/features/remote-dashboard', 'Remote dashboard', 'Watch and control the Nexa queue from your phone, behind an access token and TLS.'],
   ['/benchmarks', 'Benchmarks', 'Measured download throughput at 1, 4, 8 and 16 concurrent connections against two real hosts, plus Nexa end to end — with the method and the raw spread.'],
-  ['/tutorials', 'Tutorials', 'Short video guides for installing Nexa, the browser extension, YouTube and playlists, torrents, scheduling and the remote dashboard.'],
+  ['/tutorials', 'Tutorials', 'Video guides planned for Nexa Download Manager. None are recorded yet; every topic has a written guide today.', { noindex: true }],
   ['/security', 'Security & privacy', 'Exactly what Nexa sends, what it never sends, and what every browser-extension permission is for.'],
   ['/faq', 'FAQ', 'Answers about pricing, supported systems, YouTube downloads, safety, refunds and where your files are saved.'],
   ['/about', 'About', 'Who builds Nexa Download Manager, why it exists, and what we will and will not do with your data.'],
@@ -71,7 +73,7 @@ function setContent(html, matcher, value) {
 }
 
 let written = 0;
-for (const [route, title, description] of ROUTES) {
+for (const [route, title, description, options = {}] of ROUTES) {
   const fullTitle = title ? `${title} · ${SITE_NAME}` : SITE_NAME;
   const canonical = `${SITE_URL}${route === '/' ? '/' : route}`;
 
@@ -87,6 +89,9 @@ for (const [route, title, description] of ROUTES) {
   html = setContent(html, 'property="og:url"', canonical);
   html = setContent(html, 'name="twitter:title"', fullTitle);
   html = setContent(html, 'name="twitter:description"', description);
+  if (options.noindex) {
+    html = html.replace('</head>', '    <meta name="robots" content="noindex, follow" />\n  </head>');
+  }
 
   // "/" is dist/index.html itself; everything else gets its own directory.
   const target = route === '/' ? join(dist, 'index.html') : join(dist, route, 'index.html');
