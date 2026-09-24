@@ -150,7 +150,7 @@ export default function FeatureVideoGrabber() {
                 has been requested; the player is inside a cross-origin iframe the content script
                 cannot reach; or the video is a plain progressive MP4, in which case there is nothing
                 to grab — right-click it and use <strong className="text-white">Download with Nexa</strong> instead.
-                The <Link to="/docs/extension" className="text-brand-300 hover:underline">extension guide</Link> has the full checklist.
+                The <Link to="/docs/extension" className="text-brand-300 underline underline-offset-2">extension guide</Link> has the full checklist.
               </>
             ),
           },
