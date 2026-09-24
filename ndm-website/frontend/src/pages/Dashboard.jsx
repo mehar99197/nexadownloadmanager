@@ -11,7 +11,7 @@ import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
-import Spinner from '../components/Spinner';
+import Skeleton, { useArrival } from '../components/Skeleton';
 
 function StatCard({ label, value, icon }) {
   return (
@@ -32,7 +32,25 @@ function StatCard({ label, value, icon }) {
   );
 }
 
-function LicenseCard({ license, onRotated }) {
+/**
+ * The licence card and the devices card as they will land. These sit side by
+ * side in one grid row, so the spinner that stood in for the first — 40% of
+ * the window tall — set the height of the row, and the second arrived from
+ * nothing a moment later.
+ */
+function CardSkeleton({ label, lines = 3, action = true }) {
+  return (
+    <Card className="!p-6" role="status" aria-label={label}>
+      <Skeleton className="h-5 w-32 rounded" />
+      {Array.from({ length: lines }, (_, i) => (
+        <Skeleton key={i} className={`h-3.5 rounded ${i === lines - 1 ? 'w-2/3' : 'w-full'} ${i ? 'mt-3' : 'mt-4'}`} />
+      ))}
+      {action && <Skeleton className="mt-5 h-11 w-full rounded-xl" />}
+    </Card>
+  );
+}
+
+function LicenseCard({ license, onRotated, className = '' }) {
   const [copied, setCopied] = useState(false);
   const [keyShown, setKeyShown] = useState(false);
   const [rotating, setRotating] = useState(false);
@@ -79,7 +97,7 @@ function LicenseCard({ license, onRotated }) {
 
   if (!license) {
     return (
-      <Card className="card-hover !p-6">
+      <Card className={`card-hover !p-6 ${className}`.trim()}>
         <h3 className="font-semibold text-white">License key</h3>
         <p className="mt-2 text-sm text-zinc-400">No active license found.</p>
       </Card>
@@ -91,7 +109,7 @@ function LicenseCard({ license, onRotated }) {
   // app: signing in inside it. A trial or upgrade then follows on its own.
   if (license.plan === 'free' && !license.trial) {
     return (
-      <Card className="card-hover !p-6" data-testid="account-signin-card">
+      <Card className={`card-hover !p-6 ${className}`.trim()} data-testid="account-signin-card">
         <h3 className="font-semibold text-white">Use your account in the app</h3>
         <p className="mt-2 text-sm leading-6 text-slate-400">
           No licence key needed. In Nexa Download Manager open{' '}
@@ -109,7 +127,7 @@ function LicenseCard({ license, onRotated }) {
   }
 
   return (
-    <Card className="card-hover !p-6">
+    <Card className={`card-hover !p-6 ${className}`.trim()}>
       <h3 className="font-semibold text-white">License key</h3>
       <p className="mt-2 text-xs leading-5 text-slate-500">
         Signing in inside the app (Settings &rarr; Account) is all you need. This key is only for activating by
@@ -182,6 +200,7 @@ function DevicesCard({ onChanged }) {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const arrive = useArrival(data === null);
 
   const load = async () => {
     try {
@@ -238,11 +257,11 @@ function DevicesCard({ onChanged }) {
     }
   };
 
-  if (!data) return null;
+  if (!data) return <CardSkeleton label="Loading your devices" lines={2} />;
   const { seats = 0, activeSeats = 0, seatsEnforced = seats > 0, devices = [] } = data;
 
   return (
-    <Card className="card-hover !p-6">
+    <Card className={`card-hover !p-6 ${arrive}`.trim()}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold text-white">Your devices</h3>
@@ -549,6 +568,7 @@ export default function Dashboard() {
   const toast = useToast();
   const [license, setLicense] = useState(null);
   const [loadingLicense, setLoadingLicense] = useState(true);
+  const licenseArrives = useArrival(loadingLicense);
   const [startingTrial, setStartingTrial] = useState(false);
   const redeemed = useRef(false);
 
@@ -669,7 +689,11 @@ export default function Dashboard() {
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        {loadingLicense ? <Spinner center /> : <LicenseCard license={license} onRotated={loadLicense} />}
+        {loadingLicense ? (
+          <CardSkeleton label="Loading your licence" />
+        ) : (
+          <LicenseCard license={license} onRotated={loadLicense} className={licenseArrives} />
+        )}
         <DevicesCard />
         <TeamCard onChanged={() => { loadLicense(); refreshMe(); }} />
       </div>

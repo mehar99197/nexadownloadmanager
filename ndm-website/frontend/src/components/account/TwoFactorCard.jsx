@@ -4,6 +4,7 @@ import api, { unwrap } from '../../api/client';
 import Card from '../Card';
 import Button from '../Button';
 import Input from '../Input';
+import Skeleton from '../Skeleton';
 import { useToast } from '../Toast';
 
 const errorMessage = (err, fallback) => err?.response?.data?.error?.message || err?.message || fallback;
@@ -129,6 +130,14 @@ export default function TwoFactorCard({ user }) {
           {state ? (enabled ? 'On' : 'Off') : '…'}
         </span>
       </div>
+
+      {/* Where the button will be, until the status says which one — it
+          arriving on its own pushed the sessions card below it down. */}
+      {state === null && !error && (
+        <div className="mt-5" role="status" aria-label="Loading two-factor status">
+          <Skeleton className="h-11 w-28 rounded-[var(--radius-2)]" />
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-300">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import api, { unwrap } from '../../api/client';
 import Card from '../Card';
 import Button from '../Button';
+import Skeleton, { useArrival } from '../Skeleton';
 import { useToast } from '../Toast';
 
 const errorMessage = (err, fallback) => err?.response?.data?.error?.message || err?.message || fallback;
@@ -59,6 +60,7 @@ export default function SessionsCard() {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState(null);
+  const arrive = useArrival(sessions === null && !error);
 
   const load = useCallback(async () => {
     try {
@@ -123,11 +125,25 @@ export default function SessionsCard() {
       )}
 
       {sessions === null ? (
-        <p className="mt-5 text-sm text-slate-500">Loading…</p>
+        error ? null : (
+          // Two rows as they will land — the browser, when it was last used,
+          // and the button to sign it out.
+          <div className="mt-5 divide-y divide-[var(--color-surface-border)]" role="status" aria-label="Loading your sessions">
+            {[0, 1].map((i) => (
+              <div key={i} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0 flex-1">
+                  <Skeleton className="h-4 w-40 rounded" />
+                  <Skeleton className="mt-2 h-3 w-56 max-w-full rounded" />
+                </div>
+                <Skeleton className="h-11 w-24 shrink-0 rounded-[var(--radius-2)]" />
+              </div>
+            ))}
+          </div>
+        )
       ) : sessions.length === 0 ? (
-        <p className="mt-5 text-sm text-slate-500">No sessions.</p>
+        <p className={`mt-5 text-sm text-slate-500 ${arrive}`.trim()}>No sessions.</p>
       ) : (
-        <ul className="mt-5 divide-y divide-[var(--color-surface-border)]" data-testid="session-list">
+        <ul className={`mt-5 divide-y divide-[var(--color-surface-border)] ${arrive}`.trim()} data-testid="session-list">
           {sessions.map((s) => (
             <li key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
               <div className="min-w-0">

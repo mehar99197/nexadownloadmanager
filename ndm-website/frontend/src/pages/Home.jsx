@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import api, { unwrap } from '../api/client';
+import { lastRead, readPublic } from '../api/reads';
 import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Button from '../components/Button';
@@ -8,6 +8,7 @@ import { BrandMark } from '../components/Brand';
 import WarpField from '../components/WarpField';
 import CountUp from '../components/CountUp';
 import StarRating from '../components/StarRating';
+import Skeleton, { SkeletonText, useArrival } from '../components/Skeleton';
 
 /** The arrow both primary CTAs carry. Decorative — the label says where it goes. */
 function CtaArrow() {
@@ -81,6 +82,45 @@ const FEATURES = [
 
 const COLS_CLASS = { 1: 'md:grid-cols-1', 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4' };
 
+const HOME_REVIEWS = { page: 1, limit: 3 };
+
+// What each answer has to hold to be shown at all. Real numbers only: an
+// answer without them hides its tile or section rather than inventing one.
+const usableStats = (data) => (data && typeof data === 'object' ? data : null);
+const usableRelease = (data) => (data?.version ? data : null);
+// Same rule as the tiles: real reviews or no section at all. An empty "what
+// users say" block is worse than not claiming anything.
+const usableReviews = (data) => (data?.reviews?.length ? data : null);
+
+const firstVisit = () =>
+  lastRead('/stats') === undefined ||
+  lastRead('/releases/latest') === undefined ||
+  lastRead('/reviews', HOME_REVIEWS) === undefined;
+
+/** The reviews section as it will land: heading block, then three cards. */
+function ReviewsOutline() {
+  return (
+    <Section>
+      <div className="mx-auto flex max-w-2xl flex-col items-center text-center" role="status" aria-label="Loading reviews">
+        <Skeleton className="h-[1.95rem] w-36 rounded-full" />
+        <Skeleton className="mt-5 h-8 w-4/5 max-w-md rounded-lg" />
+        <Skeleton className="mt-4 h-4 w-3/5 rounded" />
+      </div>
+      <div className="mt-10 grid gap-5 md:grid-cols-3">
+        {[0, 1, 2].map((i) => (
+          <Card key={i} className="!p-6">
+            <Skeleton className="h-3.5 w-20 rounded" />
+            {['w-full', 'w-full', 'w-3/4'].map((w, j) => (
+              <Skeleton key={j} className={`h-3.5 rounded ${w} ${j ? 'mt-3' : 'mt-4'}`} />
+            ))}
+            <Skeleton className="mt-5 h-3 w-24 rounded" />
+          </Card>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 
 export default function Home() {
   usePageMeta({
@@ -89,33 +129,30 @@ export default function Home() {
       'Nexa Download Manager accelerates HTTP downloads with up to 32 connections per file and handles HLS/DASH streams, YouTube via yt-dlp, BitTorrent and cloud links in one queue. Free to start.',
   });
 
-  const [stats, setStats] = useState(null);
-  const [release, setRelease] = useState(null);
-  const [reviews, setReviews] = useState(null);
+  // A revisit starts from the last answers (api/reads.js), so the numbers and
+  // the reviews are there in its first frame; they are asked for again anyway.
+  const [stats, setStats] = useState(() => usableStats(lastRead('/stats')));
+  const [release, setRelease] = useState(() => usableRelease(lastRead('/releases/latest')));
+  const [reviews, setReviews] = useState(() => usableReviews(lastRead('/reviews', HOME_REVIEWS)));
+  // Until the first answers are in, what they decide is drawn as its own
+  // outline, not left out and slotted in a moment later — the release pill
+  // arriving above the headline used to push the whole hero down.
+  const [loading, setLoading] = useState(firstVisit);
+  const arrive = useArrival(loading);
 
-  // Real numbers only. If either call fails we simply hide those tiles.
+  // Real numbers only. If a call fails we simply hide what it would have shown.
   useEffect(() => {
     let cancelled = false;
     Promise.allSettled([
-      api.get('/stats'),
-      api.get('/releases/latest'),
-      api.get('/reviews', { params: { page: 1, limit: 3 } }),
+      readPublic('/stats'),
+      readPublic('/releases/latest'),
+      readPublic('/reviews', HOME_REVIEWS),
     ]).then(([s, r, v]) => {
       if (cancelled) return;
-      if (s.status === 'fulfilled') {
-        const data = unwrap(s.value);
-        if (data && typeof data === 'object') setStats(data);
-      }
-      if (r.status === 'fulfilled') {
-        const data = unwrap(r.value);
-        if (data?.version) setRelease(data);
-      }
-      // Same rule as the tiles: real reviews or no section at all. An empty
-      // "what users say" block is worse than not claiming anything.
-      if (v.status === 'fulfilled') {
-        const data = unwrap(v.value);
-        if (data?.reviews?.length) setReviews(data);
-      }
+      if (s.status === 'fulfilled') setStats(usableStats(s.value));
+      if (r.status === 'fulfilled') setRelease(usableRelease(r.value));
+      if (v.status === 'fulfilled') setReviews(usableReviews(v.value));
+      setLoading(false);
     });
     return () => { cancelled = true; };
   }, []);
@@ -140,10 +177,23 @@ export default function Home() {
         <div className="container-x relative z-10">
           <div className="grid items-center gap-14 lg:grid-cols-[1.04fr_0.96fr] lg:gap-16">
             <div>
-              {release?.version && (
-                <span className="eyebrow rise rise-1">
+              {/* Always a pill in this slot, so the headline under it never
+                  moves: the release once it is known, its outline until then,
+                  and a plain fact if there is no release to name. */}
+              {loading ? (
+                <span className="eyebrow rise rise-1" aria-hidden="true">
+                  <span className="eyebrow-dot" />
+                  <SkeletonText chars={22} />
+                </span>
+              ) : release?.version ? (
+                <span key="release" className="eyebrow rise rise-1">
                   <span className="eyebrow-dot" />
                   Latest release / v{release.version}
+                </span>
+              ) : (
+                <span key="plain" className="eyebrow rise rise-1">
+                  <span className="eyebrow-dot" />
+                  Free for Windows and Linux
                 </span>
               )}
               <h1 className="rise rise-2 mt-7 max-w-3xl text-5xl font-extrabold leading-[1.02] tracking-[-0.045em] text-white sm:text-6xl lg:text-[4.6rem]">
@@ -216,7 +266,22 @@ export default function Home() {
       </Section>
 
       <Section className="!py-0">
-        <div data-stagger className={`stat-strip grid grid-cols-2 ${COLS_CLASS[tiles.length] || 'md:grid-cols-4'}`}>
+        {loading ? (
+          // The strip usually lands with four tiles; its outline has four.
+          <div key="waiting" data-stagger className={`stat-strip grid grid-cols-2 ${COLS_CLASS[4]}`} role="status" aria-label="Loading the numbers">
+            {[5, 5, 6, 8].map((chars, i) => (
+              <div key={i} className="stat-item px-5 py-6 text-center first:border-0 md:px-8 md:py-7">
+                <div className="text-2xl font-extrabold tracking-tight md:text-3xl">
+                  <SkeletonText chars={chars} />
+                </div>
+                <div className="mt-1 text-xs font-semibold tracking-wide">
+                  <SkeletonText chars={16} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+        <div key="ready" data-stagger className={`stat-strip grid grid-cols-2 ${COLS_CLASS[tiles.length] || 'md:grid-cols-4'} ${arrive}`.trim()}>
           {tiles.map((s) => (
             <div key={s.label} className="stat-item px-5 py-6 text-center first:border-0 md:px-8 md:py-7">
               <div className="text-2xl font-extrabold tracking-tight text-white md:text-3xl">
@@ -226,6 +291,7 @@ export default function Home() {
             </div>
           ))}
         </div>
+        )}
       </Section>
 
       <Section>
@@ -248,9 +314,11 @@ export default function Home() {
         </div>
       </Section>
 
-      {reviews && (
+      {loading ? (
+        <ReviewsOutline />
+      ) : reviews && (
         <Section>
-          <div className="mx-auto max-w-2xl text-center">
+          <div className={`mx-auto max-w-2xl text-center ${arrive}`.trim()}>
             <span className="eyebrow"><span className="eyebrow-dot" />What users say</span>
             <h2 className="mt-5 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
               From people who actually use it.
@@ -263,7 +331,7 @@ export default function Home() {
               </p>
             )}
           </div>
-          <div className="mt-10 grid gap-5 md:grid-cols-3">
+          <div className={`mt-10 grid gap-5 md:grid-cols-3 ${arrive}`.trim()}>
             {reviews.reviews.map((r) => (
               <Card key={r.id} className="!p-6">
                 <StarRating value={r.rating} readOnly size={14} />

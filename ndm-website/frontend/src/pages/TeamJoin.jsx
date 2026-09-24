@@ -7,7 +7,7 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Spinner from '../components/Spinner';
+import Skeleton from '../components/Skeleton';
 
 /**
  * /team/join?token=… — the landing page of a Team invitation email.
@@ -72,7 +72,16 @@ export default function TeamJoin() {
         </div>
         <Card className="auth-card !p-8 sm:!p-9">
           {loading || authLoading ? (
-            <Spinner center />
+            // The invitation card as it will land: who invited whom, a
+            // paragraph, and the two ways to accept.
+            <div role="status" aria-label="Loading the invitation">
+              <Skeleton className="h-8 w-4/5 rounded-lg" />
+              {['w-full', 'w-full', 'w-3/5'].map((w, i) => (
+                <Skeleton key={i} className={`h-3.5 rounded ${w} ${i ? 'mt-2.5' : 'mt-4'}`} />
+              ))}
+              <Skeleton className="mt-6 h-11 w-full rounded-[var(--radius-2)]" />
+              <Skeleton className="mt-3 h-11 w-full rounded-[var(--radius-2)]" />
+            </div>
           ) : error && !invite ? (
             <>
               <h1 className="text-2xl font-extrabold tracking-tight text-white">Invitation not found.</h1>

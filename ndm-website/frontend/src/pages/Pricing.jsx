@@ -8,7 +8,8 @@ import usePageMeta from '../hooks/usePageMeta';
 import Section from '../components/Section';
 import Card from '../components/Card';
 import Button from '../components/Button';
-import Skeleton from '../components/Skeleton';
+import { lastRead, readPublic } from '../api/reads';
+import Skeleton, { useArrival } from '../components/Skeleton';
 
 const CYCLE = { monthly: 'per month', yearly: 'per year' };
 
@@ -186,12 +187,14 @@ export default function Pricing() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [plans, setPlans] = useState(null);
+  // A revisit starts from the last answer (api/reads.js) and asks again underneath.
+  const [plans, setPlans] = useState(() => lastRead('/subscription/plans') ?? null);
   // 'live' | 'mock' | 'disabled' — from /subscription/plans. Absent (an older
   // API) counts as open, which is what the page always assumed before.
   const billingOpen = !plans || plans.billing !== 'disabled';
   const [billingCycle, setBillingCycle] = useState('yearly');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => lastRead('/subscription/plans') === undefined);
+  const arrive = useArrival(loading);
   const [checking, setChecking] = useState(false);
   const [coupon, setCoupon] = useState('');
   const [couponState, setCouponState] = useState({ status: 'idle', message: '' });
@@ -199,18 +202,16 @@ export default function Pricing() {
 
   useEffect(() => {
     let cancelled = false;
-    const fetch = async () => {
-      setLoading(true);
-      try {
-        const res = await api.get('/subscription/plans');
-        if (!cancelled) setPlans(unwrap(res));
-      } catch {
-        if (!cancelled) setError('Failed to load plans.');
-      } finally {
+    readPublic('/subscription/plans')
+      .then((data) => {
+        if (!cancelled) setPlans(data);
+      })
+      .catch(() => {
+        if (!cancelled && lastRead('/subscription/plans') === undefined) setError('Failed to load plans.');
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    };
-    fetch();
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -309,7 +310,7 @@ export default function Pricing() {
           <p className="text-red-300">{error}</p>
         </div>
       ) : plans ? (
-        <>
+        <div className={arrive || undefined}>
           <div className="mt-8 flex justify-center">
             <div className="billing-toggle inline-flex rounded-xl border p-1 shadow-[0_16px_35px_-25px_rgba(126,108,255,0.8)]">
               {['monthly', 'yearly'].map((c) => (
@@ -408,7 +409,7 @@ export default function Pricing() {
               </>
             )}
           </p>
-        </>
+        </div>
       ) : null}
     </Section>
   );

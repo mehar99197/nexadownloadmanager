@@ -25,12 +25,16 @@ vi.mock('../api/client', () => {
   };
 });
 import api from '../api/client';
+import { forgetAllReads } from '../api/reads';
 
 const renderPage = (ui) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 beforeEach(() => {
   api.get.mockReset();
   api.post.mockReset();
+  // Public reads are remembered for the life of the tab (api/reads.js), and
+  // these tests render the same page against different answers.
+  forgetAllReads();
 });
 
 describe('Home — honest statistics', () => {
@@ -440,5 +444,69 @@ describe('Spinner — two of them on one page stay two of them', () => {
     const mark = screen.getByRole('status', { name: 'Loading' });
     expect(mark).toHaveAttribute('width', '32');
     expect(mark).toHaveAttribute('height', '32');
+  });
+});
+
+/**
+ * Reported by the owner: pages "shift all at once, and no skeleton shows".
+ * A page waiting for data now draws the outline of what is coming — never a
+ * spinner in place of the whole page, and never a wrong answer — and a page
+ * already seen in this tab draws its last answer at once.
+ */
+describe('Waiting for data — the outline of what is coming, then the thing', () => {
+  const never = () => new Promise(() => {});
+
+  it('Download draws its cards at once and claims nothing it does not know yet', () => {
+    api.get.mockReturnValue(never());
+    renderPage(<Download />);
+
+    // It used to say "Version not published yet" until the answer came back.
+    expect(screen.queryByText(/not published yet/i)).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent(/loading the latest release/i);
+    // No spinner standing in for the page: what does not depend on the
+    // release is already there.
+    expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Windows' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /send downloads from your browser/i })).toBeInTheDocument();
+  });
+
+  it('a revisit draws the last answer in its first frame, and still asks again', async () => {
+    api.get.mockResolvedValue({ data: { ok: true, data: { version: '0.4.2', windowsUrl: 'https://e.test/a.exe' } } });
+    const first = renderPage(<Download />);
+    await waitFor(() => expect(screen.getAllByText(/0\.4\.2/).length).toBeGreaterThan(0));
+    first.unmount();
+
+    api.get.mockReturnValue(never());
+    renderPage(<Download />);
+    // Synchronously, with the second request still in flight.
+    expect(screen.getAllByText(/0\.4\.2/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/loading the latest release/i)).toBeNull();
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('Home holds the numbers as outlines until they arrive, then shows the real ones', async () => {
+    let answer;
+    api.get.mockImplementation((path) =>
+      path === '/stats'
+        ? new Promise((resolve) => { answer = resolve; })
+        : Promise.resolve({ data: { ok: true, data: {} } })
+    );
+    renderPage(<Home />);
+
+    expect(screen.getByRole('status', { name: /loading the numbers/i })).toBeInTheDocument();
+    expect(screen.queryByText(/downloads served/i)).toBeNull();
+
+    answer({ data: { ok: true, data: { users: 3, downloads: 17 } } });
+    await waitFor(() => expect(screen.getByText('17')).toBeInTheDocument());
+    expect(screen.queryByRole('status', { name: /loading the numbers/i })).toBeNull();
+  });
+
+  it('Changelog shows release-shaped outlines rather than a spinner', async () => {
+    const Changelog = (await import('../pages/Changelog')).default;
+    api.get.mockReturnValue(never());
+    renderPage(<Changelog />);
+
+    expect(screen.getByRole('status', { name: /loading the release notes/i })).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
   });
 });

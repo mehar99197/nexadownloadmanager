@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import api, { unwrap } from '../api/client';
+import api from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/Toast';
 import Section from '../components/Section';
@@ -7,11 +7,15 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import Input from '../components/Input';
 import StarRating from '../components/StarRating';
-import Skeleton from '../components/Skeleton';
+import { lastRead, readPublic } from '../api/reads';
+import Skeleton, { SkeletonText, useArrival } from '../components/Skeleton';
 import Turnstile, { turnstileEnabled } from '../components/Turnstile';
 import usePageMeta from '../hooks/usePageMeta';
 
 const PAGE_SIZE = 10;
+
+/** The query a visit opens on, so a revisit can start from its last answer. */
+const FIRST_PAGE = { page: 1, limit: PAGE_SIZE };
 
 /* Reviews carry a rating and a comment and nothing else, so "what did you use
    it for" is not a stored field. Rather than invent one, these filter the text
@@ -198,8 +202,9 @@ function ReviewsSkeleton() {
 export default function Reviews() {
   usePageMeta({ title: "Reviews", description: "What people say about Nexa Download Manager — real, moderated reviews from users." });
 
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => lastRead('/reviews', FIRST_PAGE) ?? null);
   const [loading, setLoading] = useState(true);
+  const arrive = useArrival(data === null);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState('');
@@ -211,8 +216,7 @@ export default function Reviews() {
     try {
       const params = { page: p, limit: PAGE_SIZE };
       if (ratingFilter) params.rating = ratingFilter;
-      const res = await api.get('/reviews', { params });
-      setData(unwrap(res));
+      setData(await readPublic('/reviews', params));
     } catch {
       setError('Failed to load reviews.');
     } finally {
@@ -251,8 +255,16 @@ export default function Reviews() {
         <p>Real experiences from real downloaders. No inflated promises, just work that gets out of the way.</p>
       </div>
 
-      {totalReviews > 0 && (
-        <div className="mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2">
+      {/* The score line sits ABOVE the list, so arriving on its own it pushed
+          everything under it down; its outline holds the line meanwhile. */}
+      {loading && !data ? (
+        <div className="mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2" aria-hidden="true">
+          <span className="text-3xl font-extrabold"><SkeletonText chars={3} /></span>
+          <Skeleton className="h-5 w-28 rounded" />
+          <span className="text-sm"><SkeletonText chars={20} /></span>
+        </div>
+      ) : totalReviews > 0 && (
+        <div className={`mx-auto mt-6 flex max-w-xl flex-wrap items-center justify-center gap-x-4 gap-y-2 ${arrive}`.trim()}>
           <span className="text-3xl font-extrabold text-white">
             {Number(data.averageRating).toFixed(1)}
           </span>
@@ -270,7 +282,7 @@ export default function Reviews() {
           <p className="text-red-300">{error}</p>
         </div>
       ) : data ? (
-        <div className="mt-10 grid gap-8 lg:grid-cols-[1fr_280px]">
+        <div className={`mt-10 grid gap-8 lg:grid-cols-[1fr_280px] ${arrive}`.trim()}>
           <div className="space-y-5">
             {featured.length > 0 && (
               <div>
