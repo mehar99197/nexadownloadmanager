@@ -814,9 +814,31 @@ void SpotifyGrabber::finishTrack(const QString &outPath, const Track &t)
 void SpotifyGrabber::cancel()
 {
     m_cancelled = true;
-    if (m_embedReply)   { m_embedReply->abort();   m_embedReply->deleteLater();   m_embedReply = nullptr; }
-    if (m_previewReply) { m_previewReply->abort(); m_previewReply->deleteLater(); m_previewReply = nullptr; }
-    if (m_artReply)     { m_artReply->abort();     m_artReply->deleteLater();     m_artReply = nullptr; }
+    // Detach each reply's handlers before abort(), as MegaGrabber::cancel()
+    // does: abort() emits finished() synchronously, and every handler takes
+    // its member and nulls it first. Attached, they ran in here — failing the
+    // download the user had just paused, or for the cover art, tagging and
+    // filing the half-finished track — and deleteLater() then ran on null.
+    if (m_embedReply) {
+        m_embedReply->disconnect(this);
+        m_embedReply->abort();
+        m_embedReply->deleteLater();
+        m_embedReply = nullptr;
+    }
+    if (m_previewReply) {
+        m_previewReply->disconnect(this);
+        m_previewReply->abort();
+        m_previewReply->deleteLater();
+        m_previewReply = nullptr;
+    }
+    if (m_artReply) {
+        m_artReply->disconnect(this);
+        m_artReply->abort();
+        m_artReply->deleteLater();
+        m_artReply = nullptr;
+    }
+    // The processes' finished() arrives later, not from kill(), and both
+    // handlers return at once on a null member.
     if (m_ytdlp)        { m_ytdlp->kill();         m_ytdlp->deleteLater();        m_ytdlp = nullptr; }
     if (m_ffmpeg)       { m_ffmpeg->kill();        m_ffmpeg->deleteLater();       m_ffmpeg = nullptr; }
     if (!m_tmpDir.isEmpty()) {
