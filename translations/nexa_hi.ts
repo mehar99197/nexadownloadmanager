@@ -1859,38 +1859,63 @@ Free includes Nexa Dark and Nexa Light. Start the free 7-day trial, or see nexad
     <context>
         <name>SiteLoginsDialog</name>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="107" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="157" />
+            <source>%1 locks its cookies away from other programs on Windows, so yt-dlp can't read this login. Start downloads from the page with the “Download with NDM” button instead, or pick Firefox.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="151" />
+            <source>Apple Music tracks are DRM-protected, so no login lets Nexa download them.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="119" />
             <source>Auth subsystem unavailable.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="62" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="74" />
             <source>Browser</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="87" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="99" />
             <source>Close</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="101" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="113" />
             <source>Pick a site first.</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="47" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="59" />
             <source>Site</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="23" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="35" />
             <source>Site Logins</source>
             <translation type="unfinished" />
         </message>
         <message>
-            <location filename="../src/ui/SiteLoginsDialog.cpp" line="70" />
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="82" />
             <source>Use browser login</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="154" />
+            <source>yt-dlp can't read %1, so a login doesn't help there. Open each lecture in your browser and download it with the Nexa extension instead.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="166" />
+            <source>✓ Will use your %1 login for %2. Stay signed in there, then paste a video's link in New Download, or start it from its page with the “Download with NDM” button.</source>
+            <translation type="unfinished" />
+        </message>
+        <message>
+            <location filename="../src/ui/SiteLoginsDialog.cpp" line="161" />
+            <source>✓ Will use your %1 login for %2. Stay signed in there, then start each lecture from its page with the “Download with NDM” button — one lecture at a time; whole courses are not supported.</source>
             <translation type="unfinished" />
         </message>
     </context>

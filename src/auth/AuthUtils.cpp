@@ -40,6 +40,38 @@ QString authReasonFromYtDlpLine(const QString &line)
         return QStringLiteral("authentication required (HTTP %1)").arg(m.captured(1));
     }
 
+    // YouTube refusing one video: private, members-only or age-gated. yt-dlp
+    // prints YouTube's own reason under its "[youtube]" tag, adding "Use
+    // --cookies-from-browser or --cookies" whenever that reason says "sign in".
+    // Each needs a signed-in YouTube session, and Nexa never sends YouTube one
+    // (isYouTubeHost), so "provide cookies" and a sign-in are both wrong here.
+    // The age markers come from yt-dlp's own age-gate test (_is_agegated), with
+    // "inappropriate" kept to YouTube's full phrase. Checked before the bot
+    // check: "Sign in to confirm your age" starts like it.
+    static const QRegularExpression youtubeRe(QStringLiteral("\\[youtube[^\\]]*\\]"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    if (youtubeRe.match(line).hasMatch()) {
+        static const QRegularExpression privateRe(QStringLiteral("private video"),
+                                                  QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression membersRe(
+            QStringLiteral("members[- ]only|this channel's members"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression ageRe(
+            QStringLiteral("confirm your age|age[- ]restricted|inappropriate for some users"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (privateRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is private — Nexa never sends a YouTube "
+                                  "login, so it can download it only once the owner makes it "
+                                  "public or unlisted");
+        if (membersRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is for channel members only — Nexa never "
+                                  "sends a YouTube login, so it can't download it");
+        if (ageRe.match(line).hasMatch())
+            return QStringLiteral("this YouTube video is age-restricted — YouTube wants a "
+                                  "signed-in adult account, and Nexa never sends a YouTube "
+                                  "login, so it can't download it");
+    }
+
     // YouTube's bot check ("Sign in to confirm you're not a bot"). It asks for a
     // sign-in, but Nexa never sends YouTube a cookie (isYouTubeHost), so the
     // message offers what works without one: retrying later or from another

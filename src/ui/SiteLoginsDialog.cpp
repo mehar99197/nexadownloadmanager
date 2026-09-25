@@ -17,6 +17,18 @@
 
 namespace nexa {
 
+namespace {
+
+// `domain` is `site` or one of its subdomains: the suffix rule the credential
+// itself is scoped by (AuthenticationManager::hostMatchesDomain).
+bool onSite(const QString &domain, const QString &site)
+{
+    const QString d = domain.toLower();
+    return d == site || d.endsWith(QLatin1Char('.') + site);
+}
+
+} // namespace
+
 SiteLoginsDialog::SiteLoginsDialog(DownloadEngine *engine, QWidget *parent)
     : QDialog(parent), m_engine(engine)
 {
@@ -114,10 +126,51 @@ void SiteLoginsDialog::onUseBrowser()
     // Registering REPLACES any prior credential for this domain (old cookies gone).
     const AuthResult ar = am->registerBrowserCookies(domain, browser, profile);
     if (ar.ok) {
-        m_status->setText(QStringLiteral("✓ Will use your %1 login for %2. Just stay logged in, "
-                                         "then paste a course/lecture URL in New Download.")
-                              .arg(browser, domain));
-        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().doneFg));
+        // What this login is good for depends on the site and the browser, so the
+        // confirmation says so. Checked against the bundled yt-dlp (2026.08.19):
+        //  - Apple Music is FairPlay-DRM: nothing downloads it (AuthUtils).
+        //  - yt-dlp has no Coursera or Skillshare extractor (a pasted link lands
+        //    in [generic]); the extension downloads what their lecture pages play.
+        //  - On Windows, Chrome / Edge / Brave keep cookies under App-Bound
+        //    Encryption, which yt-dlp cannot read (browserlogin::detectBrowser
+        //    never offers them there); the extension's button still works.
+        //  - Udemy: one lecture at a time from its page. A whole course fails in
+        //    yt-dlp's udemy:course ("Udemy course download is not supported").
+        //  - Elsewhere (Vimeo, LinkedIn Learning, Pluralsight, …) yt-dlp reads a
+        //    pasted link with this login.
+#ifdef Q_OS_WIN
+        const bool unreadable = browser == QLatin1String("chrome")
+                             || browser == QLatin1String("edge")
+                             || browser == QLatin1String("brave");
+#else
+        const bool unreadable = false;
+#endif
+        QString text;
+        bool usable = false;
+        if (onSite(domain, QStringLiteral("music.apple.com"))) {
+            text = tr("Apple Music tracks are DRM-protected, so no login lets Nexa download them.");
+        } else if (onSite(domain, QStringLiteral("coursera.org"))
+                   || onSite(domain, QStringLiteral("skillshare.com"))) {
+            text = tr("yt-dlp can't read %1, so a login doesn't help there. Open each lecture in "
+                      "your browser and download it with the Nexa extension instead.").arg(domain);
+        } else if (unreadable) {
+            text = tr("%1 locks its cookies away from other programs on Windows, so yt-dlp can't "
+                      "read this login. Start downloads from the page with the “Download with NDM” "
+                      "button instead, or pick Firefox.").arg(browser);
+        } else if (onSite(domain, QStringLiteral("udemy.com"))) {
+            text = tr("✓ Will use your %1 login for %2. Stay signed in there, then start each "
+                      "lecture from its page with the “Download with NDM” button — one lecture at "
+                      "a time; whole courses are not supported.").arg(browser, domain);
+            usable = true;
+        } else {
+            text = tr("✓ Will use your %1 login for %2. Stay signed in there, then paste a video's "
+                      "link in New Download, or start it from its page with the “Download with "
+                      "NDM” button.").arg(browser, domain);
+            usable = true;
+        }
+        m_status->setText(text);
+        m_status->setStyleSheet(QStringLiteral("color:%1;").arg(
+            usable ? theme::current().doneFg : theme::current().pausedFg));
     } else {
         m_status->setText(QStringLiteral("✕ %1").arg(ar.detail));
         m_status->setStyleSheet(QStringLiteral("color:%1;").arg(theme::current().errorFg));
